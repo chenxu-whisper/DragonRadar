@@ -1,0 +1,11 @@
+.git
+.worktrees
+.temp
+.venv
+.env
+.env.*
+**/__pycache__
+**/*.pyc
+tests
+.idea
+.vscode

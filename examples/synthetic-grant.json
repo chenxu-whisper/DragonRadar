@@ -1,0 +1,12 @@
+{
+  "source_id": "synthetic-example",
+  "approved": true,
+  "reference": "Project-authored synthetic test material; not market data",
+  "starts_at": "2026-01-01T00:00:00Z",
+  "expires_at": "2030-01-01T00:00:00Z",
+  "local_storage": true,
+  "local_display": true,
+  "export": false,
+  "ai": false,
+  "sharing": false
+}
