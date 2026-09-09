@@ -1,4 +1,4 @@
-﻿﻿# Byte-compiled / optimized / DLL files
+﻿﻿﻿# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,8 +15,8 @@ dist/
 venv/
 
 # Temporary files (tool caches, coverage reports, bytecode, etc.)
-.temp/*
-!.temp/.gitkeep
+.temp/
+.worktrees/
 
 # Environment variables
 .env

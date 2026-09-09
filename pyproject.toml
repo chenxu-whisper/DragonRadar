@@ -1,7 +1,7 @@
-﻿﻿[project]
+[project]
 name = "dragon-radar"
 version = "0.1.0"
-description = "Add your description here"
+description = "Traceable end-of-day market research and deterministic analytics"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
@@ -14,21 +14,28 @@ requires = ["uv_build>=0.8.2,<0.9.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = [
-    "pytest>=9.1.1",
-]
+dev = ["pytest>=9.1.1"]
+
+[tool.uv.workspace]
+members = []
 
 [tool.pytest.ini_options]
 cache_dir = ".temp/pytest_cache"
+testpaths = ["tests"]
 
 [tool.ruff]
 cache-dir = ".temp/ruff_cache"
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 cache_dir = ".temp/mypy_cache"
 
 [tool.coverage.run]
 data_file = ".temp/coverage/.coverage"
+source = ["dragon_radar"]
 
 [tool.coverage.html]
 directory = ".temp/coverage/htmlcov"
