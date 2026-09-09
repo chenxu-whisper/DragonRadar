@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from factories import batch, grant
+from sqlalchemy import text
 
 
 def run_cli(args, database_url=None):
@@ -38,6 +39,22 @@ def test_invalid_database_configuration_sanitized():
     assert result.returncode != 0
     assert "secret" not in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_cli_migrate_unknown_revision_is_sanitized(database):
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE alembic_version SET version_num = :revision"),
+            {"revision": "private-revision-marker"},
+        )
+    result = run_cli(
+        ["migrate"],
+        database.engine.url.render_as_string(hide_password=False),
+    )
+    assert result.returncode != 0
+    assert result.stderr.strip() == "Migration failed"
+    assert "private-revision-marker" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stdout + result.stderr
 
 
 def test_cli_migrate_register_import_publish_revoke(database_url, tmp_path):

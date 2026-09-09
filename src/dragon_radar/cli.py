@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from alembic.util.exc import CommandError
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -97,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
         message = "Invalid JSON or payload structure"
     except (OSError, UnicodeError):
         message = "Cannot read local input or start service"
+    except CommandError:
+        message = "Migration failed"
     except SQLAlchemyError:
         message = "Storage unavailable"
     except Conflict:
