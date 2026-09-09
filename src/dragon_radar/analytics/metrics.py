@@ -21,9 +21,12 @@ from decimal import (
 )
 from typing import Literal
 
+from pydantic import ConfigDict
+
 from dragon_radar.analytics.calendar import TradingCalendar
 from dragon_radar.domain.models import (
     DailyBar,
+    ExactDecimal,
     FrozenModel,
     MarketBatch,
     Provenance,
@@ -109,10 +112,12 @@ class Exclusion(FrozenModel):
 
 
 class IntervalItem(FrozenModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     security_id: str
-    interval_return: Decimal
-    maximum_drawdown: Decimal
-    normalized_curve: tuple[Decimal, ...]
+    interval_return: ExactDecimal
+    maximum_drawdown: ExactDecimal
+    normalized_curve: tuple[ExactDecimal, ...]
 
 
 class IntervalAnalysis(AnalysisMetadata):
@@ -122,8 +127,10 @@ class IntervalAnalysis(AnalysisMetadata):
 
 
 class DailyReturn(FrozenModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     security_id: str
-    value: Decimal
+    value: ExactDecimal
     basis: Literal["explicit_previous_close", "prior_session_close"]
     warnings: tuple[str, ...] = ()
 

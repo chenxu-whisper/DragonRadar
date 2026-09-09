@@ -8,7 +8,7 @@ All effective intervals are [effective_from, effective_to), with None unbounded.
 Availability and grant timestamps normalize to UTC. Unknown state is never False.
 """
 
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -30,8 +30,22 @@ def _decimal_input(value: object) -> object:
     return value
 
 
+def _datetime_input(value: object) -> datetime:
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    if not isinstance(value, datetime):
+        raise ValueError(
+            "Timestamp must be an aware datetime or ISO string with timezone"
+        )
+    return value
+
+
 ExactDecimal = Annotated[Decimal, BeforeValidator(_decimal_input)]
-UTCDateTime = Annotated[AwareDatetime, AfterValidator(lambda v: v.astimezone(UTC))]
+UTCDateTime = Annotated[
+    AwareDatetime,
+    BeforeValidator(_datetime_input),
+    AfterValidator(lambda v: v.astimezone(UTC)),
+]
 Identifier = Annotated[str, Field(min_length=1, pattern=r"\S")]
 Provenance = Literal["contemporaneous", "retrospective"]
 

@@ -198,6 +198,10 @@ def validate_batch(batch: MarketBatch, *, now: datetime) -> QualityReport:
         or batch.trade_date > batch.as_of.astimezone(ZoneInfo("Asia/Shanghai")).date()
     ):
         add("batch_time", "Batch cutoff/date is in the future")
+    if batch.source_time is not None and (
+        batch.source_time > batch.as_of or batch.source_time > now
+    ):
+        add("source_time", "Source timestamp exceeds batch cutoff or operation time")
     if batch.calendar_version != batch.calendar.version:
         add("calendar_version", "Calendar version differs from batch")
     if batch.trade_date not in batch.calendar.sessions:

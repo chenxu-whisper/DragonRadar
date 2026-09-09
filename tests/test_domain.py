@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -42,6 +43,55 @@ def test_decimal_string_is_lossless_and_optional_unknowns_stay_unknown():
 def test_timestamps_reject_naive(factory, field):
     with pytest.raises(ValidationError, match="timezone"):
         factory(**{field: datetime(2026, 9, 9)})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        1788955200,
+        1788955200.25,
+        True,
+        False,
+        "1788955200",
+        "2026-09-09T12:00:00",
+        b"2026-09-09T12:00:00Z",
+        Decimal("1788955200"),
+    ],
+)
+def test_timestamp_contract_rejects_coercible_raw_inputs(value):
+    with pytest.raises(ValidationError):
+        batch(as_of=value)
+
+
+@pytest.mark.parametrize("value", [1788955200, 1788955200.25, True, "1788955200"])
+def test_timestamp_contract_rejects_numeric_json(value):
+    data = batch()
+    payload = json.loads(data.model_dump_json())
+    payload["as_of"] = value
+    with pytest.raises(ValidationError):
+        type(data).model_validate_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [NOW, "2026-09-09T12:00:00Z", "2026-09-09T20:00:00+08:00"],
+)
+@pytest.mark.parametrize(
+    "factory,field",
+    [
+        (bar, "available_at"),
+        (batch, "as_of"),
+        (batch, "source_time"),
+        (state, "available_at"),
+        (grant, "starts_at"),
+        (grant, "expires_at"),
+    ],
+)
+def test_timestamp_contract_accepts_explicit_timezones(factory, field, value):
+    result = factory(**{field: value})
+    assert getattr(result, field) == NOW
+    assert getattr(result, field).tzinfo is UTC
+    assert type(result).model_validate_json(result.model_dump_json()) == result
 
 
 def test_grant_defaults_fail_closed():
@@ -263,6 +313,31 @@ def test_future_cutoff_is_blocked():
     result = validate_batch(batch(as_of=NOW + timedelta(seconds=1)), now=NOW)
     assert not result.publishable
     assert "batch_time" in {i.code for i in result.issues}
+
+
+@pytest.mark.parametrize("provenance", ["contemporaneous", "retrospective"])
+@pytest.mark.parametrize(
+    "cutoff,source_time",
+    [
+        (NOW - timedelta(seconds=2), NOW - timedelta(seconds=1)),
+        (NOW, NOW + timedelta(seconds=1)),
+    ],
+)
+def test_future_source_time_blocks_publication(cutoff, source_time, provenance):
+    from dragon_radar.domain.quality import validate_batch
+
+    data = batch(as_of=cutoff, source_time=source_time, provenance=provenance)
+    result = validate_batch(data, now=NOW)
+    assert result.batch is data
+    assert not result.publishable
+    assert "source_time" in {issue.code for issue in result.issues}
+
+
+@pytest.mark.parametrize("source_time", [None, NOW - timedelta(seconds=1), NOW])
+def test_source_time_missing_past_or_at_cutoff_is_valid(source_time):
+    from dragon_radar.domain.quality import validate_batch
+
+    assert validate_batch(batch(source_time=source_time), now=NOW).publishable
 
 
 def test_trade_date_cutoff_uses_shanghai_not_utc_calendar_day():

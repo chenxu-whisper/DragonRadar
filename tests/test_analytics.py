@@ -1,8 +1,74 @@
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 from factories import DAYS, NOW, bar, batch, state
+from pydantic import ValidationError
+
+
+@pytest.mark.parametrize(
+    "field", ["interval_return", "maximum_drawdown", "normalized_curve", "value"]
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        0.1,
+        True,
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+        "NaN",
+        "Infinity",
+        "-Infinity",
+    ],
+)
+def test_result_decimal_contract_rejects_inexact_or_nonfinite(field, value):
+    from dragon_radar.analytics.metrics import DailyReturn, IntervalItem
+
+    if field == "value":
+        model = DailyReturn
+        payload = {
+            "security_id": "A",
+            "basis": "explicit_previous_close",
+            "value": value,
+        }
+    else:
+        model = IntervalItem
+        payload = {
+            "security_id": "A",
+            "interval_return": "0",
+            "maximum_drawdown": "0",
+            "normalized_curve": ("100",),
+        }
+        payload[field] = (value,) if field == "normalized_curve" else value
+    with pytest.raises(ValidationError, match=field):
+        model.model_validate(payload)
+    with pytest.raises(ValidationError, match=field):
+        model.model_validate_json(json.dumps(payload, default=str))
+
+
+@pytest.mark.parametrize(
+    "value", [Decimal("0.123456789123456789"), "0.123456789123456789", 0]
+)
+def test_result_decimal_contract_preserves_exact_values_and_json(value):
+    from dragon_radar.analytics.metrics import DailyReturn, IntervalItem
+
+    results = (
+        DailyReturn(security_id="A", value=value, basis="prior_session_close"),
+        IntervalItem(
+            security_id="A",
+            interval_return=value,
+            maximum_drawdown=value,
+            normalized_curve=(100, value),
+        ),
+    )
+    expected = Decimal(value)
+    assert results[0].value == expected
+    assert results[1].interval_return == results[1].maximum_drawdown == expected
+    assert results[1].normalized_curve == (Decimal(100), expected)
+    for result in results:
+        assert type(result).model_validate_json(result.model_dump_json()) == result
 
 
 def test_calendar_windows_use_only_supplied_sessions():
