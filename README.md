@@ -1,13 +1,31 @@
 # DragonRadar
 
-Local, traceable end-of-day market research. This increment implements the data
-foundation and deterministic calculations, not the seven-page P0 application.
-No real market provider, AI service, broker connection or public sharing is enabled.
+面向本机使用、支持数据追溯的盘后市场研究平台。本批实现数据底座与确定性计算，
+尚不是包含七个页面的完整 P0 应用。真实行情源、AI 服务、券商连接和公网分享均未启用。
 
-## Development
+## 当前开发进度
 
-Requirements: Python 3.12, uv 0.8.2 or compatible, Docker Compose v2.
-From this worktree in PowerShell:
+截至 2026-09-10，首批“数据底座＋确定性计算”已完成，代码提交 `90d9c0f`
+已推送至 `origin/feature/data-foundation`，尚未合并到 `main`。
+开发工作树位于工程根目录的 `.worktrees/data-foundation`。
+
+| 模块 | 进度 |
+| --- | --- |
+| 数据契约、来源授权、质量校验与问题隔离 | 已实现 |
+| 交易日窗口、区间收益、回撤、归一化比较、市场广度与收盘涨跌停计算 | 已实现 |
+| PostgreSQL 迁移、幂等导入、不可变快照、修订与审计 | 已实现 |
+| 本机管理 CLI、只读 API、Docker 启动脚本 | 已实现并完成本机联调 |
+| 自动化验证 | 最近一次完整验收为 417 项测试通过，零警告；领域与计算模块语句覆盖率 100% |
+| 七页前端、真实数据源、正式角色规则、监管规则、笔记与 AI | 尚未实现 |
+| 公网分享、备份恢复验收、性能指标与影子运行 | 尚未完成 |
+
+以上为首批交付进度，不代表完整 P0 已验收。最近一次完整测试记录见
+[验收记录](docs/verification-data-foundation.md)；本次中文文档整理不改变业务实现。
+
+## 开发环境
+
+环境要求：Python 3.12、uv 0.8.2 或兼容版本、Docker Compose v2。
+在开发工作树目录中使用 PowerShell 执行：
 
 ```powershell
 $env:PYTHONPYCACHEPREFIX = "$PWD/.temp/pycache"
@@ -19,11 +37,10 @@ uv run pytest -q
 uv run python -m compileall -q src tests
 ```
 
-Database integration tests require `DRAGON_TEST_DATABASE_URL` pointing to a
-dedicated PostgreSQL test database. Never use a real research database for tests.
-Tests without that variable do not constitute database acceptance.
-When the test container already exists, use
-`docker start dragon-radar-foundation-test-db` instead of creating it again.
+数据库集成测试需要将 `DRAGON_TEST_DATABASE_URL` 指向专用 PostgreSQL 测试数据库。
+禁止使用真实研究数据库执行测试。未设置该变量时，测试结果不能作为数据库验收依据。
+如果测试容器已经存在，应执行 `docker start dragon-radar-foundation-test-db`，
+不要重复创建。
 
 ```powershell
 docker run --detach --name dragon-radar-foundation-test-db `
@@ -36,27 +53,26 @@ uv run pytest -q --cov=dragon_radar --cov-report=term-missing
 docker stop dragon-radar-foundation-test-db
 ```
 
-The literal password above is exclusively for the isolated test database.
-The normal Compose stack requires a separate strong password.
+上述明文密码仅用于隔离的测试数据库。正常运行的 Compose 实例必须另设强密码。
 
-## Local Containers
+## 本机容器
 
-On Windows, the startup script generates an owner-only credential file in
-`.temp/local-compose.env`, builds, migrates and waits for readiness:
+在 Windows 上，启动脚本会在 `.temp/local-compose.env` 生成凭据文件，
+将访问权限限制为当前所有者与 SYSTEM，然后构建镜像、执行迁移并等待服务就绪：
 
 ```powershell
 .\scripts\start-local.ps1 -Port 8000
 ```
 
-Keep that generated credential file while retaining the database volume. The
-script does not read an existing project `.env`. To stop this script-managed stack:
+保留数据库卷时，也应保留该凭据文件。脚本不会读取项目已有的 `.env`。
+停止由该脚本管理的服务：
 
 ```powershell
 docker compose --env-file .temp/local-compose.env -f compose.yaml -f compose.dev.yaml stop
 ```
 
-For manual setup instead of the script, use a separate fresh Compose project.
-Generate a hexadecimal password with a password manager, or in PowerShell:
+若不用脚本而是手动配置，请使用另一个全新的 Compose 项目。
+通过密码管理器生成十六进制密码，或在 PowerShell 中执行：
 
 ```powershell
 $env:COMPOSE_PROJECT_NAME = "dragon-radar-manual"
@@ -71,18 +87,18 @@ docker compose run --rm api migrate
 docker compose -f compose.yaml -f compose.dev.yaml up -d
 ```
 
-Persist the password in your local secret manager before closing the shell.
-Subsequent starts must use the same database password; changing an environment
-variable does not rotate an initialized PostgreSQL account.
+关闭终端前，应将密码保存到本机凭据管理器。后续启动必须使用相同的数据库密码；
+修改环境变量不会自动轮换已初始化的 PostgreSQL 账户密码。
 
-The development read API is available at `http://127.0.0.1:8000`.
-Set `DRAGON_API_PORT` before startup if that port is occupied.
-The base Compose file exposes neither database nor API host ports. The development
-override exposes API only on loopback; this is not an authenticated share server.
-The base backend network is internal. The development override adds a network
-for Docker Desktop loopback port forwarding; its API container has outbound
-network capability, although no provider/model client is implemented. The
-database remains attached only to the internal backend network.
+开发模式只读 API 默认地址为 `http://127.0.0.1:8000`。
+手动启动时，如端口被占用，可提前设置 `DRAGON_API_PORT`；使用启动脚本时，
+通过 `-Port` 指定端口。本次本机联调使用 `8010`，再次启动可执行
+`.\scripts\start-local.ps1 -Port 8010`，相应查询地址也需改为 `8010`。
+
+基础 Compose 配置不映射数据库或 API 的宿主端口；开发叠加配置仅将 API
+绑定到回环地址，不是已经实现身份认证的分享服务器。基础后端网络是内部网络，
+开发配置为 Docker Desktop 回环端口转发增加了一个网络，因此 API 容器具备出站能力，
+但尚未实现数据供应商或模型客户端。数据库始终只连接内部后端网络。
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/health/live
@@ -91,43 +107,39 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/snapshots
 docker compose -f compose.yaml -f compose.dev.yaml stop
 ```
 
-Startup does not insert demo data or publish snapshots. Use `dragon-radar --help`
-and [the import contract](docs/data-import.md) for explicit local source registration, data import
-and publication. Browser API methods cannot register sources, import, publish,
-invoke AI or write notes.
+启动不会插入演示数据或发布快照。来源登记、数据导入与发布都需要通过本机命令显式执行，
+具体见 `dragon-radar --help` 和[数据导入契约](docs/data-import.md)。
+浏览器 API 不提供来源登记、导入、发布、AI 调用或笔记写入能力。
 
-## Data Rules
+## 数据规则
 
-- Every snapshot records source, cutoff, pool/calendar/adjustment versions and
-  explicit coverage. A missing historical date does not select today's snapshot.
-- Source rights must permit the requested local operation and remain valid on
-  read. Grant expiry or revocation blocks access to previously published data.
-- Incomplete or invalid batches retain issues and cannot publish; no zero filling,
-  incomplete-pool ranking or silent source blending.
-- N-day returns require N+1 positions from the supplied trading calendar. Holiday
-  calendars are not guessed. Missing/suspended history excludes the security.
-- Research returns use one adjustment version. Closing limit checks use raw
-  prices and supplied effective limit prices, never a hardcoded 10% assumption.
-- Published snapshots are immutable; corrections create new revisions.
-- Historical backfills are retrospective data, not contemporaneous evidence.
+- 每个快照记录来源、截止时点、股票池／日历／复权版本和明确的覆盖情况。
+  所选历史日期不存在时，不自动跳到今天的快照。
+- 来源授权必须允许请求的本机操作，并在读取时仍然有效。
+  授权到期或撤销后，之前发布的数据也不得继续读取。
+- 不完整或无效批次保留问题记录并禁止发布；不补零、不对不完整股票池生成正式排名，
+  不静默混用不同来源。
+- N 日收益需要所提供交易日历中的 N＋1 个位置，不猜测节假日。
+  区间内缺价或停牌的证券会被排除。
+- 研究收益统一使用同一复权版本；收盘涨跌停判断使用原始价格与明确提供的有效限价，
+  不硬编码“涨跌 10%”。
+- 已发布快照不可修改；更正会创建新修订版。
+- 历史回补数据只能用于事后研究，不能冒充当时已知的证据。
 
-## Structure and Scope
+## 目录与边界
 
-`src/dragon_radar/domain` defines data and quality contracts;
-`analytics` implements pure calculations; `storage` owns PostgreSQL transactions.
-The local CLI administers data, and FastAPI exposes read models. Packaged migrations
-live in `src/dragon_radar/migrations`; test artifacts and caches live in `.temp/`.
+`src/dragon_radar/domain` 定义数据与质量契约，`analytics` 实现纯计算，
+`storage` 负责 PostgreSQL 事务。本机 CLI 执行数据管理，FastAPI 提供只读模型。
+迁移脚本随包放在 `src/dragon_radar/migrations`，测试产物与缓存统一放在 `.temp/`。
 
-The first increment does not claim P0 release readiness. Pending work includes
-frontend, approved role thresholds, actual data-source integration, regulatory
-review, private notes, AI evaluation, owner operation contexts, Caddy/Tunnel,
-backup recovery exercises, accessibility, and the required shadow-run period.
+首批交付尚不满足 P0 发布条件。待完成内容包括前端、经批准的角色阈值、真实数据源接入、
+监管复核、私人笔记、AI 评测、本机所有者操作上下文、Caddy／隧道、备份恢复演练、
+无障碍验收和规定的影子运行周期。
 
-Database volumes are not backups. Do not run `docker compose down -v` to update
-or roll back the application. Application rollback cannot undo incompatible
-database migrations. Back up and test restoration before future upgrades.
+数据库卷不是备份。禁止使用 `docker compose down -v` 更新或回退应用。
+应用镜像回退无法撤销不兼容的数据库迁移；今后升级前应备份并验证恢复流程。
 
-See [the approved design](docs/superpowers/specs/2026-09-09-data-foundation-design.md),
-[implementation plan](docs/superpowers/plans/2026-09-09-data-foundation.md),
-[verification results](docs/verification-data-foundation.md),
-[dependency inventory](docs/dependencies.md), and [product requirements](docs/leader_quant_prd.md).
+相关文档：[已批准的技术设计](docs/superpowers/specs/2026-09-09-data-foundation-design.md)、
+[实施计划](docs/superpowers/plans/2026-09-09-data-foundation.md)、
+[验收记录](docs/verification-data-foundation.md)、
+[依赖清单](docs/dependencies.md)、[产品需求](docs/leader_quant_prd.md)。

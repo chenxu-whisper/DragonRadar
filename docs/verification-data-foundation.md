@@ -1,81 +1,74 @@
-# Data Foundation Verification
+# 数据底座验收记录
 
-Date: 2026-09-09. Scope: the approved data-foundation and deterministic-calculation
-increment only. This is not P0 product or public-deployment acceptance.
+验收日期：2026-09-09。范围仅限已批准的“数据底座＋确定性计算”开发批次，
+不代表完整 P0 产品或公网部署已通过验收。
+本文记录当时的执行结果与运行状态；2026-09-10 的中文化修改未重新执行该完整验收。
 
-## Automated Checks
+## 自动化检查
 
-Environment: Windows, CPython 3.12.9, uv 0.8.2; PostgreSQL 17.11 in Docker.
-The local test database is separate from the normal Compose database. Each
-database test uses an isolated disposable schema.
+环境：Windows、CPython 3.12.9、uv 0.8.2，以及 Docker 中的 PostgreSQL 17.11。
+本机测试数据库与正常 Compose 数据库隔离，每个数据库测试使用独立、可丢弃的 schema。
 
-| Check | Result |
+| 检查项 | 结果 |
 | --- | --- |
-| `uv run pytest -q -W error --cov=dragon_radar --cov-report=term-missing` | 417 passed, no warnings |
-| Domain and analytics statement coverage | 100% |
-| Whole-process statement coverage | 94%; CLI subprocess execution not included |
-| `uv run ruff check .` | Passed |
-| `uv run ruff format --check .` | Passed |
-| `uv run python -m compileall -q src tests` | Passed |
-| `uv build --out-dir .temp/dist` | Wheel and source distribution built |
-| Installed-wheel migration and CLI workflow | Passed during Task 2 verification |
-| Independent final review | Approved; independently reran 417 tests with `-W error` |
+| `uv run pytest -q -W error --cov=dragon_radar --cov-report=term-missing` | 417 项通过，零警告 |
+| 领域与计算模块语句覆盖率 | 100% |
+| 当前进程统计的整体语句覆盖率 | 94%，未包含 CLI 子进程的执行覆盖 |
+| `uv run ruff check .` | 通过 |
+| `uv run ruff format --check .` | 通过 |
+| `uv run python -m compileall -q src tests` | 通过 |
+| `uv build --out-dir .temp/dist` | wheel 和源码分发包均构建成功 |
+| 安装 wheel 后的迁移与 CLI 流程 | 在任务 2 验证中通过 |
+| 独立最终审查 | 通过；审查方独立使用 `-W error` 重跑 417 项测试 |
 
-The suite exercises missing dates, cutoff availability, strict Decimal and
-timestamp inputs, independently calculated returns, gaps/suspensions, source and
-factor versions, limit semantics, raw-vs-adjusted prices, current coverage versus
-interval eligibility, permission revocation/expiry, import key conflicts,
-concurrent publication, revisions, immutable rows, transactional rollback,
-metadata redaction and safe CLI/API failures.
+测试覆盖缺失日期、截止时点与数据可用性、严格 Decimal 与时间戳输入、独立收益复算、
+缺口与停牌、来源及因子版本、涨跌停语义、原始价与复权价区分、当前覆盖率与区间资格区分、
+授权撤销与到期、导入键冲突、并发发布、修订、不可变记录、事务回滚、元数据脱敏，
+以及 CLI／API 的安全失败处理。
 
-Review-found defects were fixed with regressions: future source timestamp
-acceptance, implicit numeric timestamp/float result coercion, and unsanitized
-Alembic command errors. API tests use async HTTPX ASGI transport and application
-lifespans; no warning filters or dependency downgrades hide upstream warnings.
+审查发现的问题均已补回归测试并修复：错误接受未来源时间戳、隐式转换数字时间戳或浮点结果，
+以及 Alembic 命令错误未脱敏。API 测试采用异步 HTTPX ASGI 传输和应用生命周期管理，
+未使用警告过滤或降级依赖来隐藏上游警告。
 
-## Container Checks
+## 容器检查
 
-- Image builds with the locked Python environment and a non-root runtime user.
-- `scripts/start-local.ps1 -Port 8010` ran successfully, including source rebuild,
-  repeat migration, database health and API readiness.
-- Host `GET http://127.0.0.1:8010/health/ready` returns `{"status":"ok"}`.
-- Host `GET /api/v1/snapshots` returns HTTP 200 with `[]`; normal instance is empty.
-- Docker port inspection confirms only `127.0.0.1:8010` maps API port 8000.
-  Database port 5432 is not mapped to the host.
-- Docker Desktop required a non-internal network for API host port forwarding.
-  This is only in `compose.dev.yaml`; the base database network remains internal.
-  The dev API has outbound network capability, not provider/model integrations.
+- 镜像使用锁定的 Python 依赖环境构建，运行用户不是 root。
+- `scripts/start-local.ps1 -Port 8010` 执行成功，包括源码重新构建、重复迁移、
+  数据库健康检查和 API 就绪检查。
+- 宿主请求 `GET http://127.0.0.1:8010/health/ready` 返回 `{"status":"ok"}`。
+- 宿主请求 `GET /api/v1/snapshots` 返回 HTTP 200 和 `[]`，正常实例保持空库。
+- Docker 端口检查确认，仅 `127.0.0.1:8010` 映射 API 的 8000 端口；
+  数据库 5432 端口未映射到宿主。
+- Docker Desktop 的 API 宿主端口转发需要非内部网络，该配置仅存在于
+  `compose.dev.yaml`，基础数据库网络仍是内部网络。
+  开发 API 具备出站能力，但没有接入供应商或模型服务。
 
-A separate `dragon_smoke` database was used for container CLI and HTTP smoke
-checks. Source registration, import and publication of the clearly synthetic
-example succeeded. The read API returned exact interval return `"0.1"`, drawdown
-`"0"` and normalized closes `["100","110"]`; source time remained null.
+容器 CLI 与 HTTP 冒烟检查使用独立的 `dragon_smoke` 数据库。
+明确标记为虚构内容的样例成功完成来源登记、导入和发布。
+只读 API 返回精确区间收益 `"0.1"`、回撤 `"0"` 和归一化收盘序列 `["100","110"]`，
+源时间保持为空。
 
-Both API-container and database-container restarts preserved the snapshot ID and
-numeric result. Revoking the source changed fixed-snapshot reads to HTTP 403 and
-the list to `[]`, while SQL counts confirmed the archive and snapshot were retained
-(one each) with four audit events. This tests availability and rights behavior;
-it is not a backup restoration/RPO/RTO exercise.
+API 容器与数据库容器分别重启后，快照 ID 和数值结果均保持一致。
+撤销来源授权后，指定快照读取返回 HTTP 403，列表返回 `[]`。
+SQL 计数确认归档与快照各保留一条，同时保留四条审计事件。
+这些检查验证可用性与权限行为，不是备份恢复、RPO 或 RTO 演练。
 
-## Operational State
+## 验收结束时状态
 
-- Development branch: `feature/data-foundation`.
-- Worktree: repository-root `.worktrees/data-foundation`.
-- Root `.temp/` and `.worktrees/` are ignored; the tracked `.temp/.gitkeep`
-  placeholder is removed from the index without deleting the local file.
-- Normal Compose stack remains available on port 8010 with no market data.
-- Temporary smoke API and integration database containers are stopped after
-  verification; their data is retained. Start the test database container again
-  before running PostgreSQL tests.
-- Generated local Compose credentials are in ignored `.temp/local-compose.env`
-  with owner/SYSTEM ACLs. No pre-existing user `.env` was read.
+- 开发分支为 `feature/data-foundation`。
+- 工作树位于工程根目录 `.worktrees/data-foundation`。
+- 根目录 `.temp/` 和 `.worktrees/` 已忽略；原受跟踪的 `.temp/.gitkeep`
+  已从索引移除，但未删除本地文件。
+- 正常 Compose 实例保留在 8010 端口运行，没有行情数据。
+- 临时冒烟 API 与集成测试数据库容器在验证后停止，数据保留。
+  再次运行 PostgreSQL 测试前需启动测试数据库容器。
+- 自动生成的本机 Compose 凭据位于已忽略的 `.temp/local-compose.env`，
+  ACL 仅允许所有者与 SYSTEM 访问。未读取用户已有的 `.env`。
 
-## Not Yet Verified or Implemented
+## 尚未完成的范围
 
-No real data vendor/license activation, frontend, role-scoring thresholds,
-regulatory rules, AI, owner browser context, public sharing, source retention
-deletion workflow, backup restoration, 20-concurrent-user SLA, or 20-trading-day
-shadow operation. The snapshot archive is JSON and listing currently loads
-authorized archived payloads; production-scale optimization requires measurement.
-CI configuration is present and its commands passed locally, but no remote CI run
-or vulnerability-scan success is claimed.
+尚未完成真实数据供应商接入与授权启用、前端、角色评分阈值、监管规则、AI、
+本机所有者浏览器操作上下文、公网分享、来源保留与删除流程、备份恢复、
+20 并发用户性能指标，以及 20 个交易日的影子运行。
+快照归档采用 JSON，列表查询目前会加载获授权的归档内容，生产规模优化仍需实测。
+CI 配置已经建立，对应命令已在本机通过，但本记录不声称远程 CI 或漏洞扫描已通过。

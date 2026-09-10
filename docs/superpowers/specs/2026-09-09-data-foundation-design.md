@@ -1,127 +1,108 @@
-# Data Foundation and Deterministic Calculations
+# 数据底座与确定性计算技术设计
 
-Status: technical direction approved by the owner on 2026-09-09.
-This document records that approval and the first implementation boundary.
+状态：技术方向已由项目所有者于 2026-09-09 批准。
+本文记录已确认的设计与首批实现边界。
 
-## Scope
+## 交付范围
 
-Deliver a local backend increment, not the full P0 release: typed data contracts,
-source rights, quality isolation, explicit trading calendars, deterministic
-calculations, PostgreSQL persistence/migrations, immutable snapshots, local CLI
-imports and read-only HTTP queries. No frontend, real provider connection, AI,
-public sharing, formal role scoring, or regulatory determination in this increment.
+交付本机后端的一个开发批次，而不是完整 P0：包含类型化数据契约、来源授权、
+质量隔离、显式交易日历、确定性计算、PostgreSQL 持久化与迁移、不可变快照、
+本机 CLI 导入和只读 HTTP 查询。
+本批不包含前端、真实供应商接入、AI、公网分享、正式角色评分或监管认定。
 
-## Architecture
+## 技术架构
 
-Python 3.12 modular monolith: `domain` contains validated contracts; `analytics`
-contains pure calculations; `storage` owns PostgreSQL transactions; `api` exposes
-read models; `cli` performs explicit local administration. FastAPI/Pydantic,
-SQLAlchemy/psycopg and Alembic implement the boundary. Decimal values retain exact
-input precision; UTC timestamps retain availability separate from event time.
-Dependencies are locked with uv; test/build artifacts live in `.temp/`.
+采用 Python 3.12 模块化单体：`domain` 定义并校验契约，`analytics` 负责纯计算，
+`storage` 管理 PostgreSQL 事务，`api` 暴露只读模型，`cli` 执行显式本机管理。
+使用 FastAPI／Pydantic、SQLAlchemy／psycopg 和 Alembic 实现相应职责。
+Decimal 保留输入的精确数值；时间戳统一为 UTC，首次可用时间与事件时间分别保存。
+依赖通过 uv 锁定，测试和构建产物放在 `.temp/`。
 
-One import is a complete, self-contained snapshot input: source grant, selected
-exchange calendar, versioned security states, expected pool, daily bars, date,
-cutoff, price-adjustment version and basis. No automatic holiday generation,
-weekend inference, provider scraping or cross-source value fusion.
+一次导入对应完整、自包含的快照输入：来源授权、所选交易所日历、版本化证券状态、
+预期股票池、日线、日期、截止时点、复权版本和计算口径。
+不自动生成节假日、不按周末猜测交易日、不抓取供应商网页，也不融合不同来源的数值。
 
-## Data and Quality
+## 数据与质量
 
-All timestamp inputs must have time zones. IDs are nonempty stable identifiers;
-names may change but identity does not. Monetary amounts, volume and prices have
-explicit units. Ratios are decimals, not display percentages.
+所有时间戳输入必须带时区。ID 是非空、稳定的标识，名称变化不改变证券身份。
+金额、成交量和价格必须有明确单位。比率内部使用小数，而非展示用百分数。
 
-Source grants distinguish local storage, local display, export, AI and sharing,
-with approved status, expiry and a documentary reference. No grant is implied
-by a provider name or possession of a key. Revocation/expiry must be checked
-again on reads, not just when importing.
+来源授权分别声明本机存储、本机展示、导出、AI 和分享权限，同时保留批准状态、
+到期时间和授权依据。不能根据供应商名称或持有密钥推定已有授权。
+读取时必须重新检查授权是否撤销或到期，不能只在导入时检查。
 
-The batch validator checks unique keys, known identities, effective states,
-calendar membership, cutoff availability, OHLC relationships, positive prices
-and adjustment factors, nonnegative amounts/volumes, source and adjustment
-versions, pagination completeness, and declared pool coverage. Suspended records
-are not fabricated as zero-price bars. Invalid or incomplete batches are retained
-with structured issues and cannot publish. A legitimately suspended security can
-be accounted for separately only with an explicit known state.
+批次校验器检查唯一键、已知证券身份、有效状态、交易日历归属、截止时点可用性、
+OHLC 关系、正数价格与复权因子、非负金额与成交量、来源及复权版本、
+分页完整性和所声明股票池的覆盖情况。停牌记录不能伪造成零价格日线。
+在允许存储的前提下，无效或不完整批次保留结构化问题并禁止发布。
+只有存在明确、已知的停牌状态，才能将该证券单独计为合法排除。
 
-Historical backfills are retrospective research; they cannot be labeled as
-contemporaneously observed. Selecting a historical cutoff excludes data first
-available later. Input payloads contain no supplier credentials.
+历史回补属于事后研究，不能标为当时观测。选择历史截止时点时，
+必须排除首次可用时间更晚的数据。输入内容不得包含供应商凭据。
 
-## Calculations
+## 计算规则
 
-- N-day windows use 1..250 integer trading-day offsets, need N+1 calendar
-  positions, and roll the requested end back to a supplied session.
-- Custom starts roll forward and ends backward; reversed/empty windows fail;
-  same-session returns are zero only for otherwise eligible observations.
-- Returns use adjusted closes with one explicit factor version:
-  `adjusted_close(end) / adjusted_close(start) - 1`. Raw close multiplied by the
-  supplied factor gives adjusted close; factors from different versions cannot mix.
-- Missing, suspended, not-yet-known, nonpositive, or mixed-source inputs exclude
-  a security with a reason, never shorten its window.
-- Close-based maximum drawdown is the maximum `1 - price / running_peak`.
-  Normalized curves use `100 * price / first_price`. Comparison is restricted to
-  at most five unique eligible securities and one common complete window.
-- Market breadth discloses expected, valid, legally excluded and missing counts;
-  missing inputs cannot silently shrink quality denominators.
-- Closing limit hits use raw close and explicitly supplied effective limit price.
-  No-limit sessions are not ordinary limit hits. Suspension breaks a consecutive
-  run; gaps make the affected run unknown, not zero. No intraday sequence is inferred.
+- N 日窗口使用 1～250 的整数交易日偏移，需要 N＋1 个日历位置；
+  所选结束日期回退至已提供的最近交易日。
+- 自定义开始日期顺延，结束日期回退；倒序或空窗口报错。
+  同一交易日起止仅在观测数据本身有效时返回零收益。
+- 收益使用同一明确因子版本下的复权收盘价：
+  `adjusted_close(end) / adjusted_close(start) - 1`。
+  原始收盘价乘以所提供因子得到复权收盘价，不得混用不同版本的因子。
+- 缺失、停牌、当时未知、非正价格或混合来源输入都会导致证券被排除，
+  同时返回原因，不缩短该证券的计算窗口。
+- 基于收盘序列的最大回撤为 `1 - price / running_peak` 的最大值；
+  归一化曲线使用 `100 * price / first_price`。
+  最多比较五只不重复的合格证券，使用同一个完整窗口。
+- 市场广度披露预期、有效、合法排除和异常缺失数量；
+  不得因输入缺失而静默缩小质量分母。
+- 收盘涨跌停使用原始收盘价和明确提供的有效限价判断。
+  无涨跌停限制的交易日不计普通涨跌停；停牌中断连续序列，
+  数据缺口使受影响序列变为未知，而不是零；不据此推断盘中事件顺序。
 
-Role thresholds remain unapproved. The foundation does not invent a ranking model
-or infer formal regulation status from these calculations.
+角色阈值尚未批准，数据底座不自行发明排名模型，也不根据上述计算推断正式监管状态。
 
-## Storage and HTTP
+## 存储与 HTTP
 
-PostgreSQL is the source of truth, including an immutable JSON input archive,
-batch issues, source grants and snapshot manifests. Normalized domain objects
-are validated before persistence; snapshot payload and domain versions are
-frozen together. Archive access is internal, never an arbitrary filesystem path
-from a request.
+PostgreSQL 是权威存储，保存不可变 JSON 输入归档、批次问题、来源授权和快照版本清单。
+标准化领域对象在持久化前校验，快照内容与领域版本一并冻结。
+归档只允许内部访问，不接受请求提供的任意文件系统路径。
 
-An idempotency key identifies import content: same key and canonical content
-returns the same batch; same key with different content conflicts. Source grant
-changes are explicit administration, not implicit imports overwriting authority.
-Publishing is a transaction with a per-date revision constraint, an immutable
-payload, and an append-only audit record. Re-publishing the same batch is
-idempotent. A correction creates a new snapshot referencing the predecessor;
-old snapshots remain readable subject to current license. Database protections
-must reject mutation/deletion of published payloads.
+使用幂等键标识导入内容：相同键与规范化内容返回同一批次，同一键对应不同内容时返回冲突。
+来源授权变更必须通过显式管理操作执行，不能由导入过程隐式覆盖。
+发布在一个事务内完成，包含按交易日约束的修订号、不可变内容和仅追加的审计记录。
+重复发布同一批次具有幂等性。更正生成引用前一版本的新快照；
+旧快照在当前授权仍允许时可继续读取。数据库层必须阻止已发布内容的修改和删除。
 
-Read API: health/liveness, database readiness, snapshot list/detail, overview
-and interval results. Every analytical response carries trade date, source time,
-snapshot ID, source, coverage, quality flags, rule version and basis. Missing
-dates never select today's data. Validation and infrastructure errors are
-sanitized; credentials and raw database exceptions cannot reach HTTP responses.
-No HTTP administration, arbitrary SQL, external URL fetching or public endpoint
-is supplied. Local development is loopback-only; this is not a completed owner
-session or anonymous sharing implementation.
+只读 API 包括存活检查、数据库就绪检查、快照列表与详情、市场概览和区间结果。
+每个分析响应包含交易日、源时间、快照 ID、来源、覆盖情况、质量标记、规则版本和口径。
+所选日期无数据时不跳到今天。输入校验与基础设施异常都需脱敏，
+凭据和原始数据库异常不得出现在 HTTP 响应中。
+不提供 HTTP 管理接口、任意 SQL、外部 URL 抓取或公网入口。
+本机开发仅绑定回环地址，不代表已实现完整所有者会话或匿名分享机制。
 
-## Deployment and Verification
+## 部署与验证
 
-Use a project-specific Compose project with PostgreSQL and API only for this
-backend increment. Database is internal in the base configuration; API exposure
-is a loopback-only development override. No Caddy/Tunnel/share listener until
-the frontend and approved owner access controls are ready.
+本批后端使用独立 Compose 项目，仅包含 PostgreSQL 和 API。
+基础配置中的数据库处于内部网络，API 仅通过开发叠加配置映射到回环地址。
+前端与经批准的所有者访问控制就绪前，不启用 Caddy、隧道或分享监听。
 
-Tests run pure domain/analytics fixtures plus real PostgreSQL migration,
-idempotency, atomic publication, immutable payload, revision, revocation and
-restart-persistence scenarios. API tests exercise missing dates and invalid
-parameters without provider network calls. CI runs Ruff, compileall, pytest and
-PostgreSQL integration tests. Test material is labeled synthetic and is never
-automatically inserted in production.
+测试包含纯领域／计算夹具，以及真实 PostgreSQL 的迁移、幂等性、原子发布、
+内容不可变、修订、撤权和重启持久性场景。
+API 测试覆盖缺失日期和非法参数，不调用供应商网络接口。
+CI 执行 Ruff、compileall、pytest 和 PostgreSQL 集成测试。
+测试材料明确标记为虚构数据，绝不自动插入生产环境。
 
-## Acceptance Mapping
+## 验收映射
 
-| PRD | This increment | Still outside acceptance |
+| PRD 编号 | 本批覆盖 | 尚未纳入本批验收 |
 | --- | --- | --- |
-| G01 / D03 | Date-bound snapshots, revisions, immutable reads | Seven-page context |
-| D01 / X02 / X03 | Grant validation, revoked/expired local reads blocked | Provider contracts, public sharing, retention policy |
-| D02 / Q02 / Q04 | Idempotent file import, archived issues, publication gate | Provider pagination retry workers, operations UI |
-| P01 / P02 | Common windows, returns, drawdown, max-five comparison | Charts, interactive sorting UI |
-| M01 / L02 | Coverage, breadth, closing limits and streak semantics | Full index/theme pages, intraday observations |
-| TCR-02/03, TCF-01/03 | Reproducibility, cutoff checks, missing-input behavior | Role experiments, statistical effectiveness |
+| G01 / D03 | 日期绑定快照、修订、不可变读取 | 七页共享上下文 |
+| D01 / X02 / X03 | 授权校验、撤销或到期后阻断本机读取 | 供应商合同、公网分享、保留策略 |
+| D02 / Q02 / Q04 | 幂等文件导入、问题归档、发布门槛 | 供应商分页重试任务、运营界面 |
+| P01 / P02 | 共同窗口、收益、回撤、最多五标的比较 | 图表、交互式排序界面 |
+| M01 / L02 | 覆盖率、市场广度、收盘涨跌停和连续序列语义 | 完整指数／题材页面、盘中观测 |
+| TCR-02/03, TCF-01/03 | 可复现性、截止时点校验、缺失输入处理 | 角色实验、统计有效性 |
 
-Passing this increment does not satisfy P0 release criteria, independent
-regulatory review, real-data license review, 20-day shadow operation, accessibility,
-backup recovery RPO/RTO or internet deployment acceptance.
+本批通过不等于满足 P0 发布条件，也不替代独立监管复核、真实数据授权审查、
+20 个交易日影子运行、无障碍、备份恢复 RPO／RTO 或公网部署验收。

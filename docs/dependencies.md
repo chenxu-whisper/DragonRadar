@@ -1,54 +1,50 @@
-# Dependency Review
+# 依赖审查清单
 
-Review date: 2026-09-09. Scope: local data-foundation backend only.
-Exact Python versions and hashes are recorded in `uv.lock`.
-The tested PostgreSQL image reports 17.11 and is pinned by digest in Compose/CI.
-The Python 3.12 Bookworm runtime image is also pinned by digest in `Dockerfile`.
+审查日期：2026-09-09。范围仅限本机数据底座后端。
+Python 依赖的确切版本和哈希记录在 `uv.lock` 中。
+实测 PostgreSQL 镜像版本为 17.11，已在 Compose／CI 中通过摘要锁定。
+Python 3.12 Bookworm 运行时镜像也已在 `Dockerfile` 中通过摘要锁定。
 
-| Dependency | Upstream license | Use |
+| 依赖 | 上游许可证 | 用途 |
 | --- | --- | --- |
-| FastAPI | MIT | Local read API, no provider network client |
-| Pydantic / pydantic-core | MIT | Typed validation, no telemetry integration |
-| SQLAlchemy | MIT | PostgreSQL persistence |
-| psycopg / psycopg-binary | LGPL-3.0-only | PostgreSQL driver; dynamically loaded, unmodified |
-| Alembic | MIT | Explicit schema migrations |
-| Uvicorn | BSD-3-Clause | ASGI server, local development or container network |
-| pytest | MIT | Development-only testing |
-| HTTPX | BSD-3-Clause | Development-only ASGI/HTTP verification |
-| Ruff | MIT | Development-only linting and formatting |
-| pytest-cov / coverage | MIT / Apache-2.0 | Development-only coverage measurement |
-| uv / uv_build | MIT OR Apache-2.0 | Package/build tooling |
-| PostgreSQL | PostgreSQL License | Local persistent database |
-| Python | PSF-2.0 | Runtime |
+| FastAPI | MIT | 本机只读 API，不含供应商网络客户端 |
+| Pydantic / pydantic-core | MIT | 类型与数据校验，未接入遥测 |
+| SQLAlchemy | MIT | PostgreSQL 持久化 |
+| psycopg / psycopg-binary | LGPL-3.0-only | PostgreSQL 驱动，动态加载且未经修改 |
+| Alembic | MIT | 显式执行数据库结构迁移 |
+| Uvicorn | BSD-3-Clause | 用于本机开发或容器网络的 ASGI 服务 |
+| pytest | MIT | 仅用于开发测试 |
+| HTTPX | BSD-3-Clause | 仅用于开发阶段的 ASGI／HTTP 验证 |
+| Ruff | MIT | 仅用于开发阶段的静态检查和格式化 |
+| pytest-cov / coverage | MIT / Apache-2.0 | 仅用于开发阶段的覆盖率统计 |
+| uv / uv_build | MIT OR Apache-2.0 | 包管理与构建工具 |
+| PostgreSQL | PostgreSQL License | 本机持久化数据库 |
+| Python | PSF-2.0 | 运行时 |
 
-Direct dependency metadata was checked against PyPI's structured package metadata.
-Installed transitive distribution metadata was also inspected: Starlette,
-HTTPX/httpcore, Click, MarkupSafe and idna use BSD variants; AnyIO, h11, Mako,
-annotated types and typing-inspection use MIT; greenlet uses MIT AND PSF-2.0;
-typing_extensions uses PSF-2.0; tzdata uses Apache-2.0; certifi uses MPL-2.0.
-Certifi is pulled by the development HTTP client, not used as a data license.
-This is an engineering inventory, not approval to redistribute third-party data.
-Keep wheel metadata/license files and bundled library notices when distributing
-images. Psycopg's LGPL obligations and bundled libpq/OpenSSL notices require
-particular attention for redistribution; this increment does not modify or
-statically relink the driver. Transitive packages remain separately licensed;
-the lock file, installed distribution metadata and image SBOM are the inventory
-for a later distribution review.
+直接依赖已对照 PyPI 的结构化包元数据核验，同时检查了已安装传递依赖的发行元数据：
+Starlette、HTTPX/httpcore、Click、MarkupSafe 和 idna 使用 BSD 系列许可证；
+AnyIO、h11、Mako、annotated-types 和 typing-inspection 使用 MIT；
+greenlet 使用 MIT AND PSF-2.0；typing_extensions 使用 PSF-2.0；
+tzdata 使用 Apache-2.0；certifi 使用 MPL-2.0。
+certifi 由开发用 HTTP 客户端引入，其许可证不构成行情数据授权。
 
-Build-time network access is limited to configured package/image registries.
-Runtime data-provider, AI, analytics telemetry and public tunnel integrations are
-absent. The base Compose backend network is internal. No data vendor credentials
-or user `.env` file are read by tests or shipped in the image.
-The loopback development override adds a non-internal API network for Docker
-Desktop port forwarding; it is not an outbound firewall. Database remains internal.
+本清单是工程依赖记录，不是第三方数据再分发许可。分发镜像时，应保留 wheel
+元数据、许可证文件和捆绑库的声明。尤其需要关注 psycopg 的 LGPL 义务，
+以及随包提供的 libpq／OpenSSL 声明；本批未修改驱动，也未进行静态重新链接。
+传递依赖仍分别适用各自许可证，后续分发审查应结合锁文件、已安装包元数据和镜像
+SBOM（软件物料清单）进行。
 
-## Upgrade and Rollback
+构建时的网络访问仅涉及配置的软件包与镜像仓库。
+运行时尚未接入数据供应商、AI、分析遥测或公网隧道。
+基础 Compose 后端网络为内部网络；测试不会读取供应商凭据或用户已有的 `.env`，
+这些文件也不会进入镜像。开发叠加配置为 Docker Desktop 端口转发增加了非内部 API 网络，
+这并不构成出站防火墙；数据库仍保留在内部网络。
 
-Review lock changes, licenses and compatibility before upgrading. Run all unit
-and real PostgreSQL integration tests and rebuild the image. Database migration
-rollback is a separate operation from application image rollback; back up before
-upgrading an existing database. Do not remove persistent volumes to roll back.
+## 升级与回退
 
-No vulnerability-free or production-license-complete claim is made by this
-inventory. Automated vulnerability scanning, image SBOM review and legal
-redistribution review remain release gates before external distribution.
+升级前应审查锁文件差异、许可证与兼容性，运行全部单元测试和真实 PostgreSQL
+集成测试，并重新构建镜像。数据库迁移回退与应用镜像回退是两件独立的事；
+升级已有数据库前必须备份，不得通过删除持久化卷进行回退。
+
+本清单不代表依赖没有漏洞，也不代表生产授权审查已全部完成。
+对外分发前，仍需完成自动化漏洞扫描、镜像 SBOM 检查以及再分发合规审查。
