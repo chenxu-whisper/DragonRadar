@@ -1,13 +1,16 @@
 # DragonRadar
 
-面向本机使用、支持数据追溯的盘后市场研究平台。本批实现数据底座与确定性计算，
-尚不是包含七个页面的完整 P0 应用。真实行情源、AI 服务、券商连接和公网分享均未启用。
+面向本机使用、支持数据追溯的盘后市场研究平台。已实现数据底座、确定性计算及
+只读研究工作台，尚不是包含七个页面的完整 P0 应用。
+真实行情源、AI 服务、券商连接和公网分享均未启用。
 
 ## 当前开发进度
 
-截至 2026-09-10，首批“数据底座＋确定性计算”已完成，代码提交 `90d9c0f`
-已推送至 `origin/feature/data-foundation`，尚未合并到 `main`。
-开发工作树位于工程根目录的 `.worktrees/data-foundation`。
+截至 2026-09-10，首批“数据底座＋确定性计算”及中文文档已推送至
+`origin/feature/data-foundation`（`3fef804`），尚未合并到 `main`。
+第二批位于工程根目录 `.worktrees/research-workbench`，
+分支为 `feature/research-workbench`，本批独立审查、回归和容器验收已完成；
+代码保留在该开发分支，尚未推送或合并。
 
 | 模块 | 进度 |
 | --- | --- |
@@ -15,16 +18,21 @@
 | 交易日窗口、区间收益、回撤、归一化比较、市场广度与收盘涨跌停计算 | 已实现 |
 | PostgreSQL 迁移、幂等导入、不可变快照、修订与审计 | 已实现 |
 | 本机管理 CLI、只读 API、Docker 启动脚本 | 已实现并完成本机联调 |
-| 自动化验证 | 最近一次完整验收为 417 项测试通过，零警告；领域与计算模块语句覆盖率 100% |
-| 七页前端、真实数据源、正式角色规则、监管规则、笔记与 AI | 尚未实现 |
+| 证券列表与详情只读 API、搜索排序分页、历史缺口与单位 | 已实现 |
+| 市场总览、区间分析、个股抽屉及完整详情 | 已实现并完成第二批本机验收 |
+| 自动化验证 | 后端 506 项、前端单测 29 项、浏览器回归 78 项通过；领域、计算及证券读模型语句覆盖率 100% |
+| 其余页面、真实数据源、正式角色规则、监管规则、笔记与 AI | 尚未实现 |
 | 公网分享、备份恢复验收、性能指标与影子运行 | 尚未完成 |
 
-以上为首批交付进度，不代表完整 P0 已验收。最近一次完整测试记录见
-[验收记录](docs/verification-data-foundation.md)；本次中文文档整理不改变业务实现。
+以上不代表完整 P0 已验收。首批历史结果见
+[数据底座验收记录](docs/verification-data-foundation.md)，
+第二批范围和验证命令见[工作台测试说明](docs/workbench-testing.md)，
+实际测试和审查状态见[第二批验收记录](docs/verification-research-workbench.md)。
 
 ## 开发环境
 
-环境要求：Python 3.12、uv 0.8.2 或兼容版本、Docker Compose v2。
+环境要求：Python 3.12、uv 0.8.2 或兼容版本、Docker Compose v2；
+前端本机开发还需 Node.js 22.12 或以上版本。
 在开发工作树目录中使用 PowerShell 执行：
 
 ```powershell
@@ -55,7 +63,23 @@ docker stop dragon-radar-foundation-test-db
 
 上述明文密码仅用于隔离的测试数据库。正常运行的 Compose 实例必须另设强密码。
 
-## 本机容器
+## 第二批工作台
+
+第二批工作树位于 `.worktrees/research-workbench`，分支为 `feature/research-workbench`。
+范围为市场总览、涨幅分析、个股抽屉和详情，全部只读。证券查询接口见
+[接口说明](docs/workbench-api.md)，运行与测试要求见[工作台测试说明](docs/workbench-testing.md)。
+
+工作台使用独立容器项目，不复用或覆盖首批数据库：
+
+```powershell
+.\scripts\start-local.ps1 -Workbench -Port 8020
+```
+
+入口为 `http://127.0.0.1:8020`，Caddy 同源托管页面并代理 API；
+数据库和 API 本身不发布宿主端口。新实例默认空库，不自动加载虚构行情。
+开发凭据位于 `.temp/workbench-compose.env`，不要与首批凭据混用。
+
+## 首批 API 容器
 
 在 Windows 上，启动脚本会在 `.temp/local-compose.env` 生成凭据文件，
 将访问权限限制为当前所有者与 SYSTEM，然后构建镜像、执行迁移并等待服务就绪：
@@ -132,9 +156,10 @@ docker compose -f compose.yaml -f compose.dev.yaml stop
 `storage` 负责 PostgreSQL 事务。本机 CLI 执行数据管理，FastAPI 提供只读模型。
 迁移脚本随包放在 `src/dragon_radar/migrations`，测试产物与缓存统一放在 `.temp/`。
 
-首批交付尚不满足 P0 发布条件。待完成内容包括前端、经批准的角色阈值、真实数据源接入、
-监管复核、私人笔记、AI 评测、本机所有者操作上下文、Caddy／隧道、备份恢复演练、
-无障碍验收和规定的影子运行周期。
+当前交付尚不满足 P0 发布条件。待完成内容包括其余页面、经批准的角色阈值、
+真实数据源接入、监管复核、私人笔记、AI 评测、本机所有者操作上下文、
+正式 HTTPS／公网分享、备份恢复演练、完整无障碍验收和规定的影子运行周期。
+本机 Caddy 同源网关和本批自动化无障碍扫描不替代这些发布条件。
 
 数据库卷不是备份。禁止使用 `docker compose down -v` 更新或回退应用。
 应用镜像回退无法撤销不兼容的数据库迁移；今后升级前应备份并验证恢复流程。

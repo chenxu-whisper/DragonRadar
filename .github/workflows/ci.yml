@@ -40,3 +40,21 @@ jobs:
       - run: uv run pytest -q -W error --cov=dragon_radar --cov-report=term-missing --cov-report=xml:.temp/coverage.xml
       - run: uv run python -m compileall -q src tests
       - run: uv build --out-dir .temp/dist
+
+  web:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

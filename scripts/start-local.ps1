@@ -1,12 +1,18 @@
 param(
     [ValidateRange(1024, 65535)]
-    [int]$Port = 8000
+    [int]$Port = 8000,
+    [switch]$Workbench
 )
+
+if ($Workbench -and -not $PSBoundParameters.ContainsKey("Port")) {
+    $Port = 8020
+}
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $state = Join-Path $root ".temp"
-$secret = Join-Path $state "local-compose.env"
+$secretName = if ($Workbench) { "workbench-compose.env" } else { "local-compose.env" }
+$secret = Join-Path $state $secretName
 New-Item -ItemType Directory -Force $state | Out-Null
 
 if (-not (Test-Path $secret)) {
@@ -33,16 +39,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $previousPort = $env:DRAGON_API_PORT
+$previousWebPort = $env:DRAGON_WEB_PORT
 $previousPassword = $env:DRAGON_DB_PASSWORD
 $env:DRAGON_API_PORT = "$Port"
+$env:DRAGON_WEB_PORT = "$Port"
+$projectName = if ($Workbench) { "dragon-radar-workbench" } else { "dragon-radar-foundation" }
+$overlay = if ($Workbench) { "compose.workbench.yaml" } else { "compose.dev.yaml" }
 # Explicit env-file is the only password source, not inherited shell variables.
 Remove-Item Env:DRAGON_DB_PASSWORD -ErrorAction SilentlyContinue
 $compose = @(
     "compose", "--env-file", $secret,
-    "--project-name", "dragon-radar-foundation",
+    "--project-name", $projectName,
     "--project-directory", $root,
     "-f", (Join-Path $root "compose.yaml"),
-    "-f", (Join-Path $root "compose.dev.yaml")
+    "-f", (Join-Path $root $overlay)
 )
 
 try {
@@ -52,11 +62,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Database startup failed." }
     & docker @compose run --rm api migrate
     if ($LASTEXITCODE -ne 0) { throw "Database migration failed." }
-    & docker @compose up -d --wait api
+    $service = if ($Workbench) { "web" } else { "api" }
+    & docker @compose up -d --wait $service
     if ($LASTEXITCODE -ne 0) { throw "API readiness failed." }
-    Write-Output "Local read API: http://127.0.0.1:$Port"
+    $entryName = if ($Workbench) { "Local research workbench" } else { "Local read API" }
+    Write-Output "${entryName}: http://127.0.0.1:$Port"
     Write-Output "No synthetic or real market data was imported."
 } finally {
     $env:DRAGON_API_PORT = $previousPort
+    $env:DRAGON_WEB_PORT = $previousWebPort
     $env:DRAGON_DB_PASSWORD = $previousPassword
 }

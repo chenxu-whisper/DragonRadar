@@ -11,13 +11,16 @@
 文件：新增 `src/dragon_radar/readmodels/securities.py`，
 修改 `src/dragon_radar/api.py`，新增 `tests/test_securities.py`。
 
-- [ ] 先写失败用例：证券名称与 ID 搜索、数值排序、空值后置、稳定并列、
+- [x] 先写失败用例：证券名称与 ID 搜索、数值排序、空值后置、稳定并列、
   默认 50 行、20／50／100 页大小、越界参数、旧名与当前名称、停牌／缺价历史。
-- [ ] 执行 `uv run pytest tests/test_securities.py -q -W error` 观察缺实现失败。
-- [ ] 实现 `securities` 与 `securities/{security_id}` 快照读接口，复用授权与响应封装。
+- [x] 执行 `uv run pytest tests/test_securities.py -q -W error` 观察缺实现失败。
+- [x] 实现 `securities` 与 `securities/{security_id}` 快照读接口，复用授权与响应封装。
   只投影白名单，拒绝快照池外证券，不暴露授权依据。
-- [ ] 添加授权撤销后列表和详情拒绝、非法查询、旧接口兼容测试。
-- [ ] 执行全套 PostgreSQL 测试、Ruff、格式与 compileall；先规格后质量审查并修复。
+- [x] 添加授权撤销后列表和详情拒绝、非法查询、旧接口兼容测试。
+- [x] 执行全套 PostgreSQL 测试、Ruff、格式与 compileall；先规格后质量审查并修复。
+
+任务一记录：`cf0fe0f` 实现接口，`cc63473` 修复重复扫描问题；索引实现复核通过。
+2026-09-10 后端全量回归 506 项通过，零警告。
 
 ```python
 async def test_readonly_securities(client, snapshot):
@@ -32,23 +35,30 @@ async def test_readonly_securities(client, snapshot):
 `web/src/{App,main}.tsx`、`web/src/components/`、`web/src/pages/`、
 `web/src/styles.css`、`web/tests/` 与构建配置。
 
-- [ ] 先写查询串、数值格式、比较上限和请求错误状态测试，执行前端测试观察失败。
-- [ ] 安装并锁定 React、TypeScript、Vite、lucide 和图表库；不安装外部设计脚本。
-- [ ] 实现浅色导航和快照选择，元信息始终可查；无快照时不造数据。
-- [ ] 实现市场总览、区间分析、证券抽屉与详情；图表同步数据表；不重复计算指标。
-- [ ] 实现查询串恢复、取消旧请求、超时重试、403 清空、比较五标的上限。
-- [ ] 执行 TypeScript、前端测试和构建；规格和质量审查通过后进入浏览器验证。
+- [x] 先写查询串、数值格式、比较上限和请求错误状态测试，执行前端测试观察失败。
+- [x] 安装并锁定 React、TypeScript、Vite、lucide 和图表库；不安装外部设计脚本。
+- [x] 实现浅色导航和快照选择，元信息始终可查；无快照时不造数据。
+- [x] 实现市场总览、区间分析、证券抽屉与详情；图表同步数据表；不重复计算指标。
+- [x] 实现查询串恢复、取消旧请求、超时重试、403 清空、比较五标的上限。
+- [x] 执行 TypeScript、前端测试和构建；规格和质量审查通过后进入浏览器验证。
+
+任务二中间验证：29 项前端单测、24 项 Playwright 通过，生产构建通过且无分包体积提示。
+独立规格复核发现深链接比较成员校验、历史混合单位绘图、首次加载占位和标签换行问题，
+以及干净容器缺少 axe 开发依赖声明，均已修复并复审通过。
+最终质量审查补充的点路径与 UUID 问题也已关闭，最终为 29 项单测、
+78 项浏览器回归通过，TypeScript、Node 22 干净安装及生产构建通过。
 
 ## 任务三：部署与验收
 
 文件：新增工作台 Compose 叠加配置、前端 Dockerfile 和 Caddy 配置；
 修改 README、依赖清单与 CI；新增中文验收记录。
 
-- [ ] 配置独立 Compose 项目与新回环端口，保留首批 8010 服务及数据。
-- [ ] Playwright 使用测试夹具覆盖正常、无快照、缺数据、断网、403、快速切换、
+- [x] 配置独立 Compose 项目与新回环端口，保留首批 8010 服务及数据。
+- [x] Playwright 使用测试夹具覆盖正常、无快照、缺数据、断网、403、快速切换、
   抽屉 Esc／回焦点、对比上限、排序分页和四档视口。
-- [ ] 核对图表绘制非空、中文标签不重叠、宽表只在容器滚动、200% 缩放。
-- [ ] 运行 Python 全量回归、前端测试、Ruff／格式、compileall、构建和容器启动。
-- [ ] 更新中文运行文档、实际测试数量及未覆盖边界，提交本批但不自动推送或合并。
+- [x] 核对图表绘制非空、中文标签不重叠、宽表只在容器滚动、200% CSS 缩放。
+- [x] 运行 Python 全量回归、前端测试、Ruff／格式、compileall、构建和容器启动。
+- [x] 更新中文运行文档、实际测试数量及未覆盖边界，提交本批但不自动推送或合并。
 
 本批不验收真实数据授权、龙头识别有效性、监管规则、笔记写入、AI 或公网部署。
+实际验证和限制见[第二批验收记录](../../verification-research-workbench.md)。

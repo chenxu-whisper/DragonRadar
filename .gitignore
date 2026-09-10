@@ -1,4 +1,4 @@
-﻿﻿﻿# Byte-compiled / optimized / DLL files
+﻿﻿# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,6 +13,7 @@ dist/
 # Virtual environments
 .venv/
 venv/
+node_modules/
 
 # Temporary files (tool caches, coverage reports, bytecode, etc.)
 .temp/

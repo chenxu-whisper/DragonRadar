@@ -40,6 +40,21 @@ SBOM（软件物料清单）进行。
 这些文件也不会进入镜像。开发叠加配置为 Docker Desktop 端口转发增加了非内部 API 网络，
 这并不构成出站防火墙；数据库仍保留在内部网络。
 
+## 第二批前端依赖
+
+2026-09-10 对 npm 包元数据进行了查询。React／Vite／decimal.js 使用 MIT，
+lucide-react 使用 ISC，ECharts 使用 Apache-2.0。前端确切安装版本以
+`web/package-lock.json` 为准；图表库只负责绘图，金融计算仍由后端完成。
+构建所用 Node 22 与 Caddy 2.10 镜像通过 digest 固定在
+`deploy/workbench.Dockerfile`。Playwright 仅用于浏览器测试，不进入生产页面。
+
+前端运行时仅同源读取 `/api/`，不访问供应商、AI 或外部图片服务。
+依赖的许可证与 NOTICE 应随分发保留；本记录不替代漏洞扫描及发布前的传递依赖审查。
+
+本机执行 `npm audit --omit=dev --audit-level=high` 返回 `found 0 vulnerabilities`。
+此结果只覆盖当次 npm 生产依赖审计，不包括开发依赖、Python 或容器操作系统。
+无障碍测试使用 `@axe-core/playwright`，仅作为开发依赖，不进入生产页面。
+
 ## 升级与回退
 
 升级前应审查锁文件差异、许可证与兼容性，运行全部单元测试和真实 PostgreSQL
