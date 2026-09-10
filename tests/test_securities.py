@@ -8,7 +8,10 @@ import pytest
 from factories import DAYS, bar, batch, state
 from httpx import ASGITransport, AsyncClient
 
-from dragon_radar.analytics.metrics import market_breadth
+from dragon_radar.analytics.metrics import _index, _observation, market_breadth
+from dragon_radar.domain.models import DailyBar, SecurityState
+from dragon_radar.domain.quality import state_at
+from dragon_radar.readmodels.securities import list_securities, security_detail
 
 pytestmark = pytest.mark.anyio
 
@@ -472,3 +475,168 @@ async def test_unknown_snapshot_is_not_replaced_with_latest(client, repository):
         response = await client.get(f"/api/v1/snapshots/{uuid4()}/securities{suffix}")
         assert response.status_code == 404
         assert response.json() == {"error": "Snapshot not found"}
+
+
+@pytest.mark.parametrize("size", [40, 80])
+@pytest.mark.parametrize("query", ["", "S00000", "name 00000", "absent"])
+def test_projection_accesses_scale_linearly_and_filter_first(monkeypatch, size, query):
+    ids = tuple(f"S{i:05d}" for i in range(size))
+    payload = batch(
+        expected_security_ids=ids,
+        security_states=tuple(
+            state(sid, name=f"Name {i:05d}") for i, sid in enumerate(ids)
+        ),
+        bars=tuple(bar(sid, previous_close="8") for sid in ids),
+    )
+    accesses = {"state": 0, "price": 0}
+    state_get = SecurityState.__getattribute__
+    bar_get = DailyBar.__getattribute__
+
+    def count_state(self, name):
+        if name == "security_id":
+            accesses["state"] += 1
+        return state_get(self, name)
+
+    def count_bar(self, name):
+        if name == "close":
+            accesses["price"] += 1
+        return bar_get(self, name)
+
+    monkeypatch.setattr(SecurityState, "__getattribute__", count_state)
+    monkeypatch.setattr(DailyBar, "__getattribute__", count_bar)
+    result = list_securities(payload, q=query, page_size=100)
+    matched = size if not query else (0 if query == "absent" else 1)
+    assert result.total == matched
+    assert all(row.change == Decimal("0.25") for row in result.items)
+    assert accesses["state"] <= 10 * size
+    assert accesses["price"] <= 20 * matched
+
+
+def test_detail_only_derives_requested_security(monkeypatch):
+    ids = tuple(f"S{i:05d}" for i in range(80))
+    payload = batch(
+        expected_security_ids=ids,
+        security_states=tuple(state(sid) for sid in ids),
+        bars=tuple(bar(sid, trade_date=day) for sid in ids for day in DAYS),
+    )
+    accesses = {"state": 0, "price": 0}
+    state_get = SecurityState.__getattribute__
+    bar_get = DailyBar.__getattribute__
+
+    def count_state(self, name):
+        if name == "security_id":
+            accesses["state"] += 1
+        return state_get(self, name)
+
+    def count_bar(self, name):
+        if name == "close":
+            accesses["price"] += 1
+        return bar_get(self, name)
+
+    monkeypatch.setattr(SecurityState, "__getattribute__", count_state)
+    monkeypatch.setattr(DailyBar, "__getattribute__", count_bar)
+    detail = security_detail(payload, ids[0])
+    assert detail.security.change == Decimal(0)
+    assert len(detail.history) == len(DAYS)
+    assert accesses["state"] <= 10 * len(ids)
+    assert accesses["price"] <= 20 * len(DAYS)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {},
+        {"complete_pages": False},
+        {"calendar_version": "wrong"},
+        {"expected_security_ids": ("A", "A", "B")},
+        {"security_states": (state(), state())},
+        {"security_states": (state(available_at=batch().as_of + timedelta(days=1)),)},
+        {"security_states": (state(source_version="wrong"),)},
+        {"security_states": (state(pool_version="wrong"),)},
+        {"security_states": (state(exchange="wrong"),)},
+        {"security_states": (state(listing_date=None),)},
+        {"security_states": (state(listing_date=DAYS[-1] + timedelta(days=1)),)},
+        {"security_states": (state(suspended=None),)},
+        {"security_states": (state(suspended=True),)},
+        {"security_states": (state(suspended=True),), "complete_pages": False},
+        {"security_states": (state(effective_from=DAYS[-1]),)},
+        {"bars": (bar(), bar())},
+        {"bars": (bar(close="-1"),)},
+        {"bars": (bar(available_at=batch().as_of + timedelta(days=1)),)},
+        {"bars": (bar(previous_close="8", amount=None),)},
+        {"bars": (bar(trade_date=DAYS[-2], currency="USD"), bar())},
+        {"bars": (bar(),)},
+        {"trade_date": DAYS[0], "bars": (bar(trade_date=DAYS[0]),)},
+    ],
+)
+def test_indexed_projection_preserves_domain_semantics(changes):
+    payload = batch(
+        **{
+            "expected_security_ids": ("A", "B"),
+            "security_states": (state(), state("B")),
+            **changes,
+        }
+    )
+    breadth = market_breadth(payload)
+    current_state = state_at(payload, "A", payload.trade_date)
+    current, errors = _observation(payload, _index(payload), "A", payload.trade_date)
+    reasons = set(errors)
+    for exclusion in breadth.exclusions:
+        if exclusion.security_id == "A":
+            reasons.update(exclusion.reasons)
+    if current is not None and current.amount is None:
+        reasons.add("missing_amount")
+    expected_return = next(
+        (r.value for r in breadth.returns if r.security_id == "A"), None
+    )
+    row = list_securities(payload, q="A").items[0]
+    assert row.name == (current_state.name if current_state is not None else None)
+    assert row.suspended == (
+        current_state.suspended if current_state is not None else None
+    )
+    assert row.close == (current.close if current is not None else None)
+    assert row.change == expected_return
+    assert row.missing_reasons == tuple(sorted(reasons))
+    assert security_detail(payload, "A").security == row
+    assert payload.expected_security_ids == changes.get(
+        "expected_security_ids", ("A", "B")
+    )
+
+
+@pytest.mark.parametrize("sort", ["security_id", "name", "close", "change", "amount"])
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_filtered_pages_sort_entire_match_set_exactly(sort, order):
+    ids = tuple(f"S{i:03d}" for i in reversed(range(80)))
+    prices = ("2", "10", "10.000000000000000001", "2")
+    payload = batch(
+        expected_security_ids=ids,
+        security_states=tuple(
+            state(
+                sid,
+                name=("Match" if int(sid[1:]) % 2 else "Other"),
+                suspended=int(sid[1:]) % 7 == 0,
+            )
+            for sid in ids
+        ),
+        bars=tuple(
+            bar(sid, close=prices[int(sid[1:]) % 4], previous_close="8")
+            for sid in ids
+            if int(sid[1:]) % 7 != 0
+        ),
+    )
+    all_rows = list_securities(payload, page_size=100).items
+    matches = [row for row in all_rows if row.name == "Match"]
+    present = [row for row in matches if getattr(row, sort) is not None]
+    missing = [row for row in matches if getattr(row, sort) is None]
+    expected = (
+        sorted(present, key=lambda row: getattr(row, sort), reverse=order == "desc")
+        + missing
+    )
+    actual = []
+    for page in (1, 2):
+        result = list_securities(
+            payload, q=" match ", sort=sort, order=order, page=page, page_size=20
+        )
+        assert result.total == 40
+        actual.extend(result.items)
+    assert actual == expected
