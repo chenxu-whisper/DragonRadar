@@ -14,10 +14,19 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from dragon_radar.analytics.calendar import TradingCalendar
 from dragon_radar.analytics.metrics import (
+    BreadthAnalysis,
     IntervalAnalysis,
     analyze_interval,
     compare_interval,
     market_breadth,
+)
+from dragon_radar.readmodels.securities import (
+    SecuritiesPage,
+    SecurityDetail,
+    SecuritySort,
+    SortOrder,
+    list_securities,
+    security_detail,
 )
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.models import Snapshot
@@ -44,7 +53,14 @@ class StorageUnavailable(Exception):
 Repo = Annotated[Repository, Depends(get_repository)]
 
 
-def _envelope(snapshot: Snapshot, result=None) -> dict:
+def _envelope(
+    snapshot: Snapshot,
+    result: IntervalAnalysis
+    | BreadthAnalysis
+    | SecuritiesPage
+    | SecurityDetail
+    | None = None,
+) -> dict:
     batch = snapshot.batch
     metadata = batch.model_dump(
         mode="json", include={"trade_date", "as_of", "source_time"}
@@ -56,7 +72,7 @@ def _envelope(snapshot: Snapshot, result=None) -> dict:
             "eligible": len(result.items),
             "excluded": len(result.exclusions),
         }
-    elif result is not None:
+    elif isinstance(result, BreadthAnalysis):
         analysis_coverage = result.coverage.model_dump(mode="json")
     return {
         "trade_date": metadata["trade_date"],
@@ -83,6 +99,12 @@ def _envelope(snapshot: Snapshot, result=None) -> dict:
             "supersedes": str(snapshot.supersedes) if snapshot.supersedes else None,
             "published_at": snapshot.published_at.isoformat(),
             "security_count": len(batch.expected_security_ids),
+            "calendar_sessions": [
+                day.isoformat()
+                for day in batch.calendar.sessions
+                if day <= batch.trade_date
+            ],
+            "earliest_date": batch.calendar.sessions[0].isoformat(),
         },
     }
 
@@ -225,6 +247,39 @@ def create_app(
     def detail(snapshot_id: UUID, request: Request, repo: Repo):
         _query(request, set())
         return _envelope(repo.get_snapshot(snapshot_id))
+
+    @app.get("/api/v1/snapshots/{snapshot_id}/securities")
+    def snapshot_securities(
+        snapshot_id: UUID,
+        request: Request,
+        repo: Repo,
+        q: Annotated[str, Query(max_length=100)] = "",
+        sort: SecuritySort = "security_id",
+        order: SortOrder = "asc",
+        page: Annotated[int, Query(ge=1, le=100000)] = 1,
+        page_size: int = 50,
+    ):
+        snapshot = repo.get_snapshot(snapshot_id)
+        _query(request, {"q", "sort", "order", "page", "page_size"})
+        return _envelope(
+            snapshot,
+            list_securities(
+                snapshot.batch,
+                q=q,
+                sort=sort,
+                order=order,
+                page=page,
+                page_size=page_size,
+            ),
+        )
+
+    @app.get("/api/v1/snapshots/{snapshot_id}/securities/{security_id}")
+    def snapshot_security(
+        snapshot_id: UUID, security_id: str, request: Request, repo: Repo
+    ):
+        snapshot = repo.get_snapshot(snapshot_id)
+        _query(request, set())
+        return _envelope(snapshot, security_detail(snapshot.batch, security_id))
 
     @app.get("/api/v1/snapshots/{snapshot_id}/overview")
     def snapshot_overview(snapshot_id: UUID, request: Request, repo: Repo):
