@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0001_foundation"
+SCHEMA_REVISION = "0002_owner"
 
 
 class Database:
@@ -52,6 +52,10 @@ class Database:
                     "import_batches",
                     "snapshots",
                     "audit_events",
+                    "owner_principals",
+                    "owner_pairings",
+                    "owner_sessions",
+                    "owner_pairing_limits",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True
