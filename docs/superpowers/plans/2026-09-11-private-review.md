@@ -33,6 +33,10 @@ uv run python -m compileall -q src tests
 
 ## 任务一：所有者存储、配对与会话
 
+进度：`240ef9b` 已实现并提交，新增 59 项仓储测试；
+基线加本任务 565 项通过，含笔记内容契约的当前整树 588 项通过。
+独立规格复核与质量审查均通过，本任务完成；任务二HTTP/CLI开始实施。
+
 新增 `src/dragon_radar/owner/{__init__,models,repository,errors}.py`、
 `src/dragon_radar/migrations/versions/0002_owner.py`、
 `tests/test_owner_repository.py`；修改 `storage/database.py` 的版本与就绪表检查。
@@ -102,6 +106,11 @@ async def test_read_app_never_issues_owner_context(read_client):
 ```
 
 ## 任务三：自选与不可变私人记录
+
+前置纯内容契约已在 `72e9c05` 提交：`NoteContent`、
+`validate_confirmation`、`template_content`，23 项测试及两阶段独立审查通过。
+其中字段为 `title/judgment/evidence/invalidation/verification_date`，后续仓储与API复用。
+完整私人存储尚未实现。
 
 新增 `review/{__init__,models,tables,repository,errors}.py`、
 `migrations/versions/0003_private_review.py`、

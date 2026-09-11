@@ -58,3 +58,11 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+  private_scripts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Windows private-file protections
+        shell: powershell
+        run: .\tests\test_private_scripts.ps1

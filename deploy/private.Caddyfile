@@ -1,0 +1,67 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+https://localhost:8443 {
+	tls internal
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Cache-Control no-store
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	}
+	request_body {
+		max_size 131072
+	}
+	route {
+		@wrongHost not header Host {$DRAGON_OWNER_AUTHORITY:localhost:8030}
+		respond @wrongHost 403
+
+		@health {
+			method GET HEAD
+			path /health/live /health/ready
+		}
+		reverse_proxy @health api:8000
+
+		@market {
+			method GET HEAD
+			path_regexp market ^/api/v1/(snapshots(/[0-9a-fA-F-]{36}(/(overview|interval|securities(/[^/]+)?))?)?|overview|interval)$
+		}
+		reverse_proxy @market api:8000
+
+		@ownerRead {
+			method GET HEAD
+			path_regexp ownerRead ^/api/owner/v1/(session|watchlist|notes(/[0-9a-fA-F-]{36}(/(revisions(/[1-9][0-9]*)?|verifications))?)?)$
+		}
+		reverse_proxy @ownerRead api:8000
+
+		@ownerCreate {
+			method POST
+			path_regexp ownerCreate ^/api/owner/v1/(pair|watchlist|notes|review-templates|notes/[0-9a-fA-F-]{36}/(confirm|fork|verifications))$
+		}
+		reverse_proxy @ownerCreate api:8000
+
+		@ownerUpdate {
+			method PATCH
+			path_regexp ownerUpdate ^/api/owner/v1/(watchlist|notes)/[0-9a-fA-F-]{36}$
+		}
+		reverse_proxy @ownerUpdate api:8000
+
+		@logout {
+			method DELETE
+			path /api/owner/v1/session
+		}
+		reverse_proxy @logout api:8000
+
+		@api path /api/* /health/*
+		respond @api 404
+		@write not method GET HEAD
+		respond @write 405
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
