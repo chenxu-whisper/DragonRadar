@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
+from dragon_radar.owner.cli import COMMANDS, add_commands, execute
+from dragon_radar.owner.security import OWNER_ERRORS
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
     Conflict,
@@ -40,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
+    add_commands(commands)
     return parser
 
 
@@ -49,7 +52,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         database = Database()
         repository = Repository(database)
-        if args.command == "migrate":
+        if args.command in COMMANDS:
+            result = execute(args, repository)
+            if result is None:
+                return 0
+        elif args.command == "migrate":
             database.migrate()
             result = {"status": "migrated"}
         elif args.command == "source-register":
@@ -102,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         message = "Migration failed"
     except SQLAlchemyError:
         message = "Storage unavailable"
+    except OWNER_ERRORS:
+        message = "Owner operation unavailable"
     except Conflict:
         message = "Conflict: idempotency key belongs to another payload"
     except Forbidden:
