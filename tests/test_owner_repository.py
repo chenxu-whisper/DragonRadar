@@ -60,6 +60,7 @@ def test_concurrent_initialize_has_one_local_principal(database):
 def test_owner_migration_uses_shared_metadata_and_no_private_market_audit(database):
     repo = owner_repository(database)
     from dragon_radar.owner import models
+    from dragon_radar.storage.database import SCHEMA_REVISION
     from dragon_radar.storage.models import metadata
 
     repo.initialize()
@@ -73,7 +74,7 @@ def test_owner_migration_uses_shared_metadata_and_no_private_market_audit(databa
     assert all(getattr(models, name).metadata is metadata for name in names)
     with database.engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0002_owner"
+            SCHEMA_REVISION
         )
         assert connection.scalar(text("SELECT count(*) FROM audit_events")) == 0
     database.migrate()
