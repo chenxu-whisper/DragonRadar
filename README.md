@@ -6,11 +6,14 @@
 
 ## 当前开发进度
 
-截至 2026-09-10，首批“数据底座＋确定性计算”及中文文档已推送至
+截至 2026-09-14，首批“数据底座＋确定性计算”及中文文档已推送至
 `origin/feature/data-foundation`（`3fef804`），尚未合并到 `main`。
 第二批位于工程根目录 `.worktrees/research-workbench`，
 分支为 `feature/research-workbench`，本批独立审查、回归和容器验收已完成；
 代码保留在该开发分支，尚未推送或合并。
+第三批位于 `.worktrees/private-review`，分支为 `feature/private-review`，
+正在实现本机私人复盘闭环；所有者入口及私人仓储已完成独立审查，
+私人前端和完整 HTTPS 交互仍待验收，未推送或合并。
 
 | 模块 | 进度 |
 | --- | --- |
@@ -20,14 +23,22 @@
 | 本机管理 CLI、只读 API、Docker 启动脚本 | 已实现并完成本机联调 |
 | 证券列表与详情只读 API、搜索排序分页、历史缺口与单位 | 已实现 |
 | 市场总览、区间分析、个股抽屉及完整详情 | 已实现并完成第二批本机验收 |
-| 自动化验证 | 后端 506 项、前端单测 29 项、浏览器回归 78 项通过；领域、计算及证券读模型语句覆盖率 100% |
-| 其余页面、真实数据源、正式角色规则、监管规则、笔记与 AI | 尚未实现 |
+| 本机所有者配对、会话、CSRF 与 CLI 文件保护 | 已实现并通过独立审查 |
+| 私人笔记、自选、不可变修订、模板、确认与人工验证仓储 | 已实现并通过独立审查，提交 `7dca8e5` |
+| 私人业务 API 与私人复盘界面 | API 已通过两阶段审查并提交 `91de787`，前端实施验收中 |
+| 自动化验证 | 最新后端含真实TLS边界844项通过，总语句覆盖率96%；原只读浏览器78项回归通过，私人前端结果另行记录 |
+| 其余页面、真实数据源、正式角色规则、监管规则与 AI | 尚未实现 |
 | 公网分享、备份恢复验收、性能指标与影子运行 | 尚未完成 |
 
 以上不代表完整 P0 已验收。首批历史结果见
 [数据底座验收记录](docs/verification-data-foundation.md)，
 第二批范围和验证命令见[工作台测试说明](docs/workbench-testing.md)，
 实际测试和审查状态见[第二批验收记录](docs/verification-research-workbench.md)。
+第三批阶段证据见[私人复盘验证记录](docs/verification-private-review.md)，
+接口见[私人 API 契约](docs/private-review-api.md)，
+运行与证书步骤见[私人实例说明](docs/private-review-running.md)。
+本批独立入口为 `https://localhost:8030`，正常库为空；系统证书信任必须另行确认，
+不得忽略证书警告。该地址当前不代表私人界面已交付。
 
 ## 开发环境
 
@@ -133,7 +144,8 @@ docker compose -f compose.yaml -f compose.dev.yaml stop
 
 启动不会插入演示数据或发布快照。来源登记、数据导入与发布都需要通过本机命令显式执行，
 具体见 `dragon-radar --help` 和[数据导入契约](docs/data-import.md)。
-浏览器 API 不提供来源登记、导入、发布、AI 调用或笔记写入能力。
+原只读浏览器 API 不提供来源登记、导入、发布、AI 调用或笔记写入能力。
+第三批独立所有者应用才装配私人写入接口；原只读入口不因本批开发而开放写入。
 
 ## 数据规则
 
@@ -153,12 +165,14 @@ docker compose -f compose.yaml -f compose.dev.yaml stop
 ## 目录与边界
 
 `src/dragon_radar/domain` 定义数据与质量契约，`analytics` 实现纯计算，
-`storage` 负责 PostgreSQL 事务。本机 CLI 执行数据管理，FastAPI 提供只读模型。
+`storage` 负责 PostgreSQL 事务，`owner` 管理本机操作上下文，
+`review` 管理私人修订及事务局部事实投影。本机 CLI 执行数据管理，
+FastAPI 分别装配只读与所有者应用。
 迁移脚本随包放在 `src/dragon_radar/migrations`，测试产物与缓存统一放在 `.temp/`。
 
 当前交付尚不满足 P0 发布条件。待完成内容包括其余页面、经批准的角色阈值、
-真实数据源接入、监管复核、私人笔记、AI 评测、本机所有者操作上下文、
-正式 HTTPS／公网分享、备份恢复演练、完整无障碍验收和规定的影子运行周期。
+真实数据源接入、监管复核、私人复盘端到端验收、AI 评测、
+浏览器 HTTPS 信任及交互验收、公网分享、备份恢复演练、完整无障碍验收和规定的影子运行周期。
 本机 Caddy 同源网关和本批自动化无障碍扫描不替代这些发布条件。
 
 数据库卷不是备份。禁止使用 `docker compose down -v` 更新或回退应用。
