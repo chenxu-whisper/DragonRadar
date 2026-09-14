@@ -31,6 +31,7 @@ from dragon_radar.owner.security import (
     storage_unavailable,
     validate_origin,
 )
+from dragon_radar.review.routes import install_review_routes
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
     Conflict,
@@ -172,5 +173,6 @@ def create_owner_app(
             )
         return response
 
+    install_review_routes(app)
     app.add_middleware(OwnerGate, origin=origin, owner_repository=owner_repository)
     return app
