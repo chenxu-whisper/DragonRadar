@@ -4,8 +4,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $probe = Join-Path $root (".temp/acl-test-" + [Guid]::NewGuid().ToString("N"))
 try {
     Initialize-PrivateDirectory $probe | Out-Null
+    Initialize-PrivateDirectory $probe | Out-Null
     $directoryAcl = Get-Acl -LiteralPath $probe
     if (-not $directoryAcl.AreAccessRulesProtected) { throw "Directory ACL inherits." }
+    if ($directoryAcl.Access.Count -ne 2) { throw "Directory ACL has unexpected rules." }
     $file = Join-Path $probe "fixture.txt"
     [System.IO.File]::WriteAllText($file, "synthetic-test-only")
     Assert-PrivateFile $file

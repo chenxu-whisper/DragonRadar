@@ -25,7 +25,8 @@ function Initialize-PrivateDirectory {
         $acl.AddAccessRule($rule)
     }
     if (Test-Path -LiteralPath $full) {
-        Set-Acl -LiteralPath $full -AclObject $acl
+        # Persist only the owner/DACL sections changed above, not the audit SACL.
+        (Get-Item -LiteralPath $full -Force).SetAccessControl($acl)
     } else {
         [System.IO.Directory]::CreateDirectory($full, $acl) | Out-Null
     }

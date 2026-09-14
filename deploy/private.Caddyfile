@@ -65,3 +65,12 @@ https://localhost:8443 {
 		file_server
 	}
 }
+
+https://:8443 {
+	header {
+		Cache-Control no-store
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	respond 403
+}
