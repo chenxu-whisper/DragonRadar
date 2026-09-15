@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import { compareDecimal, label } from '../format';
 import { intervalQuery, type ResearchState } from '../state';
 import { useResource } from '../hooks/useResource';
@@ -18,7 +18,8 @@ export function IntervalForm({ state, patch }: { state: ResearchState; patch: Pa
     const next = { n: n.trim() ? Number(n) : 0, start: custom ? start : '', end: custom ? end : '' };
     try {
       if (custom && (!start || !end)) throw new Error('请输入完整的起止日期。');
-      intervalQuery(next); setError(''); patch({ ...next, page: 1 });
+      intervalQuery(next);
+      if (patch({ ...next, page: 1 })) setError('');
     } catch (failure) { setError((failure as Error).message); }
   }}>
     <div className="toolbar">
@@ -28,16 +29,21 @@ export function IntervalForm({ state, patch }: { state: ResearchState; patch: Pa
         <label>结束日期<input type="date" value={end} onChange={e => setEnd(e.target.value)} aria-describedby={error ? 'interval-error' : undefined} /></label>
       </> : <label>交易日间隔<input type="number" min="1" max="250" step="1" value={n} onChange={e => setN(e.target.value)} aria-describedby="interval-help" aria-invalid={Boolean(error)} /></label>}
       <button className="primary" type="submit">应用区间</button>
-      <button type="button" onClick={() => { setCustom(false); setN('20'); setStart(''); setEnd(''); setError(''); patch({ n: 20, start: '', end: '', page: 1 }); }}>重置区间</button>
+      <button type="button" onClick={() => {
+        if (patch({ n: 20, start: '', end: '', page: 1 })) {
+          setCustom(false); setN('20'); setStart(''); setEnd(''); setError('');
+        }
+      }}>重置区间</button>
     </div>
     <p id="interval-help" className="muted">间隔 20 需要 21 个交易日价格；自定义日期按快照交易日历对齐。样本不足不会自动缩短。</p>
     {error && <p role="alert" id="interval-error" className="notice error">{error}</p>}
   </form>;
 }
 
-export function Analysis({ state, patch, refreshToken, open, compare }: {
+export function Analysis({ state, patch, refreshToken, open, compare, ReviewActions }: {
   state: ResearchState; patch: Patch; refreshToken: number;
   open: (id: string, trigger: HTMLElement) => void; compare: (id: string) => void;
+  ReviewActions?: ComponentType<{ snapshot: string; security: string }>;
 }) {
   let query = '', error = '';
   try { query = intervalQuery(state); } catch (failure) { error = (failure as Error).message; }
@@ -77,7 +83,8 @@ export function Analysis({ state, patch, refreshToken, open, compare }: {
         const trigger = event.currentTarget.querySelector<HTMLButtonElement>('button');
         if (trigger) { trigger.focus(); open(item.security_id, trigger); }
       }}>
-        <th className="identity"><button className="security-button" onClick={e => open(item.security_id, e.currentTarget)}>{item.security_id}</button></th>
+        <th className="identity"><button className="security-button" onClick={e => open(item.security_id, e.currentTarget)}>{item.security_id}</button>
+          {ReviewActions && <ReviewActions snapshot={state.snapshot} security={item.security_id} />}</th>
         <td><label className="check-target"><input type="checkbox" aria-label={`比较 ${item.security_id}`} checked={state.compare.includes(item.security_id)} onChange={() => compare(item.security_id)} /></label></td>
         <td className="numeric"><Percent value={item.interval_return} /></td><td className="numeric"><Percent value={item.maximum_drawdown} signed={false} /></td>
       </tr>)}</tbody></table></TableScroll>

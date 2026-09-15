@@ -5,7 +5,10 @@ import type { Resource } from '../hooks/useResource';
 import type { Exclusion, Snapshot } from '../types';
 import type { ResearchState, Sort } from '../state';
 
-export type Patch = (change: Partial<ResearchState>, replace?: boolean) => void;
+export type Patch = (change: Partial<ResearchState>, replace?: boolean) => boolean;
+export function shouldHandleSpaClick(event: Pick<MouseEvent, 'button' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>): boolean {
+  return event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
+}
 export function ResourceStatus<T>({ resource, name }: { resource: Resource<T>; name: string }) {
   return <>
     {resource.loading && <p role="status" className="status">正在加载{name}…</p>}

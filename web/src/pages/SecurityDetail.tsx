@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, type ComponentType } from 'react';
 import { ArrowLeft, ExternalLink, X } from 'lucide-react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
 import { stateSearch, type ResearchState } from '../state';
 import type { Detail, Envelope } from '../types';
 import { Chart } from '../components/Chart';
-import { Percent, ResourceStatus, TableScroll, type Patch } from '../components/Common';
+import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch } from '../components/Common';
 
-function DetailContent({ state, id, refreshToken }: { state: ResearchState; id: string; refreshToken: number }) {
+type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
+function DetailContent({ state, id, refreshToken, ReviewActions }: {
+  state: ResearchState; id: string; refreshToken: number; ReviewActions?: ReviewActionComponent;
+}) {
   const resource = useResource<Envelope<Detail>>(`/api/v1/snapshots/${state.snapshot}/securities/${encodeURIComponent(id)}`, state.snapshot, refreshToken);
   const data = resource.data?.result;
   const pricedHistory = data?.history.filter(point => point.close !== null) || [];
@@ -36,6 +39,7 @@ function DetailContent({ state, id, refreshToken }: { state: ResearchState; id: 
     <ResourceStatus resource={resource} name="证券详情" />
     {data && <>
       <div className="detail-heading"><h2>{data.security.name || '名称未知'}</h2><span>{data.security.security_id} · {label(data.security.exchange)} · {label(data.security.board)}</span></div>
+      {ReviewActions && <ReviewActions snapshot={state.snapshot} security={id} />}
       <dl className="quote">
         <div><dt>收盘价</dt><dd>{formatDecimal(data.security.close)}</dd></div>
         <div><dt>日涨跌幅</dt><dd><Percent value={data.security.change} /></dd></div>
@@ -61,8 +65,9 @@ function DetailContent({ state, id, refreshToken }: { state: ResearchState; id: 
     </>}
   </>;
 }
-export function SecurityDrawer({ state, id, trigger, close, patch, refreshToken }: {
+export function SecurityDrawer({ state, id, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions }: {
   state: ResearchState; id: string; trigger: HTMLElement; close: () => void; patch: Patch; refreshToken: number;
+  allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
 }) {
   const dialog = useRef<HTMLDialogElement>(null), closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -72,15 +77,17 @@ export function SecurityDrawer({ state, id, trigger, close, patch, refreshToken 
   const next = { ...state, view: 'stock' as const, security: id, return_view: state.view === 'analysis' ? 'analysis' as const : 'overview' as const };
   return <dialog ref={dialog} className="security-drawer" aria-labelledby="drawer-title" onCancel={e => { e.preventDefault(); close(); }}>
     <div className="drawer-toolbar"><h2 id="drawer-title">证券详情 · 只读</h2><button ref={closeButton} onClick={close} aria-label="关闭详情" title="关闭详情（退出键）"><X size={20} /></button></div>
-    <a className="fullpage-link" href={stateSearch(next)} onClick={e => { if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); close(); patch(next); } }}><ExternalLink size={16} />打开完整详情</a>
-    <DetailContent state={state} id={id} refreshToken={refreshToken} />
+    <a className="fullpage-link" href={stateSearch(next, allowPrivate)} onClick={e => { if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(next)) close(); } }}><ExternalLink size={16} />打开完整详情</a>
+    <DetailContent state={state} id={id} refreshToken={refreshToken} ReviewActions={ReviewActions} />
   </dialog>;
 }
-export function SecurityPage({ state, patch, refreshToken }: { state: ResearchState; patch: Patch; refreshToken: number }) {
+export function SecurityPage({ state, patch, refreshToken, allowPrivate = false, ReviewActions }: {
+  state: ResearchState; patch: Patch; refreshToken: number; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
+}) {
   const back = { ...state, view: state.return_view, security: '' };
   return <>
-    <a className="back-link" href={stateSearch(back)} onClick={event => { if (!event.ctrlKey && !event.metaKey) { event.preventDefault(); patch(back); } }}><ArrowLeft size={18} />返回研究列表</a>
+    <a className="back-link" href={stateSearch(back, allowPrivate)} onClick={event => { if (shouldHandleSpaClick(event)) { event.preventDefault(); patch(back); } }}><ArrowLeft size={18} />返回研究列表</a>
     <h1>证券详情</h1>
-    {state.security ? <DetailContent state={state} id={state.security} refreshToken={refreshToken} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
+    {state.security ? <DetailContent state={state} id={state.security} refreshToken={refreshToken} ReviewActions={ReviewActions} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
   </>;
 }

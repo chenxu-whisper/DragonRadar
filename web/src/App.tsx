@@ -1,30 +1,50 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ComponentType } from 'react';
 import { BarChart3, ChartNoAxesCombined, ChevronLeft, Menu, Radar } from 'lucide-react';
 import { useLocation } from './hooks/useLocation';
 import { AccessProvider, useAccess, useResource } from './hooks/useResource';
 import { parseState, stateSearch, toggleCompare, type ResearchState } from './state';
 import type { Snapshot } from './types';
-import { ResourceStatus, SnapshotEvidence } from './components/Common';
+import { ResourceStatus, shouldHandleSpaClick, SnapshotEvidence } from './components/Common';
 import { SnapshotHeader } from './components/SnapshotHeader';
 import { Comparison } from './components/Comparison';
 import { CompareMembership } from './components/CompareMembership';
+import { LazyLoadBoundary } from './components/LazyLoadBoundary';
+import type { Patch } from './components/Common';
 import { Overview } from './pages/Overview';
 import { Analysis, IntervalForm } from './pages/Analysis';
 import { SecurityDrawer, SecurityPage } from './pages/SecurityDetail';
 
-function Workbench() {
-  const { state, patch } = useLocation();
+interface PrivateFeatures {
+  locked: boolean;
+  navigationLabel: string;
+  Toolbar: ComponentType;
+  Workspace: ComponentType<{ state: ResearchState; snapshot?: Snapshot; patch: Patch }>;
+  ReviewActions: ComponentType<{ snapshot: string; security: string }>;
+}
+
+export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatures }) {
+  const privateEnabled = Boolean(privateFeatures);
+  const PrivateToolbar = privateFeatures?.Toolbar;
+  const PrivateWorkspace = privateFeatures?.Workspace;
+  const ReviewActions = privateFeatures?.ReviewActions;
+  const { state, patch } = useLocation(privateEnabled);
   const { denied, retry } = useAccess();
-  const [notice, setNotice] = useState(() => parseState(window.location.search).notices.join(' '));
+  const [notice, setNotice] = useState(() => parseState(window.location.search, privateEnabled).notices.join(' '));
   const [menu, setMenu] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [drawer, setDrawer] = useState<{ id: string; trigger: HTMLElement; context: string } | null>(null);
-  const context = stateSearch(state);
+  const context = stateSearch(state, privateEnabled);
   const list = useResource<Snapshot[]>(!state.snapshot ? `/api/v1/snapshots?${new URLSearchParams({
     ...(state.date ? { trade_date: state.date } : {}), limit: '100', offset: '0',
   })}` : null, undefined, refreshToken);
   const summary = useResource<Snapshot>(state.snapshot ? `/api/v1/snapshots/${state.snapshot}` : null, state.snapshot, refreshToken);
   const snapshot = summary.data && (!state.date || state.date === summary.data.trade_date) ? summary.data : undefined;
+  useEffect(() => {
+    if (!privateEnabled) return;
+    const openNote = (event: Event) => { setDrawer(null); patch({ view: 'review', note: (event as CustomEvent<string>).detail }, true); };
+    window.addEventListener('private-open-note', openNote);
+    return () => window.removeEventListener('private-open-note', openNote);
+  }, [patch, privateEnabled]);
   useEffect(() => {
     if (!state.snapshot && list.data?.length && !denied) {
       const chosen = list.data[0];
@@ -37,7 +57,7 @@ function Workbench() {
       patch({ date: summary.data.trade_date }, true);
     }
   }, [summary.data, state.date, patch]);
-  useEffect(() => { setDrawer(null); }, [context, denied]);
+  useEffect(() => { setDrawer(null); }, [context, denied, privateFeatures?.locked]);
   useEffect(() => {
     if (denied) { setNotice(''); patch({ compare: [], security: '' }, true); }
   }, [denied, context, patch]);
@@ -45,7 +65,7 @@ function Workbench() {
   const compare = (id: string) => {
     const result = toggleCompare(state.compare, id);
     if (result.error) setNotice(result.error);
-    else { setNotice(''); patch({ compare: result.ids }); }
+    else if (patch({ compare: result.ids })) setNotice('');
   };
   const open = (id: string, trigger: HTMLElement) => setDrawer({ id, trigger, context });
   const navigate = (view: 'overview' | 'analysis'): Partial<ResearchState> => ({
@@ -59,31 +79,38 @@ function Workbench() {
       </div>
       <nav id="primary-nav" aria-label="主导航">
         {([{ view: 'overview', text: '市场总览', Icon: BarChart3 }, { view: 'analysis', text: '区间分析', Icon: ChartNoAxesCombined }] as const).map(({ view, text, Icon }) =>
-          <a key={view} href={stateSearch({ ...state, ...navigate(view) })} aria-current={state.view === view ? 'page' : undefined} onClick={e => {
-            if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); patch(navigate(view)); setMenu(false); }
+          <a key={view} href={stateSearch({ ...state, ...navigate(view) }, privateEnabled)} aria-current={state.view === view ? 'page' : undefined} onClick={e => {
+            if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(navigate(view))) setMenu(false); }
           }}><Icon size={19} /><span>{text}</span></a>)}
+        {privateFeatures && <a href={stateSearch({ ...state, view: 'review' }, privateEnabled)} aria-current={state.view === 'review' ? 'page' : undefined} onClick={event => {
+          if (shouldHandleSpaClick(event)) { event.preventDefault(); if (patch({ view: 'review' })) setMenu(false); }
+        }}>{privateFeatures.navigationLabel}</a>}
       </nav>
       <div className="sidebar-note"><strong>只读 · 快照研究</strong><p>以指定版本为依据。<br />未知不等于零。</p><span>不含实时交易与投资建议</span></div>
     </aside>
     <div className="workspace">
+      {PrivateToolbar && <PrivateToolbar />}
       <SnapshotHeader state={state} snapshot={snapshot} patch={patch} refresh={refresh} refreshing={summary.loading || list.loading} refreshToken={refreshToken} />
       <main id="main" tabIndex={-1}>
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')}>关闭提示</button></div>}
-        {denied ? <div className="empty access-denied" role="alert"><h1>来源访问已被拒绝</h1><p>已清除所有受保护内容与内存中的来源数据。恢复授权后可重新请求。</p><button className="primary" onClick={retry}>重新检查访问权限</button></div> : <>
+        {PrivateWorkspace && state.view === 'review'
+          ? <PrivateWorkspace state={state} snapshot={denied ? undefined : snapshot} patch={patch} />
+          : denied ? <div className="empty access-denied" role="alert"><h1>来源访问已被拒绝</h1><p>已清除所有受保护内容与内存中的来源数据。恢复授权后可重新请求。</p><button className="primary" onClick={retry}>重新检查访问权限</button></div> : <>
           <ResourceStatus resource={list} name="快照列表" />
           <ResourceStatus resource={summary} name="快照" />
           {!state.snapshot && list.data?.length === 0 && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
           {snapshot && <>
-            <CompareMembership state={state} patch={patch} refreshToken={refreshToken} />
-            {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} />}
-            {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} />}
-            {state.view === 'stock' && <SecurityPage state={state} patch={patch} refreshToken={refreshToken} />}
+            <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />
+            {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ReviewActions} />}
+            {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ReviewActions} />}
+            {state.view === 'stock' && <SecurityPage state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ReviewActions} />}
             {state.view !== 'stock' && <>
               {state.view === 'overview' && state.compare.length > 0 && <IntervalForm state={state} patch={patch} />}
               <Comparison state={state} patch={patch} refreshToken={refreshToken} />
             </>}
             <SnapshotEvidence snapshot={snapshot} />
-            {drawer && drawer.context === context && state.view !== 'stock' && <SecurityDrawer state={state} id={drawer.id} trigger={drawer.trigger} close={() => setDrawer(null)} patch={patch} refreshToken={refreshToken} />}
+            {drawer && drawer.context === context && state.view !== 'stock' && <SecurityDrawer state={state} id={drawer.id} trigger={drawer.trigger} close={() => setDrawer(null)}
+              patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ReviewActions} />}
           </>}
         </>}
       </main>
@@ -96,7 +123,7 @@ function Workbench() {
           window.scrollTo({ top: window.scrollY + target.getBoundingClientRect().top - headerHeight - 16 });
           target.focus({ preventScroll: true });
         }}>前往比较</button>
-        <button onClick={() => { setNotice(''); patch({ compare: [] }); }}>取消选择</button>
+        <button onClick={() => { if (patch({ compare: [] })) setNotice(''); }}>取消选择</button>
       </div>}
       <footer>只读研究 · 指标来自所选快照 · 数据缺失与排除单独披露</footer>
     </div>
@@ -106,6 +133,13 @@ function Session() {
   const { epoch } = useAccess();
   return <Workbench key={epoch} />;
 }
+const PrivateApp = import.meta.env.VITE_PRIVATE_REVIEW === '1'
+  ? lazy(() => import('./features/review/PrivateApp'))
+  : null;
 export default function App() {
-  return <AccessProvider><Session /></AccessProvider>;
+  return PrivateApp
+    ? <LazyLoadBoundary>
+      <Suspense fallback={<p role="status" className="status">正在加载私人复盘…</p>}><PrivateApp /></Suspense>
+    </LazyLoadBoundary>
+    : <AccessProvider><Session /></AccessProvider>;
 }

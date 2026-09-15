@@ -59,7 +59,7 @@ export function interval(ids?: string[]): Interval {
     })), exclusions: ids ? [] : [{ security_id: 'TEST064', reasons: ['suspension'] }, { security_id: 'TEST065', reasons: ['missing_price'] }],
   };
 }
-export type MockState = { denied?: boolean; offline?: boolean; empty?: boolean; delayOld?: boolean };
+export type MockState = { denied?: boolean; offline?: boolean; empty?: boolean; delayOld?: boolean; securityId?: string };
 export async function mockMarket(page: Page, state: MockState = {}) {
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url());
@@ -82,7 +82,8 @@ export async function mockMarket(page: Page, state: MockState = {}) {
     }
     if (path.endsWith('/securities')) {
       const q = url.searchParams.get('q') || '';
-      let items = securities.filter(s => `${s.name} ${s.security_id}`.includes(q));
+      const available = state.securityId ? [{ ...securities[0], security_id: state.securityId }] : securities;
+      let items = available.filter(s => `${s.name} ${s.security_id}`.includes(q));
       if (url.searchParams.get('order') === 'desc') items = [...items].reverse();
       const size = +(url.searchParams.get('page_size') || 50), current = +(url.searchParams.get('page') || 1);
       return respond(envelope({ items: items.slice((current - 1) * size, current * size), total: items.length, page: current, page_size: size, basis: 'raw_close' }, id));

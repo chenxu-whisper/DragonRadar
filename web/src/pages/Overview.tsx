@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ComponentType } from 'react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
 import type { Envelope, Overview as Breadth, Securities } from '../types';
@@ -6,8 +6,11 @@ import type { ResearchState } from '../state';
 import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
 
-interface Props { state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, trigger: HTMLElement) => void; compare: (id: string) => void }
-export function Overview({ state, patch, refreshToken, open, compare }: Props) {
+interface Props {
+  state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, trigger: HTMLElement) => void;
+  compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>;
+}
+export function Overview({ state, patch, refreshToken, open, compare, ReviewActions }: Props) {
   const base = `/api/v1/snapshots/${state.snapshot}`;
   const breadth = useResource<Envelope<Breadth>>(`${base}/overview`, state.snapshot, refreshToken);
   const params = new URLSearchParams({
@@ -65,7 +68,8 @@ export function Overview({ state, patch, refreshToken, open, compare }: Props) {
               const trigger = e.currentTarget.querySelector<HTMLButtonElement>('.security-button');
               if (trigger) { trigger.focus(); open(row.security_id, trigger); }
             }}>
-              <th className="identity"><button className="security-button" onClick={e => open(row.security_id, e.currentTarget)}>{row.name || '名称未知'}</button><span className="security-id">{row.security_id}</span></th>
+              <th className="identity"><button className="security-button" onClick={e => open(row.security_id, e.currentTarget)}>{row.name || '名称未知'}</button><span className="security-id">{row.security_id}</span>
+                {ReviewActions && <ReviewActions snapshot={state.snapshot} security={row.security_id} />}</th>
               <td><label className="check-target"><input type="checkbox" checked={state.compare.includes(row.security_id)} onChange={() => compare(row.security_id)} aria-label={`比较 ${row.security_id}`} /></label></td>
               <td className="numeric">{formatDecimal(row.close)}<small>{label(row.currency)} · {label(row.price_unit)}</small></td>
               <td className="numeric"><Percent value={row.change} /></td>

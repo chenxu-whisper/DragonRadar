@@ -18,17 +18,17 @@ function MemberCheck({ id, snapshot, refreshToken, missing }: {
     : null;
 }
 
-export function CompareMembership({ state, patch, refreshToken }: {
-  state: ResearchState; patch: Patch; refreshToken: number;
+export function CompareMembership({ state, patch, refreshToken, allowPrivate = false }: {
+  state: ResearchState; patch: Patch; refreshToken: number; allowPrivate?: boolean;
 }) {
   const [removed, setRemoved] = useState<string[]>([]);
   const missing = useCallback((id: string, snapshot: string) => {
     // Concurrent responses must remove from the latest selection, never a captured list.
-    const current = parseState(window.location.search).state;
+    const current = parseState(window.location.search, allowPrivate).state;
     if (current.snapshot !== snapshot || !current.compare.includes(id)) return;
     setRemoved(previous => [...new Set([...previous, id])]);
     patch({ compare: current.compare.filter(value => value !== id) }, true);
-  }, [patch]);
+  }, [allowPrivate, patch]);
   return <>
     {removed.length > 0 && <div role="alert" className="notice">
       <span>已移除不在快照证券池中的比较标的：{removed.join('、')}。可重新选择，研究区间保持不变。</span>

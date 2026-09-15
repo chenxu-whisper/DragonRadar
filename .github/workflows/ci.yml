@@ -56,8 +56,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run build
+      - run: npm run check:bundle
+      - run: VITE_PRIVATE_REVIEW=1 npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+      - run: npx playwright test --config playwright.private.config.ts
 
   private_scripts:
     runs-on: windows-latest

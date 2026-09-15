@@ -1,10 +1,10 @@
-export type View = 'overview' | 'analysis' | 'stock';
+export type View = 'overview' | 'analysis' | 'stock' | 'review';
 export type Sort = 'security_id' | 'name' | 'close' | 'change' | 'amount' | 'interval_return' | 'maximum_drawdown';
 export interface ResearchState {
   view: View; snapshot: string; date: string; q: string; sort: Sort;
   order: 'asc' | 'desc'; page: number; page_size: number; n: number;
   start: string; end: string; compare: string[]; security: string;
-  return_view: 'overview' | 'analysis';
+  return_view: 'overview' | 'analysis'; note: string;
 }
 
 export function validDate(value: string): boolean {
@@ -12,7 +12,7 @@ export function validDate(value: string): boolean {
     Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 
-export function parseState(search: string): { state: ResearchState; notices: string[] } {
+export function parseState(search: string, allowPrivate = false): { state: ResearchState; notices: string[] } {
   const p = new URLSearchParams(search);
   const notices: string[] = [];
   const invalid = () => { if (!notices.includes('无效的网址参数已重置，请检查研究条件。')) notices.push('无效的网址参数已重置，请检查研究条件。'); };
@@ -46,7 +46,10 @@ export function parseState(search: string): { state: ResearchState; notices: str
   if (compare.some(v => !v || v.length > 200)) { invalid(); compare = []; }
   const page_size = integer('page_size', 50, 100);
   if (![20, 50, 100].includes(page_size)) invalid();
-  const view = choice('view', ['overview', 'analysis', 'stock'], 'overview');
+  const views: readonly View[] = allowPrivate ? ['overview', 'analysis', 'stock', 'review'] : ['overview', 'analysis', 'stock'];
+  const view = choice('view', views, 'overview');
+  let note = allowPrivate ? p.get('note') || '' : '';
+  if (note && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(note)) { invalid(); note = ''; }
   let sort = choice<Sort>('sort', ['security_id', 'name', 'close', 'change', 'amount', 'interval_return', 'maximum_drawdown'], 'security_id');
   if (view === 'overview' && ['interval_return', 'maximum_drawdown'].includes(sort)) { invalid(); sort = 'security_id'; }
   const q = p.get('q') || '';
@@ -54,7 +57,7 @@ export function parseState(search: string): { state: ResearchState; notices: str
   let security = p.get('security') || '';
   if (security.length > 200 || security === '.' || security === '..') { invalid(); security = ''; }
   return { state: {
-    view, snapshot, date: date('date'), q: q.slice(0, 100), sort,
+    view, snapshot, note: note.toLowerCase(), date: date('date'), q: q.slice(0, 100), sort,
     order: choice('order', ['asc', 'desc'], 'asc'), page: integer('page', 1, 100000),
     page_size: [20, 50, 100].includes(page_size) ? page_size : 50,
     n: integer('n', 20, 250), start: date('start'), end: date('end'), compare, security,
@@ -62,11 +65,14 @@ export function parseState(search: string): { state: ResearchState; notices: str
   }, notices };
 }
 
-export function stateSearch(state: ResearchState): string {
+export function stateSearch(state: ResearchState, allowPrivate = false): string {
+  const normalized = allowPrivate ? state : { ...state, view: state.view === 'review' ? 'overview' as const : state.view, note: '' };
   const p = new URLSearchParams();
-  for (const [key, value] of Object.entries(state)) {
-    if (key === 'compare') { if (state.compare.length) p.set(key, state.compare.join(',')); }
-    else if (value !== '' && !(key === 'n' && (state.start || state.end))) p.set(key, String(value));
+  const keys: (keyof ResearchState)[] = ['view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end', 'compare', 'security', 'return_view', 'note'];
+  for (const key of keys) {
+    const value = normalized[key];
+    if (key === 'compare') { if (normalized.compare.length) p.set(key, normalized.compare.join(',')); }
+    else if (value !== '' && !(key === 'n' && (normalized.start || normalized.end))) p.set(key, String(value));
   }
   return `?${p}`;
 }

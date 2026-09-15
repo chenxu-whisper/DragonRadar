@@ -1,6 +1,6 @@
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message?: string) {
+  constructor(status: number, message?: string, readonly code?: string) {
     const messages: Record<number, string> = {
       0: '网络连接失败，请检查连接后重试。',
       400: '研究区间不可用，请检查日期、交易日间隔和历史样本。',
@@ -74,7 +74,12 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       fetch(path, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: controller.signal, headers: { Accept: 'application/json' } }),
       interrupted,
     ]);
-    if (!response.ok) throw new ApiError(response.status);
+    if (!response.ok) {
+      let code: string | undefined;
+      try { const data = await Promise.race([response.json(), interrupted]); code = typeof data?.code === 'string' ? data.code : undefined; }
+      catch { /* Fixed messages do not echo server payloads. */ }
+      throw new ApiError(response.status, undefined, code);
+    }
     let data: unknown;
     try { data = await Promise.race([response.json(), interrupted]); }
     catch (error) { if (error instanceof ApiError || (error instanceof DOMException && error.name === 'AbortError')) throw error; throw new ApiError(502, '接口响应格式无效，请重试。'); }
