@@ -210,7 +210,7 @@ const command = { key: crypto.randomUUID(), expectedVersion, payload };
 
 进度：独立8030实例已启动且正常库为空，0003迁移和TLS健康检查通过。
 重复目录初始化的ACL错误已按红绿测试修复并经独立复核。
-尚未安装系统CA信任、未执行真实浏览器配对验收；不可忽略证书错误。
+项目CA已在用户明确授权后安装到当前用户信任库，真实浏览器配对验收已完成。
 
 新增 `compose.private.yaml`、`deploy/private.Caddyfile`、`deploy/private.Dockerfile`、
 `scripts/start-private.ps1`、`scripts/private-owner.ps1`、
@@ -222,9 +222,9 @@ const command = { key: crypto.randomUUID(), expectedVersion, payload };
   新 CA 私钥不导出，只提供公钥证书/指纹及精确安装、卸载命令。
 - [x] Caddy `tls internal`，禁自动HTTP公开入口，明确API方法白名单，
   no-store/CSP/no-referrer，无访问日志。健康探针验证专属CA，不跳证书验证。
-- [ ] Windows信任库变更先单独征求用户同意；获准后仅信任本项目CA，
+- [x] Windows信任库变更先单独征求用户同意；获准后仅信任本项目CA，
   不绕警告、不用ignoreHTTPSErrors，不删除其它证书。
-- [ ] 实际 HTTPS 配对、保存、冲突、确认、撤销、重启回读；测试主体与样例隔离，
+- [x] 实际 HTTPS 配对、保存、冲突、确认、撤销、重启回读；测试主体与样例隔离，
   正常库为空，记录证书和域名校验，不记录码/Token/正文。
 - [x] 后端全量、Ruff/格式/compileall、前端全量/构建、镜像构建与只读兼容回归。
 - [x] 先最终审查、修复闭环，再更新真实计数、限制和地址并提交；
