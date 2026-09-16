@@ -12,7 +12,7 @@ from dragon_radar.topics.models import (
     TopicSnapshot,
     TopicSnapshotPage,
 )
-from dragon_radar.topics.quality import TopicQualityReport, validate_topic_batch
+from dragon_radar.topics.quality import validate_topic_batch
 
 __all__ = [
     "ManifestPage",
@@ -23,7 +23,6 @@ __all__ = [
     "TopicDefinition",
     "TopicImportRecord",
     "TopicMembership",
-    "TopicQualityReport",
     "TopicSnapshot",
     "TopicSnapshotPage",
     "validate_topic_batch",

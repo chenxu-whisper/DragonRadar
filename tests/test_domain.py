@@ -153,9 +153,14 @@ def test_calendar_is_explicit_sorted_unique(sessions):
 
 
 def test_clean_batch_coverage():
-    from dragon_radar.domain.quality import validate_batch
+    from dragon_radar.domain.quality import QualityReport, validate_batch
 
-    result = validate_batch(batch(), now=NOW)
+    data = batch()
+    result = validate_batch(data, now=NOW)
+    assert isinstance(result, QualityReport)
+    assert result.batch is data
+    assert set(result.model_dump()) == {"batch", "issues", "coverage"}
+    assert type(result).model_validate_json(result.model_dump_json()) == result
     assert result.publishable
     assert result.coverage.expected == result.coverage.valid == 1
     assert result.coverage.missing == result.coverage.legal_excluded == 0

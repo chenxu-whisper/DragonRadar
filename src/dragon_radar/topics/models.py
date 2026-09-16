@@ -57,6 +57,8 @@ ImmutableJsonObject = Annotated[
 
 
 def _validate_reference(value: str) -> str:
+    if not value.strip():
+        raise ValueError("source references cannot be blank")
     if any(unicodedata.category(character).startswith("C") for character in value):
         raise ValueError("source references cannot contain control characters")
     if re.match(r"(?i)^(javascript|data|file)\s*:", value.strip()):

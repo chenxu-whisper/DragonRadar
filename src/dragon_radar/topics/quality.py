@@ -3,24 +3,18 @@
 from collections import Counter
 from datetime import date, datetime
 
-from dragon_radar.domain.models import FrozenModel
-from dragon_radar.domain.quality import Coverage, QualityIssue, grant_allows_local
+from dragon_radar.domain.quality import (
+    Coverage,
+    QualityIssue,
+    QualityReport,
+    grant_allows_local,
+)
 from dragon_radar.topics.models import TopicBatch
-
-
-class TopicQualityReport(FrozenModel):
-    batch: TopicBatch
-    issues: tuple[QualityIssue, ...]
-    coverage: Coverage
-
-    @property
-    def publishable(self) -> bool:
-        return not self.issues
 
 
 def validate_topic_batch(
     batch: TopicBatch, *, now: datetime
-) -> TopicQualityReport:
+) -> QualityReport[TopicBatch]:
     """Validate topic completeness without persisting or repairing input."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("operation time requires a timezone")
@@ -167,7 +161,7 @@ def validate_topic_batch(
 
     expected = len(expected_keys)
     valid = len(valid_keys)
-    return TopicQualityReport(
+    return QualityReport[TopicBatch](
         batch=batch,
         issues=tuple(issues),
         coverage=Coverage(

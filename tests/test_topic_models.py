@@ -131,9 +131,14 @@ def test_effective_intervals_are_half_open_and_nonempty():
 
 
 def test_clean_topic_batch_has_exact_calendar_coverage():
+    from dragon_radar.domain.quality import QualityReport
     from dragon_radar.topics.quality import validate_topic_batch
 
-    report = validate_topic_batch(topic_batch(), now=NOW)
+    data = topic_batch()
+    report = validate_topic_batch(data, now=NOW)
+    assert isinstance(report, QualityReport)
+    assert report.batch is data
+    assert type(report).model_validate_json(report.model_dump_json()) == report
     assert report.publishable
     assert report.coverage.expected == 4
     assert report.coverage.valid == 4
@@ -332,6 +337,12 @@ def test_source_reference_rejects_control_text_and_dangerous_protocols(value):
         TopicBatch.model_validate(payload)
 
 
+def test_source_reference_rejects_whitespace_only():
+    payload = topic_batch_dict(topics=[topic_definition(source_reference="   ")])
+    with pytest.raises(ValidationError):
+        TopicBatch.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -345,6 +356,14 @@ def test_source_reference_rejects_control_text_and_dangerous_protocols(value):
 def test_evidence_refs_reject_control_text_and_dangerous_protocols(value):
     payload = topic_batch_dict(
         memberships=[topic_membership(evidence_refs=(value,))]
+    )
+    with pytest.raises(ValidationError):
+        TopicBatch.model_validate(payload)
+
+
+def test_evidence_refs_reject_whitespace_only():
+    payload = topic_batch_dict(
+        memberships=[topic_membership(evidence_refs=("   ",))]
     )
     with pytest.raises(ValidationError):
         TopicBatch.model_validate(payload)
