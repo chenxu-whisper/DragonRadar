@@ -152,6 +152,45 @@ def test_failed_attempt_records_missing_cursor_between_pages(topic_repository):
     assert attempt.failed_cursor is None
 
 
+def test_failed_attempt_records_actual_terminal_cursor(topic_repository):
+    from dragon_radar.storage.repository import QualityRejected
+
+    payload = topic_batch()
+    pages = list(payload.page_manifest.pages)
+    pages[-1] = pages[-1].model_copy(update={"next_cursor": "expected-terminal"})
+    manifest = payload.page_manifest.model_copy(
+        update={
+            "pages": tuple(pages),
+            "terminal_cursor": "actual-terminal",
+        }
+    )
+    malformed = payload.model_copy(update={"page_manifest": manifest})
+
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(malformed, key="terminal-mismatch")
+
+    attempt = topic_repository.list_attempts(status="failed")[0]
+    assert attempt.missing_items == ("expected_cursor:expected-terminal",)
+    assert attempt.failed_cursor == "actual-terminal"
+
+
+def test_failed_attempt_records_missing_actual_terminal_cursor(topic_repository):
+    from dragon_radar.storage.repository import QualityRejected
+
+    payload = topic_batch()
+    pages = list(payload.page_manifest.pages)
+    pages[-1] = pages[-1].model_copy(update={"next_cursor": "expected-terminal"})
+    manifest = payload.page_manifest.model_copy(update={"pages": tuple(pages)})
+    malformed = payload.model_copy(update={"page_manifest": manifest})
+
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(malformed, key="missing-terminal")
+
+    attempt = topic_repository.list_attempts(status="failed")[0]
+    assert attempt.missing_items == ("expected_cursor:expected-terminal",)
+    assert attempt.failed_cursor is None
+
+
 def test_failed_attempt_records_missing_initial_page(topic_repository):
     from dragon_radar.storage.repository import QualityRejected
 
@@ -521,6 +560,37 @@ def test_topic_cursor_normalizes_invalid_signed_postgresql_snapshot(
     cursor = _encode_cursor(payload, topic_repository._cursor_signing_key)
 
     with pytest.raises(ValueError, match="Invalid topic snapshot cursor"):
+        topic_repository.list_snapshots(page_size=20, cursor=cursor)
+
+
+def test_topic_cursor_rejects_invalid_postgresql_snapshot_without_visible_sources(
+    topic_repository,
+):
+    from dragon_radar.topics.repository import _encode_cursor
+
+    cursor = _encode_cursor(
+        {
+            "version": 1,
+            "sort_version": 1,
+            "issued_at": NOW.isoformat(),
+            "expires_at": (NOW + timedelta(minutes=15)).isoformat(),
+            "watermark": NOW.isoformat(),
+            "transaction_snapshot": "not-a-postgresql-snapshot",
+            "filters": {
+                "trade_date": None,
+                "source_id": None,
+            },
+            "last": [
+                TOPIC_DAYS[-1].isoformat(),
+                "synthetic",
+                1,
+                "00000000-0000-0000-0000-000000000001",
+            ],
+        },
+        topic_repository._cursor_signing_key,
+    )
+
+    with pytest.raises(ValueError, match="^Invalid topic snapshot cursor$"):
         topic_repository.list_snapshots(page_size=20, cursor=cursor)
 
 

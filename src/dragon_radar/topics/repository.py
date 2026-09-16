@@ -104,7 +104,7 @@ def _page_gap(batch: TopicBatch) -> _PageGap | None:
     if expected != batch.page_manifest.terminal_cursor:
         return _PageGap(
             "expected_cursor:" + (expected if expected is not None else "<terminal>"),
-            None,
+            batch.page_manifest.terminal_cursor,
         )
     return None
 
@@ -561,6 +561,14 @@ class TopicRepository(Repository):
                 transaction_snapshot = connection.scalar(
                     text("SELECT txid_current_snapshot()::text")
                 )
+            elif cursor_data is not None:
+                try:
+                    connection.execute(
+                        text("SELECT CAST(:transaction_snapshot AS txid_snapshot)"),
+                        {"transaction_snapshot": transaction_snapshot},
+                    )
+                except DataError:
+                    raise ValueError("Invalid topic snapshot cursor") from None
             source_query = select(topic_snapshots.c.source_id).distinct()
             if source_id is not None:
                 source_query = source_query.where(
