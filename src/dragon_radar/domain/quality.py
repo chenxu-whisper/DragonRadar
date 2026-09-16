@@ -37,8 +37,8 @@ class Coverage(FrozenModel):
     missing: int
 
 
-class QualityReport[BatchT: FrozenModel](FrozenModel):
-    batch: BatchT
+class QualityReport(FrozenModel):
+    batch: MarketBatch
     issues: tuple[QualityIssue, ...]
     coverage: Coverage
 
@@ -175,9 +175,7 @@ def bar_issues(bar: DailyBar, batch: MarketBatch) -> tuple[QualityIssue, ...]:
     return tuple(issues)
 
 
-def validate_batch(
-    batch: MarketBatch, *, now: datetime
-) -> QualityReport[MarketBatch]:
+def validate_batch(batch: MarketBatch, *, now: datetime) -> QualityReport:
     """Validate for import/publication at explicit operation time.
 
     All current expected IDs must be valid or explicitly suspended. Missing
@@ -289,7 +287,7 @@ def validate_batch(
             "insufficient_coverage",
             "Current coverage must account for every expected ID",
         )
-    return QualityReport[MarketBatch](
+    return QualityReport(
         batch=batch,
         issues=tuple(issues),
         coverage=Coverage(

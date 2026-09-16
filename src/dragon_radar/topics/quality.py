@@ -12,9 +12,11 @@ from dragon_radar.domain.quality import (
 from dragon_radar.topics.models import TopicBatch
 
 
-def validate_topic_batch(
-    batch: TopicBatch, *, now: datetime
-) -> QualityReport[TopicBatch]:
+class TopicQualityReport(QualityReport):
+    batch: TopicBatch
+
+
+def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityReport:
     """Validate topic completeness without persisting or repairing input."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("operation time requires a timezone")
@@ -115,7 +117,6 @@ def validate_topic_batch(
             cell_valid = False
             if not cell.reason or not cell.reason.strip():
                 add("unavailable_reason", "Unavailable coverage requires a reason")
-            add("unavailable_coverage", "Unavailable coverage is not complete")
         if cell_valid and cell_counts[key] == 1 and key in expected_keys:
             valid_keys.add(key)
 
@@ -129,6 +130,10 @@ def validate_topic_batch(
         manifest_valid = False
     pages = manifest.pages
     if not pages or pages[0].request_cursor is not None:
+        manifest_valid = False
+    if any(page.request_cursor is None for page in pages[1:]):
+        manifest_valid = False
+    if any(page.next_cursor is None for page in pages[:-1]):
         manifest_valid = False
     if len({page.page_id for page in pages}) != len(pages):
         manifest_valid = False
@@ -161,7 +166,7 @@ def validate_topic_batch(
 
     expected = len(expected_keys)
     valid = len(valid_keys)
-    return QualityReport[TopicBatch](
+    return TopicQualityReport(
         batch=batch,
         issues=tuple(issues),
         coverage=Coverage(

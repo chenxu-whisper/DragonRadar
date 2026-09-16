@@ -137,6 +137,7 @@ def test_clean_topic_batch_has_exact_calendar_coverage():
     data = topic_batch()
     report = validate_topic_batch(data, now=NOW)
     assert isinstance(report, QualityReport)
+    assert isinstance(report.batch, TopicBatch)
     assert report.batch is data
     assert type(report).model_validate_json(report.model_dump_json()) == report
     assert report.publishable
@@ -184,7 +185,7 @@ def test_topic_coverage_cells_are_exact_and_time_bounded(cell_change, code):
     assert code in issue_codes(payload)
 
 
-def test_unavailable_coverage_is_not_counted_as_complete():
+def test_reasoned_unavailable_coverage_is_publishable_but_not_complete():
     payload = topic_batch_dict()
     payload["coverage_cells"][-1].update(
         status="unavailable", reason="provider outage"
@@ -192,10 +193,10 @@ def test_unavailable_coverage_is_not_counted_as_complete():
     from dragon_radar.topics.quality import validate_topic_batch
 
     report = validate_topic_batch(TopicBatch.model_validate(payload), now=NOW)
-    assert not report.publishable
+    assert report.publishable
+    assert report.issues == ()
     assert report.coverage.valid == 3
     assert report.coverage.missing == 1
-    assert "unavailable_coverage" in {issue.code for issue in report.issues}
 
 
 @pytest.mark.parametrize(
@@ -295,6 +296,27 @@ def test_topic_batch_rejects_a_cursor_cycle():
             "received_row_count": 1,
         },
     ]
+    assert "page_manifest" in issue_codes(payload)
+
+
+def test_topic_batch_rejects_restart_after_an_early_terminal_page():
+    payload = topic_batch_dict()
+    payload["page_manifest"]["pages"] = [
+        payload["page_manifest"]["pages"][0],
+        {
+            **payload["page_manifest"]["pages"][1],
+            "next_cursor": None,
+            "received_row_count": 0,
+        },
+        {
+            "page_id": "page-3",
+            "request_cursor": None,
+            "next_cursor": "terminal",
+            "page_hash": "c" * 64,
+            "received_row_count": 1,
+        },
+    ]
+    payload["page_manifest"]["terminal_cursor"] = "terminal"
     assert "page_manifest" in issue_codes(payload)
 
 

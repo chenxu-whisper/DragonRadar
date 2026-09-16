@@ -152,6 +152,19 @@ def test_calendar_is_explicit_sorted_unique(sessions):
         ExchangeCalendar(exchange="TEST", version="c1", sessions=sessions)
 
 
+def test_quality_report_public_schema_and_json_remain_market_specific():
+    from dragon_radar.domain.models import MarketBatch
+    from dragon_radar.domain.quality import QualityReport, validate_batch
+
+    schema = QualityReport.model_json_schema()
+    assert schema["properties"]["batch"] == {"$ref": "#/$defs/MarketBatch"}
+
+    report = validate_batch(batch(), now=NOW)
+    restored = QualityReport.model_validate_json(report.model_dump_json())
+    assert isinstance(restored.batch, MarketBatch)
+    assert restored == report
+
+
 def test_clean_batch_coverage():
     from dragon_radar.domain.quality import QualityReport, validate_batch
 
