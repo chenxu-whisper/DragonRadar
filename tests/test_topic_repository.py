@@ -134,6 +134,24 @@ def test_failed_attempt_records_page_after_missing_continuation(topic_repository
     assert attempt.failed_cursor == "cursor-2"
 
 
+def test_failed_attempt_records_missing_cursor_between_pages(topic_repository):
+    from dragon_radar.storage.repository import QualityRejected
+
+    payload = topic_batch()
+    pages = list(payload.page_manifest.pages)
+    pages[0] = pages[0].model_copy(update={"next_cursor": None})
+    pages[1] = pages[1].model_copy(update={"request_cursor": None})
+    manifest = payload.page_manifest.model_copy(update={"pages": tuple(pages)})
+    malformed = payload.model_copy(update={"page_manifest": manifest})
+
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(malformed, key="missing-between-pages")
+
+    attempt = topic_repository.list_attempts(status="failed")[0]
+    assert attempt.missing_items == ("missing_after_page:page-1",)
+    assert attempt.failed_cursor is None
+
+
 def test_failed_attempt_records_missing_initial_page(topic_repository):
     from dragon_radar.storage.repository import QualityRejected
 

@@ -79,10 +79,11 @@ class _PageGap(NamedTuple):
 
 def _page_gap(batch: TopicBatch) -> _PageGap | None:
     expected = None
-    if not batch.page_manifest.pages:
+    pages = batch.page_manifest.pages
+    if not pages:
         return _PageGap("expected_cursor:<initial>", None)
     previous_page_id = None
-    for page in batch.page_manifest.pages:
+    for index, page in enumerate(pages):
         if page.request_cursor != expected:
             if expected is None and previous_page_id is not None:
                 missing_item = f"missing_after_page:{previous_page_id}"
@@ -91,6 +92,13 @@ def _page_gap(batch: TopicBatch) -> _PageGap | None:
                     expected if expected is not None else "<initial>"
                 )
             return _PageGap(missing_item, page.request_cursor)
+        if index > 0 and page.request_cursor is None:
+            return _PageGap(f"missing_after_page:{previous_page_id}", None)
+        if index < len(pages) - 1 and page.next_cursor is None:
+            return _PageGap(
+                f"missing_after_page:{page.page_id}",
+                pages[index + 1].request_cursor,
+            )
         expected = page.next_cursor
         previous_page_id = page.page_id
     if expected != batch.page_manifest.terminal_cursor:
