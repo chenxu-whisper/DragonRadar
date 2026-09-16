@@ -302,6 +302,47 @@ def test_topic_batch_rejects_source_and_future_cutoff_errors(field, value, code)
     assert code in issue_codes(topic_batch_dict(**{field: value}))
 
 
+def test_topic_batch_trade_date_uses_shanghai_not_utc_calendar_day():
+    cutoff = datetime(2026, 9, 7, 16, tzinfo=UTC)  # Sep 8 00:00 in Shanghai
+    payload = topic_batch_dict(as_of=cutoff, source_time=cutoff)
+    for cell in payload["coverage_cells"]:
+        cell["complete_as_of"] = cutoff
+
+    assert issue_codes(payload, now=cutoff) == set()
+
+
+def test_topic_batch_rejects_trade_date_after_shanghai_cutoff_date():
+    future_sessions = (
+        *TOPIC_DAYS,
+        DAYS[-1] + timedelta(days=1),
+        DAYS[-1] + timedelta(days=2),
+    )
+    completion = datetime(2026, 9, 8, 12, tzinfo=UTC)
+    payload = topic_batch_dict(
+        trade_date=future_sessions[-1],
+        calendar=ExchangeCalendar(
+            exchange="TEST", version="c1", sessions=future_sessions
+        ),
+        coverage_to=future_sessions[-1],
+        coverage_cells=[
+            coverage_cell(trade_date=day, complete_as_of=completion)
+            for day in future_sessions
+        ],
+    )
+    payload["page_manifest"]["request_to"] = future_sessions[-1]
+
+    assert "batch_time" in issue_codes(payload)
+
+
+def test_topic_coverage_rejects_completion_before_shanghai_trade_date():
+    payload = topic_batch_dict()
+    payload["coverage_cells"][-1]["complete_as_of"] = datetime(
+        2026, 9, 7, 15, 59, tzinfo=UTC
+    )
+
+    assert "coverage_time" in issue_codes(payload)
+
+
 @pytest.mark.parametrize("record", ["topics", "memberships"])
 def test_topic_records_cannot_arrive_after_batch_or_validation_cutoff(record):
     payload = topic_batch_dict()
@@ -340,6 +381,73 @@ def test_coverage_counts_members_known_by_complete_as_of_without_duplicates():
         expected_member_count=2, received_member_count=2
     )
     assert "coverage_count" in issue_codes(payload)
+
+
+def test_coverage_member_index_preserves_interval_and_availability_semantics():
+    from dragon_radar.topics.quality import validate_topic_batch
+
+    payload = topic_batch_dict(
+        memberships=[
+            topic_membership(effective_to=TOPIC_DAYS[-1]),
+            topic_membership(effective_from=TOPIC_DAYS[-1]),
+            topic_membership(
+                security_id="B",
+                effective_from=TOPIC_DAYS[-1],
+                available_at=datetime(2026, 9, 8, 18, tzinfo=UTC),
+            ),
+        ]
+    )
+    payload["page_manifest"]["pages"][1]["received_row_count"] = 3
+    payload["page_manifest"]["declared_total"] = 4
+
+    report = validate_topic_batch(TopicBatch.model_validate(payload), now=NOW)
+
+    assert report.publishable
+    assert report.coverage.valid == report.coverage.expected == len(TOPIC_DAYS)
+
+
+def test_coverage_member_index_keeps_security_ids_scoped_to_each_topic():
+    from dragon_radar.topics.quality import validate_topic_batch
+
+    payload = topic_batch_dict(
+        topics=[topic_definition(), topic_definition(topic_id="topic-b")],
+        memberships=[
+            topic_membership(),
+            topic_membership(topic_id="topic-b"),
+        ],
+        coverage_cells=[
+            *topic_batch_dict()["coverage_cells"],
+            *[coverage_cell(topic_id="topic-b", trade_date=day) for day in TOPIC_DAYS],
+        ],
+    )
+    payload["page_manifest"]["pages"][1]["received_row_count"] = 3
+    payload["page_manifest"]["declared_total"] = 4
+
+    report = validate_topic_batch(
+        TopicBatch.model_validate(payload),
+        now=NOW,
+    )
+
+    assert report.publishable
+    assert report.coverage.valid == report.coverage.expected == 2 * len(TOPIC_DAYS)
+
+
+def test_topic_quality_indexes_memberships_before_evaluating_cells():
+    from dragon_radar.topics.quality import validate_topic_batch
+
+    class IterationCountingMemberships(tuple):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return super().__iter__()
+
+    memberships = IterationCountingMemberships(topic_batch().memberships)
+    data = topic_batch().model_copy(update={"memberships": memberships})
+
+    validate_topic_batch(data, now=NOW)
+
+    assert memberships.iterations <= 2
 
 
 @pytest.mark.parametrize(

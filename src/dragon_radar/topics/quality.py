@@ -1,7 +1,8 @@
 """Pure quality gate for immutable topic batches."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from dragon_radar.domain.quality import (
     Coverage,
@@ -9,7 +10,7 @@ from dragon_radar.domain.quality import (
     QualityReport,
     grant_allows_local,
 )
-from dragon_radar.topics.models import TopicBatch
+from dragon_radar.topics.models import TopicBatch, TopicMembership
 
 ROLE_V1_MAX_WINDOW_SESSION_COUNT = 61
 
@@ -23,14 +24,15 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("operation time requires a timezone")
     issues: list[QualityIssue] = []
+    shanghai = ZoneInfo("Asia/Shanghai")
 
     def add(code: str, message: str) -> None:
         issues.append(QualityIssue(code=code, message=message))
 
     if not grant_allows_local(batch.grant, source_id=batch.source_id, now=now):
         add("grant_denied", "Current grant does not authorize local storage/display")
-    if batch.as_of > now:
-        add("batch_time", "Batch cutoff is in the future")
+    if batch.as_of > now or batch.trade_date > batch.as_of.astimezone(shanghai).date():
+        add("batch_time", "Batch cutoff/date is in the future")
     if batch.source_time is not None and (
         batch.source_time > batch.as_of or batch.source_time > now
     ):
@@ -87,7 +89,9 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
     for topic in batch.topics:
         if topic.available_at > batch.as_of or topic.available_at > now:
             add("future_availability", "Topic definition was not known at cutoff")
+    memberships_by_topic: dict[str, list[TopicMembership]] = defaultdict(list)
     for membership in batch.memberships:
+        memberships_by_topic[membership.topic_id].append(membership)
         if membership.topic_id not in topic_ids:
             add("unknown_topic", "Membership references an undeclared topic")
         if membership.available_at > batch.as_of or membership.available_at > now:
@@ -112,9 +116,8 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
         actual = len(
             {
                 membership.security_id
-                for membership in batch.memberships
-                if membership.topic_id == cell.topic_id
-                and membership.effective_from <= cell.trade_date
+                for membership in memberships_by_topic[cell.topic_id]
+                if membership.effective_from <= cell.trade_date
                 and (
                     membership.effective_to is None
                     or cell.trade_date < membership.effective_to
@@ -123,8 +126,14 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
             }
         )
         cell_valid = True
-        if cell.complete_as_of > batch.as_of:
-            add("coverage_time", "Coverage completion exceeds batch cutoff")
+        if (
+            cell.complete_as_of > batch.as_of
+            or cell.trade_date > cell.complete_as_of.astimezone(shanghai).date()
+        ):
+            add(
+                "coverage_time",
+                "Coverage completion exceeds batch cutoff or precedes trade date",
+            )
             cell_valid = False
         if cell.received_member_count != actual:
             add("coverage_count", "Received member count differs from known members")
