@@ -11,8 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
-from sqlalchemy import insert, select, text
-from sqlalchemy.exc import DataError
+from sqlalchemy import and_, func, insert, or_, select
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.domain.quality import grant_allows_local
@@ -110,13 +109,14 @@ def _page_gap(batch: TopicBatch) -> _PageGap | None:
 
 
 TOPIC_SNAPSHOT_CURSOR_TTL = timedelta(minutes=15)
+_TOPIC_PUBLICATION_LOCK = "topic-snapshot-publication"
+_TOPIC_SNAPSHOT_BATCH_MIN_SIZE = 100
 _CURSOR_FIELDS = {
     "version",
     "sort_version",
     "issued_at",
     "expires_at",
     "watermark",
-    "transaction_snapshot",
     "filters",
     "last",
 }
@@ -347,9 +347,7 @@ class TopicRepository(Repository):
         return result
 
     @staticmethod
-    def _snapshot(
-        row: Mapping[str, Any], archive: Mapping[str, Any]
-    ) -> TopicSnapshot:
+    def _snapshot(row: Mapping[str, Any], archive: Mapping[str, Any]) -> TopicSnapshot:
         return TopicSnapshot(
             id=row["id"],
             batch_id=row["batch_id"],
@@ -375,8 +373,9 @@ class TopicRepository(Repository):
             )
             if archive is None:
                 raise NotFound("Topic batch not found")
-            current = self._source(connection, archive["source_id"])
             batch = TopicBatch.model_validate_json(archive["canonical_json"])
+            self._lock(connection, _TOPIC_PUBLICATION_LOCK)
+            current = self._source(connection, archive["source_id"])
             now = self._authorize(current, batch)
             self._lock(
                 connection,
@@ -465,15 +464,6 @@ class TopicRepository(Repository):
             self._authorize(current, result.batch)
             return result
 
-    @staticmethod
-    def _sort_key(row: Mapping[str, Any]) -> tuple[int, str, int, str]:
-        return (
-            -row["trade_date"].toordinal(),
-            row["source_id"],
-            -row["revision"],
-            str(row["id"]),
-        )
-
     def list_snapshots(
         self,
         *,
@@ -489,6 +479,7 @@ class TopicRepository(Repository):
         operation_now = self.clock()
         operation_utc = operation_now.astimezone(UTC)
         cursor_data = None
+        scan_key = None
         if cursor is not None:
             cursor_data = _decode_cursor(cursor, self._cursor_signing_key)
             expected_filters = {
@@ -519,18 +510,8 @@ class TopicRepository(Repository):
                     or filters != expected_filters
                 ):
                     raise ValueError
-                watermark_text = cursor_data["watermark"]
-                if not isinstance(watermark_text, str):
-                    raise ValueError
-                watermark = datetime.fromisoformat(watermark_text)
-                if watermark.tzinfo is None or watermark.utcoffset() is None:
-                    raise ValueError
-                transaction_snapshot = cursor_data["transaction_snapshot"]
-                if (
-                    not isinstance(transaction_snapshot, str)
-                    or not transaction_snapshot
-                    or len(transaction_snapshot) > 4096
-                ):
+                watermark = cursor_data["watermark"]
+                if type(watermark) is not int or watermark < 0:
                     raise ValueError
                 last = cursor_data["last"]
                 if (
@@ -548,31 +529,37 @@ class TopicRepository(Repository):
                 if last[0] != last_date.isoformat() or last[3] != str(last_id):
                     raise ValueError
                 _identifier(last[1])
+                scan_key = (last_date, last[1], last[2], last_id)
             except (KeyError, TypeError, ValueError):
                 raise ValueError("Invalid topic snapshot cursor") from None
         else:
             issued_at = operation_utc
             expires_at = issued_at + TOPIC_SNAPSHOT_CURSOR_TTL
-            watermark = operation_now
-            transaction_snapshot = None
+            watermark = None
 
         with self.database.engine.begin() as connection:
-            if transaction_snapshot is None:
-                transaction_snapshot = connection.scalar(
-                    text("SELECT txid_current_snapshot()::text")
+            if watermark is None:
+                self._lock(connection, _TOPIC_PUBLICATION_LOCK)
+                watermark = connection.scalar(
+                    select(func.max(topic_snapshots.c.publication_sequence))
                 )
-            elif cursor_data is not None:
-                try:
-                    connection.execute(
-                        text("SELECT CAST(:transaction_snapshot AS txid_snapshot)"),
-                        {"transaction_snapshot": transaction_snapshot},
+                if watermark is None:
+                    return TopicSnapshotPage(
+                        items=(), page_size=page_size, next_cursor=None
                     )
-                except DataError:
-                    raise ValueError("Invalid topic snapshot cursor") from None
-            source_query = select(topic_snapshots.c.source_id).distinct()
+
+            source_query = (
+                select(topic_snapshots.c.source_id)
+                .where(topic_snapshots.c.publication_sequence <= watermark)
+                .distinct()
+            )
             if source_id is not None:
                 source_query = source_query.where(
                     topic_snapshots.c.source_id == source_id
+                )
+            if trade_date is not None:
+                source_query = source_query.where(
+                    topic_snapshots.c.trade_date == trade_date
                 )
             source_ids = sorted(connection.execute(source_query).scalars().all())
             grants: dict[str, SourceGrant] = {}
@@ -581,76 +568,94 @@ class TopicRepository(Repository):
                     current = self._source(connection, candidate)
                 except Forbidden:
                     continue
-                if grant_allows_local(
-                    current, source_id=candidate, now=operation_now
-                ):
+                if grant_allows_local(current, source_id=candidate, now=operation_now):
                     grants[candidate] = current
             if not grants:
                 return TopicSnapshotPage(
                     items=(), page_size=page_size, next_cursor=None
                 )
 
-            query = select(topic_snapshots).where(
-                topic_snapshots.c.source_id.in_(grants),
-                topic_snapshots.c.published_at <= watermark,
-                text(
-                    "txid_visible_in_snapshot("
-                    "topic_snapshots.xmin::text::bigint, "
-                    "CAST(:transaction_snapshot AS txid_snapshot))"
-                ),
+            query = (
+                select(
+                    topic_snapshots,
+                    topic_import_batches.c.quality_report.label(
+                        "archive_quality_report"
+                    ),
+                    topic_import_batches.c.canonical_json.label(
+                        "archive_canonical_json"
+                    ),
+                )
+                .join(
+                    topic_import_batches,
+                    topic_import_batches.c.id == topic_snapshots.c.batch_id,
+                )
+                .where(
+                    topic_snapshots.c.source_id.in_(grants),
+                    topic_snapshots.c.publication_sequence <= watermark,
+                )
             )
             if trade_date is not None:
                 query = query.where(topic_snapshots.c.trade_date == trade_date)
-            try:
-                rows = (
-                    connection.execute(
-                        query.order_by(
-                            topic_snapshots.c.trade_date.desc(),
-                            topic_snapshots.c.source_id,
-                            topic_snapshots.c.revision.desc(),
-                            topic_snapshots.c.id,
-                        ),
-                        {"transaction_snapshot": transaction_snapshot},
-                    )
-                    .mappings()
-                    .all()
-                )
-            except DataError:
-                if cursor_data is not None:
-                    raise ValueError("Invalid topic snapshot cursor") from None
-                raise
-            last_key = None
-            if cursor_data is not None:
-                last_key = (
-                    -last_date.toordinal(),
-                    last[1],
-                    -last[2],
-                    str(last_id),
-                )
-
+            query = query.order_by(
+                topic_snapshots.c.trade_date.desc(),
+                topic_snapshots.c.source_id,
+                topic_snapshots.c.revision.desc(),
+                topic_snapshots.c.id,
+            )
+            batch_size = max(page_size * 2, _TOPIC_SNAPSHOT_BATCH_MIN_SIZE)
             visible: list[tuple[TopicSnapshot, Mapping[str, Any]]] = []
-            for row in rows:
-                if last_key is not None and self._sort_key(row) <= last_key:
-                    continue
-                archive = (
-                    connection.execute(
-                        select(topic_import_batches).where(
-                            topic_import_batches.c.id == row["batch_id"]
+            while len(visible) <= page_size:
+                batch_query = query
+                if scan_key is not None:
+                    last_date, last_source, last_revision, last_id = scan_key
+                    batch_query = batch_query.where(
+                        or_(
+                            topic_snapshots.c.trade_date < last_date,
+                            and_(
+                                topic_snapshots.c.trade_date == last_date,
+                                topic_snapshots.c.source_id > last_source,
+                            ),
+                            and_(
+                                topic_snapshots.c.trade_date == last_date,
+                                topic_snapshots.c.source_id == last_source,
+                                topic_snapshots.c.revision < last_revision,
+                            ),
+                            and_(
+                                topic_snapshots.c.trade_date == last_date,
+                                topic_snapshots.c.source_id == last_source,
+                                topic_snapshots.c.revision == last_revision,
+                                topic_snapshots.c.id > last_id,
+                            ),
                         )
                     )
-                    .mappings()
-                    .one()
+                rows = (
+                    connection.execute(batch_query.limit(batch_size)).mappings().all()
                 )
-                result = self._snapshot(row, archive)
-                if not self._authorized(
-                    grants[row["source_id"]],
-                    result.batch.grant,
-                    row["source_id"],
-                    operation_now,
-                ):
-                    continue
-                visible.append((result, row))
-                if len(visible) > page_size:
+                if not rows:
+                    break
+                for row in rows:
+                    scan_key = (
+                        row["trade_date"],
+                        row["source_id"],
+                        row["revision"],
+                        row["id"],
+                    )
+                    archive = {
+                        "quality_report": row["archive_quality_report"],
+                        "canonical_json": row["archive_canonical_json"],
+                    }
+                    result = self._snapshot(row, archive)
+                    if not self._authorized(
+                        grants[row["source_id"]],
+                        result.batch.grant,
+                        row["source_id"],
+                        operation_now,
+                    ):
+                        continue
+                    visible.append((result, row))
+                    if len(visible) > page_size:
+                        break
+                if len(visible) > page_size or len(rows) < batch_size:
                     break
 
         items = tuple(item for item, _ in visible[:page_size])
@@ -663,8 +668,7 @@ class TopicRepository(Repository):
                     "sort_version": 1,
                     "issued_at": issued_at.isoformat(),
                     "expires_at": expires_at.isoformat(),
-                    "watermark": watermark.isoformat(),
-                    "transaction_snapshot": transaction_snapshot,
+                    "watermark": watermark,
                     "filters": {
                         "trade_date": trade_date.isoformat() if trade_date else None,
                         "source_id": source_id,
@@ -734,8 +738,6 @@ class TopicRepository(Repository):
                 raise NotFound("Topic import attempt not found")
             current = self._source(connection, row["source_id"])
             embedded = SourceGrant.model_validate(row["embedded_grant"])
-            if not self._authorized(
-                current, embedded, row["source_id"], self.clock()
-            ):
+            if not self._authorized(current, embedded, row["source_id"], self.clock()):
                 raise Forbidden("Source is not locally authorized")
             return _attempt(row)

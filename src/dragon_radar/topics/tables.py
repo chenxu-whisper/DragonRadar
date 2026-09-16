@@ -1,11 +1,13 @@
 """SQLAlchemy mappings for topic import attempts, archives, and snapshots."""
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     Date,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -56,6 +58,13 @@ topic_snapshots = Table(
     ),
     Column("trade_date", Date, nullable=False),
     Column("revision", Integer, nullable=False),
+    Column(
+        "publication_sequence",
+        BigInteger,
+        Identity(always=True),
+        nullable=False,
+        unique=True,
+    ),
     Column(
         "supersedes",
         PGUUID(as_uuid=True),

@@ -46,6 +46,13 @@ def upgrade():
         sa.Column("trade_date", sa.Date, nullable=False),
         sa.Column("revision", sa.Integer, nullable=False),
         sa.Column(
+            "publication_sequence",
+            sa.BigInteger,
+            sa.Identity(always=True),
+            nullable=False,
+            unique=True,
+        ),
+        sa.Column(
             "supersedes",
             UUID(as_uuid=True),
             sa.ForeignKey("topic_snapshots.id", ondelete="RESTRICT"),

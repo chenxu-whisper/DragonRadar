@@ -8,7 +8,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from factories import NOW, grant
-from sqlalchemy import event, text
+from sqlalchemy import BigInteger, UniqueConstraint, event, text
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import DBAPIError
 from topic_factories import TOPIC_DAYS, coverage_cell, topic_batch
 
@@ -224,13 +225,16 @@ def test_successful_import_attempt_is_append_only(topic_repository):
     assert attempts[0].stage == "import"
     assert topic_repository.get_attempt(attempts[0].id) == attempts[0]
     with topic_repository.database.engine.connect() as connection:
-        assert connection.scalar(
-            text(
-                "SELECT count(*) FROM topic_import_attempts "
-                "WHERE batch_id = :batch_id"
-            ),
-            {"batch_id": stored.id},
-        ) == 1
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM topic_import_attempts "
+                    "WHERE batch_id = :batch_id"
+                ),
+                {"batch_id": stored.id},
+            )
+            == 1
+        )
 
 
 def test_topic_publish_is_immutable_and_revisioned(topic_repository):
@@ -285,6 +289,55 @@ def test_topic_snapshot_listing_has_exact_filters_and_stable_cursor(
         topic_repository.list_snapshots(cursor="not-a-cursor")
 
 
+def test_topic_later_page_uses_bounded_joined_sql_keyset_query(topic_repository):
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"sql-page-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"sql-page-{revision}").id
+        )
+    first = topic_repository.list_snapshots(page_size=20)
+    assert first.next_cursor is not None
+    statements = []
+
+    def record_query(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.lower().split()))
+
+    event.listen(
+        topic_repository.database.engine, "before_cursor_execute", record_query
+    )
+    try:
+        second = topic_repository.list_snapshots(
+            page_size=20,
+            cursor=first.next_cursor,
+        )
+    finally:
+        event.remove(
+            topic_repository.database.engine,
+            "before_cursor_execute",
+            record_query,
+        )
+
+    listing_queries = [
+        statement
+        for statement in statements
+        if "from topic_snapshots join topic_import_batches" in statement
+    ]
+    assert second.items
+    assert len(listing_queries) == 1
+    assert "publication_sequence <=" in listing_queries[0]
+    assert "trade_date <" in listing_queries[0]
+    assert "source_id >" in listing_queries[0]
+    assert "revision <" in listing_queries[0]
+    assert "id >" in listing_queries[0]
+    assert " limit " in listing_queries[0]
+    assert not any(
+        "from topic_import_batches where topic_import_batches.id" in statement
+        for statement in statements
+    )
+
+
 @pytest.mark.parametrize("page_size", [1, 19, 21, 99, 101, True])
 def test_topic_snapshot_listing_rejects_non_contract_page_sizes(
     topic_repository, page_size
@@ -294,16 +347,14 @@ def test_topic_snapshot_listing_rejects_non_contract_page_sizes(
 
 
 @pytest.mark.parametrize("change", ["revoke", "embedded_expire"])
-def test_topic_publish_rechecks_current_and_embedded_grants(
-    topic_repository, change
-):
+def test_topic_publish_rechecks_current_and_embedded_grants(topic_repository, change):
     from dragon_radar.storage.repository import Forbidden, Repository
 
     stored = topic_repository.import_batch(topic_batch(), key="authorization")
     if change == "revoke":
-        Repository(
-            topic_repository.database, clock=lambda: NOW
-        ).revoke_source("synthetic")
+        Repository(topic_repository.database, clock=lambda: NOW).revoke_source(
+            "synthetic"
+        )
     else:
         topic_repository.clock = lambda: datetime(2028, 1, 1, tzinfo=UTC)
 
@@ -332,9 +383,7 @@ def test_topic_publish_holds_source_lock_against_revocation(topic_repository):
             )
         checked.append(True)
 
-    event.listen(
-        topic_repository.database.engine, "after_cursor_execute", check_lock
-    )
+    event.listen(topic_repository.database.engine, "after_cursor_execute", check_lock)
     try:
         topic_repository.publish(stored.id)
     finally:
@@ -344,7 +393,50 @@ def test_topic_publish_holds_source_lock_against_revocation(topic_repository):
     assert checked
 
 
-def test_topic_table_metadata_matches_migration_constraints_and_indexes():
+@pytest.mark.parametrize("operation", ["publish", "first-list"])
+def test_topic_publish_and_first_list_hold_global_publication_lock(
+    topic_repository, operation
+):
+    stored = topic_repository.import_batch(topic_batch(), key=f"global-{operation}")
+    lock_attempts = []
+    statement_order = []
+
+    def check_lock(conn, cursor, statement, parameters, context, executemany):
+        if "topic_snapshots" in statement:
+            statement_order.append("snapshot")
+        if (
+            "SELECT pg_advisory_xact_lock" not in statement
+            or parameters.get("key") != "topic-snapshot-publication"
+        ):
+            return
+        statement_order.append("global-lock")
+        with topic_repository.database.engine.begin() as other:
+            lock_attempts.append(
+                other.scalar(
+                    text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": "topic-snapshot-publication"},
+                )
+            )
+
+    event.listen(topic_repository.database.engine, "after_cursor_execute", check_lock)
+    try:
+        if operation == "publish":
+            topic_repository.publish(stored.id)
+        else:
+            topic_repository.publish(stored.id)
+            statement_order.clear()
+            lock_attempts.clear()
+            topic_repository.list_snapshots()
+    finally:
+        event.remove(
+            topic_repository.database.engine, "after_cursor_execute", check_lock
+        )
+
+    assert lock_attempts == [False]
+    assert statement_order.index("global-lock") < statement_order.index("snapshot")
+
+
+def test_topic_table_metadata_matches_migration_constraints_and_indexes(database):
     from sqlalchemy import CheckConstraint
 
     from dragon_radar.topics.tables import (
@@ -362,6 +454,16 @@ def test_topic_table_metadata_matches_migration_constraints_and_indexes():
         for item in topic_import_attempts.constraints
         if isinstance(item, CheckConstraint)
     }
+    sequence = topic_snapshots.c.publication_sequence
+    assert isinstance(sequence.type, BigInteger)
+    assert sequence.nullable is False
+    assert sequence.identity is not None
+    assert sequence.identity.always is True
+    assert any(
+        isinstance(item, UniqueConstraint)
+        and tuple(item.columns.keys()) == ("publication_sequence",)
+        for item in topic_snapshots.constraints
+    )
     assert snapshot_checks == {"revision > 0"}
     assert attempt_checks == {"status IN ('failed', 'succeeded')"}
     assert {
@@ -375,6 +477,19 @@ def test_topic_table_metadata_matches_migration_constraints_and_indexes():
             "id ASC",
         )
     }
+    inspector = sa_inspect(database.engine)
+    migrated_sequence = next(
+        column
+        for column in inspector.get_columns("topic_snapshots")
+        if column["name"] == "publication_sequence"
+    )
+    assert isinstance(migrated_sequence["type"], BigInteger)
+    assert migrated_sequence["nullable"] is False
+    assert migrated_sequence["identity"]["always"] is True
+    assert any(
+        constraint["column_names"] == ["publication_sequence"]
+        for constraint in inspector.get_unique_constraints("topic_snapshots")
+    )
     assert {
         item.name: tuple(str(expression) for expression in item.expressions)
         for item in topic_import_attempts.indexes
@@ -436,6 +551,7 @@ def test_topic_cursor_excludes_later_snapshot_with_same_published_at(
     topic_repository,
 ):
     from dragon_radar.storage.repository import Repository
+    from dragon_radar.topics.repository import _decode_cursor
 
     snapshots = []
     for revision in range(1, 22):
@@ -444,15 +560,17 @@ def test_topic_cursor_excludes_later_snapshot_with_same_published_at(
         )
         snapshots.append(
             topic_repository.publish(
-                topic_repository.import_batch(
-                    payload, key=f"watermark-{revision}"
-                ).id
+                topic_repository.import_batch(payload, key=f"watermark-{revision}").id
             )
         )
 
     page = topic_repository.list_snapshots(page_size=20)
     assert page.items == tuple(reversed(snapshots[1:]))
     assert page.next_cursor is not None
+    cursor_payload = _decode_cursor(
+        page.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
 
     Repository(topic_repository.database, clock=lambda: NOW).register_source(
         grant(source_id="z-source")
@@ -466,38 +584,115 @@ def test_topic_cursor_excludes_later_snapshot_with_same_published_at(
     later = topic_repository.publish(
         topic_repository.import_batch(later_payload, key="watermark-later").id
     )
-    next_page = topic_repository.list_snapshots(
-        page_size=20, cursor=page.next_cursor
-    )
+    next_page = topic_repository.list_snapshots(page_size=20, cursor=page.next_cursor)
+    with topic_repository.database.engine.connect() as connection:
+        later_sequence = connection.scalar(
+            text(
+                "SELECT publication_sequence FROM topic_snapshots "
+                "WHERE id = :snapshot_id"
+            ),
+            {"snapshot_id": later.id},
+        )
     assert later.published_at == page.items[0].published_at
+    assert later_sequence > cursor_payload["watermark"]
     assert next_page.items == (snapshots[0],)
 
 
-def test_topic_cursor_rejects_tampered_transaction_snapshot_before_query(
+def test_topic_listing_scans_bounded_batches_across_embedded_denials(
     topic_repository,
 ):
-    snapshots = []
+    visible_grant = grant(expires_at=datetime(2030, 1, 1, tzinfo=UTC))
+    hidden_grant = grant(expires_at=datetime(2027, 1, 1, tzinfo=UTC))
+    visible = []
+    for revision in range(1, 26):
+        payload = topic_batch(
+            grant=visible_grant,
+            membership_version=f"visible-v{revision}",
+        )
+        visible.append(
+            topic_repository.publish(
+                topic_repository.import_batch(payload, key=f"visible-{revision}").id
+            )
+        )
+    for revision in range(1, 106):
+        payload = topic_batch(
+            grant=hidden_grant,
+            membership_version=f"hidden-v{revision}",
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"hidden-{revision}").id
+        )
+
+    from dragon_radar.storage.repository import Repository
+
+    Repository(topic_repository.database, clock=lambda: NOW).register_source(
+        visible_grant
+    )
+    topic_repository.clock = lambda: datetime(2028, 1, 1, tzinfo=UTC)
+    listing_queries = []
+
+    def record_listing(conn, cursor, statement, parameters, context, executemany):
+        normalized = " ".join(statement.lower().split())
+        if "from topic_snapshots join topic_import_batches" in normalized:
+            listing_queries.append(normalized)
+
+    event.listen(
+        topic_repository.database.engine,
+        "before_cursor_execute",
+        record_listing,
+    )
+    try:
+        first = topic_repository.list_snapshots(page_size=20)
+        first_query_count = len(listing_queries)
+        second = topic_repository.list_snapshots(
+            page_size=20,
+            cursor=first.next_cursor,
+        )
+    finally:
+        event.remove(
+            topic_repository.database.engine,
+            "before_cursor_execute",
+            record_listing,
+        )
+
+    assert first.items == tuple(reversed(visible[5:]))
+    assert first.next_cursor is not None
+    assert second.items == tuple(reversed(visible[:5]))
+    assert second.next_cursor is None
+    assert len({item.id for item in first.items + second.items}) == 25
+    assert first_query_count == 2
+    assert len(listing_queries) == 3
+    assert all(" limit " in statement for statement in listing_queries)
+
+
+def test_topic_cursor_uses_small_integer_watermark_and_rejects_tampering(
+    topic_repository,
+):
     for revision in range(1, 22):
         payload = topic_batch().model_copy(
             update={"membership_version": f"tamper-v{revision}"}
         )
-        snapshots.append(
-            topic_repository.publish(
-                topic_repository.import_batch(
-                    payload, key=f"tamper-{revision}"
-                ).id
-            )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"tamper-{revision}").id
         )
     page = topic_repository.list_snapshots(page_size=20)
     assert page.next_cursor is not None
+    assert len(page.next_cursor) < 1024
+
+    from dragon_radar.topics.repository import _decode_cursor
+
+    decoded = _decode_cursor(
+        page.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
+    assert "transaction_snapshot" not in decoded
+    assert type(decoded["watermark"]) is int
+    assert decoded["watermark"] >= 0
 
     encoded_payload, separator, signature = page.next_cursor.partition(".")
     padded = encoded_payload + "=" * (-len(encoded_payload) % 4)
     payload = json.loads(base64.urlsafe_b64decode(padded))
-    with topic_repository.database.engine.connect() as connection:
-        payload["transaction_snapshot"] = connection.scalar(
-            text("SELECT txid_current_snapshot()::text")
-        )
+    payload["watermark"] += 1
     tampered_payload = (
         base64.urlsafe_b64encode(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -508,18 +703,15 @@ def test_topic_cursor_rejects_tampered_transaction_snapshot_before_query(
     tampered_cursor = (
         f"{tampered_payload}.{signature}" if separator else tampered_payload
     )
-    snapshot_queries = []
+    queries = []
 
-    def record_snapshot_query(
-        conn, cursor, statement, parameters, context, executemany
-    ):
-        if "txid_visible_in_snapshot" in statement:
-            snapshot_queries.append(statement)
+    def record_query(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
 
     event.listen(
         topic_repository.database.engine,
         "before_cursor_execute",
-        record_snapshot_query,
+        record_query,
     )
     try:
         with pytest.raises(ValueError, match="Invalid topic snapshot cursor"):
@@ -531,23 +723,24 @@ def test_topic_cursor_rejects_tampered_transaction_snapshot_before_query(
         event.remove(
             topic_repository.database.engine,
             "before_cursor_execute",
-            record_snapshot_query,
+            record_query,
         )
-    assert snapshot_queries == []
+    assert queries == []
 
 
-def test_topic_cursor_normalizes_invalid_signed_postgresql_snapshot(
-    topic_repository,
+@pytest.mark.parametrize("watermark", [-1, True, "1"])
+def test_topic_cursor_rejects_invalid_signed_sequence_watermark(
+    topic_repository, watermark
 ):
     from dragon_radar.topics.repository import _decode_cursor, _encode_cursor
 
     for revision in range(1, 22):
         payload = topic_batch().model_copy(
-            update={"membership_version": f"invalid-snapshot-v{revision}"}
+            update={"membership_version": f"invalid-watermark-v{revision}"}
         )
         topic_repository.publish(
             topic_repository.import_batch(
-                payload, key=f"invalid-snapshot-{revision}"
+                payload, key=f"invalid-watermark-{revision}"
             ).id
         )
     page = topic_repository.list_snapshots(page_size=20)
@@ -556,42 +749,17 @@ def test_topic_cursor_normalizes_invalid_signed_postgresql_snapshot(
         page.next_cursor,
         topic_repository._cursor_signing_key,
     )
-    payload["transaction_snapshot"] = "not-a-postgresql-snapshot"
+    payload["watermark"] = watermark
     cursor = _encode_cursor(payload, topic_repository._cursor_signing_key)
 
     with pytest.raises(ValueError, match="Invalid topic snapshot cursor"):
         topic_repository.list_snapshots(page_size=20, cursor=cursor)
 
 
-def test_topic_cursor_rejects_invalid_postgresql_snapshot_without_visible_sources(
-    topic_repository,
-):
-    from dragon_radar.topics.repository import _encode_cursor
-
-    cursor = _encode_cursor(
-        {
-            "version": 1,
-            "sort_version": 1,
-            "issued_at": NOW.isoformat(),
-            "expires_at": (NOW + timedelta(minutes=15)).isoformat(),
-            "watermark": NOW.isoformat(),
-            "transaction_snapshot": "not-a-postgresql-snapshot",
-            "filters": {
-                "trade_date": None,
-                "source_id": None,
-            },
-            "last": [
-                TOPIC_DAYS[-1].isoformat(),
-                "synthetic",
-                1,
-                "00000000-0000-0000-0000-000000000001",
-            ],
-        },
-        topic_repository._cursor_signing_key,
-    )
-
-    with pytest.raises(ValueError, match="^Invalid topic snapshot cursor$"):
-        topic_repository.list_snapshots(page_size=20, cursor=cursor)
+def test_empty_topic_listing_has_no_cursor(topic_repository):
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.items == ()
+    assert page.next_cursor is None
 
 
 def test_topic_cursor_remains_valid_after_repository_restart(topic_repository):
