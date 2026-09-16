@@ -263,6 +263,42 @@ def test_topic_batch_requires_each_topic_session_cell_exactly_once():
     assert "duplicate_coverage" in issue_codes(payload)
 
 
+def test_missing_coverage_issues_are_sorted_by_topic_and_trade_date():
+    from dragon_radar.topics.quality import validate_topic_batch
+
+    topic_ids = ("topic-z", "topic-a", "topic-m")
+    missing_keys = {
+        ("topic-z", TOPIC_DAYS[1]),
+        ("topic-a", TOPIC_DAYS[-1]),
+        ("topic-m", TOPIC_DAYS[2]),
+        ("topic-a", TOPIC_DAYS[0]),
+        ("topic-z", TOPIC_DAYS[-2]),
+        ("topic-m", TOPIC_DAYS[-3]),
+    }
+    payload = topic_batch_dict(
+        topics=[topic_definition(topic_id) for topic_id in topic_ids],
+        memberships=[
+            topic_membership(topic_id, security_id=topic_id) for topic_id in topic_ids
+        ],
+        coverage_cells=[
+            coverage_cell(topic_id=topic_id, trade_date=day)
+            for topic_id in topic_ids
+            for day in TOPIC_DAYS
+            if (topic_id, day) not in missing_keys
+        ],
+    )
+
+    report = validate_topic_batch(TopicBatch.model_validate(payload), now=NOW)
+
+    messages = [
+        issue.message for issue in report.issues if issue.code == "missing_coverage"
+    ]
+    assert messages == [
+        f"Missing coverage cell: {topic_id} {day}"
+        for topic_id, day in sorted(missing_keys)
+    ]
+
+
 @pytest.mark.parametrize(
     "cell_change,code",
     [
@@ -591,3 +627,20 @@ def test_evidence_refs_reject_whitespace_only():
     payload = topic_batch_dict(memberships=[topic_membership(evidence_refs=("   ",))])
     with pytest.raises(ValidationError):
         TopicBatch.model_validate(payload)
+
+
+def test_evidence_refs_reject_empty_tuple():
+    payload = topic_batch_dict(memberships=[topic_membership(evidence_refs=())])
+    with pytest.raises(ValidationError):
+        TopicBatch.model_validate(payload)
+
+
+def test_evidence_refs_accept_single_safe_reference_as_tuple():
+    payload = topic_batch_dict(
+        memberships=[topic_membership(evidence_refs=("synthetic:membership-a",))]
+    )
+
+    membership = TopicBatch.model_validate(payload).memberships[0]
+
+    assert membership.evidence_refs == ("synthetic:membership-a",)
+    assert isinstance(membership.evidence_refs, tuple)

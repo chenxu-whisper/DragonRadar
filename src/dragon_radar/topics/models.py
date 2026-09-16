@@ -108,7 +108,7 @@ class TopicMembership(FrozenModel):
     effective_from: date
     effective_to: date | None = None
     available_at: UTCDateTime
-    evidence_refs: tuple[SafeReference, ...]
+    evidence_refs: Annotated[tuple[SafeReference, ...], Field(min_length=1)]
 
     @field_validator("evidence_refs")
     @classmethod

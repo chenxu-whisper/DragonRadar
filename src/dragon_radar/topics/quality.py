@@ -102,7 +102,7 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
         (cell.topic_id, cell.trade_date) for cell in batch.coverage_cells
     )
     supplied_keys = set(cell_counts)
-    for key in expected_keys - supplied_keys:
+    for key in sorted(expected_keys - supplied_keys):
         add("missing_coverage", f"Missing coverage cell: {key[0]} {key[1]}")
     for key, count in cell_counts.items():
         if count > 1:
