@@ -86,6 +86,11 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
         if count > 1:
             add("duplicate_topic", f"Duplicate topic definition: {topic_id}")
     topic_ids = set(topic_counts)
+    topic_definitions = {
+        topic.topic_id: topic
+        for topic in batch.topics
+        if topic_counts[topic.topic_id] == 1
+    }
     for topic in batch.topics:
         if topic.available_at > batch.as_of or topic.available_at > now:
             add("future_availability", "Topic definition was not known at cutoff")
@@ -94,6 +99,20 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
         memberships_by_topic[membership.topic_id].append(membership)
         if membership.topic_id not in topic_ids:
             add("unknown_topic", "Membership references an undeclared topic")
+        elif (topic := topic_definitions.get(membership.topic_id)) is not None and (
+            membership.effective_from < topic.effective_from
+            or (
+                topic.effective_to is not None
+                and (
+                    membership.effective_to is None
+                    or membership.effective_to > topic.effective_to
+                )
+            )
+        ):
+            add(
+                "membership_interval",
+                "Membership interval must be contained by its topic definition",
+            )
         if membership.available_at > batch.as_of or membership.available_at > now:
             add("future_availability", "Topic membership was not known at cutoff")
 
@@ -113,11 +132,18 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
     valid_keys: set[tuple[str, date]] = set()
     for cell in batch.coverage_cells:
         key = (cell.topic_id, cell.trade_date)
+        topic = topic_definitions.get(cell.topic_id)
         actual = len(
             {
                 membership.security_id
                 for membership in memberships_by_topic[cell.topic_id]
-                if membership.effective_from <= cell.trade_date
+                if topic is not None
+                and topic.effective_from <= cell.trade_date
+                and (
+                    topic.effective_to is None or cell.trade_date < topic.effective_to
+                )
+                and topic.available_at <= cell.complete_as_of
+                and membership.effective_from <= cell.trade_date
                 and (
                     membership.effective_to is None
                     or cell.trade_date < membership.effective_to

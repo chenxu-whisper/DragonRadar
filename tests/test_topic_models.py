@@ -419,6 +419,73 @@ def test_coverage_counts_members_known_by_complete_as_of_without_duplicates():
     assert "coverage_count" in issue_codes(payload)
 
 
+def test_coverage_excludes_members_after_topic_definition_expires():
+    payload = topic_batch_dict(
+        topics=[topic_definition(effective_to=TOPIC_DAYS[-1])]
+    )
+    payload["coverage_cells"][-1].update(
+        expected_member_count=0,
+        received_member_count=0,
+    )
+
+    codes = issue_codes(payload)
+
+    assert "coverage_count" not in codes
+    assert "membership_interval" in codes
+
+
+def test_coverage_excludes_members_when_topic_is_unknown_at_completion():
+    known_after_completion = datetime(2026, 9, 8, 18, tzinfo=UTC)
+    payload = topic_batch_dict(
+        topics=[topic_definition(available_at=known_after_completion)]
+    )
+    for cell in payload["coverage_cells"]:
+        cell.update(expected_member_count=0, received_member_count=0)
+
+    assert "coverage_count" not in issue_codes(payload)
+
+
+@pytest.mark.parametrize(
+    "membership_change",
+    [
+        {"effective_from": TOPIC_DAYS[0] - timedelta(days=1)},
+        {"effective_to": TOPIC_DAYS[-1] + timedelta(days=1)},
+    ],
+)
+def test_membership_interval_must_be_contained_by_topic_definition(
+    membership_change,
+):
+    payload = topic_batch_dict(
+        topics=[topic_definition(effective_to=TOPIC_DAYS[-1])],
+        memberships=[topic_membership(**membership_change)],
+    )
+    payload["coverage_cells"][-1].update(
+        expected_member_count=0,
+        received_member_count=0,
+    )
+
+    from dragon_radar.topics.quality import validate_topic_batch
+
+    report = validate_topic_batch(TopicBatch.model_validate(payload), now=NOW)
+
+    assert "membership_interval" in {issue.code for issue in report.issues}
+    assert not report.publishable
+
+
+def test_membership_effective_to_may_equal_topic_effective_to():
+    effective_to = TOPIC_DAYS[-1]
+    payload = topic_batch_dict(
+        topics=[topic_definition(effective_to=effective_to)],
+        memberships=[topic_membership(effective_to=effective_to)],
+    )
+    payload["coverage_cells"][-1].update(
+        expected_member_count=0,
+        received_member_count=0,
+    )
+
+    assert issue_codes(payload) == set()
+
+
 def test_coverage_member_index_preserves_interval_and_availability_semantics():
     from dragon_radar.topics.quality import validate_topic_batch
 
