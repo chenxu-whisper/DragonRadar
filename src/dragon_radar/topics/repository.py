@@ -3,13 +3,16 @@
 import base64
 import binascii
 import hashlib
+import hmac
 import json
+import os
 from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, text
+from sqlalchemy.exc import DataError
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.domain.quality import grant_allows_local
@@ -71,6 +74,8 @@ def _attempt(row: Mapping[str, Any]) -> TopicAttempt:
 
 def _page_gap(batch: TopicBatch) -> tuple[bool, str | None]:
     expected = None
+    if not batch.page_manifest.pages:
+        return True, expected
     for page in batch.page_manifest.pages:
         if page.request_cursor != expected:
             return True, expected
@@ -80,15 +85,47 @@ def _page_gap(batch: TopicBatch) -> tuple[bool, str | None]:
     return False, None
 
 
-def _encode_cursor(payload: dict[str, Any]) -> str:
+_CURSOR_FIELDS = {
+    "version",
+    "sort_version",
+    "watermark",
+    "transaction_snapshot",
+    "filters",
+    "last",
+}
+_CURSOR_FILTER_FIELDS = {"trade_date", "source_id"}
+
+
+def _base64_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+
+def _base64_decode(value: str) -> bytes:
+    if not value:
+        raise ValueError
+    padded = value + "=" * (-len(value) % 4)
+    return base64.b64decode(padded, altchars=b"-_", validate=True)
+
+
+def _encode_cursor(payload: dict[str, Any], signing_key: bytes) -> str:
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    signature = hmac.digest(signing_key, raw, "sha256")
+    return f"{_base64_encode(raw)}.{_base64_encode(signature)}"
 
 
-def _decode_cursor(value: str) -> dict[str, Any]:
+def _decode_cursor(value: str, signing_key: bytes) -> dict[str, Any]:
     try:
-        padded = value + "=" * (-len(value) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+        if not isinstance(value, str) or len(value) > 4096:
+            raise ValueError
+        encoded_payload, encoded_signature = value.split(".")
+        raw = _base64_decode(encoded_payload)
+        signature = _base64_decode(encoded_signature)
+        if len(signature) != hashlib.sha256().digest_size or not hmac.compare_digest(
+            signature,
+            hmac.digest(signing_key, raw, "sha256"),
+        ):
+            raise ValueError
+        payload = json.loads(raw.decode())
         if not isinstance(payload, dict):
             raise ValueError
         return payload
@@ -109,6 +146,25 @@ class TopicRepository(Repository):
         self, database: Database, *, clock: Callable[[], datetime] | None = None
     ):
         super().__init__(database, clock=clock)
+        secret = os.environ.get("DRAGON_TOPIC_CURSOR_SECRET")
+        if secret is None:
+            secret = database.engine.url.password
+        if not secret:
+            raise ValueError(
+                "DRAGON_TOPIC_CURSOR_SECRET is required when "
+                "DRAGON_DATABASE_URL has no password"
+            )
+        database_identity = (
+            database.engine.url.set(password=None)
+            .render_as_string(hide_password=False)
+            .encode()
+        )
+        self._cursor_signing_key = hashlib.sha256(
+            b"dragon-radar:topic-snapshot-cursor:v1\0"
+            + secret.encode()
+            + b"\0"
+            + database_identity
+        ).digest()
 
     @staticmethod
     def _authorized(
@@ -390,22 +446,56 @@ class TopicRepository(Repository):
         operation_now = self.clock()
         cursor_data = None
         if cursor is not None:
-            cursor_data = _decode_cursor(cursor)
+            cursor_data = _decode_cursor(cursor, self._cursor_signing_key)
             expected_filters = {
                 "trade_date": trade_date.isoformat() if trade_date else None,
                 "source_id": source_id,
             }
-            if (
-                cursor_data.get("version") != 1
-                or cursor_data.get("filters") != expected_filters
-                or not isinstance(cursor_data.get("last"), list)
-            ):
-                raise ValueError("Invalid topic snapshot cursor")
             try:
-                watermark = datetime.fromisoformat(cursor_data["watermark"])
-                transaction_snapshot = cursor_data["transaction_snapshot"]
-                if not isinstance(transaction_snapshot, str):
+                if (
+                    set(cursor_data) != _CURSOR_FIELDS
+                    or type(cursor_data["version"]) is not int
+                    or cursor_data["version"] != 1
+                    or type(cursor_data["sort_version"]) is not int
+                    or cursor_data["sort_version"] != 1
+                ):
                     raise ValueError
+                filters = cursor_data["filters"]
+                if (
+                    not isinstance(filters, dict)
+                    or set(filters) != _CURSOR_FILTER_FIELDS
+                    or filters != expected_filters
+                ):
+                    raise ValueError
+                watermark_text = cursor_data["watermark"]
+                if not isinstance(watermark_text, str):
+                    raise ValueError
+                watermark = datetime.fromisoformat(watermark_text)
+                if watermark.tzinfo is None or watermark.utcoffset() is None:
+                    raise ValueError
+                transaction_snapshot = cursor_data["transaction_snapshot"]
+                if (
+                    not isinstance(transaction_snapshot, str)
+                    or not transaction_snapshot
+                    or len(transaction_snapshot) > 4096
+                ):
+                    raise ValueError
+                last = cursor_data["last"]
+                if (
+                    not isinstance(last, list)
+                    or len(last) != 4
+                    or not isinstance(last[0], str)
+                    or not isinstance(last[1], str)
+                    or type(last[2]) is not int
+                    or last[2] <= 0
+                    or not isinstance(last[3], str)
+                ):
+                    raise ValueError
+                last_date = date.fromisoformat(last[0])
+                last_id = UUID(last[3])
+                if last[0] != last_date.isoformat() or last[3] != str(last_id):
+                    raise ValueError
+                _identifier(last[1])
             except (KeyError, TypeError, ValueError):
                 raise ValueError("Invalid topic snapshot cursor") from None
         else:
@@ -449,31 +539,32 @@ class TopicRepository(Repository):
             )
             if trade_date is not None:
                 query = query.where(topic_snapshots.c.trade_date == trade_date)
-            rows = (
-                connection.execute(
-                    query.order_by(
-                        topic_snapshots.c.trade_date.desc(),
-                        topic_snapshots.c.source_id,
-                        topic_snapshots.c.revision.desc(),
-                        topic_snapshots.c.id,
-                    ),
-                    {"transaction_snapshot": transaction_snapshot},
+            try:
+                rows = (
+                    connection.execute(
+                        query.order_by(
+                            topic_snapshots.c.trade_date.desc(),
+                            topic_snapshots.c.source_id,
+                            topic_snapshots.c.revision.desc(),
+                            topic_snapshots.c.id,
+                        ),
+                        {"transaction_snapshot": transaction_snapshot},
+                    )
+                    .mappings()
+                    .all()
                 )
-                .mappings()
-                .all()
-            )
+            except DataError:
+                if cursor_data is not None:
+                    raise ValueError("Invalid topic snapshot cursor") from None
+                raise
             last_key = None
             if cursor_data is not None:
-                try:
-                    last = cursor_data["last"]
-                    last_key = (
-                        -date.fromisoformat(last[0]).toordinal(),
-                        str(last[1]),
-                        -int(last[2]),
-                        str(UUID(last[3])),
-                    )
-                except (IndexError, TypeError, ValueError):
-                    raise ValueError("Invalid topic snapshot cursor") from None
+                last_key = (
+                    -last_date.toordinal(),
+                    last[1],
+                    -last[2],
+                    str(last_id),
+                )
 
             visible: list[tuple[TopicSnapshot, Mapping[str, Any]]] = []
             for row in rows:
@@ -507,6 +598,7 @@ class TopicRepository(Repository):
             next_cursor = _encode_cursor(
                 {
                     "version": 1,
+                    "sort_version": 1,
                     "watermark": watermark.isoformat(),
                     "transaction_snapshot": transaction_snapshot,
                     "filters": {
@@ -519,7 +611,8 @@ class TopicRepository(Repository):
                         last_row["revision"],
                         str(last_row["id"]),
                     ],
-                }
+                },
+                self._cursor_signing_key,
             )
         return TopicSnapshotPage(
             items=items, page_size=page_size, next_cursor=next_cursor

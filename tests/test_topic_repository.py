@@ -1,5 +1,6 @@
 """PostgreSQL contracts for immutable topic imports and snapshots."""
 
+import base64
 import hashlib
 import inspect
 import json
@@ -110,6 +111,31 @@ def test_failed_attempt_records_broken_page_cursor_and_retry_range(
     attempt = topic_repository.list_attempts(status="failed")[0]
     assert attempt.failed_cursor == "cursor-2"
     assert attempt.missing_items == ("expected_cursor:cursor-2",)
+    assert (attempt.retry_from, attempt.retry_to) == (
+        payload.coverage_from,
+        payload.coverage_to,
+    )
+
+
+def test_failed_attempt_records_missing_initial_page(topic_repository):
+    from dragon_radar.storage.repository import QualityRejected
+
+    payload = topic_batch()
+    manifest = payload.page_manifest.model_copy(
+        update={
+            "pages": (),
+            "declared_total": 0,
+            "terminal_cursor": None,
+        }
+    )
+    malformed = payload.model_copy(update={"page_manifest": manifest})
+
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(malformed, key="missing-initial-page")
+
+    attempt = topic_repository.list_attempts(status="failed")[0]
+    assert attempt.failed_cursor is None
+    assert attempt.missing_items == ("expected_cursor:<initial>",)
     assert (attempt.retry_from, attempt.retry_to) == (
         payload.coverage_from,
         payload.coverage_to,
@@ -371,3 +397,150 @@ def test_topic_cursor_excludes_later_snapshot_with_same_published_at(
     )
     assert later.published_at == page.items[0].published_at
     assert next_page.items == (snapshots[0],)
+
+
+def test_topic_cursor_rejects_tampered_transaction_snapshot_before_query(
+    topic_repository,
+):
+    snapshots = []
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"tamper-v{revision}"}
+        )
+        snapshots.append(
+            topic_repository.publish(
+                topic_repository.import_batch(
+                    payload, key=f"tamper-{revision}"
+                ).id
+            )
+        )
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.next_cursor is not None
+
+    encoded_payload, separator, signature = page.next_cursor.partition(".")
+    padded = encoded_payload + "=" * (-len(encoded_payload) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded))
+    with topic_repository.database.engine.connect() as connection:
+        payload["transaction_snapshot"] = connection.scalar(
+            text("SELECT txid_current_snapshot()::text")
+        )
+    tampered_payload = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    tampered_cursor = (
+        f"{tampered_payload}.{signature}" if separator else tampered_payload
+    )
+    snapshot_queries = []
+
+    def record_snapshot_query(
+        conn, cursor, statement, parameters, context, executemany
+    ):
+        if "txid_visible_in_snapshot" in statement:
+            snapshot_queries.append(statement)
+
+    event.listen(
+        topic_repository.database.engine,
+        "before_cursor_execute",
+        record_snapshot_query,
+    )
+    try:
+        with pytest.raises(ValueError, match="Invalid topic snapshot cursor"):
+            topic_repository.list_snapshots(
+                page_size=20,
+                cursor=tampered_cursor,
+            )
+    finally:
+        event.remove(
+            topic_repository.database.engine,
+            "before_cursor_execute",
+            record_snapshot_query,
+        )
+    assert snapshot_queries == []
+
+
+def test_topic_cursor_normalizes_invalid_signed_postgresql_snapshot(
+    topic_repository,
+):
+    from dragon_radar.topics.repository import _decode_cursor, _encode_cursor
+
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"invalid-snapshot-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(
+                payload, key=f"invalid-snapshot-{revision}"
+            ).id
+        )
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.next_cursor is not None
+    payload = _decode_cursor(
+        page.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
+    payload["transaction_snapshot"] = "not-a-postgresql-snapshot"
+    cursor = _encode_cursor(payload, topic_repository._cursor_signing_key)
+
+    with pytest.raises(ValueError, match="Invalid topic snapshot cursor"):
+        topic_repository.list_snapshots(page_size=20, cursor=cursor)
+
+
+def test_topic_cursor_remains_valid_after_repository_restart(topic_repository):
+    from dragon_radar.topics.repository import TopicRepository
+
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"restart-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"restart-{revision}").id
+        )
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.next_cursor is not None
+
+    restarted = TopicRepository(topic_repository.database, clock=lambda: NOW)
+    assert restarted.list_snapshots(
+        page_size=20,
+        cursor=page.next_cursor,
+    ).items == (topic_repository.get_snapshot(page.items[-1].supersedes),)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", "1"),
+        ("filters", {"trade_date": None, "source_id": "other"}),
+        ("sort_version", 2),
+        ("last", ["2026-09-08", "synthetic", "1", "not-a-uuid"]),
+        ("last", ["2026-09-08", "synthetic", True, "0" * 32]),
+        ("last", ["2026-09-08", "synthetic", 1]),
+        ("extra", "unexpected"),
+    ],
+)
+def test_topic_cursor_strictly_binds_filters_sort_version_and_last_types(
+    topic_repository, field, value
+):
+    from dragon_radar.topics.repository import _decode_cursor, _encode_cursor
+
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"strict-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"strict-{revision}").id
+        )
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.next_cursor is not None
+    payload = _decode_cursor(
+        page.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
+    payload[field] = value
+    cursor = _encode_cursor(payload, topic_repository._cursor_signing_key)
+
+    with pytest.raises(ValueError, match="Invalid topic snapshot cursor"):
+        topic_repository.list_snapshots(page_size=20, cursor=cursor)
