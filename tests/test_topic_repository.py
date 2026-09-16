@@ -3,7 +3,7 @@
 import hashlib
 import inspect
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from factories import NOW, grant
@@ -108,8 +108,8 @@ def test_failed_attempt_records_broken_page_cursor_and_retry_range(
         topic_repository.import_batch(malformed, key="broken-manifest")
 
     attempt = topic_repository.list_attempts(status="failed")[0]
-    assert attempt.failed_cursor == "broken-cursor"
-    assert attempt.missing_items
+    assert attempt.failed_cursor == "cursor-2"
+    assert attempt.missing_items == ("expected_cursor:cursor-2",)
     assert (attempt.retry_from, attempt.retry_to) == (
         payload.coverage_from,
         payload.coverage_to,
@@ -160,28 +160,37 @@ def test_topic_snapshot_listing_has_exact_filters_and_stable_cursor(
         "page_size",
         "cursor",
     )
-    first = topic_repository.publish(
-        topic_repository.import_batch(topic_batch(), key="first").id
-    )
-    second_payload = topic_batch().model_copy(
-        update={"membership_version": "members-v2"}
-    )
-    second = topic_repository.publish(
-        topic_repository.import_batch(second_payload, key="second").id
-    )
+    snapshots = []
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"members-v{revision}"}
+        )
+        snapshots.append(
+            topic_repository.publish(
+                topic_repository.import_batch(payload, key=f"revision-{revision}").id
+            )
+        )
 
-    page = topic_repository.list_snapshots(page_size=1)
-    assert page.items == (second,)
-    assert page.page_size == 1
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.items == tuple(reversed(snapshots[1:]))
+    assert page.page_size == 20
     assert page.next_cursor is not None
     next_page = topic_repository.list_snapshots(
-        page_size=1,
+        page_size=20,
         cursor=page.next_cursor,
     )
-    assert next_page.items == (first,)
+    assert next_page.items == (snapshots[0],)
     assert next_page.next_cursor is None
     with pytest.raises(ValueError, match="cursor"):
         topic_repository.list_snapshots(cursor="not-a-cursor")
+
+
+@pytest.mark.parametrize("page_size", [1, 19, 21, 99, 101, True])
+def test_topic_snapshot_listing_rejects_non_contract_page_sizes(
+    topic_repository, page_size
+):
+    with pytest.raises(ValueError, match="20, 50, or 100"):
+        topic_repository.list_snapshots(page_size=page_size)
 
 
 @pytest.mark.parametrize("change", ["revoke", "embedded_expire"])
@@ -235,6 +244,48 @@ def test_topic_publish_holds_source_lock_against_revocation(topic_repository):
     assert checked
 
 
+def test_topic_table_metadata_matches_migration_constraints_and_indexes():
+    from sqlalchemy import CheckConstraint
+
+    from dragon_radar.topics.tables import (
+        topic_import_attempts,
+        topic_snapshots,
+    )
+
+    snapshot_checks = {
+        str(item.sqltext)
+        for item in topic_snapshots.constraints
+        if isinstance(item, CheckConstraint)
+    }
+    attempt_checks = {
+        str(item.sqltext)
+        for item in topic_import_attempts.constraints
+        if isinstance(item, CheckConstraint)
+    }
+    assert snapshot_checks == {"revision > 0"}
+    assert attempt_checks == {"status IN ('failed', 'succeeded')"}
+    assert {
+        item.name: tuple(str(expression) for expression in item.expressions)
+        for item in topic_snapshots.indexes
+    } == {
+        "topic_snapshots_listing": (
+            "trade_date DESC",
+            "source_id ASC",
+            "revision DESC",
+            "id ASC",
+        )
+    }
+    assert {
+        item.name: tuple(str(expression) for expression in item.expressions)
+        for item in topic_import_attempts.indexes
+    } == {
+        "topic_import_attempts_listing": (
+            "created_at DESC",
+            "id ASC",
+        )
+    }
+
+
 @pytest.mark.parametrize(
     "table",
     ["topic_import_attempts", "topic_import_batches", "topic_snapshots"],
@@ -281,33 +332,42 @@ def test_topic_publication_failure_leaves_no_partial_snapshot(topic_repository):
     assert topic_repository.publish(stored.id).revision == 1
 
 
-def test_topic_cursor_excludes_snapshots_published_after_first_page(
+def test_topic_cursor_excludes_later_snapshot_with_same_published_at(
     topic_repository,
 ):
-    operation_time = [NOW]
-    topic_repository.clock = lambda: operation_time[0]
-    first = topic_repository.publish(
-        topic_repository.import_batch(topic_batch(), key="watermark-first").id
-    )
-    operation_time[0] = NOW + timedelta(seconds=1)
-    second_payload = topic_batch().model_copy(
-        update={"membership_version": "members-v2"}
-    )
-    second = topic_repository.publish(
-        topic_repository.import_batch(second_payload, key="watermark-second").id
-    )
-    page = topic_repository.list_snapshots(page_size=1)
-    assert page.items == (second,)
+    from dragon_radar.storage.repository import Repository
+
+    snapshots = []
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"watermark-v{revision}"}
+        )
+        snapshots.append(
+            topic_repository.publish(
+                topic_repository.import_batch(
+                    payload, key=f"watermark-{revision}"
+                ).id
+            )
+        )
+
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.items == tuple(reversed(snapshots[1:]))
     assert page.next_cursor is not None
 
-    operation_time[0] = NOW + timedelta(seconds=2)
-    third_payload = topic_batch().model_copy(
-        update={"membership_version": "members-v3"}
+    Repository(topic_repository.database, clock=lambda: NOW).register_source(
+        grant(source_id="z-source")
     )
-    topic_repository.publish(
-        topic_repository.import_batch(third_payload, key="watermark-third").id
+    later_payload = topic_batch().model_copy(
+        update={
+            "source_id": "z-source",
+            "grant": grant(source_id="z-source"),
+        }
+    )
+    later = topic_repository.publish(
+        topic_repository.import_batch(later_payload, key="watermark-later").id
     )
     next_page = topic_repository.list_snapshots(
-        page_size=10, cursor=page.next_cursor
+        page_size=20, cursor=page.next_cursor
     )
-    assert next_page.items == (first,)
+    assert later.published_at == page.items[0].published_at
+    assert next_page.items == (snapshots[0],)

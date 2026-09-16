@@ -1,15 +1,18 @@
 """SQLAlchemy mappings for topic import attempts, archives, and snapshots."""
 
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -61,6 +64,14 @@ topic_snapshots = Table(
     Column("manifest", JSONB, nullable=False),
     Column("published_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("source_id", "trade_date", "revision"),
+    CheckConstraint("revision > 0"),
+    Index(
+        "topic_snapshots_listing",
+        text("trade_date DESC"),
+        text("source_id ASC"),
+        text("revision DESC"),
+        text("id ASC"),
+    ),
 )
 
 topic_import_attempts = Table(
@@ -89,4 +100,10 @@ topic_import_attempts = Table(
     Column("retry_to", Date),
     Column("details", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("status IN ('failed', 'succeeded')"),
+    Index(
+        "topic_import_attempts_listing",
+        text("created_at DESC"),
+        text("id ASC"),
+    ),
 )

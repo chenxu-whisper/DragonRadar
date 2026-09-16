@@ -9,7 +9,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, text
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.domain.quality import grant_allows_local
@@ -69,15 +69,15 @@ def _attempt(row: Mapping[str, Any]) -> TopicAttempt:
     )
 
 
-def _failed_cursor(batch: TopicBatch) -> str | None:
+def _page_gap(batch: TopicBatch) -> tuple[bool, str | None]:
     expected = None
     for page in batch.page_manifest.pages:
         if page.request_cursor != expected:
-            return page.request_cursor
+            return True, expected
         expected = page.next_cursor
     if expected != batch.page_manifest.terminal_cursor:
-        return expected
-    return None
+        return True, expected
+    return False, None
 
 
 def _encode_cursor(payload: dict[str, Any]) -> str:
@@ -168,6 +168,11 @@ class TopicRepository(Repository):
                 quality = _quality_report(report)
                 rejected = not report.publishable
                 if rejected:
+                    has_page_gap, failed_cursor = _page_gap(batch)
+                    missing_page = (
+                        "expected_cursor:"
+                        + (failed_cursor if failed_cursor is not None else "<initial>")
+                    )
                     connection.execute(
                         insert(topic_import_attempts).values(
                             id=uuid4(),
@@ -179,7 +184,9 @@ class TopicRepository(Repository):
                             status="failed",
                             stage="quality",
                             missing_items=[
-                                issue.message
+                                missing_page
+                                if issue.code == "page_manifest" and has_page_gap
+                                else issue.message
                                 for issue in report.issues
                                 if issue.code
                                 in {
@@ -188,7 +195,7 @@ class TopicRepository(Repository):
                                     "page_manifest",
                                 }
                             ],
-                            failed_cursor=_failed_cursor(batch),
+                            failed_cursor=failed_cursor,
                             retry_from=batch.coverage_from,
                             retry_to=batch.coverage_to,
                             details=[
@@ -376,8 +383,8 @@ class TopicRepository(Repository):
         page_size: int = 50,
         cursor: str | None = None,
     ) -> TopicSnapshotPage:
-        if type(page_size) is not int or not 1 <= page_size <= 100:
-            raise ValueError("page_size must be from 1 to 100")
+        if type(page_size) is not int or page_size not in (20, 50, 100):
+            raise ValueError("page_size must be 20, 50, or 100")
         if source_id is not None:
             _identifier(source_id)
         operation_now = self.clock()
@@ -396,12 +403,20 @@ class TopicRepository(Repository):
                 raise ValueError("Invalid topic snapshot cursor")
             try:
                 watermark = datetime.fromisoformat(cursor_data["watermark"])
+                transaction_snapshot = cursor_data["transaction_snapshot"]
+                if not isinstance(transaction_snapshot, str):
+                    raise ValueError
             except (KeyError, TypeError, ValueError):
                 raise ValueError("Invalid topic snapshot cursor") from None
         else:
             watermark = operation_now
+            transaction_snapshot = None
 
         with self.database.engine.begin() as connection:
+            if transaction_snapshot is None:
+                transaction_snapshot = connection.scalar(
+                    text("SELECT txid_current_snapshot()::text")
+                )
             source_query = select(topic_snapshots.c.source_id).distinct()
             if source_id is not None:
                 source_query = source_query.where(
@@ -426,6 +441,11 @@ class TopicRepository(Repository):
             query = select(topic_snapshots).where(
                 topic_snapshots.c.source_id.in_(grants),
                 topic_snapshots.c.published_at <= watermark,
+                text(
+                    "txid_visible_in_snapshot("
+                    "topic_snapshots.xmin::text::bigint, "
+                    "CAST(:transaction_snapshot AS txid_snapshot))"
+                ),
             )
             if trade_date is not None:
                 query = query.where(topic_snapshots.c.trade_date == trade_date)
@@ -436,7 +456,8 @@ class TopicRepository(Repository):
                         topic_snapshots.c.source_id,
                         topic_snapshots.c.revision.desc(),
                         topic_snapshots.c.id,
-                    )
+                    ),
+                    {"transaction_snapshot": transaction_snapshot},
                 )
                 .mappings()
                 .all()
@@ -487,6 +508,7 @@ class TopicRepository(Repository):
                 {
                     "version": 1,
                     "watermark": watermark.isoformat(),
+                    "transaction_snapshot": transaction_snapshot,
                     "filters": {
                         "trade_date": trade_date.isoformat() if trade_date else None,
                         "source_id": source_id,
