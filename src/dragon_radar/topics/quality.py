@@ -138,6 +138,8 @@ def validate_topic_batch(
         manifest_valid = False
     if len({page.page_id for page in pages}) != len(pages):
         manifest_valid = False
+    if len({page.page_hash for page in pages}) != len(pages):
+        manifest_valid = False
     request_cursors = [
         page.request_cursor for page in pages if page.request_cursor is not None
     ]

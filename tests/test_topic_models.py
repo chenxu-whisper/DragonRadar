@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from factories import DAYS, NOW
@@ -10,7 +12,12 @@ from topic_factories import (
     topic_membership,
 )
 
-from dragon_radar.topics.models import TopicBatch, TopicSnapshotPage
+from dragon_radar.topics.models import (
+    TopicBatch,
+    TopicImportRecord,
+    TopicSnapshot,
+    TopicSnapshotPage,
+)
 
 
 def issue_codes(payload, *, now=NOW):
@@ -33,6 +40,60 @@ def test_topic_models_are_frozen_and_reject_unknown_fields():
         TopicBatch.model_validate(payload)
     with pytest.raises(ValidationError, match="extra"):
         TopicSnapshotPage(items=(), page_size=20, next_cursor=None, extra=True)
+
+
+@pytest.mark.parametrize(
+    "record,field",
+    [
+        (
+            TopicImportRecord(
+                id=UUID(int=1),
+                canonical_json="{}",
+                payload_hash="a" * 64,
+                quality_report={"nested": {"items": [1, {"status": "clean"}]}},
+            ),
+            "quality_report",
+        ),
+        (
+            TopicSnapshot(
+                id=UUID(int=2),
+                batch_id=UUID(int=1),
+                revision=1,
+                supersedes=None,
+                published_at=NOW,
+                manifest={"nested": {"items": [1, {"status": "clean"}]}},
+                batch=topic_batch(),
+                quality_report={},
+            ),
+            "manifest",
+        ),
+        (
+            TopicSnapshot(
+                id=UUID(int=2),
+                batch_id=UUID(int=1),
+                revision=1,
+                supersedes=None,
+                published_at=NOW,
+                manifest={},
+                batch=topic_batch(),
+                quality_report={"nested": {"items": [1, {"status": "clean"}]}},
+            ),
+            "quality_report",
+        ),
+    ],
+)
+def test_archived_topic_json_is_recursively_immutable_and_round_trips(
+    record, field
+):
+    value = getattr(record, field)
+    assert isinstance(value, Mapping)
+    assert isinstance(value["nested"], Mapping)
+    assert isinstance(value["nested"]["items"], tuple)
+    with pytest.raises(TypeError):
+        value["nested"]["items"][1]["status"] = "changed"
+
+    restored = type(record).model_validate_json(record.model_dump_json())
+    assert restored.model_dump(mode="json") == record.model_dump(mode="json")
 
 
 def test_topic_batch_requires_complete_coverage_at_a_known_cutoff():
@@ -232,6 +293,12 @@ def test_topic_batch_rejects_a_cursor_cycle():
     assert "page_manifest" in issue_codes(payload)
 
 
+def test_topic_batch_rejects_duplicate_page_content():
+    payload = topic_batch_dict()
+    payload["page_manifest"]["pages"][1]["page_hash"] = "a" * 64
+    assert "page_manifest" in issue_codes(payload)
+
+
 def test_security_state_new_fields_default_to_unknown_for_old_archives():
     from factories import state
 
@@ -249,8 +316,35 @@ def test_security_state_new_fields_default_to_unknown_for_old_archives():
     )
 
 
-def test_source_references_reject_control_text_and_dangerous_protocols():
-    for value in ("bad\x00ref", "javascript:alert(1)", "data:text/plain,x"):
-        payload = topic_batch_dict(topics=[topic_definition(source_reference=value)])
-        with pytest.raises(ValidationError):
-            TopicBatch.model_validate(payload)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "bad\x00ref",
+        "bad\u0085ref",
+        "javascript:alert(1)",
+        "data:text/plain,x",
+        "file:///tmp/evidence.json",
+    ],
+)
+def test_source_reference_rejects_control_text_and_dangerous_protocols(value):
+    payload = topic_batch_dict(topics=[topic_definition(source_reference=value)])
+    with pytest.raises(ValidationError):
+        TopicBatch.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "bad\x00ref",
+        "bad\u0085ref",
+        "javascript:alert(1)",
+        "data:text/plain,x",
+        "file:///tmp/evidence.json",
+    ],
+)
+def test_evidence_refs_reject_control_text_and_dangerous_protocols(value):
+    payload = topic_batch_dict(
+        memberships=[topic_membership(evidence_refs=(value,))]
+    )
+    with pytest.raises(ValidationError):
+        TopicBatch.model_validate(payload)

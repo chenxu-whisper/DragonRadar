@@ -1,11 +1,22 @@
 """Immutable topic import, snapshot, and repository-facing contracts."""
 
 import re
+import unicodedata
+from collections.abc import Mapping
 from datetime import date
+from types import MappingProxyType
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field, StrictStr, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    Field,
+    JsonValue,
+    PlainSerializer,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from dragon_radar.domain.models import (
     ExchangeCalendar,
@@ -20,8 +31,33 @@ SafeReference = Annotated[StrictStr, Field(min_length=1, max_length=2000)]
 SHA256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
+def _freeze_json(value: JsonValue) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {key: _freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _serialize_json(value: object) -> JsonValue:
+    if isinstance(value, Mapping):
+        return {key: _serialize_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_serialize_json(item) for item in value]
+    return value
+
+
+ImmutableJsonObject = Annotated[
+    Mapping[str, JsonValue],
+    AfterValidator(_freeze_json),
+    PlainSerializer(_serialize_json, return_type=dict[str, JsonValue]),
+]
+
+
 def _validate_reference(value: str) -> str:
-    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+    if any(unicodedata.category(character).startswith("C") for character in value):
         raise ValueError("source references cannot contain control characters")
     if re.match(r"(?i)^(javascript|data|file)\s*:", value.strip()):
         raise ValueError("source reference uses a forbidden protocol")
@@ -135,7 +171,7 @@ class TopicImportRecord(FrozenModel):
     id: UUID
     canonical_json: str
     payload_hash: SHA256
-    quality_report: dict[str, object]
+    quality_report: ImmutableJsonObject
 
 
 class TopicSnapshot(FrozenModel):
@@ -144,9 +180,9 @@ class TopicSnapshot(FrozenModel):
     revision: Annotated[int, Field(ge=1)]
     supersedes: UUID | None
     published_at: UTCDateTime
-    manifest: dict[str, object]
+    manifest: ImmutableJsonObject
     batch: TopicBatch
-    quality_report: dict[str, object]
+    quality_report: ImmutableJsonObject
 
     @property
     def trade_date(self) -> date:
