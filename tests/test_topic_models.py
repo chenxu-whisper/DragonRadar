@@ -6,12 +6,15 @@ import pytest
 from factories import DAYS, NOW
 from pydantic import ValidationError
 from topic_factories import (
+    TOPIC_DAYS,
+    coverage_cell,
     topic_batch,
     topic_batch_dict,
     topic_definition,
     topic_membership,
 )
 
+from dragon_radar.domain.models import ExchangeCalendar
 from dragon_radar.topics.models import (
     TopicBatch,
     TopicImportRecord,
@@ -82,9 +85,7 @@ def test_topic_models_are_frozen_and_reject_unknown_fields():
         ),
     ],
 )
-def test_archived_topic_json_is_recursively_immutable_and_round_trips(
-    record, field
-):
+def test_archived_topic_json_is_recursively_immutable_and_round_trips(record, field):
     value = getattr(record, field)
     assert isinstance(value, Mapping)
     assert isinstance(value["nested"], Mapping)
@@ -125,33 +126,89 @@ def test_effective_intervals_are_half_open_and_nonempty():
         ]
     )
     assert len(TopicBatch.model_validate(payload).memberships) == 2
-    payload["memberships"][0]["effective_to"] = DAYS[0]
+    payload["memberships"][0]["effective_to"] = TOPIC_DAYS[0]
     with pytest.raises(ValidationError, match="interval"):
         TopicBatch.model_validate(payload)
 
 
-def test_clean_topic_batch_has_exact_calendar_coverage():
+def test_topic_batch_with_exactly_61_sessions_is_publishable():
     from dragon_radar.domain.quality import QualityReport
-    from dragon_radar.topics.quality import validate_topic_batch
+    from dragon_radar.topics import quality
 
     data = topic_batch()
-    report = validate_topic_batch(data, now=NOW)
+    report = quality.validate_topic_batch(data, now=NOW)
+    assert getattr(quality, "ROLE_V1_MAX_WINDOW_SESSION_COUNT", None) == 61
     assert isinstance(report, QualityReport)
     assert isinstance(report.batch, TopicBatch)
     assert report.batch is data
     assert type(report).model_validate_json(report.model_dump_json()) == report
     assert report.publishable
-    assert report.coverage.expected == 4
-    assert report.coverage.valid == 4
+    assert report.coverage.expected == 61
+    assert report.coverage.valid == 61
     assert report.coverage.legal_excluded == report.coverage.missing == 0
+
+
+def test_topic_batch_rejects_four_sessions_for_role_v1_windows():
+    payload = topic_batch_dict(
+        trade_date=DAYS[-1],
+        calendar=ExchangeCalendar(exchange="TEST", version="c1", sessions=DAYS),
+        coverage_from=DAYS[0],
+        coverage_to=DAYS[-1],
+        coverage_cells=[coverage_cell(trade_date=day) for day in DAYS],
+    )
+    payload["page_manifest"].update(request_from=DAYS[0], request_to=DAYS[-1])
+
+    assert "role_window_coverage" in issue_codes(payload)
+
+
+def test_topic_batch_role_window_coverage_may_start_earlier():
+    earlier = TOPIC_DAYS[0] - timedelta(days=1)
+    payload = topic_batch_dict(
+        calendar=ExchangeCalendar(
+            exchange="TEST",
+            version="c1",
+            sessions=(earlier, *TOPIC_DAYS),
+        ),
+        coverage_from=earlier,
+        coverage_cells=[
+            coverage_cell(
+                trade_date=earlier,
+                expected_member_count=0,
+                received_member_count=0,
+            ),
+            *topic_batch_dict()["coverage_cells"],
+        ],
+    )
+    payload["page_manifest"]["request_from"] = earlier
+
+    assert issue_codes(payload) == set()
+
+
+def test_topic_batch_rejects_coverage_starting_after_role_v1_window():
+    payload = topic_batch_dict(
+        coverage_from=TOPIC_DAYS[1],
+        coverage_cells=topic_batch_dict()["coverage_cells"][1:],
+    )
+    payload["page_manifest"]["request_from"] = TOPIC_DAYS[1]
+
+    assert "role_window_coverage" in issue_codes(payload)
 
 
 @pytest.mark.parametrize(
     "change,code",
     [
-        ({"coverage_from": DAYS[0] - timedelta(days=1)}, "coverage_range"),
-        ({"coverage_to": DAYS[-1] + timedelta(days=1)}, "coverage_range"),
-        ({"trade_date": DAYS[0] - timedelta(days=1)}, "trade_date"),
+        (
+            {"coverage_from": TOPIC_DAYS[0] - timedelta(days=1)},
+            "coverage_range",
+        ),
+        (
+            {"coverage_to": TOPIC_DAYS[-1] + timedelta(days=1)},
+            "coverage_range",
+        ),
+        (
+            {"trade_date": TOPIC_DAYS[0] - timedelta(days=1)},
+            "trade_date",
+        ),
         ({"trade_date": DAYS[1] + timedelta(days=1)}, "trade_date"),
         ({"exchange": "OTHER"}, "calendar_mismatch"),
         ({"calendar_version": "c2"}, "calendar_mismatch"),
@@ -187,15 +244,13 @@ def test_topic_coverage_cells_are_exact_and_time_bounded(cell_change, code):
 
 def test_reasoned_unavailable_coverage_is_publishable_but_not_complete():
     payload = topic_batch_dict()
-    payload["coverage_cells"][-1].update(
-        status="unavailable", reason="provider outage"
-    )
+    payload["coverage_cells"][-1].update(status="unavailable", reason="provider outage")
     from dragon_radar.topics.quality import validate_topic_batch
 
     report = validate_topic_batch(TopicBatch.model_validate(payload), now=NOW)
     assert report.publishable
     assert report.issues == ()
-    assert report.coverage.valid == 3
+    assert report.coverage.valid == 60
     assert report.coverage.missing == 1
 
 
@@ -217,14 +272,21 @@ def test_topic_records_cannot_arrive_after_batch_or_validation_cutoff(record):
     payload[record][0]["available_at"] = NOW + timedelta(seconds=1)
     assert "future_availability" in issue_codes(payload)
     assert "future_availability" in issue_codes(
-        topic_batch_dict(), now=NOW - timedelta(days=8)
+        topic_batch_dict(
+            **{
+                record: [
+                    (topic_definition if record == "topics" else topic_membership)(
+                        available_at=NOW - timedelta(days=7)
+                    )
+                ]
+            }
+        ),
+        now=NOW - timedelta(days=8),
     )
 
 
 def test_memberships_must_reference_declared_topics():
-    payload = topic_batch_dict(
-        memberships=[topic_membership(topic_id="unknown")]
-    )
+    payload = topic_batch_dict(memberships=[topic_membership(topic_id="unknown")])
     assert "unknown_topic" in issue_codes(payload)
 
 
@@ -376,16 +438,12 @@ def test_source_reference_rejects_whitespace_only():
     ],
 )
 def test_evidence_refs_reject_control_text_and_dangerous_protocols(value):
-    payload = topic_batch_dict(
-        memberships=[topic_membership(evidence_refs=(value,))]
-    )
+    payload = topic_batch_dict(memberships=[topic_membership(evidence_refs=(value,))])
     with pytest.raises(ValidationError):
         TopicBatch.model_validate(payload)
 
 
 def test_evidence_refs_reject_whitespace_only():
-    payload = topic_batch_dict(
-        memberships=[topic_membership(evidence_refs=("   ",))]
-    )
+    payload = topic_batch_dict(memberships=[topic_membership(evidence_refs=("   ",))])
     with pytest.raises(ValidationError):
         TopicBatch.model_validate(payload)

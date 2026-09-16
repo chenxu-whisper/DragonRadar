@@ -11,6 +11,8 @@ from dragon_radar.domain.quality import (
 )
 from dragon_radar.topics.models import TopicBatch
 
+ROLE_V1_MAX_WINDOW_SESSION_COUNT = 61
+
 
 class TopicQualityReport(QualityReport):
     batch: TopicBatch
@@ -57,6 +59,24 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
         add(
             "trade_date",
             "Batch date must be a calendar session inside the coverage range",
+        )
+
+    sessions_through_trade_date = tuple(
+        day for day in batch.calendar.sessions if day <= batch.trade_date
+    )
+    role_window_covered = (
+        batch.trade_date in batch.calendar.sessions
+        and len(sessions_through_trade_date) >= ROLE_V1_MAX_WINDOW_SESSION_COUNT
+        and batch.coverage_from
+        <= sessions_through_trade_date[-ROLE_V1_MAX_WINDOW_SESSION_COUNT]
+        and batch.coverage_to >= batch.trade_date
+    )
+    if not role_window_covered:
+        add(
+            "role_window_coverage",
+            "Coverage must include the "
+            f"{ROLE_V1_MAX_WINDOW_SESSION_COUNT}-session role-v1 window "
+            "ending on the batch date",
         )
 
     topic_counts = Counter(topic.topic_id for topic in batch.topics)
@@ -152,13 +172,12 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
     if pages:
         if pages[-1].next_cursor != manifest.terminal_cursor:
             manifest_valid = False
-        if any(
-            page.next_cursor == manifest.terminal_cursor for page in pages[:-1]
-        ):
+        if any(page.next_cursor == manifest.terminal_cursor for page in pages[:-1]):
             manifest_valid = False
-    if (
-        sum(page.received_row_count for page in pages) != manifest.declared_total
-        or manifest.declared_total != len(batch.topics) + len(batch.memberships)
+    if sum(
+        page.received_row_count for page in pages
+    ) != manifest.declared_total or manifest.declared_total != len(batch.topics) + len(
+        batch.memberships
     ):
         manifest_valid = False
     if not manifest_valid:
