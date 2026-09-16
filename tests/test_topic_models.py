@@ -23,6 +23,27 @@ from dragon_radar.topics.models import (
 )
 
 
+def archived_topic_record(model, field, value):
+    nested = {"nested": {"items": [["value", value]]}}
+    if model is TopicImportRecord:
+        return TopicImportRecord(
+            id=UUID(int=1),
+            canonical_json="{}",
+            payload_hash="a" * 64,
+            quality_report=nested,
+        )
+    return TopicSnapshot(
+        id=UUID(int=2),
+        batch_id=UUID(int=1),
+        revision=1,
+        supersedes=None,
+        published_at=NOW,
+        manifest=nested if field == "manifest" else {},
+        batch=topic_batch(),
+        quality_report=nested if field == "quality_report" else {},
+    )
+
+
 def issue_codes(payload, *, now=NOW):
     from dragon_radar.topics.quality import validate_topic_batch
 
@@ -53,7 +74,7 @@ def test_topic_models_are_frozen_and_reject_unknown_fields():
                 id=UUID(int=1),
                 canonical_json="{}",
                 payload_hash="a" * 64,
-                quality_report={"nested": {"items": [1, {"status": "clean"}]}},
+                quality_report={"nested": {"items": [1.25, {"status": "clean"}]}},
             ),
             "quality_report",
         ),
@@ -87,6 +108,7 @@ def test_topic_models_are_frozen_and_reject_unknown_fields():
 )
 def test_archived_topic_json_is_recursively_immutable_and_round_trips(record, field):
     value = getattr(record, field)
+    assert type(record).model_json_schema()["properties"][field]["type"] == "object"
     assert isinstance(value, Mapping)
     assert isinstance(value["nested"], Mapping)
     assert isinstance(value["nested"]["items"], tuple)
@@ -95,6 +117,20 @@ def test_archived_topic_json_is_recursively_immutable_and_round_trips(record, fi
 
     restored = type(record).model_validate_json(record.model_dump_json())
     assert restored.model_dump(mode="json") == record.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    ("model", "field"),
+    [
+        (TopicSnapshot, "quality_report"),
+        (TopicSnapshot, "manifest"),
+        (TopicImportRecord, "quality_report"),
+    ],
+)
+def test_archived_topic_json_rejects_nested_nonfinite_floats(model, field, value):
+    with pytest.raises(ValidationError, match="finite"):
+        archived_topic_record(model, field, value)
 
 
 def test_topic_batch_requires_complete_coverage_at_a_known_cutoff():

@@ -1,5 +1,6 @@
 """Immutable topic import, snapshot, and repository-facing contracts."""
 
+import math
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -38,6 +39,8 @@ def _freeze_json(value: JsonValue) -> object:
         )
     if isinstance(value, list):
         return tuple(_freeze_json(item) for item in value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("immutable JSON floats must be finite")
     return value
 
 
@@ -90,9 +93,7 @@ class TopicDefinition(FrozenModel):
     available_at: UTCDateTime
     source_reference: SafeReference
 
-    _safe_source_reference = field_validator("source_reference")(
-        _validate_reference
-    )
+    _safe_source_reference = field_validator("source_reference")(_validate_reference)
 
     @model_validator(mode="after")
     def valid_interval(self):
@@ -155,9 +156,9 @@ class TopicBatch(FrozenModel):
     def nonoverlapping_memberships(self):
         groups: dict[tuple[str, str], list[TopicMembership]] = {}
         for membership in self.memberships:
-            groups.setdefault(
-                (membership.topic_id, membership.security_id), []
-            ).append(membership)
+            groups.setdefault((membership.topic_id, membership.security_id), []).append(
+                membership
+            )
         for memberships in groups.values():
             ordered = sorted(memberships, key=lambda item: item.effective_from)
             for previous, current in zip(ordered, ordered[1:], strict=False):
