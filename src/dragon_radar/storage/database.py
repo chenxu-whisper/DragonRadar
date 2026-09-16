@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0003_private_review"
+SCHEMA_REVISION = "0004_topic_snapshots"
 
 
 class Database:
@@ -62,6 +62,9 @@ class Database:
                     "review_verifications",
                     "owner_commands",
                     "private_audit_events",
+                    "topic_import_attempts",
+                    "topic_import_batches",
+                    "topic_snapshots",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True
