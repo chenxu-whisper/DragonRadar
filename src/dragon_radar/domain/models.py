@@ -92,6 +92,9 @@ class SecurityState(FrozenModel):
     security_id: Identifier
     name: Identifier
     board: Identifier
+    security_type: Identifier | None = None
+    board_category: Literal["sh_main", "sz_main", "synthetic_test"] | None = None
+    is_delisting: StrictBool | None = None
     exchange: Identifier
     effective_from: date
     effective_to: date | None = None
