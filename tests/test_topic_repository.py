@@ -4,7 +4,7 @@ import base64
 import hashlib
 import inspect
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from factories import NOW, grant
@@ -109,12 +109,29 @@ def test_failed_attempt_records_broken_page_cursor_and_retry_range(
         topic_repository.import_batch(malformed, key="broken-manifest")
 
     attempt = topic_repository.list_attempts(status="failed")[0]
-    assert attempt.failed_cursor == "cursor-2"
+    assert attempt.failed_cursor == "broken-cursor"
     assert attempt.missing_items == ("expected_cursor:cursor-2",)
     assert (attempt.retry_from, attempt.retry_to) == (
         payload.coverage_from,
         payload.coverage_to,
     )
+
+
+def test_failed_attempt_records_page_after_missing_continuation(topic_repository):
+    from dragon_radar.storage.repository import QualityRejected
+
+    payload = topic_batch()
+    pages = list(payload.page_manifest.pages)
+    pages[0] = pages[0].model_copy(update={"next_cursor": None})
+    manifest = payload.page_manifest.model_copy(update={"pages": tuple(pages)})
+    malformed = payload.model_copy(update={"page_manifest": manifest})
+
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(malformed, key="missing-continuation")
+
+    attempt = topic_repository.list_attempts(status="failed")[0]
+    assert attempt.missing_items == ("missing_after_page:page-1",)
+    assert attempt.failed_cursor == "cursor-2"
 
 
 def test_failed_attempt_records_missing_initial_page(topic_repository):
@@ -507,6 +524,148 @@ def test_topic_cursor_remains_valid_after_repository_restart(topic_repository):
         page_size=20,
         cursor=page.next_cursor,
     ).items == (topic_repository.get_snapshot(page.items[-1].supersedes),)
+
+
+def test_topic_cursor_has_canonical_utc_fifteen_minute_lifetime(topic_repository):
+    from dragon_radar.topics.repository import (
+        TOPIC_SNAPSHOT_CURSOR_TTL,
+        _decode_cursor,
+    )
+
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"ttl-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"ttl-{revision}").id
+        )
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.next_cursor is not None
+
+    payload = _decode_cursor(
+        page.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
+    assert TOPIC_SNAPSHOT_CURSOR_TTL == timedelta(minutes=15)
+    assert payload["issued_at"] == NOW.isoformat()
+    assert payload["expires_at"] == (NOW + timedelta(minutes=15)).isoformat()
+
+
+def test_topic_cursor_rejects_expiry_before_database_query(topic_repository):
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"expired-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"expired-{revision}").id
+        )
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.next_cursor is not None
+    topic_repository.clock = lambda: NOW + timedelta(minutes=15)
+    queries = []
+
+    def record_query(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    event.listen(
+        topic_repository.database.engine,
+        "before_cursor_execute",
+        record_query,
+    )
+    try:
+        with pytest.raises(ValueError, match="^Invalid topic snapshot cursor$"):
+            topic_repository.list_snapshots(
+                page_size=20,
+                cursor=page.next_cursor,
+            )
+    finally:
+        event.remove(
+            topic_repository.database.engine,
+            "before_cursor_execute",
+            record_query,
+        )
+    assert queries == []
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {
+            "issued_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "expires_at": (NOW + timedelta(minutes=15, seconds=1)).isoformat(),
+        },
+        {
+            "issued_at": NOW.isoformat(),
+            "expires_at": (NOW - timedelta(seconds=1)).isoformat(),
+        },
+        {
+            "issued_at": NOW.isoformat().replace("+00:00", "Z"),
+            "expires_at": (NOW + timedelta(minutes=15)).isoformat(),
+        },
+        {
+            "issued_at": NOW.isoformat(),
+            "expires_at": (NOW + timedelta(minutes=16)).isoformat(),
+        },
+    ],
+    ids=["future-issued", "inverted", "noncanonical-utc", "wrong-ttl"],
+)
+def test_topic_cursor_rejects_signed_invalid_lifetime_schema(topic_repository, changes):
+    from dragon_radar.topics.repository import _decode_cursor, _encode_cursor
+
+    for revision in range(1, 22):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"invalid-time-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"invalid-time-{revision}").id
+        )
+    page = topic_repository.list_snapshots(page_size=20)
+    assert page.next_cursor is not None
+    payload = _decode_cursor(
+        page.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
+    payload.update(changes)
+    cursor = _encode_cursor(payload, topic_repository._cursor_signing_key)
+
+    with pytest.raises(ValueError, match="^Invalid topic snapshot cursor$"):
+        topic_repository.list_snapshots(page_size=20, cursor=cursor)
+
+
+def test_topic_cursor_does_not_renew_lifetime_on_later_pages(topic_repository):
+    from dragon_radar.topics.repository import _decode_cursor
+
+    for revision in range(1, 42):
+        payload = topic_batch().model_copy(
+            update={"membership_version": f"no-renew-v{revision}"}
+        )
+        topic_repository.publish(
+            topic_repository.import_batch(payload, key=f"no-renew-{revision}").id
+        )
+    first = topic_repository.list_snapshots(page_size=20)
+    assert first.next_cursor is not None
+    first_payload = _decode_cursor(
+        first.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
+
+    topic_repository.clock = lambda: NOW + timedelta(minutes=1)
+    second = topic_repository.list_snapshots(
+        page_size=20,
+        cursor=first.next_cursor,
+    )
+    assert second.next_cursor is not None
+    second_payload = _decode_cursor(
+        second.next_cursor,
+        topic_repository._cursor_signing_key,
+    )
+    assert (
+        second_payload["issued_at"],
+        second_payload["expires_at"],
+    ) == (
+        first_payload["issued_at"],
+        first_payload["expires_at"],
+    )
 
 
 @pytest.mark.parametrize(

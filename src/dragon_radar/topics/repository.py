@@ -7,8 +7,8 @@ import hmac
 import json
 import os
 from collections.abc import Callable, Mapping
-from datetime import date, datetime
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, text
@@ -72,22 +72,41 @@ def _attempt(row: Mapping[str, Any]) -> TopicAttempt:
     )
 
 
-def _page_gap(batch: TopicBatch) -> tuple[bool, str | None]:
+class _PageGap(NamedTuple):
+    missing_item: str
+    failed_cursor: str | None
+
+
+def _page_gap(batch: TopicBatch) -> _PageGap | None:
     expected = None
     if not batch.page_manifest.pages:
-        return True, expected
+        return _PageGap("expected_cursor:<initial>", None)
+    previous_page_id = None
     for page in batch.page_manifest.pages:
         if page.request_cursor != expected:
-            return True, expected
+            if expected is None and previous_page_id is not None:
+                missing_item = f"missing_after_page:{previous_page_id}"
+            else:
+                missing_item = "expected_cursor:" + (
+                    expected if expected is not None else "<initial>"
+                )
+            return _PageGap(missing_item, page.request_cursor)
         expected = page.next_cursor
+        previous_page_id = page.page_id
     if expected != batch.page_manifest.terminal_cursor:
-        return True, expected
-    return False, None
+        return _PageGap(
+            "expected_cursor:" + (expected if expected is not None else "<terminal>"),
+            None,
+        )
+    return None
 
 
+TOPIC_SNAPSHOT_CURSOR_TTL = timedelta(minutes=15)
 _CURSOR_FIELDS = {
     "version",
     "sort_version",
+    "issued_at",
+    "expires_at",
     "watermark",
     "transaction_snapshot",
     "filters",
@@ -137,6 +156,19 @@ def _decode_cursor(value: str, signing_key: bytes) -> dict[str, Any]:
         json.JSONDecodeError,
     ):
         raise ValueError("Invalid topic snapshot cursor") from None
+
+
+def _canonical_utc_datetime(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError
+    parsed = datetime.fromisoformat(value)
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() != timedelta(0)
+        or value != parsed.isoformat()
+    ):
+        raise ValueError
+    return parsed
 
 
 class TopicRepository(Repository):
@@ -224,10 +256,12 @@ class TopicRepository(Repository):
                 quality = _quality_report(report)
                 rejected = not report.publishable
                 if rejected:
-                    has_page_gap, failed_cursor = _page_gap(batch)
+                    page_gap = _page_gap(batch)
                     missing_page = (
-                        "expected_cursor:"
-                        + (failed_cursor if failed_cursor is not None else "<initial>")
+                        page_gap.missing_item if page_gap is not None else None
+                    )
+                    failed_cursor = (
+                        page_gap.failed_cursor if page_gap is not None else None
                     )
                     connection.execute(
                         insert(topic_import_attempts).values(
@@ -241,7 +275,8 @@ class TopicRepository(Repository):
                             stage="quality",
                             missing_items=[
                                 missing_page
-                                if issue.code == "page_manifest" and has_page_gap
+                                if issue.code == "page_manifest"
+                                and missing_page is not None
                                 else issue.message
                                 for issue in report.issues
                                 if issue.code
@@ -444,6 +479,7 @@ class TopicRepository(Repository):
         if source_id is not None:
             _identifier(source_id)
         operation_now = self.clock()
+        operation_utc = operation_now.astimezone(UTC)
         cursor_data = None
         if cursor is not None:
             cursor_data = _decode_cursor(cursor, self._cursor_signing_key)
@@ -458,6 +494,14 @@ class TopicRepository(Repository):
                     or cursor_data["version"] != 1
                     or type(cursor_data["sort_version"]) is not int
                     or cursor_data["sort_version"] != 1
+                ):
+                    raise ValueError
+                issued_at = _canonical_utc_datetime(cursor_data["issued_at"])
+                expires_at = _canonical_utc_datetime(cursor_data["expires_at"])
+                if (
+                    expires_at != issued_at + TOPIC_SNAPSHOT_CURSOR_TTL
+                    or issued_at > operation_utc
+                    or operation_utc >= expires_at
                 ):
                     raise ValueError
                 filters = cursor_data["filters"]
@@ -499,6 +543,8 @@ class TopicRepository(Repository):
             except (KeyError, TypeError, ValueError):
                 raise ValueError("Invalid topic snapshot cursor") from None
         else:
+            issued_at = operation_utc
+            expires_at = issued_at + TOPIC_SNAPSHOT_CURSOR_TTL
             watermark = operation_now
             transaction_snapshot = None
 
@@ -599,6 +645,8 @@ class TopicRepository(Repository):
                 {
                     "version": 1,
                     "sort_version": 1,
+                    "issued_at": issued_at.isoformat(),
+                    "expires_at": expires_at.isoformat(),
                     "watermark": watermark.isoformat(),
                     "transaction_snapshot": transaction_snapshot,
                     "filters": {
