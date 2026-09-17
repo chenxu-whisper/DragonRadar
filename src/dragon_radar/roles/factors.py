@@ -127,16 +127,18 @@ def topic_amount_share(
     if amount < 0:
         raise AnalysisUnavailable("amount must be nonnegative")
     amounts = _values(eligible_amounts, "eligible amounts", nonnegative=True)
-    if (currency is None) != (eligible_currencies is None):
-        raise AnalysisUnavailable("currency metadata must be supplied together")
-    if eligible_currencies is not None:
-        currencies = tuple(eligible_currencies)
-        if (
-            not currency
-            or len(currencies) != len(amounts)
-            or any(member_currency != currency for member_currency in currencies)
-        ):
-            raise AnalysisUnavailable("currency mismatch in topic amounts")
+    if not isinstance(currency, str) or not currency:
+        raise AnalysisUnavailable("currency metadata is required")
+    if eligible_currencies is None:
+        raise AnalysisUnavailable("currency metadata is required")
+    currencies = tuple(eligible_currencies)
+    if len(currencies) != len(amounts) or any(
+        not isinstance(member_currency, str)
+        or not member_currency
+        or member_currency != currency
+        for member_currency in currencies
+    ):
+        raise AnalysisUnavailable("currency mismatch in topic amounts")
     with localcontext(_decimal_context()):
         denominator = sum(amounts, start=Decimal(0))
         _positive(denominator, "topic amount denominator")

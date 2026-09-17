@@ -34,6 +34,42 @@ def snapshot(repository):
     return repository.publish(repository.import_batch(batch(), key="api").id)
 
 
+async def test_create_app_validates_every_frozen_role_rule(monkeypatch):
+    from dragon_radar.api import create_app
+    from dragon_radar.roles import rules
+
+    validated = []
+
+    def record_validation(version, canonical_json):
+        validated.append((version, canonical_json))
+
+    monkeypatch.setattr(rules, "validate_rule_definition", record_validation)
+
+    create_app()
+
+    assert validated == [
+        (version, rules.canonical_rule_json(version))
+        for version in rules.RULE_DEFINITIONS
+    ]
+
+
+async def test_create_app_rejects_frozen_role_rule_digest_drift(monkeypatch):
+    from dragon_radar.api import create_app
+    from dragon_radar.roles import rules
+
+    canonical_rule_json = rules.canonical_rule_json
+
+    def drifted_rule_json(version):
+        if version == "role-test-v1":
+            return "{}"
+        return canonical_rule_json(version)
+
+    monkeypatch.setattr(rules, "canonical_rule_json", drifted_rule_json)
+
+    with pytest.raises(RuntimeError, match="role-test-v1"):
+        create_app()
+
+
 async def test_health_live_no_config_or_connection_and_docs_disabled(monkeypatch):
     from dragon_radar.api import create_app
 

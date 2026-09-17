@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 
 import pytest
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from dragon_radar.roles.models import RoleCandidate, RoleTopicStatus
 from dragon_radar.roles.rules import (
     ROLE_RULE_SHA256,
     ROLE_RULE_VERSION,
+    ROLE_TEST_RULE_SHA256,
     RULE_DEFINITIONS,
     canonical_rule_json,
     validate_rule_definition,
@@ -87,7 +89,16 @@ def test_mean_absolute_deviation_rate_uses_decimal_mean():
     ("function", "args"),
     [
         (period_return, (Decimal("0"), Decimal("1"))),
-        (topic_amount_share, (Decimal("0"), (Decimal("0"), Decimal("0")))),
+        (
+            partial(
+                topic_amount_share,
+                Decimal("0"),
+                (Decimal("0"), Decimal("0")),
+                currency="CNY",
+                eligible_currencies=("CNY", "CNY"),
+            ),
+            (),
+        ),
         (mean_absolute_deviation_rate, ((Decimal("0"), Decimal("0")),)),
     ],
 )
@@ -122,6 +133,31 @@ def test_topic_share_rejects_incomplete_currency_metadata():
         )
 
 
+def test_topic_share_rejects_missing_currency_metadata():
+    with pytest.raises(AnalysisUnavailable, match="currency"):
+        topic_amount_share(Decimal("25"), (Decimal("25"), Decimal("75")))
+
+
+@pytest.mark.parametrize(
+    ("currency", "eligible_currencies"),
+    [
+        ("", ("CNY", "CNY")),
+        ("CNY", ("CNY", "")),
+    ],
+)
+def test_topic_share_rejects_empty_currency_metadata(
+    currency,
+    eligible_currencies,
+):
+    with pytest.raises(AnalysisUnavailable, match="currency"):
+        topic_amount_share(
+            Decimal("25"),
+            (Decimal("25"), Decimal("75")),
+            currency=currency,
+            eligible_currencies=eligible_currencies,
+        )
+
+
 def test_knowledge_cutoff_is_earlier_snapshot_time_in_utc():
     market_as_of = datetime(2026, 9, 17, 8, tzinfo=UTC)
     topic_as_of = market_as_of - timedelta(minutes=5)
@@ -134,25 +170,253 @@ def test_knowledge_cutoff_rejects_naive_datetimes():
         knowledge_cutoff(datetime(2026, 9, 17), datetime(2026, 9, 17, tzinfo=UTC))
 
 
-def test_rule_definitions_are_canonical_immutable_and_digest_checked():
+EXPECTED_DECIMAL_CONTEXT = {
+    "precision": 34,
+    "rounding": "ROUND_HALF_EVEN",
+    "emin": -999999,
+    "emax": 999999,
+    "capitals": 1,
+    "clamp": 0,
+    "traps": ["DivisionByZero", "InvalidOperation", "Overflow"],
+}
+
+EXPECTED_FORMULA_CONTRACTS = {
+    "adjusted_price": "close(d) * adjustment_factor(d)",
+    "return": "adjusted_price(b) / adjusted_price(a) - 1",
+    "relative_return": "security_return(a,b) - benchmark_return(a,b)",
+    "maximum_drawdown": (
+        "max(1 - adjusted_price(d) / "
+        "max(adjusted_price(k) for k in [a,d]) for d in [a,b])"
+    ),
+    "topic_amount_share": (
+        "amount(i,d) / sum(amount(member,d) for member in eligible_topic_members(d))"
+    ),
+    "mean": "sum(values) / count(values)",
+    "mean_absolute_deviation_rate": ("mean(abs(value - mean(values))) / mean(values)"),
+    "numeric_type": "Decimal",
+    "price_basis": "same_market_snapshot_adjusted_close",
+    "amount_basis": "raw_currency",
+    "amount_currency_policy": "single_currency_no_conversion",
+    "divisor_policy": "finite_and_strictly_positive",
+}
+
+EXPECTED_ROLE_RULES = {
+    "trend": {
+        "capability": "ready",
+        "required_inputs": {
+            "adjusted_prices": {
+                "window": "T-60..T",
+                "observations": 61,
+            },
+            "market_benchmark": {
+                "windows": ["T-60..T", "T-20..T"],
+                "definition": "eligible_declared_market_pool_return_median",
+            },
+            "topic_benchmark": {
+                "window": "T-60..T",
+                "definition": "eligible_topic_member_mdd_median",
+            },
+        },
+        "factors": {
+            "relative60": ("return(security,T-60,T) - market_median_return(T-60,T)"),
+            "relative20": ("return(security,T-20,T) - market_median_return(T-20,T)"),
+            "mdd60": "maximum_drawdown(security,T-60,T)",
+        },
+        "candidate_conditions": [
+            "relative60 > 0",
+            "relative20 > 0",
+            "mdd60 <= eligible_topic_median(mdd60)",
+        ],
+        "sort": [
+            {"factor": "relative60", "direction": "desc"},
+            {"factor": "relative20", "direction": "desc"},
+            {"factor": "mdd60", "direction": "asc"},
+        ],
+    },
+    "core": {
+        "capability": "ready",
+        "required_inputs": {
+            "daily_amounts": {
+                "window": "T-19..T",
+                "observations": 20,
+            },
+            "daily_topic_amount_coverage": {
+                "window": "T-19..T",
+                "status": "complete",
+            },
+        },
+        "factors": {
+            "share5": "mean(topic_amount_share(security,d) for d in T-4..T)",
+            "avg20": "mean(amount[T-19..T])",
+            "mad20": "mean_absolute_deviation_rate(amount[T-19..T])",
+        },
+        "candidate_conditions": [
+            "share5 >= eligible_topic_median(share5)",
+            "avg20 >= eligible_topic_median(avg20)",
+        ],
+        "sort": [
+            {"factor": "share5", "direction": "desc"},
+            {"factor": "avg20", "direction": "desc"},
+            {"factor": "mad20", "direction": "asc"},
+        ],
+    },
+    "emotion": {
+        "capability": "simplified",
+        "rule_id": "emotion-daily-v1",
+        "required_inputs": {
+            "daily_limit_data": {"window": "T"},
+            "closing_limit_streak": {"window": "through_T"},
+            "adjusted_prices": {
+                "window": "T-5..T",
+                "observations": 6,
+            },
+            "daily_amount": {"window": "T"},
+        },
+        "factors": {
+            "relative5": (
+                "return(security,T-5,T) - eligible_topic_median_return(T-5,T)"
+            ),
+            "daily_topic_share": "topic_amount_share(security,T)",
+        },
+        "candidate_conditions": [
+            "close(T) == limit_up_price(T)",
+            "closing_limit_streak >= 1",
+        ],
+        "sort": [
+            {"factor": "closing_limit_streak", "direction": "desc"},
+            {"factor": "relative5", "direction": "desc"},
+            {"factor": "daily_topic_share", "direction": "desc"},
+        ],
+    },
+    "catchup": {
+        "capability": "simplified",
+        "rule_id": "catchup-daily-v1",
+        "required_inputs": {
+            "adjusted_prices": {
+                "window": "T-25..T",
+                "observations": 26,
+            },
+            "daily_amounts": {
+                "window": "T-24..T",
+                "observations": 25,
+            },
+            "topic_return_medians": {
+                "windows": ["T-25..T-5", "T-5..T"],
+            },
+        },
+        "factors": {
+            "prior_lag": ("topic_median_return(T-25,T-5) - return(security,T-25,T-5)"),
+            "current_excess": ("return(security,T-5,T) - topic_median_return(T-5,T)"),
+            "amount_change": ("mean(amount[T-4..T]) / mean(amount[T-24..T-5]) - 1"),
+        },
+        "candidate_conditions": [
+            "prior_lag > 0",
+            "current_excess > 0",
+            "amount_change > 0",
+        ],
+        "sort": [
+            {"factor": "current_excess", "direction": "desc"},
+            {"factor": "prior_lag", "direction": "desc"},
+            {"factor": "amount_change", "direction": "desc"},
+        ],
+    },
+    "follower": {
+        "capability": "watch_only",
+        "output_status": "watch",
+        "required_inputs": {
+            "reference_core": {
+                "role": "trend",
+                "tie_rank": 1,
+                "cardinality": "exactly_one",
+            },
+            "adjusted_prices": {
+                "window": "T-5..T",
+                "observations": 6,
+            },
+            "daily_amounts": {
+                "window": "T-9..T",
+                "observations": 10,
+            },
+        },
+        "factors": {
+            "return5": "return(security,T-5,T)",
+            "amount_change": ("mean(amount[T-4..T]) / mean(amount[T-9..T-5]) - 1"),
+        },
+        "candidate_conditions": [
+            "return5 > 0",
+            "return5 < reference_core_return5",
+        ],
+        "sort": [
+            {"factor": "return5", "direction": "desc"},
+            {"factor": "amount_change", "direction": "desc"},
+        ],
+    },
+    "relay": {
+        "capability": "pending_validation",
+        "predecessor_identity": {
+            "trade_session": "previous",
+            "activity": "unique_active_run",
+            "same_fields": [
+                "rule_version",
+                "visibility_mode",
+                "market_benchmark",
+                "topic_identity",
+            ],
+        },
+        "core_identity": {
+            "role": "trend",
+            "previous": {"tie_rank": 1, "cardinality": "exactly_one"},
+            "current": {"tie_rank": 1, "cardinality": "exactly_one"},
+            "condition": "previous_security_id != current_security_id",
+        },
+    },
+}
+
+
+def test_rule_definitions_are_complete_canonical_and_immutable():
     assert ROLE_RULE_VERSION == "role-v1"
-    assert len(ROLE_RULE_SHA256) == 64
-    assert RULE_DEFINITIONS["role-v1"]["allowed_boards"] == (
-        "sh_main",
-        "sz_main",
-    )
-    assert RULE_DEFINITIONS["role-test-v1"]["allowed_boards"] == ("synthetic_test",)
-    assert RULE_DEFINITIONS["role-test-v1"]["production_activatable"] is False
+    production = json.loads(canonical_rule_json("role-v1"))
+    test = json.loads(canonical_rule_json("role-test-v1"))
+
+    assert production == {
+        "rule_version": "role-v1",
+        "allowed_boards": ["sh_main", "sz_main"],
+        "production_activatable": True,
+        "decimal_context": EXPECTED_DECIMAL_CONTEXT,
+        "minimum_listing_sessions": 120,
+        "minimum_topic_members": 5,
+        "formula_contracts": EXPECTED_FORMULA_CONTRACTS,
+        "roles": EXPECTED_ROLE_RULES,
+    }
+    assert test == {
+        **production,
+        "rule_version": "role-test-v1",
+        "allowed_boards": ["synthetic_test"],
+        "production_activatable": False,
+        "minimum_listing_sessions": 1,
+        "minimum_topic_members": 1,
+    }
     with pytest.raises(TypeError):
         RULE_DEFINITIONS["role-v1"]["allowed_boards"] = ("synthetic_test",)
 
-    canonical = canonical_rule_json(ROLE_RULE_VERSION)
-    validate_rule_definition(ROLE_RULE_VERSION, canonical)
-    changed = json.loads(canonical)
+
+def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
+    assert (
+        ROLE_RULE_SHA256
+        == "cf8e5b5b9a944eec801aa95b6694e28dba9e7576e2077ff9802b5e9551ec6714"
+    )
+    assert (
+        ROLE_TEST_RULE_SHA256
+        == "90948aeb3441fcd56a137585eec14c0fdcf9629a686fbb48c95833a2f8f92170"
+    )
+    validate_rule_definition("role-v1", canonical_rule_json("role-v1"))
+    validate_rule_definition("role-test-v1", canonical_rule_json("role-test-v1"))
+
+    changed = json.loads(canonical_rule_json("role-v1"))
     changed["minimum_topic_members"] += 1
     with pytest.raises(RuntimeError, match="digest"):
         validate_rule_definition(
-            ROLE_RULE_VERSION,
+            "role-v1",
             json.dumps(changed, sort_keys=True, separators=(",", ":")),
         )
 

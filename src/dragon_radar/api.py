@@ -28,6 +28,7 @@ from dragon_radar.readmodels.securities import (
     list_securities,
     security_detail,
 )
+from dragon_radar.roles import rules as role_rules
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.models import Snapshot
 from dragon_radar.storage.repository import (
@@ -171,6 +172,7 @@ def create_app(
     database_url: str | None = None, *, repository: Repository | None = None
 ) -> FastAPI:
     """Explicit URL or environment only; no .env loading and no startup migration."""
+    role_rules.validate_frozen_rule_definitions()
     owned = repository is None
     value = database_url or os.environ.get("DRAGON_DATABASE_URL")
     database = (
