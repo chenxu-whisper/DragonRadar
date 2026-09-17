@@ -38,6 +38,93 @@ _FORMULA_CONTRACTS = {
     "divisor_policy": "finite_and_strictly_positive",
 }
 
+_COMMON_CONTRACT = {
+    "snapshot_binding": {
+        "trade_date": "market_snapshot.trade_date == topic_snapshot.trade_date",
+        "source_grants_at_materialization": {
+            "market_snapshot": {
+                "local_storage": True,
+                "local_display": True,
+            },
+            "topic_snapshot": {
+                "local_storage": True,
+                "local_display": True,
+            },
+        },
+        "knowledge_cutoff": "min(market_snapshot.as_of,topic_snapshot.as_of)",
+        "available_at_refilter": [
+            "market_bars",
+            "security_states",
+            "topic_definitions",
+            "topic_memberships",
+        ],
+        "available_at_condition": "available_at <= knowledge_cutoff",
+    },
+    "security_eligibility": {
+        "topic_membership": "effective_on_trade_date",
+        "market_pool": "declared_market_pool",
+        "security_state": "effective_on_trade_date",
+        "required_state_values": {
+            "security_type": "common_stock",
+            "is_st": False,
+            "is_delisting": False,
+        },
+        "required_non_null_fields": [
+            "security_type",
+            "board_category",
+            "is_delisting",
+        ],
+        "missing_required_field": "excluded_from_formal_role_pool",
+        "board_category": "in_allowed_boards",
+    },
+    "exchange_policy": {
+        "mode": "single_exchange",
+        "member_exchange": "market_calendar.exchange",
+        "cross_exchange_topic": "insufficient",
+    },
+    "listing_sessions": {
+        "calendar": "selected_market_calendar",
+        "count": "count(d where listing_date <= d <= trade_date)",
+        "minimum": "minimum_listing_sessions",
+        "incomplete_calendar": "insufficient",
+    },
+    "role_pool": {
+        "minimum_valid_members": "minimum_topic_members",
+        "valid_member": ("valid_and_known_on_trade_date_satisfying_all_role_inputs"),
+        "below_minimum": "insufficient",
+    },
+    "missing_input_policy": [
+        "do_not_shorten_window",
+        "do_not_zero_fill",
+        "do_not_reallocate_factor_priority",
+    ],
+    "benchmark_members": {
+        "window_factors": {
+            "applies_to": ["window_return", "maximum_drawdown", "return_median"],
+            "members": (
+                "intersection_continuously_valid_for_entire_window_"
+                "and_known_by_cutoff_with_complete_prices"
+            ),
+        },
+        "daily_topic_amount_share": (
+            "members_valid_and_known_on_day_with_complete_coverage"
+        ),
+        "multi_day_topic_amount_share": (
+            "arithmetic_mean_of_daily_shares_each_using_that_days_member_set"
+        ),
+        "observation_day_qualification_count": (
+            "members_satisfying_all_inputs_for_role"
+        ),
+    },
+    "ranking": {
+        "numeric_values": "unrounded_decimal",
+        "tie_definition": "identical_complete_evidence_tuple",
+        "rank_method": "dense",
+        "rank_start": 1,
+        "security_id": "stable_display_order_within_tie_only",
+    },
+}
+
 _ROLE_RULES = {
     "trend": {
         "capability": "ready",
@@ -170,21 +257,90 @@ _ROLE_RULES = {
     },
     "relay": {
         "capability": "pending_validation",
+        "output_status": "pending_validation",
+        "same_day_output": "pending_validation_only_no_candidate",
         "predecessor_identity": {
             "trade_session": "previous",
             "activity": "unique_active_run",
             "same_fields": [
                 "rule_version",
                 "visibility_mode",
-                "market_benchmark",
+                "market_benchmark_definition",
                 "topic_identity",
             ],
+        },
+        "comparability": {
+            "topic_identity": "continuous",
+            "missing_predecessor": "insufficient",
+            "topic_incomparable": "insufficient",
+            "same_day_changes": {
+                "topic_revision": "not_comparable",
+                "rule_version": "not_comparable",
+                "visibility_mode": "not_comparable",
+                "market_benchmark": "not_comparable",
+            },
+            "membership_change": "record_separately",
         },
         "core_identity": {
             "role": "trend",
             "previous": {"tie_rank": 1, "cardinality": "exactly_one"},
             "current": {"tie_rank": 1, "cardinality": "exactly_one"},
             "condition": "previous_security_id != current_security_id",
+        },
+        "factors": {
+            "old_relative5": (
+                "return(previous_security,T-5,T) - eligible_topic_median_return(T-5,T)"
+            ),
+            "new_relative5": (
+                "return(current_security,T-5,T) - eligible_topic_median_return(T-5,T)"
+            ),
+            "topic_daily_median_return": "eligible_topic_median_return(T-1,T)",
+        },
+        "pending_conditions": [
+            "old_relative5 <= 0",
+            "new_relative5 > 0",
+            "topic_daily_median_return > 0",
+        ],
+        "validation": {
+            "window": "T+1..T+5",
+            "return_endpoints": "T..T+5",
+            "run_visibility": (
+                "daily_visible_active_runs_with_same_rule_visibility_"
+                "and_continuous_topic_identity"
+            ),
+            "write_policy": (
+                "append_immutable_validation_without_updating_original_result"
+            ),
+            "outcomes": {
+                "supported": "new_return > old_return and new_return > topic_median",
+                "weakened": "new_return > old_return and new_return <= topic_median",
+                "refuted": "new_return <= old_return",
+                "unavailable": (
+                    "suspension_or_any_missing_price_or_topic_incomparable_"
+                    "or_incomplete_window"
+                ),
+            },
+            "benchmark_members": (
+                "known_at_T_with_identity_continuous_T_through_T+5_"
+                "and_all_six_price_points"
+            ),
+            "denominator_failure": (
+                "suspension_or_membership_change_makes_validation_unavailable"
+            ),
+            "record_identity": "pending_result_id",
+            "record_fields": [
+                "window_start",
+                "window_end",
+                "old_return_raw",
+                "new_return_raw",
+                "topic_median_raw",
+                "input_run_ids",
+                "reasons",
+            ],
+            "chain": (
+                "one_current_validation_chain_per_pending_result_"
+                "with_append_only_corrections"
+            ),
         },
     },
 }
@@ -206,6 +362,7 @@ def _raw_rule_definition(
         "minimum_listing_sessions": minimum_listing_sessions,
         "minimum_topic_members": minimum_topic_members,
         "formula_contracts": _FORMULA_CONTRACTS,
+        "common_contract": _COMMON_CONTRACT,
         "roles": _ROLE_RULES,
     }
 
@@ -268,9 +425,9 @@ def canonical_rule_json(version: str) -> str:
     )
 
 
-ROLE_RULE_SHA256 = "cf8e5b5b9a944eec801aa95b6694e28dba9e7576e2077ff9802b5e9551ec6714"
+ROLE_RULE_SHA256 = "3daabf4bcec2e6e3042d7d65d530bb07863721c322d4bab1ca2412abbbfa8cd4"
 ROLE_TEST_RULE_SHA256 = (
-    "90948aeb3441fcd56a137585eec14c0fdcf9629a686fbb48c95833a2f8f92170"
+    "84ef2ae02a9fa176aaca19a7f0f56f69743fa4a778e6074dcb5771d54f51eb99"
 )
 _RULE_SHA256 = MappingProxyType(
     {
