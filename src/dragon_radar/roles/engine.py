@@ -3,7 +3,7 @@
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -30,7 +30,11 @@ from dragon_radar.roles.models import (
     RoleTopicStatus,
 )
 from dragon_radar.roles.rules import RULE_DEFINITIONS
-from dragon_radar.topics.models import TopicDefinition
+from dragon_radar.topics.models import (
+    TopicCoverageCell,
+    TopicDefinition,
+    TopicMembership,
+)
 
 SortKey = tuple[Decimal, ...]
 Eligibility = Literal["valid", "legal_excluded", "missing", "cross_exchange"]
@@ -97,6 +101,11 @@ class _PreparedContext:
     context: RoleContext
     topic_id: str
     topic_definition: TopicDefinition | None
+    pool: frozenset[str]
+    topic_definitions: tuple[TopicDefinition, ...]
+    memberships: tuple[TopicMembership, ...]
+    coverage_by_session: dict[date, tuple[TopicCoverageCell, ...]]
+    coverage_actual_member_counts: dict[tuple[date, datetime], int | None]
     members_by_session: dict[date, tuple[str, ...]]
     states: dict[str, tuple[SecurityState, ...]]
     bars: dict[tuple[str, date], tuple[DailyBar, ...]]
@@ -104,12 +113,15 @@ class _PreparedContext:
     @classmethod
     def build(cls, context: RoleContext, topic_id: str) -> "_PreparedContext":
         cutoff = context.knowledge_cutoff
-        definitions = tuple(
+        topic_definitions = tuple(
             definition
             for definition in context.topic.topics
-            if definition.topic_id == topic_id
-            and definition.available_at <= cutoff
-            and _effective(
+            if definition.topic_id == topic_id and definition.available_at <= cutoff
+        )
+        definitions = tuple(
+            definition
+            for definition in topic_definitions
+            if _effective(
                 definition.effective_from,
                 definition.effective_to,
                 context.market.trade_date,
@@ -121,6 +133,43 @@ class _PreparedContext:
             for membership in context.topic.memberships
             if membership.topic_id == topic_id and membership.available_at <= cutoff
         )
+        coverage_groups: dict[date, list[TopicCoverageCell]] = {}
+        for cell in context.topic.coverage_cells:
+            if cell.topic_id == topic_id and cell.complete_as_of <= cutoff:
+                coverage_groups.setdefault(cell.trade_date, []).append(cell)
+        coverage_by_session = {
+            day: tuple(cells) for day, cells in coverage_groups.items()
+        }
+        coverage_actual_member_counts: dict[
+            tuple[date, datetime], int | None
+        ] = {}
+        for day, cells in coverage_by_session.items():
+            for complete_as_of in {cell.complete_as_of for cell in cells}:
+                visible_definitions = tuple(
+                    definition
+                    for definition in topic_definitions
+                    if definition.available_at <= complete_as_of
+                    and _effective(
+                        definition.effective_from,
+                        definition.effective_to,
+                        day,
+                    )
+                )
+                actual_count = None
+                if len(visible_definitions) == 1:
+                    actual_count = len(
+                        {
+                            membership.security_id
+                            for membership in memberships
+                            if membership.available_at <= complete_as_of
+                            and _effective(
+                                membership.effective_from,
+                                membership.effective_to,
+                                day,
+                            )
+                        }
+                    )
+                coverage_actual_member_counts[(day, complete_as_of)] = actual_count
         sessions = context.market.calendar.sessions
         indexed_days = (
             sessions
@@ -179,6 +228,11 @@ class _PreparedContext:
             context=context,
             topic_id=topic_id,
             topic_definition=topic_definition,
+            pool=frozenset(context.market.expected_security_ids),
+            topic_definitions=topic_definitions,
+            memberships=memberships,
+            coverage_by_session=coverage_by_session,
+            coverage_actual_member_counts=coverage_actual_member_counts,
             members_by_session=members_by_session,
             states={
                 security_id: tuple(values)
@@ -190,10 +244,6 @@ class _PreparedContext:
     @property
     def trade_date(self) -> date:
         return self.context.market.trade_date
-
-    @property
-    def pool(self) -> frozenset[str]:
-        return frozenset(self.context.market.expected_security_ids)
 
     def members_on(self, day: date) -> tuple[str, ...]:
         return self.members_by_session.get(day, ())
@@ -283,13 +333,7 @@ def _insufficient(
 
 def _observation_expected_member_count(prepared: _PreparedContext) -> int:
     known_member_count = len(prepared.members_on(prepared.trade_date))
-    visible_cells = tuple(
-        cell
-        for cell in prepared.context.topic.coverage_cells
-        if cell.topic_id == prepared.topic_id
-        and cell.trade_date == prepared.trade_date
-        and cell.complete_as_of <= prepared.context.knowledge_cutoff
-    )
+    visible_cells = prepared.coverage_by_session.get(prepared.trade_date, ())
     if len(visible_cells) != 1:
         return known_member_count
     return max(known_member_count, visible_cells[0].expected_member_count)
@@ -756,13 +800,7 @@ def _coverage_complete(
         or day not in topic.calendar.sessions
     ):
         return False
-    matches = tuple(
-        cell
-        for cell in topic.coverage_cells
-        if cell.topic_id == prepared.topic_id
-        and cell.trade_date == day
-        and cell.complete_as_of <= prepared.context.knowledge_cutoff
-    )
+    matches = prepared.coverage_by_session.get(day, ())
     if len(matches) != 1:
         return False
     cell = matches[0]
@@ -771,23 +809,13 @@ def _coverage_complete(
         or cell.received_member_count != cell.expected_member_count
     ):
         return False
-    definitions = tuple(
-        definition
-        for definition in prepared.context.topic.topics
-        if definition.topic_id == prepared.topic_id
-        and definition.available_at <= cell.complete_as_of
-        and _effective(definition.effective_from, definition.effective_to, day)
+    actual_member_count = prepared.coverage_actual_member_counts.get(
+        (day, cell.complete_as_of)
     )
-    if len(definitions) != 1:
-        return False
-    actual_members = {
-        membership.security_id
-        for membership in prepared.context.topic.memberships
-        if membership.topic_id == prepared.topic_id
-        and membership.available_at <= cell.complete_as_of
-        and _effective(membership.effective_from, membership.effective_to, day)
-    }
-    return cell.received_member_count == len(actual_members)
+    return (
+        actual_member_count is not None
+        and cell.received_member_count == actual_member_count
+    )
 
 
 def _amount_on(

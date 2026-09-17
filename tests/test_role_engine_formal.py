@@ -254,6 +254,39 @@ def test_prepared_members_index_includes_off_calendar_observation_day():
     assert prepared.members_on(off_calendar_day) == ("A", "B")
 
 
+def test_prepared_pool_is_materialized_once_before_repeated_eligibility_checks():
+    from dragon_radar.roles import engine
+
+    class CountingSecurityIds:
+        def __init__(self, values):
+            self.values = values
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return iter(self.values)
+
+    context = _context()
+    expected_security_ids = CountingSecurityIds(
+        context.market.expected_security_ids
+    )
+    market = context.market.model_copy(
+        update={"expected_security_ids": expected_security_ids}
+    )
+    forged = RoleContext.model_construct(
+        market=market,
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+
+    prepared = engine._PreparedContext.build(forged, "topic-a")
+    for _ in range(10):
+        engine._classify_current_members(prepared)
+
+    assert expected_security_ids.iterations == 1
+    assert prepared.pool is prepared.pool
+
+
 def test_listed_session_count_uses_bisect_with_inclusive_endpoints(monkeypatch):
     from bisect import bisect_left as standard_bisect_left
     from bisect import bisect_right as standard_bisect_right
@@ -768,6 +801,59 @@ def test_topic_coverage_rejects_day_absent_from_topic_calendar():
     )
     prepared = _PreparedContext.build(forged, "topic-a")
     assert not _coverage_complete(prepared, missing_day)
+
+
+def test_trend_indexes_global_topic_coverage_inputs_once_during_build():
+    _, _, evaluate_trend = _engine()
+
+    class CountingRows:
+        def __init__(self, values):
+            self.values = values
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return iter(self.values)
+
+    context = _context()
+    baseline = evaluate_trend(context, "topic-a")
+    other_definition = context.topic.topics[0].model_copy(
+        update={"topic_id": "topic-b", "name": "Synthetic Topic B"}
+    )
+    other_memberships = tuple(
+        membership.model_copy(update={"topic_id": "topic-b"})
+        for membership in context.topic.memberships
+    )
+    other_cells = tuple(
+        cell.model_copy(update={"topic_id": "topic-b"})
+        for cell in context.topic.coverage_cells
+    )
+    topics = CountingRows((*context.topic.topics, other_definition))
+    memberships = CountingRows(
+        (*context.topic.memberships, *other_memberships)
+    )
+    coverage_cells = CountingRows(
+        (*context.topic.coverage_cells, *other_cells)
+    )
+    topic = context.topic.model_copy(
+        update={
+            "topics": topics,
+            "memberships": memberships,
+            "coverage_cells": coverage_cells,
+        }
+    )
+    forged = RoleContext.model_construct(
+        market=context.market,
+        topic=topic,
+        rule_version=context.rule_version,
+    )
+
+    result = evaluate_trend(forged, "topic-a")
+
+    assert result == baseline
+    assert topics.iterations == 1
+    assert memberships.iterations == 1
+    assert coverage_cells.iterations == 1
 
 
 @pytest.mark.parametrize(
