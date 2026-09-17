@@ -386,6 +386,108 @@ def test_dense_rank_rejects_nonfinite_key_items():
         dense_rank((row,), key=lambda _: (Decimal("NaN"),))
 
 
+def test_trend_contains_ranking_unavailable_with_exact_partition(monkeypatch):
+    from dragon_radar.roles import engine
+    from dragon_radar.roles.factors import AnalysisUnavailable
+
+    member_ids = ("A", "B", "MISSING", "EXCLUDED")
+    context = _context(
+        member_ids=member_ids,
+        prices={
+            "A": _window_prices("100", "110", "130"),
+            "B": _window_prices("100", "105", "120"),
+            "MISSING": _prices("100", "110", 60),
+            "EXCLUDED": (),
+        },
+        states=tuple(
+            state(
+                security_id=security_id,
+                exchange="TEST",
+                security_type=(
+                    "fund" if security_id == "EXCLUDED" else "common_stock"
+                ),
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            )
+            for security_id in member_ids
+        ),
+    )
+
+    def unavailable(*_args, **_kwargs):
+        raise AnalysisUnavailable("forced ranking failure")
+
+    monkeypatch.setattr(engine, "dense_rank", unavailable)
+
+    result = engine.evaluate_trend(context, "topic-a")
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (4, 0, 1, 3)
+    assert status.reasons == (
+        "EXCLUDED: ineligible security state",
+        "MISSING: missing 61 adjusted prices",
+        "trend ranking unavailable",
+    )
+    assert result.candidates == ()
+
+
+def test_core_contains_ranking_unavailable_with_exact_partition(monkeypatch):
+    from dragon_radar.roles import engine
+    from dragon_radar.roles.factors import AnalysisUnavailable
+
+    member_ids = ("A", "B", "MISSING", "EXCLUDED")
+    context = _context(
+        member_ids=member_ids,
+        amounts={
+            "A": (Decimal("100"),) * 20,
+            "B": (Decimal("200"),) * 20,
+            "MISSING": (Decimal("0"),) * 20,
+            "EXCLUDED": (),
+        },
+        states=tuple(
+            state(
+                security_id=security_id,
+                exchange="TEST",
+                security_type=(
+                    "fund" if security_id == "EXCLUDED" else "common_stock"
+                ),
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            )
+            for security_id in member_ids
+        ),
+    )
+
+    def unavailable(*_args, **_kwargs):
+        raise AnalysisUnavailable("forced ranking failure")
+
+    monkeypatch.setattr(engine, "dense_rank", unavailable)
+
+    result = engine.evaluate_core(context, "topic-a")
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (4, 0, 1, 3)
+    assert status.reasons == (
+        "EXCLUDED: ineligible security state",
+        "MISSING: mean must be positive",
+        "core ranking unavailable",
+    )
+    assert result.candidates == ()
+
+
 def test_trend_uses_market_medians_positive_relative_returns_and_mdd_gate():
     _, _, evaluate_trend = _engine()
     context = _context(

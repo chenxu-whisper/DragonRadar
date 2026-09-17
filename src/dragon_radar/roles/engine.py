@@ -716,12 +716,20 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
         )
         for security_id, factors in raw_factors.items()
     )
-    ranked = _first_tie_group_candidates(
-        dense_rank(
+    try:
+        ranked = dense_rank(
             rows,
             key=lambda row: (-row.factors[0], -row.factors[1], row.factors[2]),
         )
-    )
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "trend",
+            reasons=(*reasons, "trend ranking unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    ranked = _first_tie_group_candidates(ranked)
     has_candidate = any(row.status == "candidate" for row in ranked)
     return RoleEvaluation(
         topic_status=_role_status(
@@ -994,12 +1002,20 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
         )
         for security_id, factors in raw_factors.items()
     )
-    ranked = _first_tie_group_candidates(
-        dense_rank(
+    try:
+        ranked = dense_rank(
             rows,
             key=lambda row: (-row.factors[0], -row.factors[1], row.factors[2]),
         )
-    )
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "core",
+            reasons=(*reasons, "core ranking unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    ranked = _first_tie_group_candidates(ranked)
     has_candidate = any(row.status == "candidate" for row in ranked)
     return RoleEvaluation(
         topic_status=_role_status(
