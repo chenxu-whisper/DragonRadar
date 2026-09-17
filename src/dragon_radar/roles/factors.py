@@ -142,6 +142,10 @@ def topic_amount_share(
     with localcontext(_decimal_context()):
         denominator = sum(amounts, start=Decimal(0))
         _positive(denominator, "topic amount denominator")
+        if amount > denominator:
+            raise AnalysisUnavailable(
+                "amount must not exceed eligible topic amount denominator"
+            )
         return amount / denominator
 
 

@@ -60,6 +60,14 @@ ALLOWED_RESULT_STATUSES: Mapping[RoleName, frozenset[CandidateStatus]] = (
         }
     )
 )
+PRIMARY_RESULT_STATUS: Mapping[RoleCapability, CandidateStatus] = MappingProxyType(
+    {
+        "ready": "candidate",
+        "simplified": "simplified_candidate",
+        "watch_only": "watch",
+        "pending_validation": "pending_validation",
+    }
+)
 
 
 class _StrictFrozenRoleModel(FrozenModel):
@@ -138,6 +146,14 @@ class RoleTopicStatus(_StrictFrozenRoleModel):
             raise ValueError(
                 f"capability for role {self.role!r} must be {expected_capability!r}"
             )
+        if self.status not in {
+            expected_capability,
+            "insufficient",
+            "no_candidate",
+        }:
+            raise ValueError(
+                f"status {self.status!r} is not allowed for role {self.role!r}"
+            )
         return self
 
 
@@ -154,4 +170,25 @@ class RoleEvaluation(_StrictFrozenRoleModel):
                 raise ValueError("candidate topic_id must equal topic_status.topic_id")
             if candidate.role != self.topic_status.role:
                 raise ValueError("candidate role must equal topic_status.role")
+
+        result_statuses = {candidate.status for candidate in self.candidates}
+        if self.topic_status.status == "insufficient":
+            if result_statuses - {"excluded"}:
+                raise ValueError(
+                    "insufficient role evaluation allows only excluded evidence"
+                )
+            return self
+
+        positive_status = PRIMARY_RESULT_STATUS[self.topic_status.capability]
+        if self.topic_status.status == "no_candidate":
+            if positive_status in result_statuses:
+                raise ValueError(
+                    "no_candidate role evaluation cannot contain positive output"
+                )
+            return self
+
+        if positive_status not in result_statuses:
+            raise ValueError(
+                "successful role evaluation must contain matching positive output"
+            )
         return self

@@ -89,6 +89,19 @@ def test_topic_amount_share_and_average_share_are_exact():
     assert decimal_mean(shares) == Decimal("0.275")
 
 
+def test_topic_amount_share_is_closed_between_zero_and_one():
+    common = {
+        "eligible_amounts": (Decimal("25"), Decimal("75")),
+        "currency": "CNY",
+        "eligible_currencies": ("CNY", "CNY"),
+    }
+
+    assert topic_amount_share(Decimal("0"), **common) == Decimal("0")
+    assert topic_amount_share(Decimal("100"), **common) == Decimal("1")
+    with pytest.raises(AnalysisUnavailable, match="eligible"):
+        topic_amount_share(Decimal("200"), **common)
+
+
 def test_mean_absolute_deviation_rate_uses_decimal_mean():
     assert mean_absolute_deviation_rate(
         tuple(map(Decimal, ("10", "20", "30")))
@@ -227,7 +240,9 @@ EXPECTED_FORMULA_CONTRACTS = {
             "security": "finite_decimal_nonnegative",
             "eligible_members": "finite_decimal_nonnegative",
         },
+        "eligible_set": "includes_subject_security",
         "denominator": "finite_and_strictly_positive",
+        "result_range": "closed_[0,1]",
     },
     "divisor_policy": "finite_and_strictly_positive",
 }
@@ -768,11 +783,11 @@ def test_canonical_allowed_result_statuses_match_role_models():
 def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
     assert (
         ROLE_RULE_SHA256
-        == "e16800106eac2009782609a12f061a79e0c3a8e8d7a7ceea267e39f9981d3c10"
+        == "72b1fdb869b027513b678166b49d463e55642a63d8e5cc9b5631ce660e54991c"
     )
     assert (
         ROLE_TEST_RULE_SHA256
-        == "be51c330b2339dcdc24e54cc41410c61b3d223b7f34c920e7300b501be7be4ac"
+        == "2917c41b57f0909f238d29f795fab39d085ce5772e04502c5a697afa6abb4a39"
     )
     validate_rule_definition("role-v1", canonical_rule_json("role-v1"))
     validate_rule_definition("role-test-v1", canonical_rule_json("role-test-v1"))
@@ -903,6 +918,57 @@ def test_role_topic_status_capability_matches_canonical_role_rule(
         RoleTopicStatus(capability=conflicting_capability, **values)
 
 
+@pytest.mark.parametrize(
+    ("role", "canonical_status"),
+    tuple(ROLE_CAPABILITIES.items()),
+)
+def test_role_topic_status_accepts_only_canonical_success_status(
+    role,
+    canonical_status,
+):
+    values = {
+        "topic_id": "topic-1",
+        "role": role,
+        "capability": canonical_status,
+        "expected": 1,
+        "valid": 1,
+        "legal_excluded": 0,
+        "missing": 0,
+    }
+
+    assert RoleTopicStatus(status=canonical_status, **values).status == canonical_status
+    for generic_status in ("insufficient", "no_candidate"):
+        assert RoleTopicStatus(status=generic_status, **values).status == generic_status
+
+
+@pytest.mark.parametrize(
+    ("role", "conflicting_status"),
+    [
+        ("trend", "simplified"),
+        ("core", "watch_only"),
+        ("emotion", "ready"),
+        ("catchup", "pending_validation"),
+        ("follower", "simplified"),
+        ("relay", "ready"),
+    ],
+)
+def test_role_topic_status_rejects_success_status_for_another_capability(
+    role,
+    conflicting_status,
+):
+    with pytest.raises(ValidationError, match="status"):
+        RoleTopicStatus(
+            topic_id="topic-1",
+            role=role,
+            capability=ROLE_CAPABILITIES[role],
+            status=conflicting_status,
+            expected=1,
+            valid=1,
+            legal_excluded=0,
+            missing=0,
+        )
+
+
 def test_role_evaluation_allows_empty_candidates():
     status = RoleTopicStatus(
         topic_id="topic-1",
@@ -916,6 +982,144 @@ def test_role_evaluation_allows_empty_candidates():
     )
 
     assert RoleEvaluation(topic_status=status).candidates == ()
+
+
+def _role_topic_status(role, status):
+    return RoleTopicStatus(
+        topic_id="topic-1",
+        role=role,
+        capability=ROLE_CAPABILITIES[role],
+        status=status,
+        expected=1,
+        valid=1,
+        legal_excluded=0,
+        missing=0,
+    )
+
+
+def _ranked_role_result(role, status, security_id="600000.SH"):
+    return RankedCandidate(
+        topic_id="topic-1",
+        security_id=security_id,
+        role=role,
+        status=status,
+        factors=(),
+        tie_rank=1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "topic_status", "positive_status", "auxiliary_status"),
+    [
+        ("trend", "ready", "candidate", "eligible_non_candidate"),
+        ("core", "ready", "candidate", "excluded"),
+        ("emotion", "simplified", "simplified_candidate", "eligible_non_candidate"),
+        ("catchup", "simplified", "simplified_candidate", "excluded"),
+        ("follower", "watch_only", "watch", "excluded"),
+        ("relay", "pending_validation", "pending_validation", "excluded"),
+    ],
+)
+def test_role_evaluation_success_requires_matching_positive_output(
+    role,
+    topic_status,
+    positive_status,
+    auxiliary_status,
+):
+    status = _role_topic_status(role, topic_status)
+    positive = _ranked_role_result(role, positive_status)
+    auxiliary = _ranked_role_result(role, auxiliary_status, "600001.SH")
+
+    evaluation = RoleEvaluation(
+        topic_status=status,
+        candidates=(positive, auxiliary),
+    )
+
+    assert evaluation.candidates == (positive, auxiliary)
+    with pytest.raises(ValidationError, match="positive"):
+        RoleEvaluation(topic_status=status, candidates=(auxiliary,))
+    with pytest.raises(ValidationError, match="positive"):
+        RoleEvaluation(topic_status=status)
+
+
+@pytest.mark.parametrize(
+    ("role", "positive_status"),
+    [
+        ("trend", "candidate"),
+        ("core", "candidate"),
+        ("emotion", "simplified_candidate"),
+        ("catchup", "simplified_candidate"),
+        ("follower", "watch"),
+        ("relay", "pending_validation"),
+    ],
+)
+def test_role_evaluation_no_candidate_rejects_positive_output(
+    role,
+    positive_status,
+):
+    status = _role_topic_status(role, "no_candidate")
+
+    with pytest.raises(ValidationError, match="positive"):
+        RoleEvaluation(
+            topic_status=status,
+            candidates=(_ranked_role_result(role, positive_status),),
+        )
+
+
+@pytest.mark.parametrize(
+    ("role", "non_positive_status"),
+    [
+        ("trend", "eligible_non_candidate"),
+        ("core", "excluded"),
+        ("emotion", "eligible_non_candidate"),
+        ("catchup", "excluded"),
+        ("follower", "excluded"),
+        ("relay", "excluded"),
+    ],
+)
+def test_role_evaluation_no_candidate_preserves_legal_non_candidate_evidence(
+    role,
+    non_positive_status,
+):
+    candidate = _ranked_role_result(role, non_positive_status)
+
+    assert RoleEvaluation(
+        topic_status=_role_topic_status(role, "no_candidate"),
+        candidates=(candidate,),
+    ).candidates == (candidate,)
+
+
+@pytest.mark.parametrize(
+    ("role", "disallowed_status"),
+    [
+        ("trend", "candidate"),
+        ("trend", "eligible_non_candidate"),
+        ("emotion", "simplified_candidate"),
+        ("emotion", "eligible_non_candidate"),
+        ("follower", "watch"),
+        ("relay", "pending_validation"),
+    ],
+)
+def test_role_evaluation_insufficient_rejects_completed_qualification_output(
+    role,
+    disallowed_status,
+):
+    with pytest.raises(ValidationError, match="insufficient"):
+        RoleEvaluation(
+            topic_status=_role_topic_status(role, "insufficient"),
+            candidates=(_ranked_role_result(role, disallowed_status),),
+        )
+
+
+@pytest.mark.parametrize("role", tuple(ROLE_CAPABILITIES))
+def test_role_evaluation_insufficient_allows_only_empty_or_excluded_evidence(role):
+    status = _role_topic_status(role, "insufficient")
+    excluded = _ranked_role_result(role, "excluded")
+
+    assert RoleEvaluation(topic_status=status).candidates == ()
+    assert RoleEvaluation(
+        topic_status=status,
+        candidates=(excluded,),
+    ).candidates == (excluded,)
 
 
 @pytest.mark.parametrize(

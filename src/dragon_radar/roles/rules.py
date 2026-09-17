@@ -55,7 +55,9 @@ _FORMULA_CONTRACTS = {
             "security": "finite_decimal_nonnegative",
             "eligible_members": "finite_decimal_nonnegative",
         },
+        "eligible_set": "includes_subject_security",
         "denominator": "finite_and_strictly_positive",
+        "result_range": "closed_[0,1]",
     },
     "divisor_policy": "finite_and_strictly_positive",
 }
@@ -558,9 +560,9 @@ def canonical_rule_json(version: str) -> str:
     )
 
 
-ROLE_RULE_SHA256 = "e16800106eac2009782609a12f061a79e0c3a8e8d7a7ceea267e39f9981d3c10"
+ROLE_RULE_SHA256 = "72b1fdb869b027513b678166b49d463e55642a63d8e5cc9b5631ce660e54991c"
 ROLE_TEST_RULE_SHA256 = (
-    "be51c330b2339dcdc24e54cc41410c61b3d223b7f34c920e7300b501be7be4ac"
+    "2917c41b57f0909f238d29f795fab39d085ce5772e04502c5a697afa6abb4a39"
 )
 _RULE_SHA256 = MappingProxyType(
     {
