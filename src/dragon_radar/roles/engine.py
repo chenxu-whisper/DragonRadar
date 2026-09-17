@@ -263,6 +263,10 @@ def _global_reasons(prepared: _PreparedContext) -> tuple[str, ...]:
         reasons.append("market_calendar_version_mismatch")
     if context.topic.calendar_version != context.topic.calendar.version:
         reasons.append("topic_calendar_version_mismatch")
+    if context.market.calendar.version != context.topic.calendar.version:
+        reasons.append("market_topic_calendar_version_mismatch")
+    if context.market.calendar.sessions != context.topic.calendar.sessions:
+        reasons.append("market_topic_calendar_sessions_mismatch")
     for source, grant, source_id in (
         ("market", context.market.grant, context.market.source_id),
         ("topic", context.topic.grant, context.topic.source_id),
@@ -625,9 +629,15 @@ def _coverage_complete(
     prepared: _PreparedContext,
     day: date,
 ) -> bool:
+    topic = prepared.context.topic
+    if (
+        not topic.coverage_from <= day <= topic.coverage_to
+        or day not in topic.calendar.sessions
+    ):
+        return False
     matches = tuple(
         cell
-        for cell in prepared.context.topic.coverage_cells
+        for cell in topic.coverage_cells
         if cell.topic_id == prepared.topic_id
         and cell.trade_date == day
     )

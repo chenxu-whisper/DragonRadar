@@ -389,6 +389,67 @@ def test_trend_requires_complete_coverage_by_cutoff_for_every_window_day(
     assert result.candidates == ()
 
 
+def test_trend_rejects_cells_outside_declared_topic_coverage_range():
+    _, _, evaluate_trend = _engine()
+    context = _context()
+    first_window_day = SESSIONS[-61]
+    forged = RoleContext(
+        market=context.market,
+        topic=context.topic.model_copy(update={"coverage_from": SESSIONS[-20]}),
+        rule_version=context.rule_version,
+    )
+
+    result = evaluate_trend(forged, "topic-a")
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (3, 0, 0, 3)
+    assert status.reasons == (
+        f"{first_window_day.isoformat()}: topic coverage incomplete",
+    )
+    assert result.candidates == ()
+
+
+def test_topic_coverage_rejects_day_absent_from_topic_calendar():
+    from dragon_radar.roles.engine import _coverage_complete, _PreparedContext
+
+    _, _, evaluate_trend = _engine()
+    context = _context()
+    missing_day = SESSIONS[-30]
+    topic = context.topic.model_copy(
+        update={
+            "calendar": context.topic.calendar.model_copy(
+                update={
+                    "sessions": tuple(
+                        day
+                        for day in context.topic.calendar.sessions
+                        if day != missing_day
+                    )
+                }
+            )
+        }
+    )
+    forged = RoleContext(
+        market=context.market,
+        topic=topic,
+        rule_version=context.rule_version,
+    )
+
+    result = evaluate_trend(forged, "topic-a")
+
+    assert result.topic_status.status == "insufficient"
+    assert result.topic_status.reasons == (
+        "market_topic_calendar_sessions_mismatch",
+    )
+    prepared = _PreparedContext.build(forged, "topic-a")
+    assert not _coverage_complete(prepared, missing_day)
+
+
 @pytest.mark.parametrize(
     "forgery",
     ("unknown_definition", "unknown_membership", "duplicate_membership"),
@@ -694,6 +755,60 @@ def test_formal_roles_reject_calendar_version_mismatch(
     changed = RoleContext(
         market=changed_batch if batch_name == "market" else context.market,
         topic=changed_batch if batch_name == "topic" else context.topic,
+        rule_version=context.rule_version,
+    )
+
+    for result in (
+        evaluate_trend(changed, "topic-a"),
+        evaluate_core(changed, "topic-a"),
+    ):
+        status = result.topic_status
+        assert status.status == "insufficient"
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == (3, 0, 0, 3)
+        assert status.reasons == (expected_reason,)
+        assert result.candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("topic_changes", "expected_reason"),
+    (
+        (
+            {
+                "calendar": ExchangeCalendar(
+                    exchange="TEST",
+                    version="formal-c2",
+                    sessions=SESSIONS,
+                ),
+                "calendar_version": "formal-c2",
+            },
+            "market_topic_calendar_version_mismatch",
+        ),
+        (
+            {
+                "calendar": ExchangeCalendar(
+                    exchange="TEST",
+                    version="formal-c1",
+                    sessions=SESSIONS[:-30] + SESSIONS[-29:],
+                ),
+            },
+            "market_topic_calendar_sessions_mismatch",
+        ),
+    ),
+)
+def test_formal_roles_require_aligned_market_and_topic_calendars(
+    topic_changes,
+    expected_reason,
+):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context()
+    changed = RoleContext(
+        market=context.market,
+        topic=context.topic.model_copy(update=topic_changes),
         rule_version=context.rule_version,
     )
 
@@ -1159,7 +1274,13 @@ def test_short_window_preserves_current_legal_exclusion(
                 )
             }
         ),
-        topic=context.topic,
+        topic=context.topic.model_copy(
+            update={
+                "calendar": context.topic.calendar.model_copy(
+                    update={"sessions": SESSIONS[-session_count:]}
+                )
+            }
+        ),
         rule_version=context.rule_version,
     )
     evaluator = evaluate_trend if role == "trend" else evaluate_core
@@ -1215,7 +1336,13 @@ def test_short_window_keeps_cross_exchange_reason_priority(role, session_count):
                 )
             }
         ),
-        topic=context.topic,
+        topic=context.topic.model_copy(
+            update={
+                "calendar": context.topic.calendar.model_copy(
+                    update={"sessions": SESSIONS[-session_count:]}
+                )
+            }
+        ),
         rule_version=context.rule_version,
     )
     evaluator = evaluate_trend if role == "trend" else evaluate_core
