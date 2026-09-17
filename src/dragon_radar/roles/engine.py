@@ -723,13 +723,13 @@ def _coverage_complete(
         for cell in topic.coverage_cells
         if cell.topic_id == prepared.topic_id
         and cell.trade_date == day
+        and cell.complete_as_of <= prepared.context.knowledge_cutoff
     )
     if len(matches) != 1:
         return False
     cell = matches[0]
     if (
-        cell.complete_as_of > prepared.context.knowledge_cutoff
-        or cell.status != "complete"
+        cell.status != "complete"
         or cell.received_member_count != cell.expected_member_count
     ):
         return False

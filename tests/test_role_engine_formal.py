@@ -575,17 +575,10 @@ def test_formal_roles_recompute_coverage_members_at_cell_completion(forgery):
         assert result.candidates == ()
 
 
-@pytest.mark.parametrize("duplicate_after_cutoff", (False, True))
-def test_formal_roles_keep_duplicate_coverage_cell_incomplete(
-    duplicate_after_cutoff,
-):
+def test_formal_roles_keep_visible_duplicate_coverage_cell_incomplete():
     _, evaluate_core, evaluate_trend = _engine()
     context = _context()
     duplicate_cell = context.topic.coverage_cells[-1]
-    if duplicate_after_cutoff:
-        duplicate_cell = duplicate_cell.model_copy(
-            update={"complete_as_of": CUTOFF + timedelta(seconds=1)}
-        )
     duplicate = RoleContext(
         market=context.market,
         topic=context.topic.model_copy(
@@ -608,6 +601,38 @@ def test_formal_roles_keep_duplicate_coverage_cell_incomplete(
             f"{T.isoformat()}: topic coverage incomplete",
         )
         assert result.candidates == ()
+
+
+@pytest.mark.parametrize("role", ("trend", "core"))
+def test_formal_roles_ignore_coverage_duplicate_after_cutoff(role):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context()
+    late_duplicate = context.topic.coverage_cells[-1].model_copy(
+        update={
+            "expected_member_count": 99,
+            "received_member_count": 99,
+            "complete_as_of": CUTOFF + timedelta(seconds=1),
+        }
+    )
+    revised = RoleContext(
+        market=context.market,
+        topic=context.topic.model_copy(
+            update={
+                "coverage_cells": (
+                    *context.topic.coverage_cells,
+                    late_duplicate,
+                )
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+    evaluate = evaluate_trend if role == "trend" else evaluate_core
+
+    baseline = evaluate(context, "topic-a")
+    result = evaluate(revised, "topic-a")
+
+    assert result.topic_status == baseline.topic_status
+    assert result.candidates == baseline.candidates
 
 
 def test_trend_refilters_cutoff_and_counts_missing_state():
