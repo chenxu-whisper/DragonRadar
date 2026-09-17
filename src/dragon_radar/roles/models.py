@@ -33,7 +33,16 @@ CandidateStatus = Literal[
 ]
 
 
-class RoleContext(FrozenModel):
+class _StrictFrozenRoleModel(FrozenModel):
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        allow_inf_nan=False,
+    )
+
+
+class RoleContext(_StrictFrozenRoleModel):
     """The two immutable snapshots and frozen rule selected for one evaluation."""
 
     market: MarketBatch
@@ -45,10 +54,8 @@ class RoleContext(FrozenModel):
         return min(self.market.as_of, self.topic.as_of)
 
 
-class RoleCandidate(FrozenModel):
+class RoleCandidate(_StrictFrozenRoleModel):
     """An evaluated security before dense ranking."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     topic_id: Identifier
     security_id: Identifier
@@ -64,7 +71,7 @@ class RankedCandidate(RoleCandidate):
     tie_rank: int = Field(ge=1)
 
 
-class RoleTopicStatus(FrozenModel):
+class RoleTopicStatus(_StrictFrozenRoleModel):
     """Coverage and outcome for one topic-role pair, including empty results."""
 
     topic_id: Identifier
@@ -78,7 +85,7 @@ class RoleTopicStatus(FrozenModel):
     reasons: tuple[str, ...] = ()
 
 
-class RoleEvaluation(FrozenModel):
+class RoleEvaluation(_StrictFrozenRoleModel):
     """One topic-role status and its immutable ranked result rows."""
 
     topic_status: RoleTopicStatus

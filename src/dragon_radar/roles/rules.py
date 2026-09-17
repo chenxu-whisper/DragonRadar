@@ -236,8 +236,11 @@ _ROLE_RULES = {
         "required_inputs": {
             "reference_core": {
                 "role": "trend",
+                "status": "candidate",
                 "tie_rank": 1,
                 "cardinality": "exactly_one",
+                "zero_candidates": "insufficient",
+                "tied_candidates": "insufficient",
             },
             "adjusted_prices": {"window": "T-5..T", "observations": 6},
             "daily_amounts": {"window": "T-9..T", "observations": 10},
@@ -283,8 +286,20 @@ _ROLE_RULES = {
         },
         "core_identity": {
             "role": "trend",
-            "previous": {"tie_rank": 1, "cardinality": "exactly_one"},
-            "current": {"tie_rank": 1, "cardinality": "exactly_one"},
+            "previous": {
+                "status": "candidate",
+                "tie_rank": 1,
+                "cardinality": "exactly_one",
+                "zero_candidates": "insufficient",
+                "tied_candidates": "insufficient",
+            },
+            "current": {
+                "status": "candidate",
+                "tie_rank": 1,
+                "cardinality": "exactly_one",
+                "zero_candidates": "insufficient",
+                "tied_candidates": "insufficient",
+            },
             "condition": "previous_security_id != current_security_id",
         },
         "factors": {
@@ -315,18 +330,43 @@ _ROLE_RULES = {
                 "supported": "new_return > old_return and new_return > topic_median",
                 "weakened": "new_return > old_return and new_return <= topic_median",
                 "refuted": "new_return <= old_return",
-                "unavailable": (
-                    "suspension_or_any_missing_price_or_topic_incomparable_"
-                    "or_incomplete_window"
-                ),
+                "unavailable": {
+                    "when": "benchmark_members.denominator_policy.failure_conditions",
+                    "scope": "entire_validation",
+                },
             },
-            "benchmark_members": (
-                "known_at_T_with_identity_continuous_T_through_T+5_"
-                "and_all_six_price_points"
-            ),
-            "denominator_failure": (
-                "suspension_or_membership_change_makes_validation_unavailable"
-            ),
+            "benchmark_members": {
+                "baseline": {
+                    "observation_session": "T",
+                    "member_set": "all_topic_members_known_and_valid_at_T",
+                    "eligibility_contract": "common_contract.security_eligibility",
+                    "fixed_for_validation": True,
+                },
+                "validation_requirements": {
+                    "applies_to": "every_baseline_member",
+                    "identity_continuity": {
+                        "window": "T..T+5",
+                        "required": True,
+                    },
+                    "adjusted_prices": {
+                        "window": "T..T+5",
+                        "observations": 6,
+                        "coverage": "complete",
+                    },
+                },
+                "denominator_policy": {
+                    "member_removal": "forbidden",
+                    "failure_outcome": "unavailable",
+                    "failure_conditions": [
+                        "any_baseline_member_suspended",
+                        "any_baseline_member_identity_discontinuous",
+                        "topic_membership_changed",
+                        "any_baseline_member_price_missing",
+                        "topic_incomparable",
+                        "window_incomplete",
+                    ],
+                },
+            },
             "record_identity": "pending_result_id",
             "record_fields": [
                 "window_start",
@@ -425,9 +465,9 @@ def canonical_rule_json(version: str) -> str:
     )
 
 
-ROLE_RULE_SHA256 = "3daabf4bcec2e6e3042d7d65d530bb07863721c322d4bab1ca2412abbbfa8cd4"
+ROLE_RULE_SHA256 = "b824ae605429fad97ad08021acf489c8822736e475cb686e907943e0750ba7f2"
 ROLE_TEST_RULE_SHA256 = (
-    "84ef2ae02a9fa176aaca19a7f0f56f69743fa4a778e6074dcb5771d54f51eb99"
+    "cda6489f3aff938f8c41a4df1bc3fadf07074c44cb94b3c2b3efb868656a0dcc"
 )
 _RULE_SHA256 = MappingProxyType(
     {

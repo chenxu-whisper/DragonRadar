@@ -4,7 +4,9 @@ from decimal import Decimal
 from functools import partial
 
 import pytest
+from factories import batch
 from pydantic import ValidationError
+from topic_factories import topic_batch
 
 from dragon_radar.roles.factors import (
     AnalysisUnavailable,
@@ -18,7 +20,13 @@ from dragon_radar.roles.factors import (
     relative_return,
     topic_amount_share,
 )
-from dragon_radar.roles.models import RoleCandidate, RoleTopicStatus
+from dragon_radar.roles.models import (
+    RankedCandidate,
+    RoleCandidate,
+    RoleContext,
+    RoleEvaluation,
+    RoleTopicStatus,
+)
 from dragon_radar.roles.rules import (
     ROLE_RULE_SHA256,
     ROLE_RULE_VERSION,
@@ -413,8 +421,11 @@ EXPECTED_ROLE_RULES = {
         "required_inputs": {
             "reference_core": {
                 "role": "trend",
+                "status": "candidate",
                 "tie_rank": 1,
                 "cardinality": "exactly_one",
+                "zero_candidates": "insufficient",
+                "tied_candidates": "insufficient",
             },
             "adjusted_prices": {
                 "window": "T-5..T",
@@ -466,8 +477,20 @@ EXPECTED_ROLE_RULES = {
         },
         "core_identity": {
             "role": "trend",
-            "previous": {"tie_rank": 1, "cardinality": "exactly_one"},
-            "current": {"tie_rank": 1, "cardinality": "exactly_one"},
+            "previous": {
+                "status": "candidate",
+                "tie_rank": 1,
+                "cardinality": "exactly_one",
+                "zero_candidates": "insufficient",
+                "tied_candidates": "insufficient",
+            },
+            "current": {
+                "status": "candidate",
+                "tie_rank": 1,
+                "cardinality": "exactly_one",
+                "zero_candidates": "insufficient",
+                "tied_candidates": "insufficient",
+            },
             "condition": "previous_security_id != current_security_id",
         },
         "factors": {
@@ -498,18 +521,43 @@ EXPECTED_ROLE_RULES = {
                 "supported": "new_return > old_return and new_return > topic_median",
                 "weakened": "new_return > old_return and new_return <= topic_median",
                 "refuted": "new_return <= old_return",
-                "unavailable": (
-                    "suspension_or_any_missing_price_or_topic_incomparable_"
-                    "or_incomplete_window"
-                ),
+                "unavailable": {
+                    "when": "benchmark_members.denominator_policy.failure_conditions",
+                    "scope": "entire_validation",
+                },
             },
-            "benchmark_members": (
-                "known_at_T_with_identity_continuous_T_through_T+5_"
-                "and_all_six_price_points"
-            ),
-            "denominator_failure": (
-                "suspension_or_membership_change_makes_validation_unavailable"
-            ),
+            "benchmark_members": {
+                "baseline": {
+                    "observation_session": "T",
+                    "member_set": "all_topic_members_known_and_valid_at_T",
+                    "eligibility_contract": "common_contract.security_eligibility",
+                    "fixed_for_validation": True,
+                },
+                "validation_requirements": {
+                    "applies_to": "every_baseline_member",
+                    "identity_continuity": {
+                        "window": "T..T+5",
+                        "required": True,
+                    },
+                    "adjusted_prices": {
+                        "window": "T..T+5",
+                        "observations": 6,
+                        "coverage": "complete",
+                    },
+                },
+                "denominator_policy": {
+                    "member_removal": "forbidden",
+                    "failure_outcome": "unavailable",
+                    "failure_conditions": [
+                        "any_baseline_member_suspended",
+                        "any_baseline_member_identity_discontinuous",
+                        "topic_membership_changed",
+                        "any_baseline_member_price_missing",
+                        "topic_incomparable",
+                        "window_incomplete",
+                    ],
+                },
+            },
             "record_identity": "pending_result_id",
             "record_fields": [
                 "window_start",
@@ -541,6 +589,18 @@ def test_relay_pending_and_future_validation_contract_is_canonical():
     relay = json.loads(canonical_rule_json("role-v1"))["roles"]["relay"]
 
     assert relay == EXPECTED_ROLE_RULES["relay"]
+
+
+def test_follower_and_relay_core_identity_requires_one_rank_one_candidate():
+    roles = json.loads(canonical_rule_json("role-v1"))["roles"]
+
+    assert (
+        roles["follower"]["required_inputs"]["reference_core"]
+        == (EXPECTED_ROLE_RULES["follower"]["required_inputs"]["reference_core"])
+    )
+    assert (
+        roles["relay"]["core_identity"] == EXPECTED_ROLE_RULES["relay"]["core_identity"]
+    )
 
 
 def test_rule_definitions_are_complete_canonical_and_immutable():
@@ -576,11 +636,11 @@ def test_rule_definitions_are_complete_canonical_and_immutable():
 def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
     assert (
         ROLE_RULE_SHA256
-        == "3daabf4bcec2e6e3042d7d65d530bb07863721c322d4bab1ca2412abbbfa8cd4"
+        == "b824ae605429fad97ad08021acf489c8822736e475cb686e907943e0750ba7f2"
     )
     assert (
         ROLE_TEST_RULE_SHA256
-        == "84ef2ae02a9fa176aaca19a7f0f56f69743fa4a778e6074dcb5771d54f51eb99"
+        == "cda6489f3aff938f8c41a4df1bc3fadf07074c44cb94b3c2b3efb868656a0dcc"
     )
     validate_rule_definition("role-v1", canonical_rule_json("role-v1"))
     validate_rule_definition("role-test-v1", canonical_rule_json("role-test-v1"))
@@ -594,7 +654,90 @@ def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
         )
 
 
-def test_role_models_are_frozen_strict_and_enforce_status_literals():
+def test_all_public_role_models_are_strict_frozen_contracts():
+    for model in (
+        RoleContext,
+        RoleCandidate,
+        RankedCandidate,
+        RoleTopicStatus,
+        RoleEvaluation,
+    ):
+        assert model.model_config["strict"] is True
+        assert model.model_config["frozen"] is True
+        assert model.model_config["extra"] == "forbid"
+        assert model.model_config["allow_inf_nan"] is False
+
+    context = RoleContext(market=batch(), topic=topic_batch())
+    status = RoleTopicStatus(
+        topic_id="topic-1",
+        role="trend",
+        capability="ready",
+        status="ready",
+        expected=1,
+        valid=1,
+        legal_excluded=0,
+        missing=0,
+    )
+    candidate = RankedCandidate(
+        topic_id="topic-1",
+        security_id="600000.SH",
+        role="trend",
+        status="candidate",
+        factors=(Decimal("0.1"),),
+        tie_rank=1,
+    )
+
+    assert context.market == batch()
+    assert context.topic == topic_batch()
+    assert RoleEvaluation(topic_status=status, candidates=(candidate,)).candidates == (
+        candidate,
+    )
+
+
+@pytest.mark.parametrize("value", ["1", True])
+def test_role_count_fields_reject_strings_and_booleans(value):
+    with pytest.raises(ValidationError, match="tie_rank"):
+        RankedCandidate(
+            topic_id="topic-1",
+            security_id="600000.SH",
+            role="trend",
+            status="candidate",
+            factors=(Decimal("0.1"),),
+            tie_rank=value,
+        )
+    with pytest.raises(ValidationError, match="expected"):
+        RoleTopicStatus(
+            topic_id="topic-1",
+            role="trend",
+            capability="ready",
+            status="ready",
+            expected=value,
+            valid=1,
+            legal_excluded=0,
+            missing=0,
+        )
+
+
+def test_role_literals_and_tuples_are_not_coerced():
+    with pytest.raises(ValidationError, match="role"):
+        RoleCandidate(
+            topic_id="topic-1",
+            security_id="600000.SH",
+            role=b"trend",
+            status="candidate",
+            factors=(Decimal("0.1"),),
+        )
+    with pytest.raises(ValidationError, match="factors"):
+        RoleCandidate(
+            topic_id="topic-1",
+            security_id="600000.SH",
+            role="trend",
+            status="candidate",
+            factors=[Decimal("0.1")],
+        )
+
+
+def test_role_models_are_frozen_and_enforce_status_literals():
     candidate = RoleCandidate(
         topic_id="topic-1",
         security_id="600000.SH",
