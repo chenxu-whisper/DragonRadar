@@ -20,6 +20,30 @@ from dragon_radar.storage.repository import (
     QualityRejected,
     Repository,
 )
+from dragon_radar.topics.models import TopicAttempt, TopicBatch
+from dragon_radar.topics.repository import TopicRepository
+
+
+def _topic_attempt_result(attempt: TopicAttempt) -> dict[str, object]:
+    return {
+        "attempt_id": str(attempt.id),
+        "status": attempt.status,
+        "stage": attempt.stage,
+        "missing_items": list(attempt.missing_items),
+        "failed_cursor": attempt.failed_cursor,
+        "request_from": (
+            attempt.retry_from.isoformat() if attempt.retry_from is not None else None
+        ),
+        "request_to": (
+            attempt.retry_to.isoformat() if attempt.retry_to is not None else None
+        ),
+        "retry_from": (
+            attempt.retry_from.isoformat() if attempt.retry_from is not None else None
+        ),
+        "retry_to": (
+            attempt.retry_to.isoformat() if attempt.retry_to is not None else None
+        ),
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -39,6 +63,29 @@ def _parser() -> argparse.ArgumentParser:
     importer.add_argument("--key", required=True)
     publish = commands.add_parser("publish", help="Publish a quality-gated batch")
     publish.add_argument("batch_id")
+    topic_import = commands.add_parser(
+        "topic-import", help="Archive a local topic batch JSON file"
+    )
+    topic_import.add_argument("path", type=Path)
+    topic_import.add_argument("--key", required=True)
+    topic_publish = commands.add_parser(
+        "topic-publish", help="Publish a quality-gated topic batch"
+    )
+    topic_publish.add_argument("batch_id")
+    topic_attempts = commands.add_parser(
+        "topic-attempts", help="List topic import attempts"
+    )
+    topic_attempts.add_argument("--status")
+    topic_attempt_show = commands.add_parser(
+        "topic-attempt-show", help="Show a topic import attempt"
+    )
+    topic_attempt_show.add_argument("attempt_id")
+    topic_retry = commands.add_parser(
+        "topic-retry", help="Retry a failed topic import range"
+    )
+    topic_retry.add_argument("attempt_id")
+    topic_retry.add_argument("--path", required=True, type=Path)
+    topic_retry.add_argument("--key", required=True)
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
@@ -52,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         database = Database()
         repository = Repository(database)
+        topic_repository = (
+            TopicRepository(database) if args.command.startswith("topic-") else None
+        )
         if args.command in COMMANDS:
             result = execute(args, repository)
             if result is None:
@@ -84,6 +134,52 @@ def main(argv: list[str] | None = None) -> int:
                 "revision": snapshot.revision,
                 "supersedes": str(snapshot.supersedes) if snapshot.supersedes else None,
             }
+        elif args.command == "topic-import":
+            record = topic_repository.import_batch(
+                TopicBatch.model_validate_json(args.path.read_text(encoding="utf-8")),
+                key=args.key,
+            )
+            result = {"batch_id": str(record.id), "status": "imported"}
+        elif args.command == "topic-publish":
+            snapshot = topic_repository.publish(args.batch_id)
+            result = {
+                "snapshot_id": str(snapshot.id),
+                "batch_id": str(snapshot.batch_id),
+                "status": "published",
+                "revision": snapshot.revision,
+                "supersedes": (
+                    str(snapshot.supersedes) if snapshot.supersedes else None
+                ),
+            }
+        elif args.command == "topic-attempts":
+            result = {
+                "attempts": [
+                    _topic_attempt_result(attempt)
+                    for attempt in topic_repository.list_attempts(status=args.status)
+                ]
+            }
+        elif args.command == "topic-attempt-show":
+            result = _topic_attempt_result(
+                topic_repository.get_attempt(args.attempt_id)
+            )
+        elif args.command == "topic-retry":
+            attempt = topic_repository.get_attempt(args.attempt_id)
+            if (
+                attempt.status != "failed"
+                or attempt.retry_from is None
+                or attempt.retry_to is None
+            ):
+                raise ValueError("Topic attempt is not retryable")
+            batch = TopicBatch.model_validate_json(
+                args.path.read_text(encoding="utf-8")
+            )
+            if (
+                batch.coverage_from != attempt.retry_from
+                or batch.coverage_to != attempt.retry_to
+            ):
+                raise ValueError("Topic retry range does not match")
+            record = topic_repository.import_batch(batch, key=args.key)
+            result = {"batch_id": str(record.id), "status": "imported"}
         else:
             import uvicorn
 
