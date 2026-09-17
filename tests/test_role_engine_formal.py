@@ -118,21 +118,37 @@ def _context(
         )
         for security_id in member_ids
     )
-    coverage_cells = coverage_cells or tuple(
-        coverage_cell(
-            trade_date=day,
-            expected_member_count=len(member_ids),
-            received_member_count=len(member_ids),
-            complete_as_of=datetime(
+    if coverage_cells is None:
+        cells = []
+        for day in SESSIONS:
+            complete_as_of = datetime(
                 day.year,
                 day.month,
                 day.day,
                 17,
                 tzinfo=UTC,
-            ),
-        )
-        for day in SESSIONS
-    )
+            )
+            actual = len(
+                {
+                    membership["security_id"]
+                    for membership in memberships
+                    if membership["effective_from"] <= day
+                    and (
+                        membership.get("effective_to") is None
+                        or day < membership["effective_to"]
+                    )
+                    and membership["available_at"] <= complete_as_of
+                }
+            )
+            cells.append(
+                coverage_cell(
+                    trade_date=day,
+                    expected_member_count=actual,
+                    received_member_count=actual,
+                    complete_as_of=complete_as_of,
+                )
+            )
+        coverage_cells = tuple(cells)
     calendar = ExchangeCalendar(
         exchange=market_exchange,
         version="formal-c1",
@@ -373,6 +389,104 @@ def test_trend_requires_complete_coverage_by_cutoff_for_every_window_day(
     assert result.candidates == ()
 
 
+@pytest.mark.parametrize(
+    "forgery",
+    ("unknown_definition", "unknown_membership", "duplicate_membership"),
+)
+def test_formal_roles_recompute_coverage_members_at_cell_completion(forgery):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(member_ids=("A", "B"))
+    topic_changes = {}
+    forged_count = 2
+    if forgery == "unknown_definition":
+        topic_changes["topics"] = (
+            context.topic.topics[0].model_copy(
+                update={"available_at": CUTOFF},
+            ),
+        )
+    elif forgery == "unknown_membership":
+        topic_changes["memberships"] = (
+            context.topic.memberships[0],
+            context.topic.memberships[1].model_copy(
+                update={"available_at": CUTOFF},
+            ),
+        )
+    else:
+        forged_count = 3
+        topic_changes["memberships"] = (
+            *context.topic.memberships,
+            context.topic.memberships[0],
+        )
+    topic_changes["coverage_cells"] = tuple(
+        cell.model_copy(
+            update={
+                "expected_member_count": forged_count,
+                "received_member_count": forged_count,
+            }
+        )
+        for cell in context.topic.coverage_cells
+    )
+    forged_topic = context.topic.model_copy(update=topic_changes)
+    if forgery == "duplicate_membership":
+        forged = RoleContext.model_construct(
+            market=context.market,
+            topic=forged_topic,
+            rule_version=context.rule_version,
+        )
+    else:
+        forged = RoleContext(
+            market=context.market,
+            topic=forged_topic,
+            rule_version=context.rule_version,
+        )
+
+    for result in (
+        evaluate_trend(forged, "topic-a"),
+        evaluate_core(forged, "topic-a"),
+    ):
+        assert result.topic_status.status == "insufficient"
+        assert any(
+            "coverage incomplete" in reason
+            for reason in result.topic_status.reasons
+        )
+        assert result.candidates == ()
+
+
+@pytest.mark.parametrize("duplicate_after_cutoff", (False, True))
+def test_formal_roles_keep_duplicate_coverage_cell_incomplete(
+    duplicate_after_cutoff,
+):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context()
+    duplicate_cell = context.topic.coverage_cells[-1]
+    if duplicate_after_cutoff:
+        duplicate_cell = duplicate_cell.model_copy(
+            update={"complete_as_of": CUTOFF + timedelta(seconds=1)}
+        )
+    duplicate = RoleContext(
+        market=context.market,
+        topic=context.topic.model_copy(
+            update={
+                "coverage_cells": (
+                    *context.topic.coverage_cells,
+                    duplicate_cell,
+                )
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+
+    for result in (
+        evaluate_trend(duplicate, "topic-a"),
+        evaluate_core(duplicate, "topic-a"),
+    ):
+        assert result.topic_status.status == "insufficient"
+        assert result.topic_status.reasons == (
+            f"{T.isoformat()}: topic coverage incomplete",
+        )
+        assert result.candidates == ()
+
+
 def test_trend_refilters_cutoff_and_counts_missing_state():
     _, _, evaluate_trend = _engine()
     late_state = state(
@@ -501,6 +615,59 @@ def test_trend_market_benchmark_excludes_security_below_listing_minimum():
     assert result.topic_status.status == "ready"
     assert result.candidates[0].security_id == "A"
     assert result.candidates[0].factors[0] == Decimal("0.2")
+
+
+def test_formal_roles_count_future_listing_on_observation_day_as_missing():
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A",),
+        states=(
+            state(
+                security_id="A",
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=T + timedelta(days=1),
+            ),
+        ),
+    )
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        assert (
+            result.topic_status.valid,
+            result.topic_status.legal_excluded,
+            result.topic_status.missing,
+        ) == (0, 0, 1)
+        assert "A: listing date is after observation day" in result.topic_status.reasons
+
+
+def test_trend_rejects_forged_history_before_listing_date():
+    _, _, evaluate_trend = _engine()
+    listing_date = SESSIONS[-30]
+    states = tuple(
+        state(
+            security_id=security_id,
+            exchange="TEST",
+            effective_from=SESSIONS[0],
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+            listing_date=listing_date if security_id == "B" else SESSIONS[0],
+        )
+        for security_id in ("A", "B", "C")
+    )
+
+    result = evaluate_trend(_context(states=states), "topic-a")
+
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (3, 2, 0, 1)
+    assert "B: listing date is after observation day" in result.topic_status.reasons
+    assert {row.security_id for row in result.candidates} == {"A", "C"}
 
 
 def test_formal_roles_count_incomplete_listing_calendar_as_missing():
@@ -652,6 +819,122 @@ def test_formal_roles_reject_cross_exchange_member_as_insufficient():
         assert status.reasons == ("cross_exchange", "A: cross_exchange")
 
 
+def test_trend_keeps_cross_exchange_priority_over_incomplete_coverage():
+    _, _, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A", "B"),
+        states=(
+            state(
+                security_id="A",
+                exchange="OTHER",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+            state(
+                security_id="B",
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        ),
+    )
+    broken_day = SESSIONS[-10]
+    broken = RoleContext(
+        market=context.market,
+        topic=context.topic.model_copy(
+            update={
+                "coverage_cells": tuple(
+                    cell.model_copy(
+                        update={
+                            "status": "unavailable",
+                            "reason": "provider outage",
+                        }
+                    )
+                    if cell.trade_date == broken_day
+                    else cell
+                    for cell in context.topic.coverage_cells
+                )
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+
+    status = evaluate_trend(broken, "topic-a").topic_status
+
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 1, 1)
+    assert status.reasons == (
+        "cross_exchange",
+        "A: cross_exchange",
+        "B: ineligible security state",
+    )
+
+
+def test_trend_preserves_legal_exclusion_when_coverage_is_incomplete():
+    _, _, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A", "B"),
+        states=(
+            state(
+                security_id="A",
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+            state(
+                security_id="B",
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        ),
+    )
+    broken_day = SESSIONS[-10]
+    broken = RoleContext(
+        market=context.market,
+        topic=context.topic.model_copy(
+            update={
+                "coverage_cells": tuple(
+                    cell.model_copy(
+                        update={
+                            "status": "unavailable",
+                            "reason": "provider outage",
+                        }
+                    )
+                    if cell.trade_date == broken_day
+                    else cell
+                    for cell in context.topic.coverage_cells
+                )
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+
+    status = evaluate_trend(broken, "topic-a").topic_status
+
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 1, 1)
+    assert status.reasons == (
+        "A: ineligible security state",
+        f"{broken_day.isoformat()}: topic coverage incomplete",
+    )
+
+
 def test_formal_roles_reject_cross_exchange_topic_as_insufficient():
     _, evaluate_core, evaluate_trend = _engine()
     context = _context(topic_exchange="OTHER")
@@ -765,6 +1048,26 @@ def test_core_marks_every_member_of_the_first_tie_group_as_candidate():
         ("B", "candidate", 1),
         ("C", "candidate", 1),
     ]
+
+
+def test_core_allows_zero_member_amount_when_daily_denominator_is_positive():
+    _, evaluate_core, _ = _engine()
+    result = evaluate_core(
+        _context(
+            amounts={
+                "A": (Decimal("0"),) * 20,
+                "B": (Decimal("100"),) * 20,
+                "C": (Decimal("100"),) * 20,
+            }
+        ),
+        "topic-a",
+    )
+
+    factors = {row.security_id: row.factors for row in result.candidates}
+    assert result.topic_status.status == "ready"
+    assert factors["B"][0] == factors["C"][0] == Decimal("0.5")
+    assert result.topic_status.missing == 1
+    assert "A: mean must be positive" in result.topic_status.reasons
 
 
 def test_core_daily_denominator_uses_each_days_effective_membership():

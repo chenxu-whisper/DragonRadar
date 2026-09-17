@@ -294,6 +294,10 @@ def _state_eligibility(
         or security_state.is_st is None
     ):
         return "missing", f"{security_id}: missing required security state"
+    if security_state.listing_date is None:
+        return "missing", f"{security_id}: missing listing date"
+    if security_state.listing_date > day:
+        return "missing", f"{security_id}: listing date is after observation day"
     allowed_boards = RULE_DEFINITIONS[prepared.context.rule_version]["allowed_boards"]
     if (
         security_state.security_type != "common_stock"
@@ -304,8 +308,6 @@ def _state_eligibility(
         return "legal_excluded", f"{security_id}: ineligible security state"
     if not check_listing:
         return "valid", None
-    if security_state.listing_date is None:
-        return "missing", f"{security_id}: missing listing date"
     sessions = prepared.context.market.calendar.sessions
     minimum = RULE_DEFINITIONS[prepared.context.rule_version][
         "minimum_listing_sessions"
@@ -313,7 +315,7 @@ def _state_eligibility(
     if security_state.listing_date < sessions[0]:
         return "missing", f"{security_id}: incomplete listing calendar"
     listed_sessions = sum(
-        security_state.listing_date <= session <= prepared.trade_date
+        security_state.listing_date <= session <= day
         for session in sessions
     )
     if listed_sessions >= minimum:
@@ -433,16 +435,34 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             reasons=("market_calendar_missing_61_sessions",),
             expected=expected,
         )
+
+    classifications, reasons = _classify_current_members(prepared)
+    if "cross_exchange" in classifications.values():
+        return _insufficient(
+            prepared,
+            "trend",
+            reasons=("cross_exchange", *reasons),
+            expected=expected,
+            legal_excluded=sum(
+                value == "legal_excluded" for value in classifications.values()
+            ),
+        )
     for day in sessions:
         if not _coverage_complete(prepared, day):
             return _insufficient(
                 prepared,
                 "trend",
-                reasons=(f"{day.isoformat()}: topic coverage incomplete",),
+                reasons=(
+                    *reasons,
+                    f"{day.isoformat()}: topic coverage incomplete",
+                ),
                 expected=expected,
+                legal_excluded=sum(
+                    value == "legal_excluded"
+                    for value in classifications.values()
+                ),
             )
 
-    classifications, reasons = _classify_current_members(prepared)
     for security_id, classification in tuple(classifications.items()):
         if classification != "valid":
             continue
@@ -573,13 +593,33 @@ def _coverage_complete(
         for cell in prepared.context.topic.coverage_cells
         if cell.topic_id == prepared.topic_id
         and cell.trade_date == day
-        and cell.complete_as_of <= prepared.context.knowledge_cutoff
     )
-    return (
-        len(matches) == 1
-        and matches[0].status == "complete"
-        and matches[0].received_member_count == matches[0].expected_member_count
+    if len(matches) != 1:
+        return False
+    cell = matches[0]
+    if (
+        cell.complete_as_of > prepared.context.knowledge_cutoff
+        or cell.status != "complete"
+        or cell.received_member_count != cell.expected_member_count
+    ):
+        return False
+    definitions = tuple(
+        definition
+        for definition in prepared.context.topic.topics
+        if definition.topic_id == prepared.topic_id
+        and definition.available_at <= cell.complete_as_of
+        and _effective(definition.effective_from, definition.effective_to, day)
     )
+    if len(definitions) != 1:
+        return False
+    actual_members = {
+        membership.security_id
+        for membership in prepared.context.topic.memberships
+        if membership.topic_id == prepared.topic_id
+        and membership.available_at <= cell.complete_as_of
+        and _effective(membership.effective_from, membership.effective_to, day)
+    }
+    return cell.received_member_count == len(actual_members)
 
 
 def _amount_on(
