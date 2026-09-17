@@ -7,7 +7,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from dragon_radar.domain.models import DailyBar, SecurityState
+from pydantic import ConfigDict, Field
+
+from dragon_radar.domain.models import DailyBar, FrozenModel, Identifier, SecurityState
 from dragon_radar.domain.quality import grant_allows_local
 from dragon_radar.roles.factors import (
     AnalysisUnavailable,
@@ -22,11 +24,13 @@ from dragon_radar.roles.factors import (
     topic_amount_share,
 )
 from dragon_radar.roles.models import (
+    ROLE_CAPABILITIES,
     RankedCandidate,
     RoleCandidate,
     RoleContext,
     RoleEvaluation,
     RoleName,
+    RoleRunStatus,
     RoleTopicStatus,
 )
 from dragon_radar.roles.rules import RULE_DEFINITIONS
@@ -38,6 +42,30 @@ from dragon_radar.topics.models import (
 
 SortKey = tuple[Decimal, ...]
 Eligibility = Literal["valid", "legal_excluded", "missing", "cross_exchange"]
+
+
+class RelayPredecessorRun(FrozenModel):
+    """Immutable Task 6 projection of the run selected by an activation event."""
+
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        allow_inf_nan=False,
+    )
+
+    trade_date: date
+    active_run_count: int = Field(ge=0)
+    rule_version: Literal["role-v1", "role-test-v1"]
+    visibility_mode: Identifier
+    market_benchmark_definition: Identifier
+    topic_id: Identifier
+    topic_source_id: Identifier
+    topic_source_version: Identifier
+    taxonomy_version: Identifier
+    membership_version: Identifier
+    member_ids: tuple[Identifier, ...]
+    trend_evaluation: RoleEvaluation
 
 
 def dense_rank(
@@ -293,7 +321,7 @@ def _role_status(
     *,
     topic_id: str,
     role: RoleName,
-    status: Literal["ready", "insufficient", "no_candidate"],
+    status: RoleRunStatus,
     expected: int,
     valid: int,
     legal_excluded: int,
@@ -303,7 +331,7 @@ def _role_status(
     return RoleTopicStatus(
         topic_id=topic_id,
         role=role,
-        capability="ready",
+        capability=ROLE_CAPABILITIES[role],
         status=status,
         expected=expected,
         valid=valid,
@@ -1068,4 +1096,872 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
             reasons=reasons,
         ),
         candidates=ranked,
+    )
+
+
+def _staged_preflight(
+    context: RoleContext,
+    topic_id: str,
+    role: RoleName,
+) -> tuple[
+    _PreparedContext,
+    int,
+    dict[str, Eligibility],
+    list[str],
+    RoleEvaluation | None,
+]:
+    prepared = _PreparedContext.build(context, topic_id)
+    expected = _observation_expected_member_count(prepared)
+    classifications, reasons = _classify_current_members(prepared)
+    global_reasons = _global_reasons(prepared)
+    if global_reasons:
+        failure = _global_failure_result(
+            prepared,
+            role,
+            expected=expected,
+            global_reasons=global_reasons,
+            classifications=classifications,
+            member_reasons=reasons,
+        )
+        return prepared, expected, classifications, reasons, failure
+    failure = _cross_exchange_result(
+        prepared,
+        role,
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+    )
+    return prepared, expected, classifications, reasons, failure
+
+
+def _complete_coverage_window(
+    prepared: _PreparedContext,
+    sessions: Sequence[date],
+) -> str | None:
+    for day in sessions:
+        if not _coverage_complete(prepared, day):
+            return f"{day.isoformat()}: topic coverage incomplete"
+    return None
+
+
+def _continuous_window_eligibility(
+    prepared: _PreparedContext,
+    security_id: str,
+    sessions: Sequence[date],
+    *,
+    price_sessions: Sequence[date] | None = None,
+) -> tuple[Eligibility, str | None]:
+    if any(not prepared.has_member_on(security_id, day) for day in sessions):
+        return (
+            "missing",
+            f"{security_id}: membership is not continuous for {len(sessions)} sessions",
+        )
+    for day in sessions:
+        classification, reason = _state_eligibility(
+            prepared,
+            security_id,
+            day,
+            check_listing=False,
+        )
+        if classification != "valid":
+            return classification, reason
+    required_price_sessions = sessions if price_sessions is None else price_sessions
+    if _prices_for(prepared, security_id, required_price_sessions) is None:
+        return (
+            "missing",
+            f"{security_id}: missing {len(required_price_sessions)} adjusted prices",
+        )
+    return "valid", None
+
+
+def _topic_return_median(
+    prepared: _PreparedContext,
+    sessions: Sequence[date],
+) -> Decimal | None:
+    returns: list[Decimal] = []
+    for security_id in prepared.members_on(sessions[-1]):
+        classification, _ = _continuous_window_eligibility(
+            prepared,
+            security_id,
+            sessions,
+        )
+        if classification != "valid":
+            continue
+        prices = _prices_for(prepared, security_id, sessions)
+        if prices is None:
+            continue
+        try:
+            returns.append(period_return(prices[0], prices[-1]))
+        except AnalysisUnavailable:
+            continue
+    if not returns:
+        return None
+    try:
+        return decimal_median(returns)
+    except AnalysisUnavailable:
+        return None
+
+
+def _amount_series(
+    prepared: _PreparedContext,
+    security_id: str,
+    sessions: Sequence[date],
+) -> tuple[Decimal, ...]:
+    observations = tuple(_amount_on(prepared, security_id, day) for day in sessions)
+    if any(observation is None for observation in observations):
+        raise AnalysisUnavailable("missing daily amount")
+    complete = tuple(observation for observation in observations if observation)
+    if len({observation[1] for observation in complete}) != 1:
+        raise AnalysisUnavailable("currency mismatch across amount window")
+    return tuple(observation[0] for observation in complete)
+
+
+def _amount_change(
+    current: Sequence[Decimal],
+    prior: Sequence[Decimal],
+) -> Decimal:
+    current_mean = decimal_mean(current)
+    prior_mean = decimal_mean(prior)
+    with _decimal34_operation("amount_change") as normalize:
+        current_mean, prior_mean, one = normalize(
+            current_mean,
+            prior_mean,
+            Decimal(1),
+        )
+        if prior_mean <= 0:
+            raise AnalysisUnavailable("prior amount mean must be positive")
+        return current_mean / prior_mean - one
+
+
+def _daily_topic_amounts(
+    prepared: _PreparedContext,
+    day: date,
+) -> tuple[tuple[Decimal, ...], tuple[str, ...]] | None:
+    if not _coverage_complete(prepared, day):
+        return None
+    amounts: list[Decimal] = []
+    currencies: list[str] = []
+    for security_id in prepared.members_on(day):
+        classification, _ = _state_eligibility(
+            prepared,
+            security_id,
+            day,
+            check_listing=True,
+        )
+        if classification == "legal_excluded":
+            continue
+        if classification != "valid":
+            return None
+        observation = _amount_on(prepared, security_id, day)
+        if observation is None:
+            return None
+        amounts.append(observation[0])
+        currencies.append(observation[1])
+    if not amounts or len(set(currencies)) != 1:
+        return None
+    try:
+        topic_amount_share(
+            amounts[0],
+            amounts,
+            currency=currencies[0],
+            eligible_currencies=currencies,
+        )
+    except AnalysisUnavailable:
+        return None
+    return tuple(amounts), tuple(currencies)
+
+
+def _closing_limit_streak(
+    prepared: _PreparedContext,
+    security_id: str,
+) -> int | None:
+    sessions = prepared.context.market.calendar.sessions
+    try:
+        endpoint = sessions.index(prepared.trade_date)
+    except ValueError:
+        return None
+    count = 0
+    for day in reversed(sessions[: endpoint + 1]):
+        state = prepared.state_on(security_id, day)
+        if state is None:
+            return None
+        if state.suspended:
+            return count
+        daily_bar = prepared.bar_on(security_id, day)
+        if (
+            daily_bar is None
+            or daily_bar.close is None
+            or not daily_bar.close.is_finite()
+            or daily_bar.close <= 0
+        ):
+            return None
+        if daily_bar.limit_status == "no_limit":
+            if any(
+                value is not None
+                for value in (
+                    daily_bar.limit_date,
+                    daily_bar.limit_up,
+                    daily_bar.limit_down,
+                )
+            ):
+                return None
+            return count
+        if (
+            daily_bar.limit_status != "limited"
+            or daily_bar.limit_date != day
+            or daily_bar.limit_up is None
+            or daily_bar.limit_down is None
+            or not daily_bar.limit_up.is_finite()
+            or not daily_bar.limit_down.is_finite()
+            or daily_bar.limit_down <= 0
+            or daily_bar.limit_down >= daily_bar.limit_up
+            or not daily_bar.limit_down <= daily_bar.close <= daily_bar.limit_up
+        ):
+            return None
+        if daily_bar.close != daily_bar.limit_up:
+            return count
+        count += 1
+    return None
+
+
+def _finish_staged(
+    *,
+    prepared: _PreparedContext,
+    role: RoleName,
+    expected: int,
+    classifications: dict[str, Eligibility],
+    reasons: Sequence[str],
+    rows: tuple[RankedCandidate, ...],
+) -> RoleEvaluation:
+    valid = sum(value == "valid" for value in classifications.values())
+    legal_excluded, missing = _partition_counts(
+        expected,
+        classifications,
+        valid=valid,
+    )
+    minimum = RULE_DEFINITIONS[prepared.context.rule_version]["minimum_topic_members"]
+    if valid < minimum:
+        return RoleEvaluation(
+            topic_status=_role_status(
+                topic_id=prepared.topic_id,
+                role=role,
+                status="insufficient",
+                expected=expected,
+                valid=valid,
+                legal_excluded=legal_excluded,
+                missing=missing,
+                reasons=(*reasons, "minimum_valid_members_not_met"),
+            )
+        )
+    positive_status = {
+        "emotion": "simplified_candidate",
+        "catchup": "simplified_candidate",
+        "follower": "watch",
+        "relay": "pending_validation",
+    }[role]
+    has_positive = any(row.status == positive_status for row in rows)
+    return RoleEvaluation(
+        topic_status=_role_status(
+            topic_id=prepared.topic_id,
+            role=role,
+            status=ROLE_CAPABILITIES[role] if has_positive else "no_candidate",
+            expected=expected,
+            valid=valid,
+            legal_excluded=legal_excluded,
+            missing=missing,
+            reasons=reasons,
+        ),
+        candidates=rows,
+    )
+
+
+def _first_simplified_tie_group(
+    rows: tuple[RankedCandidate, ...],
+) -> tuple[RankedCandidate, ...]:
+    return tuple(
+        row
+        if row.tie_rank == 1 or row.status != "simplified_candidate"
+        else row.model_copy(
+            update={
+                "status": "eligible_non_candidate",
+                "reasons": (*row.reasons, "not_first_tie_group"),
+            }
+        )
+        for row in rows
+    )
+
+
+def evaluate_emotion(context: RoleContext, topic_id: str) -> RoleEvaluation:
+    """Evaluate the daily-only simplified emotion role."""
+    prepared, expected, classifications, reasons, failure = _staged_preflight(
+        context, topic_id, "emotion"
+    )
+    if failure is not None:
+        return failure
+    sessions = _window(prepared, 6)
+    if len(sessions) != 6:
+        return _insufficient(
+            prepared,
+            "emotion",
+            reasons=(*reasons, "market_calendar_missing_6_sessions"),
+            expected=expected,
+            classifications=classifications,
+        )
+    coverage_reason = _complete_coverage_window(prepared, sessions)
+    if coverage_reason is not None:
+        return _insufficient(
+            prepared,
+            "emotion",
+            reasons=(*reasons, coverage_reason),
+            expected=expected,
+            classifications=classifications,
+        )
+    daily_topic_amounts = _daily_topic_amounts(prepared, prepared.trade_date)
+    if daily_topic_amounts is None:
+        return _insufficient(
+            prepared,
+            "emotion",
+            reasons=(*reasons, "daily topic amount coverage unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    benchmark = _topic_return_median(prepared, sessions)
+    if benchmark is None:
+        return _insufficient(
+            prepared,
+            "emotion",
+            reasons=(*reasons, "topic_return_median_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+
+    factors_by_security: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
+    candidates: dict[str, bool] = {}
+    for security_id, classification in tuple(classifications.items()):
+        if classification != "valid":
+            continue
+        classification, reason = _continuous_window_eligibility(
+            prepared,
+            security_id,
+            sessions,
+        )
+        if classification != "valid":
+            classifications[security_id] = classification
+            if reason is not None:
+                reasons.append(reason)
+            continue
+        amount = _amount_on(prepared, security_id, prepared.trade_date)
+        streak = _closing_limit_streak(prepared, security_id)
+        current_bar = prepared.bar_on(security_id, prepared.trade_date)
+        if amount is None or streak is None or current_bar is None:
+            classifications[security_id] = "missing"
+            reasons.append(f"{security_id}: unknown required daily limit input")
+            continue
+        prices = _prices_for(prepared, security_id, sessions)
+        if prices is None:
+            raise AssertionError("validated emotion prices became unavailable")
+        try:
+            factors_by_security[security_id] = (
+                Decimal(streak),
+                relative_return(period_return(prices[0], prices[-1]), benchmark),
+                topic_amount_share(
+                    amount[0],
+                    daily_topic_amounts[0],
+                    currency=amount[1],
+                    eligible_currencies=daily_topic_amounts[1],
+                ),
+            )
+        except AnalysisUnavailable as exc:
+            classifications[security_id] = "missing"
+            reasons.append(f"{security_id}: {exc}")
+            continue
+        candidates[security_id] = (
+            current_bar.limit_status == "limited"
+            and current_bar.limit_date == prepared.trade_date
+            and current_bar.limit_up is not None
+            and current_bar.close == current_bar.limit_up
+            and streak >= 1
+        )
+
+    rows = tuple(
+        RoleCandidate(
+            topic_id=topic_id,
+            security_id=security_id,
+            role="emotion",
+            status=(
+                "simplified_candidate"
+                if candidates[security_id]
+                else "eligible_non_candidate"
+            ),
+            factors=factors,
+            reasons=(
+                (
+                    "candidate_conditions_met",
+                    "daily_simplified_candidate_only",
+                )
+                if candidates[security_id]
+                else ("candidate_conditions_not_met",)
+            ),
+        )
+        for security_id, factors in factors_by_security.items()
+    )
+    try:
+        ranked = dense_rank(
+            rows,
+            key=lambda row: (-row.factors[0], -row.factors[1], -row.factors[2]),
+        )
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "emotion",
+            reasons=(*reasons, "emotion ranking unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    return _finish_staged(
+        prepared=prepared,
+        role="emotion",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        rows=_first_simplified_tie_group(ranked),
+    )
+
+
+def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
+    """Evaluate the two disjoint-window simplified catchup role."""
+    prepared, expected, classifications, reasons, failure = _staged_preflight(
+        context, topic_id, "catchup"
+    )
+    if failure is not None:
+        return failure
+    sessions = _window(prepared, 26)
+    if len(sessions) != 26:
+        return _insufficient(
+            prepared,
+            "catchup",
+            reasons=(*reasons, "market_calendar_missing_26_sessions"),
+            expected=expected,
+            classifications=classifications,
+        )
+    coverage_reason = _complete_coverage_window(prepared, sessions)
+    if coverage_reason is not None:
+        return _insufficient(
+            prepared,
+            "catchup",
+            reasons=(*reasons, coverage_reason),
+            expected=expected,
+            classifications=classifications,
+        )
+    prior_sessions = sessions[:21]
+    current_sessions = sessions[-6:]
+    prior_benchmark = _topic_return_median(prepared, prior_sessions)
+    current_benchmark = _topic_return_median(prepared, current_sessions)
+    if prior_benchmark is None or current_benchmark is None:
+        return _insufficient(
+            prepared,
+            "catchup",
+            reasons=(*reasons, "topic_return_median_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+
+    factors_by_security: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
+    for security_id, classification in tuple(classifications.items()):
+        if classification != "valid":
+            continue
+        classification, reason = _continuous_window_eligibility(
+            prepared,
+            security_id,
+            sessions,
+        )
+        if classification != "valid":
+            classifications[security_id] = classification
+            if reason is not None:
+                reasons.append(reason)
+            continue
+        prices = _prices_for(prepared, security_id, sessions)
+        if prices is None:
+            classifications[security_id] = "missing"
+            reasons.append(f"{security_id}: missing 26 adjusted prices")
+            continue
+        try:
+            amounts = _amount_series(prepared, security_id, sessions[1:])
+            prior_return = period_return(prices[0], prices[20])
+            current_return = period_return(prices[20], prices[-1])
+            factors_by_security[security_id] = (
+                relative_return(current_return, current_benchmark),
+                relative_return(prior_benchmark, prior_return),
+                _amount_change(amounts[-5:], amounts[:20]),
+            )
+        except AnalysisUnavailable as exc:
+            classifications[security_id] = "missing"
+            reasons.append(f"{security_id}: {exc}")
+
+    rows = tuple(
+        RoleCandidate(
+            topic_id=topic_id,
+            security_id=security_id,
+            role="catchup",
+            status=(
+                "simplified_candidate"
+                if all(factor > 0 for factor in factors)
+                else "eligible_non_candidate"
+            ),
+            factors=factors,
+            reasons=(
+                ("candidate_conditions_met", "daily_simplified_candidate_only")
+                if all(factor > 0 for factor in factors)
+                else ("candidate_conditions_not_met",)
+            ),
+        )
+        for security_id, factors in factors_by_security.items()
+    )
+    try:
+        ranked = dense_rank(
+            rows,
+            key=lambda row: (-row.factors[0], -row.factors[1], -row.factors[2]),
+        )
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "catchup",
+            reasons=(*reasons, "catchup ranking unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    return _finish_staged(
+        prepared=prepared,
+        role="catchup",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        rows=_first_simplified_tie_group(ranked),
+    )
+
+
+def _unique_first_trend_candidate(
+    evaluation: RoleEvaluation,
+) -> RankedCandidate | None:
+    candidates = tuple(
+        row
+        for row in evaluation.candidates
+        if row.status == "candidate" and row.tie_rank == 1
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def evaluate_follower(context: RoleContext, topic_id: str) -> RoleEvaluation:
+    """Evaluate follower observations against the unique current trend core."""
+    prepared, expected, classifications, reasons, failure = _staged_preflight(
+        context, topic_id, "follower"
+    )
+    if failure is not None:
+        return failure
+    reference = _unique_first_trend_candidate(evaluate_trend(context, topic_id))
+    if reference is None:
+        return _insufficient(
+            prepared,
+            "follower",
+            reasons=(*reasons, "unique_trend_reference_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    sessions = _window(prepared, 10)
+    if len(sessions) != 10:
+        return _insufficient(
+            prepared,
+            "follower",
+            reasons=(*reasons, "market_calendar_missing_10_sessions"),
+            expected=expected,
+            classifications=classifications,
+        )
+    coverage_reason = _complete_coverage_window(prepared, sessions)
+    if coverage_reason is not None:
+        return _insufficient(
+            prepared,
+            "follower",
+            reasons=(*reasons, coverage_reason),
+            expected=expected,
+            classifications=classifications,
+        )
+    reference_prices = _prices_for(prepared, reference.security_id, sessions[-6:])
+    if reference_prices is None:
+        return _insufficient(
+            prepared,
+            "follower",
+            reasons=(*reasons, "trend_reference_return5_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    try:
+        reference_return = period_return(reference_prices[0], reference_prices[-1])
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "follower",
+            reasons=(*reasons, "trend_reference_return5_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+
+    factors_by_security: dict[str, tuple[Decimal, Decimal]] = {}
+    for security_id, classification in tuple(classifications.items()):
+        if classification != "valid":
+            continue
+        classification, reason = _continuous_window_eligibility(
+            prepared,
+            security_id,
+            sessions,
+            price_sessions=sessions[-6:],
+        )
+        if classification != "valid":
+            classifications[security_id] = classification
+            if reason is not None:
+                reasons.append(reason)
+            continue
+        prices = _prices_for(prepared, security_id, sessions[-6:])
+        if prices is None:
+            classifications[security_id] = "missing"
+            reasons.append(f"{security_id}: missing 6 adjusted prices")
+            continue
+        try:
+            amounts = _amount_series(prepared, security_id, sessions)
+            factors_by_security[security_id] = (
+                period_return(prices[0], prices[-1]),
+                _amount_change(amounts[-5:], amounts[:5]),
+            )
+        except AnalysisUnavailable as exc:
+            classifications[security_id] = "missing"
+            reasons.append(f"{security_id}: {exc}")
+
+    rows = tuple(
+        RoleCandidate(
+            topic_id=topic_id,
+            security_id=security_id,
+            role="follower",
+            status="watch",
+            factors=factors,
+            reasons=(
+                "watch_conditions_met",
+                "intraday_start_order_unavailable",
+                "independent_catalyst_evidence_unavailable",
+                "correlation_is_not_causation",
+            ),
+        )
+        for security_id, factors in factors_by_security.items()
+        if factors[0] > 0 and factors[0] < reference_return
+    )
+    try:
+        ranked = dense_rank(
+            rows,
+            key=lambda row: (-row.factors[0], -row.factors[1]),
+        )
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "follower",
+            reasons=(*reasons, "follower ranking unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    return _finish_staged(
+        prepared=prepared,
+        role="follower",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        rows=ranked,
+    )
+
+
+def _previous_session(prepared: _PreparedContext) -> date | None:
+    sessions = prepared.context.market.calendar.sessions
+    try:
+        index = sessions.index(prepared.trade_date)
+    except ValueError:
+        return None
+    return sessions[index - 1] if index > 0 else None
+
+
+def _relay_comparability_reasons(
+    prepared: _PreparedContext,
+    predecessor: RelayPredecessorRun,
+) -> tuple[str, ...]:
+    context = prepared.context
+    benchmark_definition = RULE_DEFINITIONS[context.rule_version]["roles"]["trend"][
+        "required_inputs"
+    ]["market_benchmark"]["definition"]
+    checks = (
+        (predecessor.trade_date == _previous_session(prepared), "not_previous_session"),
+        (predecessor.active_run_count == 1, "predecessor_not_unique_active"),
+        (predecessor.rule_version == context.rule_version, "rule_version_changed"),
+        (predecessor.visibility_mode == "local_display", "visibility_mode_changed"),
+        (
+            predecessor.market_benchmark_definition == benchmark_definition,
+            "market_benchmark_changed",
+        ),
+        (predecessor.topic_id == prepared.topic_id, "topic_identity_changed"),
+        (
+            predecessor.topic_source_id == context.topic.source_id,
+            "topic_identity_changed",
+        ),
+        (
+            predecessor.topic_source_version == context.topic.source_version,
+            "topic_revision_changed",
+        ),
+        (
+            predecessor.taxonomy_version == context.topic.taxonomy_version,
+            "topic_identity_changed",
+        ),
+    )
+    return tuple(reason for matches, reason in checks if not matches)
+
+
+def evaluate_relay(
+    context: RoleContext,
+    topic_id: str,
+    predecessor: RelayPredecessorRun | None,
+) -> RoleEvaluation:
+    """Evaluate same-day relay evidence without Task 7 validation outcomes."""
+    prepared, expected, classifications, reasons, failure = _staged_preflight(
+        context, topic_id, "relay"
+    )
+    if failure is not None:
+        return failure
+    if predecessor is None:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, "predecessor_run_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    comparability_reasons = _relay_comparability_reasons(prepared, predecessor)
+    if comparability_reasons:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, *comparability_reasons),
+            expected=expected,
+            classifications=classifications,
+        )
+    old_core = _unique_first_trend_candidate(predecessor.trend_evaluation)
+    current_core = _unique_first_trend_candidate(evaluate_trend(context, topic_id))
+    if old_core is None or current_core is None:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, "unique_trend_core_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    if old_core.security_id == current_core.security_id:
+        valid = sum(value == "valid" for value in classifications.values())
+        legal_excluded, missing = _partition_counts(
+            expected, classifications, valid=valid
+        )
+        return RoleEvaluation(
+            topic_status=_role_status(
+                topic_id=topic_id,
+                role="relay",
+                status="no_candidate",
+                expected=expected,
+                valid=valid,
+                legal_excluded=legal_excluded,
+                missing=missing,
+                reasons=(*reasons, "trend_core_unchanged"),
+            )
+        )
+    sessions = _window(prepared, 6)
+    daily_sessions = _window(prepared, 2)
+    if len(sessions) != 6 or len(daily_sessions) != 2:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, "market_calendar_missing_relay_window"),
+            expected=expected,
+            classifications=classifications,
+        )
+    coverage_reason = _complete_coverage_window(prepared, sessions)
+    if coverage_reason is not None:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, coverage_reason),
+            expected=expected,
+            classifications=classifications,
+        )
+    topic_return5 = _topic_return_median(prepared, sessions)
+    topic_daily_return = _topic_return_median(prepared, daily_sessions)
+    old_prices = _prices_for(prepared, old_core.security_id, sessions)
+    new_prices = _prices_for(prepared, current_core.security_id, sessions)
+    if (
+        topic_return5 is None
+        or topic_daily_return is None
+        or old_prices is None
+        or new_prices is None
+    ):
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, "relay_factor_input_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    try:
+        factors = (
+            relative_return(
+                period_return(old_prices[0], old_prices[-1]),
+                topic_return5,
+            ),
+            relative_return(
+                period_return(new_prices[0], new_prices[-1]),
+                topic_return5,
+            ),
+            topic_daily_return,
+        )
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, "relay_factor_input_unavailable"),
+            expected=expected,
+            classifications=classifications,
+        )
+    membership_changed = (
+        predecessor.membership_version != context.topic.membership_version
+        or frozenset(predecessor.member_ids)
+        != frozenset(prepared.members_on(prepared.trade_date))
+    )
+    if membership_changed:
+        reasons.append("membership_changed")
+    rows: tuple[RankedCandidate, ...] = ()
+    if factors[0] <= 0 and factors[1] > 0 and factors[2] > 0:
+        rows = (
+            RankedCandidate(
+                topic_id=topic_id,
+                security_id=current_core.security_id,
+                role="relay",
+                status="pending_validation",
+                factors=factors,
+                reasons=(
+                    "pending_conditions_met",
+                    "validation_window:T+1..T+5",
+                    *(
+                        ("membership_changed_not_attributed_to_market",)
+                        if membership_changed
+                        else ()
+                    ),
+                ),
+                tie_rank=1,
+            ),
+        )
+    return _finish_staged(
+        prepared=prepared,
+        role="relay",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        rows=rows,
     )
