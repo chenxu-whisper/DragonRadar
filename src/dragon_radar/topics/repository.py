@@ -12,6 +12,7 @@ from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, insert, or_, select
+from sqlalchemy.engine import Connection
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.domain.quality import grant_allows_local
@@ -76,6 +77,11 @@ def _attempt(row: Mapping[str, Any]) -> TopicAttempt:
 class _PageGap(NamedTuple):
     missing_item: str
     failed_cursor: str | None
+
+
+class _ImportOutcome(NamedTuple):
+    record: TopicImportRecord | None
+    rejected: bool
 
 
 def _page_gap(batch: TopicBatch) -> _PageGap | None:
@@ -221,6 +227,80 @@ class TopicRepository(Repository):
         _identifier(key)
         batch = TopicBatch.model_validate(batch.model_dump())
         _identifier(batch.source_id)
+        with self.database.engine.begin() as connection:
+            self._lock(connection, "topic-import-key:" + key)
+            outcome = self._import_batch_transaction(
+                connection,
+                batch,
+                key=key,
+                allow_replay=True,
+            )
+        if outcome.rejected:
+            raise QualityRejected("Topic batch failed the quality gate")
+        assert outcome.record is not None
+        return outcome.record
+
+    def retry_attempt(
+        self,
+        attempt_id: UUID | str,
+        batch: TopicBatch,
+        *,
+        key: str,
+    ) -> TopicImportRecord:
+        attempt_id = _uuid(attempt_id)
+        _identifier(key)
+        with self.database.engine.begin() as connection:
+            self._lock(connection, "topic-import-attempt:" + str(attempt_id))
+            attempt = (
+                connection.execute(
+                    select(topic_import_attempts)
+                    .where(topic_import_attempts.c.id == attempt_id)
+                    .with_for_update()
+                )
+                .mappings()
+                .first()
+            )
+            if attempt is None:
+                raise NotFound("Topic import attempt not found")
+            if (
+                attempt["status"] != "failed"
+                or attempt["retry_from"] is None
+                or attempt["retry_to"] is None
+            ):
+                raise ValueError("Topic attempt is not retryable")
+
+            self._lock(connection, "topic-import-key:" + key)
+            batch = TopicBatch.model_validate(batch.model_dump())
+            _identifier(batch.source_id)
+            if (
+                key == attempt["idempotency_key"]
+                or batch.source_id != attempt["source_id"]
+                or batch.coverage_from != attempt["retry_from"]
+                or batch.coverage_to != attempt["retry_to"]
+            ):
+                raise Conflict("Topic retry does not match the failed attempt")
+
+            outcome = self._import_batch_transaction(
+                connection,
+                batch,
+                key=key,
+                allow_replay=False,
+                required_grant=SourceGrant.model_validate(attempt["embedded_grant"]),
+            )
+        if outcome.rejected:
+            raise QualityRejected("Topic batch failed the quality gate")
+        assert outcome.record is not None
+        return outcome.record
+
+    def _import_batch_transaction(
+        self,
+        connection: Connection,
+        batch: TopicBatch,
+        *,
+        key: str,
+        allow_replay: bool,
+        required_grant: SourceGrant | None = None,
+    ) -> _ImportOutcome:
         canonical = json.dumps(
             batch.model_dump(mode="json"),
             sort_keys=True,
@@ -229,128 +309,133 @@ class TopicRepository(Repository):
             allow_nan=False,
         )
         digest = hashlib.sha256(canonical.encode()).hexdigest()
-        rejected = False
-        with self.database.engine.begin() as connection:
-            self._lock(connection, "topic-import-key:" + key)
-            current = self._source(connection, batch.source_id)
-            now = self._authorize(current, batch)
-            existing = (
-                connection.execute(
-                    select(topic_import_batches).where(
-                        topic_import_batches.c.idempotency_key == key
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if existing:
-                if existing["payload_hash"] != digest:
-                    raise Conflict("Idempotency key already belongs to another payload")
-                return _import_record(existing)
+        existing = failed_attempt = None
+        if not allow_replay:
+            existing, failed_attempt = self._import_key_rows(connection, key)
+            if existing is not None or failed_attempt is not None:
+                raise Conflict("Idempotency key has already been used")
+        current = self._source(connection, batch.source_id)
+        now = self.clock()
+        if (
+            required_grant is not None
+            and not self._authorized(current, required_grant, batch.source_id, now)
+        ) or not self._authorized(current, batch.grant, batch.source_id, now):
+            raise Forbidden("Source is not locally authorized")
+        if allow_replay:
+            existing, failed_attempt = self._import_key_rows(connection, key)
+        used = existing or failed_attempt
+        if used is not None:
+            if used["payload_hash"] != digest:
+                raise Conflict("Idempotency key already belongs to another payload")
+            if existing is not None:
+                return _ImportOutcome(_import_record(existing), False)
+            return _ImportOutcome(None, True)
 
-            failed_attempt = (
-                connection.execute(
-                    select(topic_import_attempts).where(
-                        topic_import_attempts.c.idempotency_key == key
-                    )
+        report = validate_topic_batch(batch, now=now)
+        quality = _quality_report(report)
+        if not report.publishable:
+            page_gap = _page_gap(batch)
+            missing_page = page_gap.missing_item if page_gap is not None else None
+            failed_cursor = page_gap.failed_cursor if page_gap is not None else None
+            connection.execute(
+                insert(topic_import_attempts).values(
+                    id=uuid4(),
+                    batch_id=None,
+                    idempotency_key=key,
+                    payload_hash=digest,
+                    source_id=batch.source_id,
+                    embedded_grant=batch.grant.model_dump(mode="json"),
+                    status="failed",
+                    stage="quality",
+                    missing_items=[
+                        missing_page
+                        if issue.code == "page_manifest" and missing_page is not None
+                        else issue.message
+                        for issue in report.issues
+                        if issue.code
+                        in {
+                            "missing_coverage",
+                            "invalid_coverage",
+                            "page_manifest",
+                        }
+                    ],
+                    failed_cursor=failed_cursor,
+                    request_from=batch.page_manifest.request_from,
+                    request_to=batch.page_manifest.request_to,
+                    retry_from=batch.coverage_from,
+                    retry_to=batch.coverage_to,
+                    details=[
+                        f"{issue.code}: {issue.message}" for issue in report.issues
+                    ],
+                    created_at=now,
                 )
-                .mappings()
-                .first()
             )
-            if failed_attempt:
-                if failed_attempt["payload_hash"] != digest:
-                    raise Conflict("Idempotency key already belongs to another payload")
-                rejected = True
-            else:
-                report = validate_topic_batch(batch, now=now)
-                quality = _quality_report(report)
-                rejected = not report.publishable
-                if rejected:
-                    page_gap = _page_gap(batch)
-                    missing_page = (
-                        page_gap.missing_item if page_gap is not None else None
-                    )
-                    failed_cursor = (
-                        page_gap.failed_cursor if page_gap is not None else None
-                    )
-                    connection.execute(
-                        insert(topic_import_attempts).values(
-                            id=uuid4(),
-                            batch_id=None,
-                            idempotency_key=key,
-                            payload_hash=digest,
-                            source_id=batch.source_id,
-                            embedded_grant=batch.grant.model_dump(mode="json"),
-                            status="failed",
-                            stage="quality",
-                            missing_items=[
-                                missing_page
-                                if issue.code == "page_manifest"
-                                and missing_page is not None
-                                else issue.message
-                                for issue in report.issues
-                                if issue.code
-                                in {
-                                    "missing_coverage",
-                                    "invalid_coverage",
-                                    "page_manifest",
-                                }
-                            ],
-                            failed_cursor=failed_cursor,
-                            request_from=batch.page_manifest.request_from,
-                            request_to=batch.page_manifest.request_to,
-                            retry_from=batch.coverage_from,
-                            retry_to=batch.coverage_to,
-                            details=[
-                                f"{issue.code}: {issue.message}"
-                                for issue in report.issues
-                            ],
-                            created_at=now,
-                        )
-                    )
-                else:
-                    row = (
-                        connection.execute(
-                            insert(topic_import_batches)
-                            .values(
-                                id=uuid4(),
-                                idempotency_key=key,
-                                source_id=batch.source_id,
-                                trade_date=batch.trade_date,
-                                canonical_json=canonical,
-                                payload_hash=digest,
-                                quality_report=quality,
-                                imported_at=now,
-                            )
-                            .returning(topic_import_batches)
-                        )
-                        .mappings()
-                        .one()
-                    )
-                    connection.execute(
-                        insert(topic_import_attempts).values(
-                            id=uuid4(),
-                            batch_id=row["id"],
-                            idempotency_key=key,
-                            payload_hash=digest,
-                            source_id=batch.source_id,
-                            embedded_grant=batch.grant.model_dump(mode="json"),
-                            status="succeeded",
-                            stage="import",
-                            missing_items=[],
-                            failed_cursor=None,
-                            request_from=batch.page_manifest.request_from,
-                            request_to=batch.page_manifest.request_to,
-                            retry_from=None,
-                            retry_to=None,
-                            details=[],
-                            created_at=now,
-                        )
-                    )
-                    result = _import_record(row)
-        if rejected:
-            raise QualityRejected("Topic batch failed the quality gate")
-        return result
+            return _ImportOutcome(None, True)
+
+        row = (
+            connection.execute(
+                insert(topic_import_batches)
+                .values(
+                    id=uuid4(),
+                    idempotency_key=key,
+                    source_id=batch.source_id,
+                    trade_date=batch.trade_date,
+                    canonical_json=canonical,
+                    payload_hash=digest,
+                    quality_report=quality,
+                    imported_at=now,
+                )
+                .returning(topic_import_batches)
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            insert(topic_import_attempts).values(
+                id=uuid4(),
+                batch_id=row["id"],
+                idempotency_key=key,
+                payload_hash=digest,
+                source_id=batch.source_id,
+                embedded_grant=batch.grant.model_dump(mode="json"),
+                status="succeeded",
+                stage="import",
+                missing_items=[],
+                failed_cursor=None,
+                request_from=batch.page_manifest.request_from,
+                request_to=batch.page_manifest.request_to,
+                retry_from=None,
+                retry_to=None,
+                details=[],
+                created_at=now,
+            )
+        )
+        return _ImportOutcome(_import_record(row), False)
+
+    @staticmethod
+    def _import_key_rows(
+        connection: Connection,
+        key: str,
+    ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+        existing = (
+            connection.execute(
+                select(topic_import_batches).where(
+                    topic_import_batches.c.idempotency_key == key
+                )
+            )
+            .mappings()
+            .first()
+        )
+        failed_attempt = (
+            connection.execute(
+                select(topic_import_attempts).where(
+                    topic_import_attempts.c.idempotency_key == key
+                )
+            )
+            .mappings()
+            .first()
+        )
+        return existing, failed_attempt
 
     @staticmethod
     def _snapshot(row: Mapping[str, Any], archive: Mapping[str, Any]) -> TopicSnapshot:

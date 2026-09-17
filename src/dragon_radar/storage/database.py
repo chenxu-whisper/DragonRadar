@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0004_topic_snapshots"
+SCHEMA_REVISION = "0004a_topic_attempt_ranges"
 
 
 class Database:

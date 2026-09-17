@@ -225,6 +225,21 @@ def test_topic_retry_revalidates_complete_manifest_without_publishing(
     assert set(retried_body) == {"batch_id", "status"}
     assert retried_body["status"] == "imported"
     assert_safe_output(retried)
+
+    reused = run_cli(
+        [
+            "topic-retry",
+            failed_attempt["attempt_id"],
+            "--path",
+            str(retry_path),
+            "--key",
+            "retry-topic-cli",
+        ],
+        database_url,
+    )
+    assert reused.returncode != 0
+    assert reused.stderr.strip().startswith("Conflict:")
+    assert_safe_output(reused)
     with database.engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM topic_snapshots")) == 0
 

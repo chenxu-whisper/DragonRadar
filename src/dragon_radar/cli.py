@@ -165,22 +165,14 @@ def main(argv: list[str] | None = None) -> int:
                 topic_repository.get_attempt(args.attempt_id)
             )
         elif args.command == "topic-retry":
-            attempt = topic_repository.get_attempt(args.attempt_id)
-            if (
-                attempt.status != "failed"
-                or attempt.retry_from is None
-                or attempt.retry_to is None
-            ):
-                raise ValueError("Topic attempt is not retryable")
             batch = TopicBatch.model_validate_json(
                 args.path.read_text(encoding="utf-8")
             )
-            if (
-                batch.coverage_from != attempt.retry_from
-                or batch.coverage_to != attempt.retry_to
-            ):
-                raise ValueError("Topic retry range does not match")
-            record = topic_repository.import_batch(batch, key=args.key)
+            record = topic_repository.retry_attempt(
+                args.attempt_id,
+                batch,
+                key=args.key,
+            )
             result = {"batch_id": str(record.id), "status": "imported"}
         else:
             import uvicorn

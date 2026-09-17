@@ -4,7 +4,9 @@ import base64
 import hashlib
 import inspect
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 import pytest
 from factories import NOW, grant
@@ -78,6 +80,294 @@ def test_failed_quality_attempt_is_persisted_without_a_batch(topic_repository):
     with topic_repository.database.engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM topic_import_batches")) == 0
         assert connection.scalar(text("SELECT count(*) FROM topic_snapshots")) == 0
+
+
+def _failed_topic_attempt(topic_repository, *, key="retry-origin"):
+    from dragon_radar.storage.repository import QualityRejected
+
+    payload = topic_batch()
+    incomplete = payload.model_copy(
+        update={
+            "coverage_cells": tuple(
+                cell
+                for cell in payload.coverage_cells
+                if cell.trade_date != TOPIC_DAYS[-1]
+            )
+        }
+    )
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(incomplete, key=key)
+    return topic_repository.list_attempts(status="failed")[0], payload
+
+
+@pytest.mark.parametrize("used_by", ["batch", "attempt"])
+def test_topic_retry_requires_a_fresh_key(topic_repository, used_by):
+    from dragon_radar.storage.repository import Conflict, QualityRejected
+
+    failed, payload = _failed_topic_attempt(topic_repository)
+    if used_by == "batch":
+        topic_repository.import_batch(payload, key="used-key")
+    else:
+        malformed = payload.model_copy(
+            update={
+                "page_manifest": payload.page_manifest.model_copy(update={"pages": ()})
+            }
+        )
+        with pytest.raises(QualityRejected):
+            topic_repository.import_batch(malformed, key="used-key")
+
+    before = topic_repository.list_attempts()
+    with pytest.raises(Conflict):
+        topic_repository.retry_attempt(failed.id, payload, key="used-key")
+    assert topic_repository.list_attempts() == before
+
+
+def test_topic_retry_rejects_original_key(topic_repository):
+    from dragon_radar.storage.repository import Conflict
+
+    failed, payload = _failed_topic_attempt(topic_repository)
+
+    with pytest.raises(Conflict):
+        topic_repository.retry_attempt(failed.id, payload, key="retry-origin")
+
+
+def test_topic_retry_used_key_is_conflict_even_after_source_revocation(
+    topic_repository,
+):
+    from dragon_radar.storage.repository import Conflict, Repository
+
+    failed, payload = _failed_topic_attempt(topic_repository)
+    topic_repository.import_batch(payload, key="used-before-revoke")
+    Repository(topic_repository.database, clock=lambda: NOW).revoke_source("synthetic")
+
+    with pytest.raises(Conflict):
+        topic_repository.retry_attempt(failed.id, payload, key="used-before-revoke")
+
+
+def test_topic_retry_binds_original_source_and_range(topic_repository):
+    from dragon_radar.storage.repository import Conflict, Repository
+
+    failed, payload = _failed_topic_attempt(topic_repository)
+    Repository(topic_repository.database, clock=lambda: NOW).register_source(
+        grant(source_id="other")
+    )
+    other_source = payload.model_copy(
+        update={
+            "source_id": "other",
+            "grant": grant(source_id="other"),
+        }
+    )
+    wrong_range = payload.model_copy(
+        update={
+            "coverage_from": TOPIC_DAYS[1],
+            "page_manifest": payload.page_manifest.model_copy(
+                update={"request_from": TOPIC_DAYS[1]}
+            ),
+        }
+    )
+
+    with pytest.raises(Conflict):
+        topic_repository.retry_attempt(failed.id, other_source, key="other-source")
+    with pytest.raises(Conflict):
+        topic_repository.retry_attempt(failed.id, wrong_range, key="wrong-range")
+    assert len(topic_repository.list_attempts()) == 1
+
+
+def test_topic_retry_rechecks_original_embedded_grant(topic_repository):
+    from dragon_radar.storage.repository import Forbidden, QualityRejected, Repository
+
+    original_grant = grant(expires_at=datetime(2027, 1, 1, tzinfo=UTC))
+    current_grant = grant(expires_at=datetime(2030, 1, 1, tzinfo=UTC))
+    payload = topic_batch(grant=original_grant)
+    incomplete = payload.model_copy(
+        update={"coverage_cells": payload.coverage_cells[:-1]}
+    )
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(incomplete, key="expiring-origin")
+    failed = topic_repository.list_attempts(status="failed")[0]
+    Repository(topic_repository.database, clock=lambda: NOW).register_source(
+        current_grant
+    )
+    topic_repository.clock = lambda: datetime(2028, 1, 1, tzinfo=UTC)
+    retry = payload.model_copy(update={"grant": current_grant})
+
+    with pytest.raises(Forbidden):
+        topic_repository.retry_attempt(failed.id, retry, key="expired-origin-retry")
+    with topic_repository.database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM topic_import_attempts "
+                    "WHERE idempotency_key = 'expired-origin-retry'"
+                )
+            )
+            == 0
+        )
+
+
+def test_topic_retry_holds_attempt_key_and_source_locks(topic_repository):
+    failed, payload = _failed_topic_attempt(topic_repository)
+    advisory_keys = []
+    locked_rows = []
+    checking = False
+
+    def check_locks(conn, cursor, statement, parameters, context, executemany):
+        nonlocal checking
+        if checking:
+            return
+        if "SELECT pg_advisory_xact_lock" in statement:
+            advisory_keys.append(parameters["key"])
+        if "FOR UPDATE" not in statement:
+            return
+        if "topic_import_attempts" in statement:
+            query = text(
+                "SELECT * FROM topic_import_attempts "
+                "WHERE id = :attempt_id FOR UPDATE NOWAIT"
+            )
+            values = {"attempt_id": failed.id}
+            locked_rows.append("attempt")
+        elif "source_grants" in statement:
+            query = text(
+                "SELECT * FROM source_grants "
+                "WHERE source_id = 'synthetic' FOR UPDATE NOWAIT"
+            )
+            values = {}
+            locked_rows.append("source")
+        else:
+            return
+        checking = True
+        try:
+            with (
+                pytest.raises(DBAPIError),
+                topic_repository.database.engine.begin() as other,
+            ):
+                other.execute(query, values)
+        finally:
+            checking = False
+
+    event.listen(topic_repository.database.engine, "after_cursor_execute", check_locks)
+    try:
+        topic_repository.retry_attempt(failed.id, payload, key="retry-locks")
+    finally:
+        event.remove(
+            topic_repository.database.engine,
+            "after_cursor_execute",
+            check_locks,
+        )
+
+    assert advisory_keys[:2] == [
+        f"topic-import-attempt:{failed.id}",
+        "topic-import-key:retry-locks",
+    ]
+    assert locked_rows == ["attempt", "source"]
+
+
+def test_topic_retry_appends_success_without_publishing(topic_repository):
+    failed, payload = _failed_topic_attempt(topic_repository)
+
+    record = topic_repository.retry_attempt(failed.id, payload, key="retry-success")
+
+    attempts = topic_repository.list_attempts()
+    assert len(attempts) == 2
+    succeeded = next(attempt for attempt in attempts if attempt.status == "succeeded")
+    assert succeeded.stage == "import"
+    with topic_repository.database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM topic_import_batches")) == 1
+        assert connection.scalar(text("SELECT count(*) FROM topic_snapshots")) == 0
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM topic_import_attempts "
+                    "WHERE batch_id = :batch_id"
+                ),
+                {"batch_id": record.id},
+            )
+            == 1
+        )
+
+
+def test_topic_retry_quality_failure_appends_failed_attempt(topic_repository):
+    from dragon_radar.storage.repository import QualityRejected
+
+    failed, payload = _failed_topic_attempt(topic_repository)
+    still_incomplete = payload.model_copy(
+        update={
+            "coverage_cells": tuple(
+                cell
+                for cell in payload.coverage_cells
+                if cell.trade_date != TOPIC_DAYS[-2]
+            )
+        }
+    )
+
+    with pytest.raises(QualityRejected):
+        topic_repository.retry_attempt(
+            failed.id, still_incomplete, key="retry-incomplete"
+        )
+
+    attempts = topic_repository.list_attempts(status="failed")
+    assert len(attempts) == 2
+    assert {attempt.retry_from for attempt in attempts} == {payload.coverage_from}
+    with topic_repository.database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM topic_import_batches")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM topic_snapshots")) == 0
+
+
+def test_concurrent_topic_retry_same_key_has_one_winner(topic_repository):
+    from dragon_radar.storage.repository import Conflict
+
+    failed, payload = _failed_topic_attempt(topic_repository)
+    barrier = Barrier(2)
+
+    def retry(_):
+        barrier.wait(timeout=10)
+        try:
+            return topic_repository.retry_attempt(
+                failed.id, payload, key="retry-race"
+            ).id
+        except Conflict:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(retry, range(2)))
+
+    assert results.count("conflict") == 1
+    assert len(topic_repository.list_attempts(status="succeeded")) == 1
+    with topic_repository.database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM topic_import_batches")) == 1
+
+
+def test_topic_retry_attempt_insert_failure_rolls_back_batch(topic_repository):
+    failed, payload = _failed_topic_attempt(topic_repository)
+
+    def fail_attempt(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("INSERT INTO topic_import_attempts"):
+            raise RuntimeError("injected retry attempt failure")
+
+    event.listen(
+        topic_repository.database.engine, "before_cursor_execute", fail_attempt
+    )
+    try:
+        with pytest.raises(RuntimeError, match="injected"):
+            topic_repository.retry_attempt(failed.id, payload, key="retry-atomic")
+    finally:
+        event.remove(
+            topic_repository.database.engine,
+            "before_cursor_execute",
+            fail_attempt,
+        )
+
+    with topic_repository.database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM topic_import_batches")) == 0
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM topic_import_attempts "
+                    "WHERE idempotency_key = 'retry-atomic'"
+                )
+            )
+            == 0
+        )
 
 
 def test_failed_attempt_round_trips_distinct_request_and_retry_ranges(
