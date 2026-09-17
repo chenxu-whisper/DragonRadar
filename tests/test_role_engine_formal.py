@@ -1,5 +1,6 @@
+import decimal
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 
 import pytest
 from factories import bar, batch, grant, state
@@ -86,10 +87,14 @@ def _context(
     market_bars = []
     for security_id in pool_ids:
         security_prices = prices.get(security_id, ())
-        price_days = SESSIONS[-len(security_prices) :]
+        price_days = SESSIONS[-len(security_prices) :] if security_prices else ()
         security_amounts = amounts.get(security_id, ())
         amount_by_day = dict(
-            zip(SESSIONS[-len(security_amounts) :], security_amounts, strict=True)
+            zip(
+                SESSIONS[-len(security_amounts) :] if security_amounts else (),
+                security_amounts,
+                strict=True,
+            )
         )
         for day, close in zip(price_days, security_prices, strict=True):
             market_bars.append(
@@ -195,6 +200,100 @@ def _engine():
     return dense_rank, evaluate_core, evaluate_trend
 
 
+def test_prepared_members_on_uses_build_time_deterministic_session_index(monkeypatch):
+    from dragon_radar.roles import engine
+
+    memberships = (
+        topic_membership(
+            security_id="B",
+            effective_from=SESSIONS[-3],
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+        topic_membership(
+            security_id="A",
+            effective_from=SESSIONS[-2],
+            effective_to=SESSIONS[-1],
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+    prepared = engine._PreparedContext.build(
+        _context(member_ids=("A", "B"), memberships=memberships),
+        "topic-a",
+    )
+    calls = 0
+    original_effective = engine._effective
+
+    def counting_effective(start, end, day):
+        nonlocal calls
+        calls += 1
+        return original_effective(start, end, day)
+
+    monkeypatch.setattr(engine, "_effective", counting_effective)
+
+    assert prepared.members_on(SESSIONS[-3]) == ("B",)
+    assert prepared.members_on(SESSIONS[-2]) == ("A", "B")
+    assert prepared.members_on(SESSIONS[-1]) == ("B",)
+    for _ in range(10):
+        for day in SESSIONS:
+            prepared.members_on(day)
+    assert calls == 0
+
+
+def test_prepared_members_index_includes_off_calendar_observation_day():
+    from dragon_radar.roles.engine import _PreparedContext
+
+    context = _context(member_ids=("A", "B"))
+    off_calendar_day = T + timedelta(days=1)
+    forged = RoleContext(
+        market=context.market.model_copy(update={"trade_date": off_calendar_day}),
+        topic=context.topic.model_copy(update={"trade_date": off_calendar_day}),
+    )
+
+    prepared = _PreparedContext.build(forged, "topic-a")
+
+    assert prepared.members_on(off_calendar_day) == ("A", "B")
+
+
+def test_listed_session_count_uses_bisect_with_inclusive_endpoints(monkeypatch):
+    from bisect import bisect_left as standard_bisect_left
+    from bisect import bisect_right as standard_bisect_right
+
+    from dragon_radar.roles import engine
+
+    calls = []
+
+    def tracked_left(values, target):
+        calls.append(("left", target))
+        return standard_bisect_left(values, target)
+
+    def tracked_right(values, target):
+        calls.append(("right", target))
+        return standard_bisect_right(values, target)
+
+    monkeypatch.setattr(engine, "bisect_left", tracked_left, raising=False)
+    monkeypatch.setattr(engine, "bisect_right", tracked_right, raising=False)
+    sessions = tuple(date(2026, 1, day) for day in (2, 5, 8, 12, 20))
+
+    assert engine._listed_session_count(
+        sessions,
+        listing_date=date(2026, 1, 5),
+        day=date(2026, 1, 12),
+    ) == 3
+    assert engine._listed_session_count(
+        sessions,
+        listing_date=date(2026, 1, 3),
+        day=date(2026, 1, 19),
+    ) == 3
+    assert sorted(calls) == sorted(
+        [
+            ("left", date(2026, 1, 5)),
+            ("right", date(2026, 1, 12)),
+            ("left", date(2026, 1, 3)),
+            ("right", date(2026, 1, 19)),
+        ]
+    )
+
+
 def test_dense_rank_uses_complete_decimal_key_and_stable_id_only_inside_ties():
     dense_rank, _, _ = _engine()
     rows = (
@@ -228,6 +327,63 @@ def test_dense_rank_uses_complete_decimal_key_and_stable_id_only_inside_ties():
         ("B", 1),
         ("C", 2),
     ]
+
+
+def test_dense_rank_contains_decimal34_errors_independent_of_default_context():
+    from dragon_radar.roles.factors import AnalysisUnavailable
+
+    dense_rank, _, _ = _engine()
+    normal_rows = (
+        RoleCandidate(
+            topic_id="topic-a",
+            security_id="A",
+            role="trend",
+            status="candidate",
+            factors=(Decimal("1.25"),),
+        ),
+        RoleCandidate(
+            topic_id="topic-a",
+            security_id="B",
+            role="trend",
+            status="candidate",
+            factors=(Decimal("1.5"),),
+        ),
+    )
+    extreme_row = normal_rows[0].model_copy(
+        update={"factors": (Decimal("1E+1000000"),)}
+    )
+    saved_precision = decimal.DefaultContext.prec
+    saved_overflow_trap = decimal.DefaultContext.traps[decimal.Overflow]
+    decimal.DefaultContext.prec = 2
+    decimal.DefaultContext.traps[decimal.Overflow] = False
+    try:
+        ranked = dense_rank(normal_rows, key=lambda row: (-row.factors[0],))
+        with pytest.raises(
+            AnalysisUnavailable,
+            match="dense_rank: Decimal34 arithmetic unavailable",
+        ) as caught:
+            dense_rank((extreme_row,), key=lambda row: (-row.factors[0],))
+    finally:
+        decimal.DefaultContext.prec = saved_precision
+        decimal.DefaultContext.traps[decimal.Overflow] = saved_overflow_trap
+
+    assert [row.security_id for row in ranked] == ["B", "A"]
+    assert isinstance(caught.value.__cause__, DecimalException)
+
+
+def test_dense_rank_rejects_nonfinite_key_items():
+    dense_rank, _, _ = _engine()
+    row = RoleCandidate(
+        topic_id="topic-a",
+        security_id="A",
+        role="trend",
+        status="candidate",
+        factors=(Decimal("1"),),
+    )
+    from dragon_radar.roles.factors import AnalysisUnavailable
+
+    with pytest.raises(AnalysisUnavailable, match="dense_rank key"):
+        dense_rank((row,), key=lambda _: (Decimal("NaN"),))
 
 
 def test_trend_uses_market_medians_positive_relative_returns_and_mdd_gate():
@@ -1123,6 +1279,8 @@ def test_formal_roles_count_member_outside_market_pool_as_missing():
         ("is_st", None, "missing"),
         ("is_delisting", True, "legal_excluded"),
         ("is_delisting", None, "missing"),
+        ("suspended", True, "legal_excluded"),
+        ("suspended", None, "missing"),
     ),
 )
 def test_formal_role_state_fields_distinguish_legal_exclusion_from_missing(
@@ -1172,6 +1330,49 @@ def test_formal_role_state_fields_distinguish_legal_exclusion_from_missing(
             for reason in status.reasons
         )
         assert result.candidates == ()
+
+
+def test_suspended_member_needs_no_bar_and_is_excluded_from_formal_role_ranking():
+    _, evaluate_core, evaluate_trend = _engine()
+    member_ids = ("A", "B", "SUSPENDED")
+    context = _context(
+        member_ids=member_ids,
+        states=tuple(
+            state(
+                security_id=security_id,
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+                suspended=security_id == "SUSPENDED",
+            )
+            for security_id in member_ids
+        ),
+        prices={
+            "A": _window_prices("100", "110", "130"),
+            "B": _window_prices("100", "105", "120"),
+            "SUSPENDED": (),
+        },
+        amounts={
+            "A": (Decimal("200"),) * 20,
+            "B": (Decimal("100"),) * 20,
+            "SUSPENDED": (),
+        },
+    )
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        assert (
+            result.topic_status.expected,
+            result.topic_status.valid,
+            result.topic_status.legal_excluded,
+            result.topic_status.missing,
+        ) == (3, 2, 1, 0)
+        assert result.topic_status.status == "ready"
+        assert {row.security_id for row in result.candidates} == {"A", "B"}
+        assert "SUSPENDED: ineligible security state" in result.topic_status.reasons
 
 
 def test_formal_roles_reject_cross_exchange_member_as_insufficient():

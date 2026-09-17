@@ -1,15 +1,17 @@
 """Formal deterministic evaluators for trend and core topic roles."""
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
-from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from decimal import Decimal
 from typing import Literal
 
 from dragon_radar.domain.models import DailyBar, SecurityState
 from dragon_radar.domain.quality import grant_allows_local
 from dragon_radar.roles.factors import (
     AnalysisUnavailable,
+    _decimal34_operation,
     adjusted_price,
     decimal_mean,
     decimal_median,
@@ -28,7 +30,7 @@ from dragon_radar.roles.models import (
     RoleTopicStatus,
 )
 from dragon_radar.roles.rules import RULE_DEFINITIONS
-from dragon_radar.topics.models import TopicDefinition, TopicMembership
+from dragon_radar.topics.models import TopicDefinition
 
 SortKey = tuple[Decimal, ...]
 Eligibility = Literal["valid", "legal_excluded", "missing", "cross_exchange"]
@@ -39,16 +41,19 @@ def dense_rank(
     key: Callable[[RoleCandidate], SortKey],
 ) -> tuple[RankedCandidate, ...]:
     """Sort by an exact business key and assign one-based dense ranks."""
-    decimal34 = Context(
-        prec=34,
-        rounding=ROUND_HALF_EVEN,
-        Emin=-999999,
-        Emax=999999,
-        capitals=1,
-        clamp=0,
-    )
-    with localcontext(decimal34):
-        keyed = tuple((key(row), row) for row in rows)
+    keyed_rows: list[tuple[SortKey, RoleCandidate]] = []
+    with _decimal34_operation("dense_rank") as normalize:
+        for row in rows:
+            business_key = key(row)
+            if any(
+                not isinstance(value, Decimal) or not value.is_finite()
+                for value in business_key
+            ):
+                raise AnalysisUnavailable(
+                    "dense_rank key items must be finite Decimals"
+                )
+            keyed_rows.append((normalize(*business_key), row))
+    keyed = tuple(keyed_rows)
     ordered = sorted(keyed, key=lambda item: (item[0], item[1].security_id))
     result: list[RankedCandidate] = []
     previous_key: SortKey | None = None
@@ -92,7 +97,7 @@ class _PreparedContext:
     context: RoleContext
     topic_id: str
     topic_definition: TopicDefinition | None
-    memberships: tuple[TopicMembership, ...]
+    members_by_session: dict[date, tuple[str, ...]]
     states: dict[str, tuple[SecurityState, ...]]
     bars: dict[tuple[str, date], tuple[DailyBar, ...]]
 
@@ -116,6 +121,37 @@ class _PreparedContext:
             for membership in context.topic.memberships
             if membership.topic_id == topic_id and membership.available_at <= cutoff
         )
+        sessions = context.market.calendar.sessions
+        indexed_days = (
+            sessions
+            if context.market.trade_date in sessions
+            else (*sessions, context.market.trade_date)
+        )
+        members_by_session = {
+            day: (
+                tuple(
+                    sorted(
+                        {
+                            membership.security_id
+                            for membership in memberships
+                            if _effective(
+                                membership.effective_from,
+                                membership.effective_to,
+                                day,
+                            )
+                        }
+                    )
+                )
+                if topic_definition is not None
+                and _effective(
+                    topic_definition.effective_from,
+                    topic_definition.effective_to,
+                    day,
+                )
+                else ()
+            )
+            for day in indexed_days
+        }
         state_groups: dict[str, list[SecurityState]] = {}
         for security_state in context.market.security_states:
             if (
@@ -143,7 +179,7 @@ class _PreparedContext:
             context=context,
             topic_id=topic_id,
             topic_definition=topic_definition,
-            memberships=memberships,
+            members_by_session=members_by_session,
             states={
                 security_id: tuple(values)
                 for security_id, values in state_groups.items()
@@ -160,25 +196,7 @@ class _PreparedContext:
         return frozenset(self.context.market.expected_security_ids)
 
     def members_on(self, day: date) -> tuple[str, ...]:
-        if self.topic_definition is None or not _effective(
-            self.topic_definition.effective_from,
-            self.topic_definition.effective_to,
-            day,
-        ):
-            return ()
-        return tuple(
-            sorted(
-                {
-                    membership.security_id
-                    for membership in self.memberships
-                    if _effective(
-                        membership.effective_from,
-                        membership.effective_to,
-                        day,
-                    )
-                }
-            )
-        )
+        return self.members_by_session.get(day, ())
 
     def state_on(self, security_id: str, day: date) -> SecurityState | None:
         matches = tuple(
@@ -199,6 +217,15 @@ class _PreparedContext:
 
 def _effective(start: date, end: date | None, day: date) -> bool:
     return start <= day and (end is None or day < end)
+
+
+def _listed_session_count(
+    sessions: Sequence[date],
+    *,
+    listing_date: date,
+    day: date,
+) -> int:
+    return bisect_right(sessions, day) - bisect_left(sessions, listing_date)
 
 
 def _role_status(
@@ -347,6 +374,7 @@ def _state_eligibility(
         security_state.security_type is None
         or security_state.board_category is None
         or security_state.is_delisting is None
+        or security_state.suspended is None
         or security_state.is_st is None
     ):
         return "missing", f"{security_id}: missing required security state"
@@ -360,6 +388,7 @@ def _state_eligibility(
         or security_state.board_category not in allowed_boards
         or security_state.is_st
         or security_state.is_delisting
+        or security_state.suspended
     ):
         return "legal_excluded", f"{security_id}: ineligible security state"
     if not check_listing:
@@ -370,9 +399,10 @@ def _state_eligibility(
     ]
     if security_state.listing_date < sessions[0]:
         return "missing", f"{security_id}: incomplete listing calendar"
-    listed_sessions = sum(
-        security_state.listing_date <= session <= day
-        for session in sessions
+    listed_sessions = _listed_session_count(
+        sessions,
+        listing_date=security_state.listing_date,
+        day=day,
     )
     if listed_sessions >= minimum:
         return "valid", None
