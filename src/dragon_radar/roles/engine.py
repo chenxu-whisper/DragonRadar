@@ -260,7 +260,7 @@ def _state_eligibility(
     check_listing: bool,
 ) -> tuple[Eligibility, str | None]:
     if security_id not in prepared.pool:
-        return "legal_excluded", f"{security_id}: outside declared market pool"
+        return "missing", f"{security_id}: outside declared market pool"
     security_state = prepared.state_on(security_id, day)
     if security_state is None:
         return "missing", f"{security_id}: missing effective security state"
@@ -289,14 +289,14 @@ def _state_eligibility(
     minimum = RULE_DEFINITIONS[prepared.context.rule_version][
         "minimum_listing_sessions"
     ]
+    if security_state.listing_date < sessions[0]:
+        return "missing", f"{security_id}: incomplete listing calendar"
     listed_sessions = sum(
         security_state.listing_date <= session <= prepared.trade_date
         for session in sessions
     )
     if listed_sessions >= minimum:
         return "valid", None
-    if security_state.listing_date < sessions[0]:
-        return "missing", f"{security_id}: incomplete listing calendar"
     return "legal_excluded", f"{security_id}: insufficient listing history"
 
 

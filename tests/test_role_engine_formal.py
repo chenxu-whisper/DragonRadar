@@ -346,6 +346,93 @@ def test_trend_market_benchmark_excludes_security_below_listing_minimum():
     assert result.candidates[0].factors[0] == Decimal("0.2")
 
 
+def test_formal_roles_count_incomplete_listing_calendar_as_missing():
+    _, evaluate_core, evaluate_trend = _engine()
+    member_ids = ("A", "B", "C", "D", "E")
+    states = tuple(
+        state(
+            security_id=security_id,
+            board_category="sh_main",
+            exchange="TEST",
+            effective_from=SESSIONS[0],
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+            listing_date=SESSIONS[0] - timedelta(days=1),
+        )
+        for security_id in member_ids
+    )
+    context = _context(
+        member_ids=member_ids,
+        states=states,
+        rule_version="role-v1",
+    )
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        status = result.topic_status
+        assert status.status == "insufficient"
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == (5, 0, 0, 5)
+        assert status.reasons[: len(member_ids)] == tuple(
+            f"{security_id}: incomplete listing calendar"
+            for security_id in member_ids
+        )
+
+
+def test_formal_roles_count_member_outside_market_pool_as_missing():
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(member_ids=("OUT",), pool_ids=("MARKET",))
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        status = result.topic_status
+        assert status.status == "insufficient"
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == (1, 0, 0, 1)
+        assert "OUT: outside declared market pool" in status.reasons
+
+
+def test_formal_roles_reject_cross_exchange_member_as_insufficient():
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A",),
+        states=(
+            state(
+                security_id="A",
+                exchange="OTHER",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        ),
+    )
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        status = result.topic_status
+        assert status.status == "insufficient"
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == (1, 0, 0, 1)
+        assert status.reasons == ("cross_exchange", "A: cross_exchange")
+
+
 def test_formal_roles_reject_cross_exchange_topic_as_insufficient():
     _, evaluate_core, evaluate_trend = _engine()
     context = _context(topic_exchange="OTHER")
@@ -499,6 +586,31 @@ def test_core_requires_complete_daily_coverage_and_all_member_amounts():
     assert result.topic_status.status == "insufficient"
     assert result.candidates == ()
     assert any("coverage" in reason for reason in result.topic_status.reasons)
+
+
+def test_core_is_insufficient_when_one_denominator_member_amount_is_missing():
+    _, evaluate_core, _ = _engine()
+    missing_day = SESSIONS[-7]
+    amounts = [Decimal("100")] * 20
+    amounts[-7] = None
+
+    result = evaluate_core(
+        _context(member_ids=("A",), amounts={"A": tuple(amounts)}),
+        "topic-a",
+    )
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (1, 0, 0, 1)
+    assert status.reasons == (
+        f"A: incomplete topic amount coverage on {missing_day.isoformat()}",
+    )
+    assert result.candidates == ()
 
 
 def test_core_zero_mean_and_currency_mismatch_are_insufficient():
