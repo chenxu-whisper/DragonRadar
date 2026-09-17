@@ -107,6 +107,7 @@ class _PreparedContext:
     coverage_by_session: dict[date, tuple[TopicCoverageCell, ...]]
     coverage_actual_member_counts: dict[tuple[date, datetime], int | None]
     members_by_session: dict[date, tuple[str, ...]]
+    member_ids_by_session: dict[date, frozenset[str]]
     states: dict[str, tuple[SecurityState, ...]]
     bars: dict[tuple[str, date], tuple[DailyBar, ...]]
 
@@ -133,9 +134,19 @@ class _PreparedContext:
             for membership in context.topic.memberships
             if membership.topic_id == topic_id and membership.available_at <= cutoff
         )
+        sessions = context.market.calendar.sessions
+        endpoint = bisect_right(sessions, context.market.trade_date)
+        indexed_days = sessions[max(0, endpoint - 61) : endpoint]
+        if context.market.trade_date not in indexed_days:
+            indexed_days = (*indexed_days[-60:], context.market.trade_date)
+        indexed_day_set = frozenset(indexed_days)
         coverage_groups: dict[date, list[TopicCoverageCell]] = {}
         for cell in context.topic.coverage_cells:
-            if cell.topic_id == topic_id and cell.complete_as_of <= cutoff:
+            if (
+                cell.topic_id == topic_id
+                and cell.complete_as_of <= cutoff
+                and cell.trade_date in indexed_day_set
+            ):
                 coverage_groups.setdefault(cell.trade_date, []).append(cell)
         coverage_by_session = {
             day: tuple(cells) for day, cells in coverage_groups.items()
@@ -170,14 +181,10 @@ class _PreparedContext:
                         }
                     )
                 coverage_actual_member_counts[(day, complete_as_of)] = actual_count
-        sessions = context.market.calendar.sessions
-        indexed_days = (
-            sessions
-            if context.market.trade_date in sessions
-            else (*sessions, context.market.trade_date)
-        )
-        members_by_session = {
-            day: (
+        members_by_session: dict[date, tuple[str, ...]] = {}
+        member_ids_by_session: dict[date, frozenset[str]] = {}
+        for day in indexed_days:
+            members = (
                 tuple(
                     sorted(
                         {
@@ -199,8 +206,8 @@ class _PreparedContext:
                 )
                 else ()
             )
-            for day in indexed_days
-        }
+            members_by_session[day] = members
+            member_ids_by_session[day] = frozenset(members)
         state_groups: dict[str, list[SecurityState]] = {}
         for security_state in context.market.security_states:
             if (
@@ -234,6 +241,7 @@ class _PreparedContext:
             coverage_by_session=coverage_by_session,
             coverage_actual_member_counts=coverage_actual_member_counts,
             members_by_session=members_by_session,
+            member_ids_by_session=member_ids_by_session,
             states={
                 security_id: tuple(values)
                 for security_id, values in state_groups.items()
@@ -247,6 +255,9 @@ class _PreparedContext:
 
     def members_on(self, day: date) -> tuple[str, ...]:
         return self.members_by_session.get(day, ())
+
+    def has_member_on(self, security_id: str, day: date) -> bool:
+        return security_id in self.member_ids_by_session.get(day, frozenset())
 
     def state_on(self, security_id: str, day: date) -> SecurityState | None:
         matches = tuple(
@@ -543,7 +554,7 @@ def _continuous_trend_eligibility(
     require_membership: bool,
 ) -> tuple[Eligibility, str | None]:
     if require_membership and any(
-        security_id not in prepared.members_on(day) for day in sessions
+        not prepared.has_member_on(security_id, day) for day in sessions
     ):
         return "missing", f"{security_id}: membership is not continuous for 61 sessions"
     for day in sessions:
@@ -936,7 +947,7 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
             continue
         share_sessions = sessions[-5:]
         if any(
-            security_id not in prepared.members_on(day)
+            not prepared.has_member_on(security_id, day)
             or _state_eligibility(
                 prepared,
                 security_id,

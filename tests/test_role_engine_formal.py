@@ -239,6 +239,82 @@ def test_prepared_members_on_uses_build_time_deterministic_session_index(monkeyp
     assert calls == 0
 
 
+def test_formal_membership_contains_uses_immutable_constant_time_index(monkeypatch):
+    from dragon_radar.roles import engine
+
+    class IterationOnlyMembers(tuple):
+        def __contains__(self, _value):
+            raise AssertionError("membership contains must not scan the ordered tuple")
+
+    context = _context()
+    prepared = engine._PreparedContext.build(context, "topic-a")
+    for day, members in prepared.members_by_session.items():
+        prepared.members_by_session[day] = IterationOnlyMembers(members)
+
+    assert all(
+        isinstance(members, frozenset)
+        for members in prepared.member_ids_by_session.values()
+    )
+    assert prepared.has_member_on("A", T)
+    monkeypatch.setattr(
+        engine._PreparedContext,
+        "build",
+        classmethod(lambda _cls, _context, _topic_id: prepared),
+    )
+
+    assert engine.evaluate_trend(context, "topic-a").topic_status.status == "ready"
+    assert engine.evaluate_core(context, "topic-a").topic_status.status == "ready"
+
+
+def test_prepared_membership_indexes_only_61_sessions_ending_at_trade_date(
+    monkeypatch,
+):
+    from dragon_radar.roles import engine
+
+    past = _sessions(200)
+    future = tuple(T + timedelta(days=offset) for offset in range(1, 15))
+    calendar_sessions = tuple(sorted((*past, *future)))
+    context = _context(
+        member_ids=("A",),
+        memberships=(
+            topic_membership(
+                security_id="A",
+                effective_from=SESSIONS[1],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        ),
+    )
+    calendar = context.market.calendar.model_copy(
+        update={"sessions": calendar_sessions}
+    )
+    forged = RoleContext(
+        market=context.market.model_copy(update={"calendar": calendar}),
+        topic=context.topic.model_copy(update={"calendar": calendar}),
+        rule_version=context.rule_version,
+    )
+    membership_days = []
+    original_effective = engine._effective
+
+    def tracking_effective(start, end, day):
+        if start == SESSIONS[1]:
+            membership_days.append(day)
+        return original_effective(start, end, day)
+
+    monkeypatch.setattr(engine, "_effective", tracking_effective)
+
+    prepared = engine._PreparedContext.build(forged, "topic-a")
+    expected_days = calendar_sessions[
+        calendar_sessions.index(T) - 60 : calendar_sessions.index(T) + 1
+    ]
+
+    assert tuple(prepared.members_by_session) == expected_days
+    assert tuple(prepared.member_ids_by_session) == expected_days
+    assert tuple(membership_days) == (*expected_days, *expected_days)
+    assert tuple(prepared.coverage_by_session) == expected_days
+    assert T in prepared.members_by_session
+    assert all(day <= T for day in prepared.members_by_session)
+
+
 def test_prepared_members_index_includes_off_calendar_observation_day():
     from dragon_radar.roles.engine import _PreparedContext
 
