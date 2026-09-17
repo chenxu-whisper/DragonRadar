@@ -32,9 +32,31 @@ _FORMULA_CONTRACTS = {
     "mean": "sum(values) / count(values)",
     "mean_absolute_deviation_rate": ("mean(abs(value - mean(values))) / mean(values)"),
     "numeric_type": "Decimal",
+    "operand_policy": "all_operands_must_be_finite_decimal",
+    "decimal_median": {
+        "sample": "nonempty",
+        "ordering": "ascending",
+        "odd": "middle_decimal",
+        "even": "arithmetic_mean_of_middle_two_decimals",
+        "arithmetic": "Decimal34",
+    },
     "price_basis": "same_market_snapshot_adjusted_close",
     "amount_basis": "raw_currency",
     "amount_currency_policy": "single_currency_no_conversion",
+    "topic_amount_share_policy": {
+        "currency_metadata": {
+            "security": "mandatory_nonempty",
+            "eligible_members": "mandatory_nonempty_one_per_amount",
+            "matching": "all_exactly_equal_to_security_currency",
+            "conversion": "forbidden",
+            "default": "forbidden",
+        },
+        "amounts": {
+            "security": "finite_decimal_nonnegative",
+            "eligible_members": "finite_decimal_nonnegative",
+        },
+        "denominator": "finite_and_strictly_positive",
+    },
     "divisor_policy": "finite_and_strictly_positive",
 }
 
@@ -118,6 +140,9 @@ _COMMON_CONTRACT = {
     },
     "ranking": {
         "numeric_values": "unrounded_decimal",
+        "comparison_unit": "each_sort_key_declared_raw_unit",
+        "cross_unit_comparison": "forbidden",
+        "unit_conversion": "forbidden",
         "tie_definition": "identical_complete_evidence_tuple",
         "rank_method": "dense",
         "rank_start": 1,
@@ -150,9 +175,9 @@ _ROLE_RULES = {
             "mdd60 <= eligible_topic_median(mdd60)",
         ],
         "sort": [
-            {"factor": "relative60", "direction": "desc"},
-            {"factor": "relative20", "direction": "desc"},
-            {"factor": "mdd60", "direction": "asc"},
+            {"factor": "relative60", "direction": "desc", "unit": "ratio"},
+            {"factor": "relative20", "direction": "desc", "unit": "ratio"},
+            {"factor": "mdd60", "direction": "asc", "unit": "ratio"},
         ],
     },
     "core": {
@@ -174,9 +199,9 @@ _ROLE_RULES = {
             "avg20 >= eligible_topic_median(avg20)",
         ],
         "sort": [
-            {"factor": "share5", "direction": "desc"},
-            {"factor": "avg20", "direction": "desc"},
-            {"factor": "mad20", "direction": "asc"},
+            {"factor": "share5", "direction": "desc", "unit": "ratio"},
+            {"factor": "avg20", "direction": "desc", "unit": "currency_amount"},
+            {"factor": "mad20", "direction": "asc", "unit": "ratio"},
         ],
     },
     "emotion": {
@@ -199,9 +224,13 @@ _ROLE_RULES = {
             "closing_limit_streak >= 1",
         ],
         "sort": [
-            {"factor": "closing_limit_streak", "direction": "desc"},
-            {"factor": "relative5", "direction": "desc"},
-            {"factor": "daily_topic_share", "direction": "desc"},
+            {
+                "factor": "closing_limit_streak",
+                "direction": "desc",
+                "unit": "trading_sessions",
+            },
+            {"factor": "relative5", "direction": "desc", "unit": "ratio"},
+            {"factor": "daily_topic_share", "direction": "desc", "unit": "ratio"},
         ],
     },
     "catchup": {
@@ -225,9 +254,9 @@ _ROLE_RULES = {
             "amount_change > 0",
         ],
         "sort": [
-            {"factor": "current_excess", "direction": "desc"},
-            {"factor": "prior_lag", "direction": "desc"},
-            {"factor": "amount_change", "direction": "desc"},
+            {"factor": "current_excess", "direction": "desc", "unit": "ratio"},
+            {"factor": "prior_lag", "direction": "desc", "unit": "ratio"},
+            {"factor": "amount_change", "direction": "desc", "unit": "ratio"},
         ],
     },
     "follower": {
@@ -254,8 +283,8 @@ _ROLE_RULES = {
             "return5 < reference_core_return5",
         ],
         "sort": [
-            {"factor": "return5", "direction": "desc"},
-            {"factor": "amount_change", "direction": "desc"},
+            {"factor": "return5", "direction": "desc", "unit": "ratio"},
+            {"factor": "amount_change", "direction": "desc", "unit": "ratio"},
         ],
     },
     "relay": {
@@ -301,6 +330,48 @@ _ROLE_RULES = {
                 "tied_candidates": "insufficient",
             },
             "condition": "previous_security_id != current_security_id",
+        },
+        "required_inputs": {
+            "previous_trend_candidate": {
+                "reference": "core_identity.previous",
+                "uniqueness": "required",
+            },
+            "current_trend_candidate": {
+                "reference": "core_identity.current",
+                "uniqueness": "required",
+            },
+            "old_adjusted_prices": {
+                "subject": "previous_security",
+                "window": "T-5..T",
+                "observations": 6,
+                "coverage": "complete",
+            },
+            "new_adjusted_prices": {
+                "subject": "current_security",
+                "window": "T-5..T",
+                "observations": 6,
+                "coverage": "complete",
+            },
+            "topic_return_benchmark": {
+                "member_set": "fixed_eligible_topic_member_intersection",
+                "window": "T-5..T",
+                "observations_per_member": 6,
+                "coverage": "complete",
+            },
+            "topic_daily_median_return": {
+                "member_set": "fixed_eligible_topic_member_intersection",
+                "window": "T-1..T",
+                "observations_per_member": 2,
+                "coverage": "complete",
+            },
+            "availability": {
+                "applies_to": "all_required_inputs",
+                "condition": "available_at <= knowledge_cutoff",
+            },
+            "predecessor_comparability": {
+                "required": True,
+                "contracts": ["predecessor_identity", "comparability"],
+            },
         },
         "factors": {
             "old_relative5": (
@@ -465,9 +536,9 @@ def canonical_rule_json(version: str) -> str:
     )
 
 
-ROLE_RULE_SHA256 = "b824ae605429fad97ad08021acf489c8822736e475cb686e907943e0750ba7f2"
+ROLE_RULE_SHA256 = "78602ac54b28d763b00cad702897c244ff144bb0136d7fbd6b04332b7126a41e"
 ROLE_TEST_RULE_SHA256 = (
-    "cda6489f3aff938f8c41a4df1bc3fadf07074c44cb94b3c2b3efb868656a0dcc"
+    "caad5612b15f1aae9745c4f8c1233a46854610c738a74e67075229298a0d5c2f"
 )
 _RULE_SHA256 = MappingProxyType(
     {
