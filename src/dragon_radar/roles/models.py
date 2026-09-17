@@ -154,6 +154,8 @@ class RoleTopicStatus(_StrictFrozenRoleModel):
             raise ValueError(
                 f"status {self.status!r} is not allowed for role {self.role!r}"
             )
+        if self.status == "no_candidate" and self.valid == 0:
+            raise ValueError("no_candidate requires at least one valid member")
         return self
 
 
@@ -174,6 +176,17 @@ class RoleEvaluation(_StrictFrozenRoleModel):
         security_ids = tuple(candidate.security_id for candidate in self.candidates)
         if len(set(security_ids)) != len(security_ids):
             raise ValueError("candidate security_id must be unique within evaluation")
+
+        if len(self.candidates) > self.topic_status.expected:
+            raise ValueError("result rows must not exceed topic_status.expected")
+
+        excluded_rows = sum(
+            candidate.status == "excluded" for candidate in self.candidates
+        )
+        if excluded_rows > self.topic_status.legal_excluded:
+            raise ValueError(
+                "excluded result rows must not exceed topic_status.legal_excluded"
+            )
 
         calculable_rows = sum(
             candidate.status != "excluded" for candidate in self.candidates

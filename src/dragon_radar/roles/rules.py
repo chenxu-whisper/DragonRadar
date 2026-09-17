@@ -34,6 +34,9 @@ _FORMULA_CONTRACTS = {
     "numeric_type": "Decimal",
     "operand_policy": "all_operands_must_be_finite_decimal",
     "operand_normalization": "Decimal34_before_arithmetic",
+    "decimal_error_policy": (
+        "unrepresentable_or_trapped_decimal_arithmetic -> AnalysisUnavailable"
+    ),
     "decimal_median": {
         "sample": "nonempty",
         "ordering": "ascending",
@@ -561,9 +564,9 @@ def canonical_rule_json(version: str) -> str:
     )
 
 
-ROLE_RULE_SHA256 = "e67f85bff2fc0388502ca6c25d60b6bf4e269e5e89bba7332bce5304c9253f9a"
+ROLE_RULE_SHA256 = "9489dd59d8751969a8eece960e7f3573671233589e0a0f7b57500f76304770ec"
 ROLE_TEST_RULE_SHA256 = (
-    "942c10815e8ac8d82901d5d56db42d923daa21b316fb6690504bf0d37c66a753"
+    "633d7d1c96018168088c85c87e263e221d7aa6fe0730bb47eb86636be35183ae"
 )
 _RULE_SHA256 = MappingProxyType(
     {

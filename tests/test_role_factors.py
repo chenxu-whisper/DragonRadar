@@ -1,6 +1,6 @@
 import json
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from functools import partial
 
 import pytest
@@ -48,8 +48,45 @@ def test_adjusted_price_and_period_return_use_decimal34_half_even():
     assert period_return(start, end) == Decimal("0.454545454545454545454545454545455")
 
 
+def test_adjusted_price_normalizes_each_operand_before_arithmetic():
+    assert adjusted_price(
+        Decimal("12345678901234567890123456789012345"),
+        Decimal("9.8765432109876543210987654321098765"),
+    ) == Decimal("1.219326311370217952261850327338667E+35")
+
+
+def test_period_return_normalizes_each_operand_before_arithmetic():
+    assert period_return(
+        Decimal("12345678901234567890123456789012345"),
+        Decimal("9876543210987654321098765432109876.5"),
+    ) == Decimal("-0.1999999927099999336609993963150942")
+
+
 def test_relative_return_subtracts_exact_decimal_returns():
     assert relative_return(Decimal("0.125"), Decimal("0.075")) == Decimal("0.050")
+
+
+def test_relative_return_normalizes_each_operand_before_arithmetic():
+    assert relative_return(
+        Decimal("1.00000000000000000000000000000000005"),
+        Decimal("1"),
+    ) == Decimal("0E-33")
+
+
+def test_decimal_mean_normalizes_each_sample_value_before_arithmetic():
+    assert decimal_mean(
+        tuple(
+            map(
+                Decimal,
+                (
+                    "46.894885471242686919379003172093007",
+                    "3039355039044855267073712853.6843262",
+                    "9958.5322555999020673426137355845753",
+                    "535884462536398567.18760214960406783",
+                ),
+            )
+        )
+    ) == Decimal("759838759895184932402530356.5747672")
 
 
 @pytest.mark.parametrize(
@@ -63,10 +100,39 @@ def test_decimal_median_is_exact_for_odd_and_even_samples(values, expected):
     assert decimal_median(values) == expected
 
 
+def test_decimal_median_normalizes_values_before_sorting():
+    assert decimal_median(
+        tuple(
+            map(
+                Decimal,
+                (
+                    "2.00000000000000000000000000000000005",
+                    "1.00000000000000000000000000000000005",
+                    "1.00000000000000000000000000000000004",
+                ),
+            )
+        )
+    ) == Decimal("1.000000000000000000000000000000000")
+
+
 def test_maximum_drawdown_uses_each_running_peak():
     assert maximum_drawdown(
         tuple(map(Decimal, ("100", "125", "100", "150", "90")))
     ) == Decimal("0.4")
+
+
+def test_maximum_drawdown_normalizes_prices_before_arithmetic():
+    assert maximum_drawdown(
+        tuple(
+            map(
+                Decimal,
+                (
+                    "12345678901234567890123456789012345",
+                    "9876543210987654321098765432109876.5",
+                ),
+            )
+        )
+    ) == Decimal("0.1999999927099999336609993963150942")
 
 
 def test_topic_amount_share_and_average_share_are_exact():
@@ -137,6 +203,21 @@ def test_mean_absolute_deviation_rate_uses_decimal_mean():
     ) == Decimal("0.3333333333333333333333333333333334")
 
 
+def test_mean_absolute_deviation_rate_normalizes_each_sample_value():
+    assert mean_absolute_deviation_rate(
+        tuple(
+            map(
+                Decimal,
+                (
+                    "1.9945971886712321777165847221885572",
+                    "161099527986061665140.56328022854684",
+                    "43120543752588642202.385024143078074",
+                ),
+            )
+        )
+    ) == Decimal("0.9110384689208679541576464349380312")
+
+
 @pytest.mark.parametrize(
     ("function", "args"),
     [
@@ -163,6 +244,71 @@ def test_formula_primitives_reject_nonpositive_denominators(function, args):
 def test_formula_primitives_reject_nonfinite_values(value):
     with pytest.raises(AnalysisUnavailable, match="finite"):
         adjusted_price(value, Decimal("1"))
+
+
+@pytest.mark.parametrize(
+    ("operation", "function", "args"),
+    [
+        (
+            "adjusted_price",
+            adjusted_price,
+            (Decimal("1e999999"), Decimal("10")),
+        ),
+        (
+            "period_return",
+            period_return,
+            (Decimal("1e-999999"), Decimal("1e999999")),
+        ),
+        (
+            "decimal_mean",
+            decimal_mean,
+            ((Decimal("1e1000000"),),),
+        ),
+        (
+            "decimal_median",
+            decimal_median,
+            ((Decimal("1e1000000"),),),
+        ),
+        (
+            "relative_return",
+            relative_return,
+            (
+                Decimal("9.999999999999999999999999999999999e999999"),
+                Decimal("-9.999999999999999999999999999999999e999999"),
+            ),
+        ),
+        (
+            "maximum_drawdown",
+            maximum_drawdown,
+            ((Decimal("1e1000000"),),),
+        ),
+        (
+            "mean_absolute_deviation_rate",
+            mean_absolute_deviation_rate,
+            ((Decimal("1e1000000"),),),
+        ),
+        (
+            "topic_amount_share",
+            partial(
+                topic_amount_share,
+                Decimal("1e1000000"),
+                (Decimal("1e1000000"),),
+                currency="CNY",
+                eligible_currencies=("CNY",),
+            ),
+            (),
+        ),
+    ],
+)
+def test_decimal_factor_errors_are_analysis_unavailable_with_operation_context(
+    operation,
+    function,
+    args,
+):
+    with pytest.raises(AnalysisUnavailable, match=operation) as caught:
+        function(*args)
+
+    assert isinstance(caught.value.__cause__, DecimalException)
 
 
 def test_topic_share_rejects_currency_mismatch():
@@ -248,6 +394,9 @@ EXPECTED_FORMULA_CONTRACTS = {
     "numeric_type": "Decimal",
     "operand_policy": "all_operands_must_be_finite_decimal",
     "operand_normalization": "Decimal34_before_arithmetic",
+    "decimal_error_policy": (
+        "unrepresentable_or_trapped_decimal_arithmetic -> AnalysisUnavailable"
+    ),
     "decimal_median": {
         "sample": "nonempty",
         "ordering": "ascending",
@@ -813,11 +962,11 @@ def test_canonical_allowed_result_statuses_match_role_models():
 def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
     assert (
         ROLE_RULE_SHA256
-        == "e67f85bff2fc0388502ca6c25d60b6bf4e269e5e89bba7332bce5304c9253f9a"
+        == "9489dd59d8751969a8eece960e7f3573671233589e0a0f7b57500f76304770ec"
     )
     assert (
         ROLE_TEST_RULE_SHA256
-        == "942c10815e8ac8d82901d5d56db42d923daa21b316fb6690504bf0d37c66a753"
+        == "633d7d1c96018168088c85c87e263e221d7aa6fe0730bb47eb86636be35183ae"
     )
     validate_rule_definition("role-v1", canonical_rule_json("role-v1"))
     validate_rule_definition("role-test-v1", canonical_rule_json("role-test-v1"))
@@ -999,14 +1148,14 @@ def test_role_topic_status_rejects_success_status_for_another_capability(
         )
 
 
-def test_role_evaluation_allows_empty_candidates():
+def test_role_evaluation_allows_sparse_no_candidate_results():
     status = RoleTopicStatus(
         topic_id="topic-1",
         role="trend",
         capability="ready",
         status="no_candidate",
-        expected=0,
-        valid=0,
+        expected=1,
+        valid=1,
         legal_excluded=0,
         missing=0,
     )
@@ -1014,16 +1163,52 @@ def test_role_evaluation_allows_empty_candidates():
     assert RoleEvaluation(topic_status=status).candidates == ()
 
 
-def _role_topic_status(role, status, *, valid=1):
+def test_role_topic_status_rejects_no_candidate_without_valid_members():
+    with pytest.raises(ValidationError, match="no_candidate"):
+        RoleTopicStatus(
+            topic_id="topic-1",
+            role="trend",
+            capability="ready",
+            status="no_candidate",
+            expected=0,
+            valid=0,
+            legal_excluded=0,
+            missing=0,
+        )
+
+
+def test_role_topic_status_allows_insufficient_without_valid_members():
+    status = RoleTopicStatus(
+        topic_id="topic-1",
+        role="trend",
+        capability="ready",
+        status="insufficient",
+        expected=1,
+        valid=0,
+        legal_excluded=0,
+        missing=1,
+    )
+
+    assert status.valid == 0
+
+
+def _role_topic_status(
+    role,
+    status,
+    *,
+    valid=1,
+    legal_excluded=0,
+    missing=0,
+):
     return RoleTopicStatus(
         topic_id="topic-1",
         role=role,
         capability=ROLE_CAPABILITIES[role],
         status=status,
-        expected=valid,
+        expected=valid + legal_excluded + missing,
         valid=valid,
-        legal_excluded=0,
-        missing=0,
+        legal_excluded=legal_excluded,
+        missing=missing,
     )
 
 
@@ -1055,7 +1240,13 @@ def test_role_evaluation_success_requires_matching_positive_output(
     positive_status,
     auxiliary_status,
 ):
-    status = _role_topic_status(role, topic_status, valid=2)
+    excluded_rows = int(auxiliary_status == "excluded")
+    status = _role_topic_status(
+        role,
+        topic_status,
+        valid=2 - excluded_rows,
+        legal_excluded=excluded_rows,
+    )
     positive = _ranked_role_result(role, positive_status)
     auxiliary = _ranked_role_result(role, auxiliary_status, "600001.SH")
 
@@ -1120,6 +1311,48 @@ def test_role_evaluation_rejects_more_calculable_results_than_valid_members():
         )
 
 
+def test_role_evaluation_rejects_excluded_rows_over_legal_excluded_count():
+    status = _role_topic_status("trend", "ready", valid=1, missing=1)
+    candidate = _ranked_role_result("trend", "candidate")
+    excluded = _ranked_role_result("trend", "excluded", "600001.SH")
+
+    with pytest.raises(ValidationError, match="legal_excluded"):
+        RoleEvaluation(
+            topic_status=status,
+            candidates=(candidate, excluded),
+        )
+
+
+def test_role_evaluation_rejects_result_rows_over_expected_count():
+    status = _role_topic_status("trend", "ready", valid=1, legal_excluded=1)
+    candidate = _ranked_role_result("trend", "candidate")
+    first_excluded = _ranked_role_result("trend", "excluded", "600001.SH")
+    second_excluded = _ranked_role_result("trend", "excluded", "600002.SH")
+
+    with pytest.raises(ValidationError, match="expected"):
+        RoleEvaluation(
+            topic_status=status,
+            candidates=(candidate, first_excluded, second_excluded),
+        )
+
+
+def test_role_evaluation_allows_sparse_valid_and_excluded_rows():
+    status = _role_topic_status(
+        "trend",
+        "ready",
+        valid=2,
+        legal_excluded=2,
+        missing=1,
+    )
+    candidate = _ranked_role_result("trend", "candidate")
+    excluded = _ranked_role_result("trend", "excluded", "600001.SH")
+
+    assert RoleEvaluation(
+        topic_status=status,
+        candidates=(candidate, excluded),
+    ).candidates == (candidate, excluded)
+
+
 def test_role_evaluation_rejects_duplicate_security_ids():
     status = _role_topic_status("trend", "ready", valid=2)
     candidate = _ranked_role_result("trend", "candidate")
@@ -1176,9 +1409,14 @@ def test_role_evaluation_no_candidate_preserves_legal_non_candidate_evidence(
     non_positive_status,
 ):
     candidate = _ranked_role_result(role, non_positive_status)
+    legal_excluded = int(non_positive_status == "excluded")
 
     assert RoleEvaluation(
-        topic_status=_role_topic_status(role, "no_candidate"),
+        topic_status=_role_topic_status(
+            role,
+            "no_candidate",
+            legal_excluded=legal_excluded,
+        ),
         candidates=(candidate,),
     ).candidates == (candidate,)
 
@@ -1207,7 +1445,7 @@ def test_role_evaluation_insufficient_rejects_completed_qualification_output(
 
 @pytest.mark.parametrize("role", tuple(ROLE_CAPABILITIES))
 def test_role_evaluation_insufficient_allows_only_empty_or_excluded_evidence(role):
-    status = _role_topic_status(role, "insufficient")
+    status = _role_topic_status(role, "insufficient", legal_excluded=1)
     excluded = _ranked_role_result(role, "excluded")
 
     assert RoleEvaluation(topic_status=status).candidates == ()
