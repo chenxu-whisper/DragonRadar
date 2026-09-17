@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from factories import NOW, grant
-from sqlalchemy import BigInteger, UniqueConstraint, event, text
+from sqlalchemy import BigInteger, Date, UniqueConstraint, event, text
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import DBAPIError
 from topic_factories import TOPIC_DAYS, coverage_cell, topic_batch
@@ -78,6 +78,55 @@ def test_failed_quality_attempt_is_persisted_without_a_batch(topic_repository):
     with topic_repository.database.engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM topic_import_batches")) == 0
         assert connection.scalar(text("SELECT count(*) FROM topic_snapshots")) == 0
+
+
+def test_failed_attempt_round_trips_distinct_request_and_retry_ranges(
+    topic_repository,
+):
+    from dragon_radar.storage.repository import QualityRejected
+
+    payload = topic_batch()
+    manifest = payload.page_manifest.model_copy(
+        update={
+            "request_from": TOPIC_DAYS[1],
+            "request_to": TOPIC_DAYS[-2],
+        }
+    )
+    malformed = payload.model_copy(update={"page_manifest": manifest})
+
+    with pytest.raises(QualityRejected):
+        topic_repository.import_batch(malformed, key="request-range-mismatch")
+
+    listed = topic_repository.list_attempts(status="failed")
+    assert len(listed) == 1
+    attempt = topic_repository.get_attempt(listed[0].id)
+    assert attempt == listed[0]
+    assert (attempt.request_from, attempt.request_to) == (
+        manifest.request_from,
+        manifest.request_to,
+    )
+    assert (attempt.retry_from, attempt.retry_to) == (
+        malformed.coverage_from,
+        malformed.coverage_to,
+    )
+    assert (attempt.request_from, attempt.request_to) != (
+        attempt.retry_from,
+        attempt.retry_to,
+    )
+    with topic_repository.database.engine.connect() as connection:
+        stored = connection.execute(
+            text(
+                "SELECT request_from, request_to, retry_from, retry_to "
+                "FROM topic_import_attempts WHERE id = :attempt_id"
+            ),
+            {"attempt_id": attempt.id},
+        ).one()
+    assert tuple(stored) == (
+        manifest.request_from,
+        manifest.request_to,
+        malformed.coverage_from,
+        malformed.coverage_to,
+    )
 
 
 def test_topic_listing_uses_one_operation_time(topic_repository):
@@ -218,11 +267,17 @@ def test_failed_attempt_records_missing_initial_page(topic_repository):
 
 
 def test_successful_import_attempt_is_append_only(topic_repository):
-    stored = topic_repository.import_batch(topic_batch(), key="successful")
+    payload = topic_batch()
+    stored = topic_repository.import_batch(payload, key="successful")
 
     attempts = topic_repository.list_attempts(status="succeeded")
     assert len(attempts) == 1
     assert attempts[0].stage == "import"
+    assert (attempts[0].request_from, attempts[0].request_to) == (
+        payload.page_manifest.request_from,
+        payload.page_manifest.request_to,
+    )
+    assert (attempts[0].retry_from, attempts[0].retry_to) == (None, None)
     assert topic_repository.get_attempt(attempts[0].id) == attempts[0]
     with topic_repository.database.engine.connect() as connection:
         assert (
@@ -499,6 +554,18 @@ def test_topic_table_metadata_matches_migration_constraints_and_indexes(database
             "id ASC",
         )
     }
+    for column_name in ("request_from", "request_to"):
+        column = topic_import_attempts.c[column_name]
+        assert isinstance(column.type, Date)
+        assert column.nullable is True
+    migrated_attempt_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("topic_import_attempts")
+    }
+    for column_name in ("request_from", "request_to"):
+        column = migrated_attempt_columns[column_name]
+        assert isinstance(column["type"], Date)
+        assert column["nullable"] is True
 
 
 @pytest.mark.parametrize(

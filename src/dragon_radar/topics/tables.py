@@ -105,6 +105,8 @@ topic_import_attempts = Table(
     Column("stage", String(80), nullable=False),
     Column("missing_items", JSONB, nullable=False),
     Column("failed_cursor", Text),
+    Column("request_from", Date),
+    Column("request_to", Date),
     Column("retry_from", Date),
     Column("retry_to", Date),
     Column("details", JSONB, nullable=False),

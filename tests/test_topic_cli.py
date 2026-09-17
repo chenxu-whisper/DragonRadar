@@ -138,12 +138,15 @@ def test_topic_retry_revalidates_complete_manifest_without_publishing(
     database_url = database.engine.url.render_as_string(hide_password=False)
     register_source(database_url, tmp_path)
     payload = sensitive_batch()
+    request_from = TOPIC_DAYS[1]
+    request_to = TOPIC_DAYS[-2]
     incomplete = payload.model_copy(
         update={
-            "coverage_cells": tuple(
-                cell
-                for cell in payload.coverage_cells
-                if cell.trade_date != TOPIC_DAYS[-1]
+            "page_manifest": payload.page_manifest.model_copy(
+                update={
+                    "request_from": request_from,
+                    "request_to": request_to,
+                }
             )
         }
     )
@@ -163,11 +166,26 @@ def test_topic_retry_revalidates_complete_manifest_without_publishing(
     assert failed_attempt["status"] == "failed"
     assert failed_attempt["stage"] == "quality"
     assert failed_attempt["missing_items"]
-    assert failed_attempt["request_from"] == payload.coverage_from.isoformat()
-    assert failed_attempt["request_to"] == payload.coverage_to.isoformat()
+    assert failed_attempt["request_from"] == request_from.isoformat()
+    assert failed_attempt["request_to"] == request_to.isoformat()
     assert failed_attempt["retry_from"] == payload.coverage_from.isoformat()
     assert failed_attempt["retry_to"] == payload.coverage_to.isoformat()
+    assert (
+        failed_attempt["request_from"],
+        failed_attempt["request_to"],
+    ) != (
+        failed_attempt["retry_from"],
+        failed_attempt["retry_to"],
+    )
     assert_safe_output(attempts)
+
+    shown = run_cli(
+        ["topic-attempt-show", failed_attempt["attempt_id"]],
+        database_url,
+    )
+    assert shown.returncode == 0, shown.stderr
+    assert json.loads(shown.stdout) == failed_attempt
+    assert_safe_output(shown)
 
     rejected_retry = run_cli(
         [

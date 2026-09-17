@@ -93,6 +93,8 @@ def upgrade():
         sa.Column("stage", sa.String(80), nullable=False),
         sa.Column("missing_items", JSONB, nullable=False),
         sa.Column("failed_cursor", sa.Text),
+        sa.Column("request_from", sa.Date),
+        sa.Column("request_to", sa.Date),
         sa.Column("retry_from", sa.Date),
         sa.Column("retry_to", sa.Date),
         sa.Column("details", JSONB, nullable=False),

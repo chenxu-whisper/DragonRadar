@@ -198,6 +198,8 @@ class TopicAttempt(FrozenModel):
     stage: Identifier
     missing_items: tuple[str, ...] = ()
     failed_cursor: str | None = None
+    request_from: date | None = None
+    request_to: date | None = None
     retry_from: date | None = None
     retry_to: date | None = None
     details: tuple[str, ...] = ()

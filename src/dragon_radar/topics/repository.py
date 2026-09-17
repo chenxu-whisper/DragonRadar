@@ -64,6 +64,8 @@ def _attempt(row: Mapping[str, Any]) -> TopicAttempt:
         stage=row["stage"],
         missing_items=tuple(row["missing_items"]),
         failed_cursor=row["failed_cursor"],
+        request_from=row["request_from"],
+        request_to=row["request_to"],
         retry_from=row["retry_from"],
         retry_to=row["retry_to"],
         details=tuple(row["details"]),
@@ -295,6 +297,8 @@ class TopicRepository(Repository):
                                 }
                             ],
                             failed_cursor=failed_cursor,
+                            request_from=batch.page_manifest.request_from,
+                            request_to=batch.page_manifest.request_to,
                             retry_from=batch.coverage_from,
                             retry_to=batch.coverage_to,
                             details=[
@@ -335,6 +339,8 @@ class TopicRepository(Repository):
                             stage="import",
                             missing_items=[],
                             failed_cursor=None,
+                            request_from=batch.page_manifest.request_from,
+                            request_to=batch.page_manifest.request_to,
                             retry_from=None,
                             retry_to=None,
                             details=[],

@@ -16,6 +16,7 @@ from topic_factories import (
 
 from dragon_radar.domain.models import ExchangeCalendar
 from dragon_radar.topics.models import (
+    TopicAttempt,
     TopicBatch,
     TopicImportRecord,
     TopicSnapshot,
@@ -64,6 +65,34 @@ def test_topic_models_are_frozen_and_reject_unknown_fields():
         TopicBatch.model_validate(payload)
     with pytest.raises(ValidationError, match="extra"):
         TopicSnapshotPage(items=(), page_size=20, next_cursor=None, extra=True)
+
+
+def test_topic_attempt_request_range_is_nullable_and_round_trips_independently():
+    attempt = TopicAttempt(
+        id=UUID(int=3),
+        status="failed",
+        stage="quality",
+        request_from=TOPIC_DAYS[1],
+        request_to=TOPIC_DAYS[-2],
+        retry_from=TOPIC_DAYS[0],
+        retry_to=TOPIC_DAYS[-1],
+        created_at=NOW,
+    )
+
+    restored = TopicAttempt.model_validate_json(attempt.model_dump_json())
+
+    assert restored == attempt
+    assert (restored.request_from, restored.request_to) != (
+        restored.retry_from,
+        restored.retry_to,
+    )
+    legacy = TopicAttempt(
+        id=UUID(int=4),
+        status="succeeded",
+        stage="import",
+        created_at=NOW,
+    )
+    assert (legacy.request_from, legacy.request_to) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -420,9 +449,7 @@ def test_coverage_counts_members_known_by_complete_as_of_without_duplicates():
 
 
 def test_coverage_excludes_members_after_topic_definition_expires():
-    payload = topic_batch_dict(
-        topics=[topic_definition(effective_to=TOPIC_DAYS[-1])]
-    )
+    payload = topic_batch_dict(topics=[topic_definition(effective_to=TOPIC_DAYS[-1])])
     payload["coverage_cells"][-1].update(
         expected_member_count=0,
         received_member_count=0,

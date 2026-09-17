@@ -32,10 +32,12 @@ def _topic_attempt_result(attempt: TopicAttempt) -> dict[str, object]:
         "missing_items": list(attempt.missing_items),
         "failed_cursor": attempt.failed_cursor,
         "request_from": (
-            attempt.retry_from.isoformat() if attempt.retry_from is not None else None
+            attempt.request_from.isoformat()
+            if attempt.request_from is not None
+            else None
         ),
         "request_to": (
-            attempt.retry_to.isoformat() if attempt.retry_to is not None else None
+            attempt.request_to.isoformat() if attempt.request_to is not None else None
         ),
         "retry_from": (
             attempt.retry_from.isoformat() if attempt.retry_from is not None else None
