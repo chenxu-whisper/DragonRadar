@@ -381,6 +381,34 @@ def _cross_exchange_result(
     )
 
 
+def _global_failure_result(
+    prepared: _PreparedContext,
+    role: RoleName,
+    *,
+    expected: int,
+    global_reasons: Sequence[str],
+    classifications: dict[str, Eligibility],
+    member_reasons: Sequence[str],
+) -> RoleEvaluation:
+    cross_exchange_reasons = (
+        ("cross_exchange",)
+        if "cross_exchange" in classifications.values()
+        else ()
+    )
+    reasons = tuple(
+        dict.fromkeys((*global_reasons, *cross_exchange_reasons, *member_reasons))
+    )
+    return _insufficient(
+        prepared,
+        role,
+        reasons=reasons,
+        expected=expected,
+        legal_excluded=sum(
+            value == "legal_excluded" for value in classifications.values()
+        ),
+    )
+
+
 def _prices_for(
     prepared: _PreparedContext,
     security_id: str,
@@ -449,25 +477,33 @@ def _market_return_median(
             continue
         prices = _prices_for(prepared, security_id, sessions)
         if prices is not None:
-            returns.append(period_return(prices[0], prices[-1]))
+            try:
+                returns.append(period_return(prices[0], prices[-1]))
+            except AnalysisUnavailable:
+                continue
     if not returns:
         return None
-    return decimal_median(returns)
+    try:
+        return decimal_median(returns)
+    except AnalysisUnavailable:
+        return None
 
 
 def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
     """Evaluate the formal trend role for one topic."""
     prepared = _PreparedContext.build(context, topic_id)
     expected = len(prepared.members_on(prepared.trade_date))
+    classifications, reasons = _classify_current_members(prepared)
     global_reasons = _global_reasons(prepared)
     if global_reasons:
-        return _insufficient(
+        return _global_failure_result(
             prepared,
             "trend",
-            reasons=global_reasons,
             expected=expected,
+            global_reasons=global_reasons,
+            classifications=classifications,
+            member_reasons=reasons,
         )
-    classifications, reasons = _classify_current_members(prepared)
     cross_exchange = _cross_exchange_result(
         prepared,
         "trend",
@@ -542,9 +578,6 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
         classification == "legal_excluded"
         for classification in classifications.values()
     )
-    missing = sum(
-        classification == "missing" for classification in classifications.values()
-    )
     if benchmark60 is None or benchmark20 is None:
         return _insufficient(
             prepared,
@@ -553,6 +586,36 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             expected=expected,
             legal_excluded=legal_excluded,
         )
+
+    raw_factors: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
+    for security_id in valid_ids:
+        prices = _prices_for(prepared, security_id, sessions)
+        if prices is None:
+            raise AssertionError("validated trend prices became unavailable")
+        try:
+            raw_factors[security_id] = (
+                relative_return(
+                    period_return(prices[0], prices[-1]),
+                    benchmark60,
+                ),
+                relative_return(
+                    period_return(prices[-21], prices[-1]),
+                    benchmark20,
+                ),
+                maximum_drawdown(prices),
+            )
+        except AnalysisUnavailable as exc:
+            classifications[security_id] = "missing"
+            reasons.append(f"{security_id}: {exc}")
+
+    valid_ids = tuple(sorted(raw_factors))
+    legal_excluded = sum(
+        classification == "legal_excluded"
+        for classification in classifications.values()
+    )
+    missing = sum(
+        classification == "missing" for classification in classifications.values()
+    )
     if len(valid_ids) < minimum:
         return RoleEvaluation(
             topic_status=_role_status(
@@ -566,20 +629,18 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
                 reasons=(*reasons, "minimum_valid_members_not_met"),
             )
         )
-
-    raw_factors: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
-    for security_id in valid_ids:
-        prices = _prices_for(prepared, security_id, sessions)
-        if prices is None:
-            raise AssertionError("validated trend prices became unavailable")
-        raw_factors[security_id] = (
-            relative_return(period_return(prices[0], prices[-1]), benchmark60),
-            relative_return(period_return(prices[-21], prices[-1]), benchmark20),
-            maximum_drawdown(prices),
+    try:
+        topic_mdd = decimal_median(
+            tuple(factors[2] for factors in raw_factors.values())
         )
-    topic_mdd = decimal_median(
-        tuple(factors[2] for factors in raw_factors.values())
-    )
+    except AnalysisUnavailable:
+        return _insufficient(
+            prepared,
+            "trend",
+            reasons=(*reasons, "topic_mdd_median_unavailable"),
+            expected=expected,
+            legal_excluded=legal_excluded,
+        )
     rows = tuple(
         RoleCandidate(
             topic_id=topic_id,
@@ -686,15 +747,17 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
     """Evaluate the formal core role for one topic."""
     prepared = _PreparedContext.build(context, topic_id)
     expected = len(prepared.members_on(prepared.trade_date))
+    classifications, reasons = _classify_current_members(prepared)
     global_reasons = _global_reasons(prepared)
     if global_reasons:
-        return _insufficient(
+        return _global_failure_result(
             prepared,
             "core",
-            reasons=global_reasons,
             expected=expected,
+            global_reasons=global_reasons,
+            classifications=classifications,
+            member_reasons=reasons,
         )
-    classifications, reasons = _classify_current_members(prepared)
     cross_exchange = _cross_exchange_result(
         prepared,
         "core",

@@ -335,6 +335,68 @@ def test_trend_requires_exactly_61_sessions_and_reports_missing_member():
     )
 
 
+def test_trend_returns_insufficient_when_benchmark_returns_are_unavailable():
+    from dragon_radar.roles.engine import _market_return_median, _PreparedContext
+
+    _, _, evaluate_trend = _engine()
+    prices = (
+        (Decimal("1e-999999"),) * 40
+        + (Decimal("1e999999"),) * 21
+    )
+    context = _context(
+        member_ids=("A", "B"),
+        prices={"A": prices, "B": prices},
+    )
+
+    result = evaluate_trend(context, "topic-a")
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 0, 2)
+    assert status.reasons == ("market_benchmark_unavailable",)
+    assert result.candidates == ()
+    prepared = _PreparedContext.build(context, "topic-a")
+    assert _market_return_median(prepared, SESSIONS[-61:]) is None
+    assert _market_return_median(prepared, SESSIONS[-21:]) == Decimal("0")
+
+
+def test_trend_marks_unavailable_candidate_factors_missing_and_recomputes():
+    _, _, evaluate_trend = _engine()
+    extreme = (
+        (Decimal("1e-999999"),) * 40
+        + (Decimal("1e999999"),) * 21
+    )
+    context = _context(
+        member_ids=("A", "B"),
+        pool_ids=("A", "B", "M"),
+        prices={
+            "A": extreme,
+            "B": _window_prices("100", "100", "120"),
+            "M": _window_prices("100", "100", "100"),
+        },
+    )
+
+    result = evaluate_trend(context, "topic-a")
+
+    status = result.topic_status
+    assert status.status == "ready"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 1, 0, 1)
+    assert status.reasons == (
+        "A: period_return: Decimal34 arithmetic unavailable",
+    )
+    assert [row.security_id for row in result.candidates] == ["B"]
+
+
 @pytest.mark.parametrize(
     "coverage_changes",
     (
@@ -1407,6 +1469,101 @@ def test_formal_roles_require_each_embedded_grant_at_knowledge_cutoff(
     ) == (3, 0, 0, 3)
     assert status.reasons == (f"{source}_source_not_materializable",)
     assert result.candidates == ()
+
+
+@pytest.mark.parametrize("role", ("trend", "core"))
+def test_global_grant_failure_preserves_current_legal_exclusion(role):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A", "B"),
+        market_grant=grant(approved=False),
+        states=(
+            state(
+                security_id="A",
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+            state(
+                security_id="B",
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        ),
+    )
+    evaluator = evaluate_trend if role == "trend" else evaluate_core
+
+    status = evaluator(context, "topic-a").topic_status
+
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 1, 1)
+    assert status.reasons == (
+        "market_source_not_materializable",
+        "A: ineligible security state",
+    )
+
+
+@pytest.mark.parametrize("role", ("trend", "core"))
+def test_global_calendar_failure_preserves_member_cross_exchange(role):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A", "B"),
+        states=(
+            state(
+                security_id="A",
+                exchange="OTHER",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+            state(
+                security_id="B",
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        ),
+    )
+    mismatched = RoleContext(
+        market=context.market,
+        topic=context.topic.model_copy(
+            update={
+                "calendar": context.topic.calendar.model_copy(
+                    update={"version": "formal-c2"}
+                ),
+                "calendar_version": "formal-c2",
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+    evaluator = evaluate_trend if role == "trend" else evaluate_core
+
+    status = evaluator(mismatched, "topic-a").topic_status
+
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 1, 1)
+    assert status.reasons == (
+        "market_topic_calendar_version_mismatch",
+        "cross_exchange",
+        "A: cross_exchange",
+        "B: ineligible security state",
+    )
 
 
 def test_every_call_returns_status_when_topic_is_missing():
