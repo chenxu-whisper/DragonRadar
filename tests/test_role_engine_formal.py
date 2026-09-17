@@ -1295,6 +1295,122 @@ def test_trend_preserves_legal_exclusion_when_coverage_is_incomplete():
     )
 
 
+@pytest.mark.parametrize("role", ("trend", "core"))
+def test_formal_roles_use_visible_declared_expected_for_incomplete_observation(
+    role,
+):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        states=tuple(
+            state(
+                security_id=security_id,
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            )
+            for security_id in ("A", "B")
+        )
+        + (
+            state(
+                security_id="C",
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                effective_to=T,
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        ),
+    )
+    topic = context.topic.model_copy(
+        update={
+            "coverage_cells": tuple(
+                cell.model_copy(
+                    update={
+                        "expected_member_count": 4,
+                        "received_member_count": 3,
+                        "status": "unavailable",
+                        "reason": "missing page",
+                    }
+                )
+                if cell.trade_date == T
+                else cell
+                for cell in context.topic.coverage_cells
+            )
+        }
+    )
+    evaluate = evaluate_trend if role == "trend" else evaluate_core
+
+    result = evaluate(
+        RoleContext(
+            market=context.market,
+            topic=topic,
+            rule_version=context.rule_version,
+        ),
+        "topic-a",
+    )
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (4, 0, 2, 2)
+    assert "C: missing effective security state" in status.reasons
+    assert f"{T.isoformat()}: topic coverage incomplete" in status.reasons
+    assert result.candidates == ()
+
+
+@pytest.mark.parametrize("role", ("trend", "core"))
+def test_formal_roles_do_not_use_future_observation_expected_count(role):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context()
+    topic = context.topic.model_copy(
+        update={
+            "coverage_cells": tuple(
+                cell.model_copy(
+                    update={
+                        "expected_member_count": 4,
+                        "received_member_count": 3,
+                        "complete_as_of": CUTOFF + timedelta(seconds=1),
+                        "status": "unavailable",
+                        "reason": "missing page",
+                    }
+                )
+                if cell.trade_date == T
+                else cell
+                for cell in context.topic.coverage_cells
+            )
+        }
+    )
+    evaluate = evaluate_trend if role == "trend" else evaluate_core
+
+    result = evaluate(
+        RoleContext(
+            market=context.market,
+            topic=topic,
+            rule_version=context.rule_version,
+        ),
+        "topic-a",
+    )
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (3, 0, 0, 3)
+    assert status.reasons == (
+        f"{T.isoformat()}: topic coverage incomplete",
+    )
+    assert result.candidates == ()
+
+
 @pytest.mark.parametrize(
     ("role", "session_count", "calendar_reason"),
     (

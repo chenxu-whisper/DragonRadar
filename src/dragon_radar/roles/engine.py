@@ -231,10 +231,15 @@ def _insufficient(
     *,
     reasons: Sequence[str],
     expected: int | None = None,
-    legal_excluded: int = 0,
+    classifications: dict[str, Eligibility] | None = None,
 ) -> RoleEvaluation:
     if expected is None:
-        expected = len(prepared.members_on(prepared.trade_date))
+        expected = _observation_expected_member_count(prepared)
+    legal_excluded, missing = _partition_counts(
+        expected,
+        classifications or {},
+        valid=0,
+    )
     return RoleEvaluation(
         topic_status=_role_status(
             topic_id=prepared.topic_id,
@@ -243,10 +248,42 @@ def _insufficient(
             expected=expected,
             valid=0,
             legal_excluded=legal_excluded,
-            missing=expected - legal_excluded,
+            missing=missing,
             reasons=reasons,
         )
     )
+
+
+def _observation_expected_member_count(prepared: _PreparedContext) -> int:
+    known_member_count = len(prepared.members_on(prepared.trade_date))
+    visible_cells = tuple(
+        cell
+        for cell in prepared.context.topic.coverage_cells
+        if cell.topic_id == prepared.topic_id
+        and cell.trade_date == prepared.trade_date
+        and cell.complete_as_of <= prepared.context.knowledge_cutoff
+    )
+    if len(visible_cells) != 1:
+        return known_member_count
+    return max(known_member_count, visible_cells[0].expected_member_count)
+
+
+def _partition_counts(
+    expected: int,
+    classifications: dict[str, Eligibility],
+    *,
+    valid: int,
+) -> tuple[int, int]:
+    legal_excluded = sum(
+        classification == "legal_excluded"
+        for classification in classifications.values()
+    )
+    known_missing = sum(
+        classification == "missing" for classification in classifications.values()
+    )
+    unresolved_known = len(classifications) - valid - legal_excluded - known_missing
+    unreceived = max(expected - len(classifications), 0)
+    return legal_excluded, known_missing + unresolved_known + unreceived
 
 
 def _global_reasons(prepared: _PreparedContext) -> tuple[str, ...]:
@@ -375,9 +412,7 @@ def _cross_exchange_result(
         role,
         reasons=("cross_exchange", *reasons),
         expected=expected,
-        legal_excluded=sum(
-            value == "legal_excluded" for value in classifications.values()
-        ),
+        classifications=classifications,
     )
 
 
@@ -403,9 +438,7 @@ def _global_failure_result(
         role,
         reasons=reasons,
         expected=expected,
-        legal_excluded=sum(
-            value == "legal_excluded" for value in classifications.values()
-        ),
+        classifications=classifications,
     )
 
 
@@ -492,7 +525,7 @@ def _market_return_median(
 def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
     """Evaluate the formal trend role for one topic."""
     prepared = _PreparedContext.build(context, topic_id)
-    expected = len(prepared.members_on(prepared.trade_date))
+    expected = _observation_expected_member_count(prepared)
     classifications, reasons = _classify_current_members(prepared)
     global_reasons = _global_reasons(prepared)
     if global_reasons:
@@ -520,9 +553,7 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             "trend",
             reasons=(*reasons, "market_calendar_missing_61_sessions"),
             expected=expected,
-            legal_excluded=sum(
-                value == "legal_excluded" for value in classifications.values()
-            ),
+            classifications=classifications,
         )
 
     for day in sessions:
@@ -535,10 +566,7 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
                     f"{day.isoformat()}: topic coverage incomplete",
                 ),
                 expected=expected,
-                legal_excluded=sum(
-                    value == "legal_excluded"
-                    for value in classifications.values()
-                ),
+                classifications=classifications,
             )
 
     for security_id, classification in tuple(classifications.items()):
@@ -574,17 +602,13 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
         )
     )
     minimum = RULE_DEFINITIONS[context.rule_version]["minimum_topic_members"]
-    legal_excluded = sum(
-        classification == "legal_excluded"
-        for classification in classifications.values()
-    )
     if benchmark60 is None or benchmark20 is None:
         return _insufficient(
             prepared,
             "trend",
             reasons=(*reasons, "market_benchmark_unavailable"),
             expected=expected,
-            legal_excluded=legal_excluded,
+            classifications=classifications,
         )
 
     raw_factors: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
@@ -609,12 +633,10 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             reasons.append(f"{security_id}: {exc}")
 
     valid_ids = tuple(sorted(raw_factors))
-    legal_excluded = sum(
-        classification == "legal_excluded"
-        for classification in classifications.values()
-    )
-    missing = sum(
-        classification == "missing" for classification in classifications.values()
+    legal_excluded, missing = _partition_counts(
+        expected,
+        classifications,
+        valid=len(valid_ids),
     )
     if len(valid_ids) < minimum:
         return RoleEvaluation(
@@ -639,7 +661,7 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             "trend",
             reasons=(*reasons, "topic_mdd_median_unavailable"),
             expected=expected,
-            legal_excluded=legal_excluded,
+            classifications=classifications,
         )
     rows = tuple(
         RoleCandidate(
@@ -746,7 +768,7 @@ def _amount_on(
 def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
     """Evaluate the formal core role for one topic."""
     prepared = _PreparedContext.build(context, topic_id)
-    expected = len(prepared.members_on(prepared.trade_date))
+    expected = _observation_expected_member_count(prepared)
     classifications, reasons = _classify_current_members(prepared)
     global_reasons = _global_reasons(prepared)
     if global_reasons:
@@ -774,9 +796,7 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
             "core",
             reasons=(*reasons, "market_calendar_missing_20_sessions"),
             expected=expected,
-            legal_excluded=sum(
-                value == "legal_excluded" for value in classifications.values()
-            ),
+            classifications=classifications,
         )
 
     daily_denominators: dict[date, tuple[tuple[Decimal, ...], tuple[str, ...]]] = {}
@@ -835,17 +855,13 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
             )
             break
         daily_denominators[day] = (tuple(daily_amounts), tuple(daily_currencies))
-    legal_excluded = sum(
-        classification == "legal_excluded"
-        for classification in classifications.values()
-    )
     if denominator_failure is not None:
         return _insufficient(
             prepared,
             "core",
             reasons=(*reasons, denominator_failure),
             expected=expected,
-            legal_excluded=legal_excluded,
+            classifications=classifications,
         )
 
     raw_factors: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
@@ -904,12 +920,10 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
 
     valid_ids = tuple(sorted(raw_factors))
     minimum = RULE_DEFINITIONS[context.rule_version]["minimum_topic_members"]
-    legal_excluded = sum(
-        classification == "legal_excluded"
-        for classification in classifications.values()
-    )
-    missing = sum(
-        classification == "missing" for classification in classifications.values()
+    legal_excluded, missing = _partition_counts(
+        expected,
+        classifications,
+        valid=len(valid_ids),
     )
     if len(valid_ids) < minimum:
         return RoleEvaluation(
