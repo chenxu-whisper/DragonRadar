@@ -631,6 +631,19 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
         if not daily_amounts or len(set(daily_currencies)) != 1:
             denominator_failure = f"{day.isoformat()}: currency mismatch"
             break
+        try:
+            topic_amount_share(
+                daily_amounts[0],
+                daily_amounts,
+                currency=daily_currencies[0],
+                eligible_currencies=daily_currencies,
+            )
+        except AnalysisUnavailable:
+            denominator_failure = (
+                f"{day.isoformat()}: "
+                "topic amount denominator nonpositive or unavailable"
+            )
+            break
         daily_denominators[day] = (tuple(daily_amounts), tuple(daily_currencies))
     legal_excluded = sum(
         classification == "legal_excluded"

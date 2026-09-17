@@ -613,6 +613,31 @@ def test_core_is_insufficient_when_one_denominator_member_amount_is_missing():
     assert result.candidates == ()
 
 
+def test_core_is_insufficient_when_early_daily_denominator_is_nonpositive():
+    _, evaluate_core, _ = _engine()
+    zero_denominator_day = SESSIONS[-7]
+    amounts = (Decimal("100"),) * 13 + (Decimal("0"),) + (Decimal("100"),) * 6
+
+    result = evaluate_core(
+        _context(amounts={security_id: amounts for security_id in ("A", "B", "C")}),
+        "topic-a",
+    )
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (3, 0, 0, 3)
+    assert status.reasons == (
+        f"{zero_denominator_day.isoformat()}: "
+        "topic amount denominator nonpositive or unavailable",
+    )
+    assert result.candidates == ()
+
+
 def test_core_zero_mean_and_currency_mismatch_are_insufficient():
     _, evaluate_core, _ = _engine()
     zero_context = _context(
