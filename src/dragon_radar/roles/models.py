@@ -1,8 +1,10 @@
 """Immutable contracts for deterministic role evaluation."""
 
-from typing import Literal
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Literal, Self
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from dragon_radar.domain.models import (
     ExactDecimal,
@@ -32,6 +34,33 @@ CandidateStatus = Literal[
     "excluded",
 ]
 
+ROLE_CAPABILITIES: Mapping[RoleName, RoleCapability] = MappingProxyType(
+    {
+        "trend": "ready",
+        "core": "ready",
+        "emotion": "simplified",
+        "catchup": "simplified",
+        "follower": "watch_only",
+        "relay": "pending_validation",
+    }
+)
+ALLOWED_RESULT_STATUSES: Mapping[RoleName, frozenset[CandidateStatus]] = (
+    MappingProxyType(
+        {
+            "trend": frozenset({"candidate", "eligible_non_candidate", "excluded"}),
+            "core": frozenset({"candidate", "eligible_non_candidate", "excluded"}),
+            "emotion": frozenset(
+                {"simplified_candidate", "eligible_non_candidate", "excluded"}
+            ),
+            "catchup": frozenset(
+                {"simplified_candidate", "eligible_non_candidate", "excluded"}
+            ),
+            "follower": frozenset({"watch", "excluded"}),
+            "relay": frozenset({"pending_validation", "excluded"}),
+        }
+    )
+)
+
 
 class _StrictFrozenRoleModel(FrozenModel):
     model_config = ConfigDict(
@@ -49,6 +78,14 @@ class RoleContext(_StrictFrozenRoleModel):
     topic: TopicBatch
     rule_version: Literal["role-v1", "role-test-v1"] = "role-v1"
 
+    @model_validator(mode="after")
+    def validate_trade_date_binding(self) -> Self:
+        if self.market.trade_date != self.topic.trade_date:
+            raise ValueError(
+                "market.trade_date must equal topic.trade_date for role evaluation"
+            )
+        return self
+
     @property
     def knowledge_cutoff(self) -> UTCDateTime:
         return min(self.market.as_of, self.topic.as_of)
@@ -63,6 +100,14 @@ class RoleCandidate(_StrictFrozenRoleModel):
     status: CandidateStatus
     factors: tuple[ExactDecimal, ...]
     reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_status_for_role(self) -> Self:
+        if self.status not in ALLOWED_RESULT_STATUSES[self.role]:
+            raise ValueError(
+                f"status {self.status!r} is not allowed for role {self.role!r}"
+            )
+        return self
 
 
 class RankedCandidate(RoleCandidate):
@@ -84,9 +129,29 @@ class RoleTopicStatus(_StrictFrozenRoleModel):
     missing: int = Field(ge=0)
     reasons: tuple[str, ...] = ()
 
+    @model_validator(mode="after")
+    def validate_count_partition(self) -> Self:
+        if self.expected != self.valid + self.legal_excluded + self.missing:
+            raise ValueError("expected must equal valid + legal_excluded + missing")
+        expected_capability = ROLE_CAPABILITIES[self.role]
+        if self.capability != expected_capability:
+            raise ValueError(
+                f"capability for role {self.role!r} must be {expected_capability!r}"
+            )
+        return self
+
 
 class RoleEvaluation(_StrictFrozenRoleModel):
     """One topic-role status and its immutable ranked result rows."""
 
     topic_status: RoleTopicStatus
     candidates: tuple[RankedCandidate, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_candidate_context(self) -> Self:
+        for candidate in self.candidates:
+            if candidate.topic_id != self.topic_status.topic_id:
+                raise ValueError("candidate topic_id must equal topic_status.topic_id")
+            if candidate.role != self.topic_status.role:
+                raise ValueError("candidate role must equal topic_status.role")
+        return self

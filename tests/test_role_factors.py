@@ -21,6 +21,8 @@ from dragon_radar.roles.factors import (
     topic_amount_share,
 )
 from dragon_radar.roles.models import (
+    ALLOWED_RESULT_STATUSES,
+    ROLE_CAPABILITIES,
     RankedCandidate,
     RoleCandidate,
     RoleContext,
@@ -323,6 +325,11 @@ EXPECTED_COMMON_CONTRACT = {
 EXPECTED_ROLE_RULES = {
     "trend": {
         "capability": "ready",
+        "allowed_result_statuses": [
+            "candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "required_inputs": {
             "adjusted_prices": {
                 "window": "T-60..T",
@@ -355,6 +362,11 @@ EXPECTED_ROLE_RULES = {
     },
     "core": {
         "capability": "ready",
+        "allowed_result_statuses": [
+            "candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "required_inputs": {
             "daily_amounts": {
                 "window": "T-19..T",
@@ -382,6 +394,11 @@ EXPECTED_ROLE_RULES = {
     },
     "emotion": {
         "capability": "simplified",
+        "allowed_result_statuses": [
+            "simplified_candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "rule_id": "emotion-daily-v1",
         "required_inputs": {
             "daily_limit_data": {"window": "T"},
@@ -414,6 +431,11 @@ EXPECTED_ROLE_RULES = {
     },
     "catchup": {
         "capability": "simplified",
+        "allowed_result_statuses": [
+            "simplified_candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "rule_id": "catchup-daily-v1",
         "required_inputs": {
             "adjusted_prices": {
@@ -446,6 +468,7 @@ EXPECTED_ROLE_RULES = {
     },
     "follower": {
         "capability": "watch_only",
+        "allowed_result_statuses": ["watch", "excluded"],
         "output_status": "watch",
         "required_inputs": {
             "reference_core": {
@@ -480,6 +503,7 @@ EXPECTED_ROLE_RULES = {
     },
     "relay": {
         "capability": "pending_validation",
+        "allowed_result_statuses": ["pending_validation", "excluded"],
         "output_status": "pending_validation",
         "same_day_output": "pending_validation_only_no_candidate",
         "predecessor_identity": {
@@ -732,14 +756,23 @@ def test_rule_definitions_are_complete_canonical_and_immutable():
         RULE_DEFINITIONS["role-v1"]["common_contract"]["ranking"]["rank_start"] = 2
 
 
+def test_canonical_allowed_result_statuses_match_role_models():
+    canonical_roles = json.loads(canonical_rule_json("role-v1"))["roles"]
+
+    assert {
+        role: frozenset(definition["allowed_result_statuses"])
+        for role, definition in canonical_roles.items()
+    } == dict(ALLOWED_RESULT_STATUSES)
+
+
 def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
     assert (
         ROLE_RULE_SHA256
-        == "78602ac54b28d763b00cad702897c244ff144bb0136d7fbd6b04332b7126a41e"
+        == "e16800106eac2009782609a12f061a79e0c3a8e8d7a7ceea267e39f9981d3c10"
     )
     assert (
         ROLE_TEST_RULE_SHA256
-        == "caad5612b15f1aae9745c4f8c1233a46854610c738a74e67075229298a0d5c2f"
+        == "be51c330b2339dcdc24e54cc41410c61b3d223b7f34c920e7300b501be7be4ac"
     )
     validate_rule_definition("role-v1", canonical_rule_json("role-v1"))
     validate_rule_definition("role-test-v1", canonical_rule_json("role-test-v1"))
@@ -791,6 +824,186 @@ def test_all_public_role_models_are_strict_frozen_contracts():
     assert RoleEvaluation(topic_status=status, candidates=(candidate,)).candidates == (
         candidate,
     )
+
+
+def test_role_context_rejects_mismatched_snapshot_trade_dates():
+    market = batch()
+    topic = topic_batch()
+    mismatched_topic = topic.model_copy(
+        update={"trade_date": topic.trade_date - timedelta(days=1)}
+    )
+
+    with pytest.raises(ValidationError, match="trade_date"):
+        RoleContext(market=market, topic=mismatched_topic)
+
+
+def test_role_topic_status_accepts_complete_count_partition():
+    status = RoleTopicStatus(
+        topic_id="topic-1",
+        role="trend",
+        capability="ready",
+        status="ready",
+        expected=3,
+        valid=1,
+        legal_excluded=1,
+        missing=1,
+    )
+
+    assert status.expected == status.valid + status.legal_excluded + status.missing
+
+
+def test_role_topic_status_rejects_impossible_count_partition():
+    with pytest.raises(ValidationError, match="expected"):
+        RoleTopicStatus(
+            topic_id="topic-1",
+            role="trend",
+            capability="ready",
+            status="ready",
+            expected=2,
+            valid=1,
+            legal_excluded=1,
+            missing=1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("role", "conflicting_capability"),
+    [
+        ("trend", "simplified"),
+        ("core", "watch_only"),
+        ("emotion", "ready"),
+        ("catchup", "pending_validation"),
+        ("follower", "simplified"),
+        ("relay", "ready"),
+    ],
+)
+def test_role_topic_status_capability_matches_canonical_role_rule(
+    role,
+    conflicting_capability,
+):
+    canonical_capability = json.loads(canonical_rule_json("role-v1"))["roles"][role][
+        "capability"
+    ]
+    assert ROLE_CAPABILITIES[role] == canonical_capability
+    values = {
+        "topic_id": "topic-1",
+        "role": role,
+        "status": canonical_capability,
+        "expected": 1,
+        "valid": 1,
+        "legal_excluded": 0,
+        "missing": 0,
+    }
+
+    assert (
+        RoleTopicStatus(capability=canonical_capability, **values).capability
+        == canonical_capability
+    )
+    with pytest.raises(ValidationError, match="capability"):
+        RoleTopicStatus(capability=conflicting_capability, **values)
+
+
+def test_role_evaluation_allows_empty_candidates():
+    status = RoleTopicStatus(
+        topic_id="topic-1",
+        role="trend",
+        capability="ready",
+        status="no_candidate",
+        expected=0,
+        valid=0,
+        legal_excluded=0,
+        missing=0,
+    )
+
+    assert RoleEvaluation(topic_status=status).candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("candidate_changes", "error"),
+    [
+        ({"topic_id": "topic-2"}, "topic_id"),
+        ({"role": "core"}, "role"),
+    ],
+)
+def test_role_evaluation_rejects_candidate_context_mismatch(candidate_changes, error):
+    status = RoleTopicStatus(
+        topic_id="topic-1",
+        role="trend",
+        capability="ready",
+        status="ready",
+        expected=1,
+        valid=1,
+        legal_excluded=0,
+        missing=0,
+    )
+    candidate = RankedCandidate(
+        topic_id="topic-1",
+        security_id="600000.SH",
+        role="trend",
+        status="candidate",
+        factors=(Decimal("0.1"),),
+        tie_rank=1,
+    ).model_copy(update=candidate_changes)
+
+    with pytest.raises(ValidationError, match=error):
+        RoleEvaluation(topic_status=status, candidates=(candidate,))
+
+
+@pytest.mark.parametrize(
+    ("role", "status"),
+    [
+        ("trend", "candidate"),
+        ("trend", "eligible_non_candidate"),
+        ("trend", "excluded"),
+        ("core", "candidate"),
+        ("core", "eligible_non_candidate"),
+        ("core", "excluded"),
+        ("emotion", "simplified_candidate"),
+        ("emotion", "eligible_non_candidate"),
+        ("emotion", "excluded"),
+        ("catchup", "simplified_candidate"),
+        ("catchup", "eligible_non_candidate"),
+        ("catchup", "excluded"),
+        ("follower", "watch"),
+        ("follower", "excluded"),
+        ("relay", "pending_validation"),
+        ("relay", "excluded"),
+    ],
+)
+def test_role_candidate_accepts_status_allowed_by_role(role, status):
+    candidate = RoleCandidate(
+        topic_id="topic-1",
+        security_id="600000.SH",
+        role=role,
+        status=status,
+        factors=(),
+    )
+
+    assert candidate.status == status
+
+
+@pytest.mark.parametrize(
+    ("role", "status"),
+    [
+        ("trend", "simplified_candidate"),
+        ("core", "watch"),
+        ("emotion", "candidate"),
+        ("catchup", "watch"),
+        ("follower", "candidate"),
+        ("follower", "simplified_candidate"),
+        ("relay", "candidate"),
+        ("relay", "watch"),
+    ],
+)
+def test_role_candidate_rejects_status_conflicting_with_role(role, status):
+    with pytest.raises(ValidationError, match="status"):
+        RoleCandidate(
+            topic_id="topic-1",
+            security_id="600000.SH",
+            role=role,
+            status=status,
+            factors=(),
+        )
 
 
 @pytest.mark.parametrize("value", ["1", True])

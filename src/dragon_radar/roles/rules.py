@@ -153,6 +153,11 @@ _COMMON_CONTRACT = {
 _ROLE_RULES = {
     "trend": {
         "capability": "ready",
+        "allowed_result_statuses": [
+            "candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "required_inputs": {
             "adjusted_prices": {"window": "T-60..T", "observations": 61},
             "market_benchmark": {
@@ -182,6 +187,11 @@ _ROLE_RULES = {
     },
     "core": {
         "capability": "ready",
+        "allowed_result_statuses": [
+            "candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "required_inputs": {
             "daily_amounts": {"window": "T-19..T", "observations": 20},
             "daily_topic_amount_coverage": {
@@ -206,6 +216,11 @@ _ROLE_RULES = {
     },
     "emotion": {
         "capability": "simplified",
+        "allowed_result_statuses": [
+            "simplified_candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "rule_id": "emotion-daily-v1",
         "required_inputs": {
             "daily_limit_data": {"window": "T"},
@@ -235,6 +250,11 @@ _ROLE_RULES = {
     },
     "catchup": {
         "capability": "simplified",
+        "allowed_result_statuses": [
+            "simplified_candidate",
+            "eligible_non_candidate",
+            "excluded",
+        ],
         "rule_id": "catchup-daily-v1",
         "required_inputs": {
             "adjusted_prices": {"window": "T-25..T", "observations": 26},
@@ -261,6 +281,7 @@ _ROLE_RULES = {
     },
     "follower": {
         "capability": "watch_only",
+        "allowed_result_statuses": ["watch", "excluded"],
         "output_status": "watch",
         "required_inputs": {
             "reference_core": {
@@ -289,6 +310,7 @@ _ROLE_RULES = {
     },
     "relay": {
         "capability": "pending_validation",
+        "allowed_result_statuses": ["pending_validation", "excluded"],
         "output_status": "pending_validation",
         "same_day_output": "pending_validation_only_no_candidate",
         "predecessor_identity": {
@@ -536,9 +558,9 @@ def canonical_rule_json(version: str) -> str:
     )
 
 
-ROLE_RULE_SHA256 = "78602ac54b28d763b00cad702897c244ff144bb0136d7fbd6b04332b7126a41e"
+ROLE_RULE_SHA256 = "e16800106eac2009782609a12f061a79e0c3a8e8d7a7ceea267e39f9981d3c10"
 ROLE_TEST_RULE_SHA256 = (
-    "caad5612b15f1aae9745c4f8c1233a46854610c738a74e67075229298a0d5c2f"
+    "be51c330b2339dcdc24e54cc41410c61b3d223b7f34c920e7300b501be7be4ac"
 )
 _RULE_SHA256 = MappingProxyType(
     {
