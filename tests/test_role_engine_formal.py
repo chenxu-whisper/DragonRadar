@@ -530,6 +530,189 @@ def test_formal_roles_ignore_bar_after_knowledge_cutoff():
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_id", "other-source"),
+        ("source_version", "other-version"),
+        ("pool_version", "other-pool"),
+    ),
+)
+def test_formal_roles_ignore_security_states_not_bound_to_market_batch(field, value):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A",),
+        states=(
+            state(
+                security_id="A",
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+                **{field: value},
+            ),
+        ),
+    )
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        status = result.topic_status
+        assert status.status == "insufficient"
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == (1, 0, 0, 1)
+        assert "A: missing effective security state" in status.reasons
+        assert result.candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_id", "other-source"),
+        ("source_version", "other-version"),
+        ("adjustment_version", "other-adjustment"),
+    ),
+)
+def test_formal_roles_ignore_daily_bars_not_bound_to_market_batch(field, value):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context()
+    mismatched = RoleContext(
+        market=context.market.model_copy(
+            update={
+                "bars": tuple(
+                    daily_bar.model_copy(update={field: value})
+                    if daily_bar.security_id == "A"
+                    else daily_bar
+                    for daily_bar in context.market.bars
+                )
+            }
+        ),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+
+    for result in (
+        evaluate_trend(mismatched, "topic-a"),
+        evaluate_core(mismatched, "topic-a"),
+    ):
+        status = result.topic_status
+        expected_counts = (
+            (3, 2, 0, 1) if status.role == "trend" else (3, 0, 0, 3)
+        )
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == expected_counts
+        assert any("A" in reason for reason in status.reasons)
+        assert {row.security_id for row in result.candidates} <= {"B", "C"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_id", "other-source"),
+        ("source_version", "other-version"),
+        ("adjustment_version", "other-adjustment"),
+    ),
+)
+def test_wrong_version_bar_does_not_duplicate_the_unique_bound_bar(field, value):
+    _, evaluate_core, evaluate_trend = _engine()
+    baseline = _context()
+    wrong_version_duplicate = bar(
+        security_id="A",
+        trade_date=T,
+        close=Decimal("999"),
+        amount=Decimal("999"),
+        **{field: value},
+    )
+    context = _context(bars_extra=(wrong_version_duplicate,))
+
+    assert evaluate_trend(context, "topic-a") == evaluate_trend(
+        baseline,
+        "topic-a",
+    )
+    assert evaluate_core(context, "topic-a") == evaluate_core(
+        baseline,
+        "topic-a",
+    )
+
+
+def test_duplicate_bound_bars_remain_unavailable():
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        bars_extra=(
+            bar(
+                security_id="A",
+                trade_date=T,
+                close=Decimal("999"),
+                amount=Decimal("999"),
+            ),
+        )
+    )
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        status = result.topic_status
+        expected_counts = (
+            (3, 2, 0, 1) if status.role == "trend" else (3, 0, 0, 3)
+        )
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == expected_counts
+        assert any("A" in reason for reason in status.reasons)
+        assert {row.security_id for row in result.candidates} <= {"B", "C"}
+
+
+@pytest.mark.parametrize(
+    ("batch_name", "expected_reason"),
+    (
+        ("market", "market_calendar_version_mismatch"),
+        ("topic", "topic_calendar_version_mismatch"),
+    ),
+)
+def test_formal_roles_reject_calendar_version_mismatch(
+    batch_name,
+    expected_reason,
+):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context()
+    changed_batch = getattr(context, batch_name).model_copy(
+        update={"calendar_version": "other-calendar"}
+    )
+    changed = RoleContext(
+        market=changed_batch if batch_name == "market" else context.market,
+        topic=changed_batch if batch_name == "topic" else context.topic,
+        rule_version=context.rule_version,
+    )
+
+    for result in (
+        evaluate_trend(changed, "topic-a"),
+        evaluate_core(changed, "topic-a"),
+    ):
+        status = result.topic_status
+        assert status.status == "insufficient"
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == (3, 0, 0, 3)
+        assert status.reasons == (expected_reason,)
+        assert result.candidates == ()
+
+
 @pytest.mark.parametrize("fact", ("definition", "membership"))
 def test_formal_roles_ignore_topic_facts_after_knowledge_cutoff(fact):
     _, evaluate_core, evaluate_trend = _engine()
@@ -935,6 +1118,123 @@ def test_trend_preserves_legal_exclusion_when_coverage_is_incomplete():
     )
 
 
+@pytest.mark.parametrize(
+    ("role", "session_count", "calendar_reason"),
+    (
+        ("trend", 60, "market_calendar_missing_61_sessions"),
+        ("core", 19, "market_calendar_missing_20_sessions"),
+    ),
+)
+def test_short_window_preserves_current_legal_exclusion(
+    role,
+    session_count,
+    calendar_reason,
+):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A", "B"),
+        states=(
+            state(
+                security_id="A",
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[-session_count],
+            ),
+            state(
+                security_id="B",
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[-session_count],
+            ),
+        ),
+    )
+    short = RoleContext(
+        market=context.market.model_copy(
+            update={
+                "calendar": context.market.calendar.model_copy(
+                    update={"sessions": SESSIONS[-session_count:]}
+                )
+            }
+        ),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+    evaluator = evaluate_trend if role == "trend" else evaluate_core
+
+    status = evaluator(short, "topic-a").topic_status
+
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 1, 1)
+    assert status.reasons == (
+        "A: ineligible security state",
+        calendar_reason,
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "session_count"),
+    (
+        ("trend", 60),
+        ("core", 19),
+    ),
+)
+def test_short_window_keeps_cross_exchange_reason_priority(role, session_count):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A", "B"),
+        states=(
+            state(
+                security_id="A",
+                exchange="OTHER",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+            state(
+                security_id="B",
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        ),
+    )
+    short = RoleContext(
+        market=context.market.model_copy(
+            update={
+                "calendar": context.market.calendar.model_copy(
+                    update={"sessions": SESSIONS[-session_count:]}
+                )
+            }
+        ),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+    evaluator = evaluate_trend if role == "trend" else evaluate_core
+
+    status = evaluator(short, "topic-a").topic_status
+
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 1, 1)
+    assert status.reasons == (
+        "cross_exchange",
+        "A: cross_exchange",
+        "B: ineligible security state",
+    )
+
+
 def test_formal_roles_reject_cross_exchange_topic_as_insufficient():
     _, evaluate_core, evaluate_trend = _engine()
     context = _context(topic_exchange="OTHER")
@@ -1274,6 +1574,40 @@ def test_core_is_insufficient_when_early_daily_denominator_is_nonpositive():
         "topic amount denominator nonpositive or unavailable",
     )
     assert result.candidates == ()
+
+
+def test_core_reports_empty_denominator_when_all_daily_members_are_excluded():
+    _, evaluate_core, _ = _engine()
+    member_ids = ("A", "B", "C")
+    context = _context(
+        member_ids=member_ids,
+        states=tuple(
+            state(
+                security_id=security_id,
+                exchange="TEST",
+                security_type="fund",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            )
+            for security_id in member_ids
+        ),
+    )
+
+    status = evaluate_core(context, "topic-a").topic_status
+
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (3, 0, 3, 0)
+    assert status.reasons == (
+        "A: ineligible security state",
+        "B: ineligible security state",
+        "C: ineligible security state",
+        f"{SESSIONS[-20].isoformat()}: topic amount denominator unavailable/empty",
+    )
 
 
 def test_core_zero_mean_and_currency_mismatch_are_insufficient():

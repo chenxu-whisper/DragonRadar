@@ -118,13 +118,24 @@ class _PreparedContext:
         )
         state_groups: dict[str, list[SecurityState]] = {}
         for security_state in context.market.security_states:
-            if security_state.available_at <= cutoff:
+            if (
+                security_state.available_at <= cutoff
+                and security_state.source_id == context.market.source_id
+                and security_state.source_version == context.market.source_version
+                and security_state.pool_version == context.market.pool_version
+            ):
                 state_groups.setdefault(security_state.security_id, []).append(
                     security_state
                 )
         bar_groups: dict[tuple[str, date], list[DailyBar]] = {}
         for daily_bar in context.market.bars:
-            if daily_bar.available_at <= cutoff:
+            if (
+                daily_bar.available_at <= cutoff
+                and daily_bar.source_id == context.market.source_id
+                and daily_bar.source_version == context.market.source_version
+                and daily_bar.adjustment_version
+                == context.market.adjustment_version
+            ):
                 bar_groups.setdefault(
                     (daily_bar.security_id, daily_bar.trade_date), []
                 ).append(daily_bar)
@@ -248,6 +259,10 @@ def _global_reasons(prepared: _PreparedContext) -> tuple[str, ...]:
         or context.topic.calendar.exchange != context.topic.exchange
     ):
         reasons.append("cross_exchange")
+    if context.market.calendar_version != context.market.calendar.version:
+        reasons.append("market_calendar_version_mismatch")
+    if context.topic.calendar_version != context.topic.calendar.version:
+        reasons.append("topic_calendar_version_mismatch")
     for source, grant, source_id in (
         ("market", context.market.grant, context.market.source_id),
         ("topic", context.topic.grant, context.topic.source_id),
@@ -341,6 +356,27 @@ def _classify_current_members(
     return classifications, reasons
 
 
+def _cross_exchange_result(
+    prepared: _PreparedContext,
+    role: RoleName,
+    *,
+    expected: int,
+    classifications: dict[str, Eligibility],
+    reasons: Sequence[str],
+) -> RoleEvaluation | None:
+    if "cross_exchange" not in classifications.values():
+        return None
+    return _insufficient(
+        prepared,
+        role,
+        reasons=("cross_exchange", *reasons),
+        expected=expected,
+        legal_excluded=sum(
+            value == "legal_excluded" for value in classifications.values()
+        ),
+    )
+
+
 def _prices_for(
     prepared: _PreparedContext,
     security_id: str,
@@ -427,26 +463,28 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             reasons=global_reasons,
             expected=expected,
         )
+    classifications, reasons = _classify_current_members(prepared)
+    cross_exchange = _cross_exchange_result(
+        prepared,
+        "trend",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+    )
+    if cross_exchange is not None:
+        return cross_exchange
     sessions = _window(prepared, 61)
     if len(sessions) != 61:
         return _insufficient(
             prepared,
             "trend",
-            reasons=("market_calendar_missing_61_sessions",),
-            expected=expected,
-        )
-
-    classifications, reasons = _classify_current_members(prepared)
-    if "cross_exchange" in classifications.values():
-        return _insufficient(
-            prepared,
-            "trend",
-            reasons=("cross_exchange", *reasons),
+            reasons=(*reasons, "market_calendar_missing_61_sessions"),
             expected=expected,
             legal_excluded=sum(
                 value == "legal_excluded" for value in classifications.values()
             ),
         )
+
     for day in sessions:
         if not _coverage_complete(prepared, day):
             return _insufficient(
@@ -476,16 +514,15 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
         if reason is not None:
             reasons.append(reason)
 
-    if "cross_exchange" in classifications.values():
-        return _insufficient(
-            prepared,
-            "trend",
-            reasons=("cross_exchange", *reasons),
-            expected=expected,
-            legal_excluded=sum(
-                value == "legal_excluded" for value in classifications.values()
-            ),
-        )
+    cross_exchange = _cross_exchange_result(
+        prepared,
+        "trend",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+    )
+    if cross_exchange is not None:
+        return cross_exchange
 
     benchmark60 = _market_return_median(prepared, sessions)
     benchmark20 = _market_return_median(prepared, sessions[-21:])
@@ -647,21 +684,22 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
             reasons=global_reasons,
             expected=expected,
         )
+    classifications, reasons = _classify_current_members(prepared)
+    cross_exchange = _cross_exchange_result(
+        prepared,
+        "core",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+    )
+    if cross_exchange is not None:
+        return cross_exchange
     sessions = _window(prepared, 20)
     if len(sessions) != 20:
         return _insufficient(
             prepared,
             "core",
-            reasons=("market_calendar_missing_20_sessions",),
-            expected=expected,
-        )
-
-    classifications, reasons = _classify_current_members(prepared)
-    if "cross_exchange" in classifications.values():
-        return _insufficient(
-            prepared,
-            "core",
-            reasons=("cross_exchange", *reasons),
+            reasons=(*reasons, "market_calendar_missing_20_sessions"),
             expected=expected,
             legal_excluded=sum(
                 value == "legal_excluded" for value in classifications.values()
@@ -702,7 +740,12 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
             daily_currencies.append(amount[1])
         if denominator_failure is not None:
             break
-        if not daily_amounts or len(set(daily_currencies)) != 1:
+        if not daily_amounts:
+            denominator_failure = (
+                f"{day.isoformat()}: topic amount denominator unavailable/empty"
+            )
+            break
+        if len(set(daily_currencies)) != 1:
             denominator_failure = f"{day.isoformat()}: currency mismatch"
             break
         try:
