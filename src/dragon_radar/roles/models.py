@@ -171,6 +171,18 @@ class RoleEvaluation(_StrictFrozenRoleModel):
             if candidate.role != self.topic_status.role:
                 raise ValueError("candidate role must equal topic_status.role")
 
+        security_ids = tuple(candidate.security_id for candidate in self.candidates)
+        if len(set(security_ids)) != len(security_ids):
+            raise ValueError("candidate security_id must be unique within evaluation")
+
+        calculable_rows = sum(
+            candidate.status != "excluded" for candidate in self.candidates
+        )
+        if calculable_rows > self.topic_status.valid:
+            raise ValueError(
+                "calculable result rows must not exceed topic_status.valid"
+            )
+
         result_statuses = {candidate.status for candidate in self.candidates}
         if self.topic_status.status == "insufficient":
             if result_statuses - {"excluded"}:

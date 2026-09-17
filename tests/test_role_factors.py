@@ -89,6 +89,35 @@ def test_topic_amount_share_and_average_share_are_exact():
     assert decimal_mean(shares) == Decimal("0.275")
 
 
+def test_topic_amount_share_normalizes_single_high_precision_member():
+    amount = Decimal("12345678901234567890123456789012345")
+
+    assert topic_amount_share(
+        amount,
+        (amount,),
+        currency="CNY",
+        eligible_currencies=("CNY",),
+    ) == Decimal("1")
+
+
+def test_topic_amount_share_keeps_multi_member_high_precision_math_decimal():
+    amount = Decimal("12345678901234567890123456789012345")
+
+    share = topic_amount_share(
+        amount,
+        (
+            amount,
+            Decimal("12345678901234567890123456789012344"),
+            Decimal("1"),
+        ),
+        currency="CNY",
+        eligible_currencies=("CNY", "CNY", "CNY"),
+    )
+
+    assert isinstance(share, Decimal)
+    assert share == Decimal("0.5")
+
+
 def test_topic_amount_share_is_closed_between_zero_and_one():
     common = {
         "eligible_amounts": (Decimal("25"), Decimal("75")),
@@ -218,6 +247,7 @@ EXPECTED_FORMULA_CONTRACTS = {
     "mean_absolute_deviation_rate": ("mean(abs(value - mean(values))) / mean(values)"),
     "numeric_type": "Decimal",
     "operand_policy": "all_operands_must_be_finite_decimal",
+    "operand_normalization": "Decimal34_before_arithmetic",
     "decimal_median": {
         "sample": "nonempty",
         "ordering": "ascending",
@@ -783,11 +813,11 @@ def test_canonical_allowed_result_statuses_match_role_models():
 def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
     assert (
         ROLE_RULE_SHA256
-        == "72b1fdb869b027513b678166b49d463e55642a63d8e5cc9b5631ce660e54991c"
+        == "e67f85bff2fc0388502ca6c25d60b6bf4e269e5e89bba7332bce5304c9253f9a"
     )
     assert (
         ROLE_TEST_RULE_SHA256
-        == "2917c41b57f0909f238d29f795fab39d085ce5772e04502c5a697afa6abb4a39"
+        == "942c10815e8ac8d82901d5d56db42d923daa21b316fb6690504bf0d37c66a753"
     )
     validate_rule_definition("role-v1", canonical_rule_json("role-v1"))
     validate_rule_definition("role-test-v1", canonical_rule_json("role-test-v1"))
@@ -984,14 +1014,14 @@ def test_role_evaluation_allows_empty_candidates():
     assert RoleEvaluation(topic_status=status).candidates == ()
 
 
-def _role_topic_status(role, status):
+def _role_topic_status(role, status, *, valid=1):
     return RoleTopicStatus(
         topic_id="topic-1",
         role=role,
         capability=ROLE_CAPABILITIES[role],
         status=status,
-        expected=1,
-        valid=1,
+        expected=valid,
+        valid=valid,
         legal_excluded=0,
         missing=0,
     )
@@ -1025,7 +1055,7 @@ def test_role_evaluation_success_requires_matching_positive_output(
     positive_status,
     auxiliary_status,
 ):
-    status = _role_topic_status(role, topic_status)
+    status = _role_topic_status(role, topic_status, valid=2)
     positive = _ranked_role_result(role, positive_status)
     auxiliary = _ranked_role_result(role, auxiliary_status, "600001.SH")
 
@@ -1039,6 +1069,71 @@ def test_role_evaluation_success_requires_matching_positive_output(
         RoleEvaluation(topic_status=status, candidates=(auxiliary,))
     with pytest.raises(ValidationError, match="positive"):
         RoleEvaluation(topic_status=status)
+
+
+@pytest.mark.parametrize("valid", [1, 2])
+def test_role_evaluation_allows_sparse_results_up_to_valid_count(valid):
+    status = _role_topic_status("trend", "ready", valid=valid)
+    candidate = _ranked_role_result("trend", "candidate")
+
+    assert RoleEvaluation(
+        topic_status=status,
+        candidates=(candidate,),
+    ).candidates == (candidate,)
+
+
+@pytest.mark.parametrize(
+    ("role", "topic_status", "result_status"),
+    [
+        ("trend", "ready", "candidate"),
+        ("emotion", "simplified", "simplified_candidate"),
+        ("trend", "no_candidate", "eligible_non_candidate"),
+        ("follower", "watch_only", "watch"),
+        ("relay", "pending_validation", "pending_validation"),
+    ],
+)
+def test_role_evaluation_rejects_calculable_result_when_valid_is_zero(
+    role,
+    topic_status,
+    result_status,
+):
+    with pytest.raises(ValidationError, match="valid"):
+        RoleEvaluation(
+            topic_status=_role_topic_status(role, topic_status, valid=0),
+            candidates=(_ranked_role_result(role, result_status),),
+        )
+
+
+def test_role_evaluation_rejects_more_calculable_results_than_valid_members():
+    status = _role_topic_status("trend", "ready", valid=1)
+    candidate = _ranked_role_result("trend", "candidate")
+    non_candidate = _ranked_role_result(
+        "trend",
+        "eligible_non_candidate",
+        "600001.SH",
+    )
+
+    with pytest.raises(ValidationError, match="valid"):
+        RoleEvaluation(
+            topic_status=status,
+            candidates=(candidate, non_candidate),
+        )
+
+
+def test_role_evaluation_rejects_duplicate_security_ids():
+    status = _role_topic_status("trend", "ready", valid=2)
+    candidate = _ranked_role_result("trend", "candidate")
+    duplicate = _ranked_role_result(
+        "trend",
+        "eligible_non_candidate",
+        candidate.security_id,
+    )
+
+    with pytest.raises(ValidationError, match="security_id"):
+        RoleEvaluation(
+            topic_status=status,
+            candidates=(candidate, duplicate),
+        )
 
 
 @pytest.mark.parametrize(

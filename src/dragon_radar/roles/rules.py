@@ -33,6 +33,7 @@ _FORMULA_CONTRACTS = {
     "mean_absolute_deviation_rate": ("mean(abs(value - mean(values))) / mean(values)"),
     "numeric_type": "Decimal",
     "operand_policy": "all_operands_must_be_finite_decimal",
+    "operand_normalization": "Decimal34_before_arithmetic",
     "decimal_median": {
         "sample": "nonempty",
         "ordering": "ascending",
@@ -560,9 +561,9 @@ def canonical_rule_json(version: str) -> str:
     )
 
 
-ROLE_RULE_SHA256 = "72b1fdb869b027513b678166b49d463e55642a63d8e5cc9b5631ce660e54991c"
+ROLE_RULE_SHA256 = "e67f85bff2fc0388502ca6c25d60b6bf4e269e5e89bba7332bce5304c9253f9a"
 ROLE_TEST_RULE_SHA256 = (
-    "2917c41b57f0909f238d29f795fab39d085ce5772e04502c5a697afa6abb4a39"
+    "942c10815e8ac8d82901d5d56db42d923daa21b316fb6690504bf0d37c66a753"
 )
 _RULE_SHA256 = MappingProxyType(
     {

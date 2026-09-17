@@ -140,7 +140,9 @@ def topic_amount_share(
     ):
         raise AnalysisUnavailable("currency mismatch in topic amounts")
     with localcontext(_decimal_context()):
-        denominator = sum(amounts, start=Decimal(0))
+        amount = +amount
+        normalized_amounts = tuple(+member_amount for member_amount in amounts)
+        denominator = sum(normalized_amounts, start=Decimal(0))
         _positive(denominator, "topic amount denominator")
         if amount > denominator:
             raise AnalysisUnavailable(
