@@ -7,6 +7,7 @@ from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from typing import Literal
 
 from dragon_radar.domain.models import DailyBar, SecurityState
+from dragon_radar.domain.quality import grant_allows_local
 from dragon_radar.roles.factors import (
     AnalysisUnavailable,
     adjusted_price,
@@ -68,6 +69,22 @@ def dense_rank(
             )
         )
     return tuple(result)
+
+
+def _first_tie_group_candidates(
+    rows: tuple[RankedCandidate, ...],
+) -> tuple[RankedCandidate, ...]:
+    return tuple(
+        row
+        if row.tie_rank == 1 or row.status != "candidate"
+        else row.model_copy(
+            update={
+                "status": "eligible_non_candidate",
+                "reasons": (*row.reasons, "not_first_tie_group"),
+            }
+        )
+        for row in rows
+    )
 
 
 @dataclass(frozen=True)
@@ -231,11 +248,15 @@ def _global_reasons(prepared: _PreparedContext) -> tuple[str, ...]:
         or context.topic.calendar.exchange != context.topic.exchange
     ):
         reasons.append("cross_exchange")
-    for source, grant in (
-        ("market", context.market.grant),
-        ("topic", context.topic.grant),
+    for source, grant, source_id in (
+        ("market", context.market.grant, context.market.source_id),
+        ("topic", context.topic.grant, context.topic.source_id),
     ):
-        if not grant.local_storage or not grant.local_display:
+        if not grant_allows_local(
+            grant,
+            source_id=source_id,
+            now=context.knowledge_cutoff,
+        ):
             reasons.append(f"{source}_source_not_materializable")
     return tuple(reasons)
 
@@ -412,6 +433,14 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             reasons=("market_calendar_missing_61_sessions",),
             expected=expected,
         )
+    for day in sessions:
+        if not _coverage_complete(prepared, day):
+            return _insufficient(
+                prepared,
+                "trend",
+                reasons=(f"{day.isoformat()}: topic coverage incomplete",),
+                expected=expected,
+            )
 
     classifications, reasons = _classify_current_members(prepared)
     for security_id, classification in tuple(classifications.items()):
@@ -513,9 +542,11 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
         )
         for security_id, factors in raw_factors.items()
     )
-    ranked = dense_rank(
-        rows,
-        key=lambda row: (-row.factors[0], -row.factors[1], row.factors[2]),
+    ranked = _first_tie_group_candidates(
+        dense_rank(
+            rows,
+            key=lambda row: (-row.factors[0], -row.factors[1], row.factors[2]),
+        )
     )
     has_candidate = any(row.status == "candidate" for row in ranked)
     return RoleEvaluation(
@@ -606,17 +637,20 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
         daily_amounts: list[Decimal] = []
         daily_currencies: list[str] = []
         for security_id in prepared.members_on(day):
-            classification, _ = _state_eligibility(
+            classification, eligibility_reason = _state_eligibility(
                 prepared,
                 security_id,
                 day,
                 check_listing=True,
             )
-            if classification == "cross_exchange":
-                denominator_failure = f"{security_id}: cross_exchange"
-                break
-            if classification != "valid":
+            if classification == "legal_excluded":
                 continue
+            if classification != "valid":
+                denominator_failure = (
+                    f"{eligibility_reason or f'{security_id}: ineligible'} "
+                    f"on {day.isoformat()}"
+                )
+                break
             amount = _amount_on(prepared, security_id, day)
             if amount is None:
                 denominator_failure = (
@@ -760,9 +794,11 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
         )
         for security_id, factors in raw_factors.items()
     )
-    ranked = dense_rank(
-        rows,
-        key=lambda row: (-row.factors[0], -row.factors[1], row.factors[2]),
+    ranked = _first_tie_group_candidates(
+        dense_rank(
+            rows,
+            key=lambda row: (-row.factors[0], -row.factors[1], row.factors[2]),
+        )
     )
     has_candidate = any(row.status == "candidate" for row in ranked)
     return RoleEvaluation(

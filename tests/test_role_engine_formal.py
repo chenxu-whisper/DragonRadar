@@ -1,7 +1,8 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from factories import bar, batch, state
+import pytest
+from factories import bar, batch, grant, state
 from topic_factories import (
     coverage_cell,
     topic_batch,
@@ -244,7 +245,7 @@ def test_trend_uses_market_medians_positive_relative_returns_and_mdd_gate():
         (row.security_id, row.status, row.tie_rank) for row in result.candidates
     ] == [
         ("A", "candidate", 1),
-        ("B", "candidate", 2),
+        ("B", "eligible_non_candidate", 2),
         ("C", "eligible_non_candidate", 3),
     ]
     assert result.candidates[0].factors == (
@@ -252,7 +253,46 @@ def test_trend_uses_market_medians_positive_relative_returns_and_mdd_gate():
         Decimal("0.05"),
         Decimal("0"),
     )
+    assert result.candidates[1].reasons == (
+        "candidate_conditions_met",
+        "not_first_tie_group",
+    )
     assert result.candidates[2].factors[2] > Decimal("0")
+
+
+def test_trend_is_no_candidate_when_only_later_ranks_meet_candidate_conditions():
+    _, _, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A", "B", "C"),
+        pool_ids=("A", "B", "C", "M1", "M2", "M3"),
+        prices={
+            "A": (
+                (Decimal("100"),)
+                + (Decimal("200"),) * 59
+                + (Decimal("150"),)
+            ),
+            "B": _window_prices("100", "120", "140"),
+            "C": _window_prices("100", "110", "130"),
+            "M1": _window_prices("100", "100", "105"),
+            "M2": _window_prices("100", "100", "110"),
+            "M3": _window_prices("100", "100", "115"),
+        },
+    )
+
+    result = evaluate_trend(context, "topic-a")
+
+    assert result.topic_status.status == "no_candidate"
+    assert [
+        (row.security_id, row.status, row.tie_rank) for row in result.candidates
+    ] == [
+        ("A", "eligible_non_candidate", 1),
+        ("B", "eligible_non_candidate", 2),
+        ("C", "eligible_non_candidate", 3),
+    ]
+    assert result.candidates[1].reasons == (
+        "candidate_conditions_met",
+        "not_first_tie_group",
+    )
 
 
 def test_trend_requires_exactly_61_sessions_and_reports_missing_member():
@@ -279,6 +319,60 @@ def test_trend_requires_exactly_61_sessions_and_reports_missing_member():
     )
 
 
+@pytest.mark.parametrize(
+    "coverage_changes",
+    (
+        {
+            "status": "unavailable",
+            "received_member_count": 2,
+            "reason": "provider outage",
+        },
+        {"complete_as_of": CUTOFF + timedelta(seconds=1)},
+    ),
+)
+def test_trend_requires_complete_coverage_by_cutoff_for_every_window_day(
+    coverage_changes,
+):
+    _, _, evaluate_trend = _engine()
+    unavailable_day = SESSIONS[-10]
+    coverage_cells = tuple(
+        coverage_cell(
+            trade_date=day,
+            **{
+                "expected_member_count": 3,
+                "received_member_count": 3,
+                "complete_as_of": datetime(
+                    day.year,
+                    day.month,
+                    day.day,
+                    17,
+                    tzinfo=UTC,
+                ),
+                **(coverage_changes if day == unavailable_day else {}),
+            },
+        )
+        for day in SESSIONS
+    )
+
+    result = evaluate_trend(
+        _context(coverage_cells=coverage_cells),
+        "topic-a",
+    )
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (3, 0, 0, 3)
+    assert status.reasons == (
+        f"{unavailable_day.isoformat()}: topic coverage incomplete",
+    )
+    assert result.candidates == ()
+
+
 def test_trend_refilters_cutoff_and_counts_missing_state():
     _, _, evaluate_trend = _engine()
     late_state = state(
@@ -297,6 +391,69 @@ def test_trend_refilters_cutoff_and_counts_missing_state():
     assert result.topic_status.missing == 2
     assert any(
         "B" in reason and "state" in reason for reason in result.topic_status.reasons
+    )
+
+
+def test_formal_roles_ignore_bar_after_knowledge_cutoff():
+    _, evaluate_core, evaluate_trend = _engine()
+    baseline = _context()
+    late_bar = bar(
+        security_id="A",
+        trade_date=T,
+        close=Decimal("999"),
+        amount=Decimal("999"),
+        available_at=CUTOFF + timedelta(seconds=1),
+    )
+    with_late_bar = _context(bars_extra=(late_bar,))
+
+    assert evaluate_trend(with_late_bar, "topic-a") == evaluate_trend(
+        baseline,
+        "topic-a",
+    )
+    assert evaluate_core(with_late_bar, "topic-a") == evaluate_core(
+        baseline,
+        "topic-a",
+    )
+
+
+@pytest.mark.parametrize("fact", ("definition", "membership"))
+def test_formal_roles_ignore_topic_facts_after_knowledge_cutoff(fact):
+    _, evaluate_core, evaluate_trend = _engine()
+    baseline = _context()
+    topic_changes = {}
+    if fact == "definition":
+        topic_changes["topics"] = (
+            *baseline.topic.topics,
+            baseline.topic.topics[0].model_copy(
+                update={
+                    "name": "Future duplicate",
+                    "available_at": CUTOFF + timedelta(seconds=1),
+                }
+            ),
+        )
+    else:
+        topic_changes["memberships"] = (
+            *baseline.topic.memberships,
+            baseline.topic.memberships[0].model_copy(
+                update={
+                    "security_id": "FUTURE",
+                    "available_at": CUTOFF + timedelta(seconds=1),
+                }
+            ),
+        )
+    with_late_fact = RoleContext(
+        market=baseline.market,
+        topic=baseline.topic.model_copy(update=topic_changes),
+        rule_version=baseline.rule_version,
+    )
+
+    assert evaluate_trend(with_late_fact, "topic-a") == evaluate_trend(
+        baseline,
+        "topic-a",
+    )
+    assert evaluate_core(with_late_fact, "topic-a") == evaluate_core(
+        baseline,
+        "topic-a",
     )
 
 
@@ -403,6 +560,68 @@ def test_formal_roles_count_member_outside_market_pool_as_missing():
         assert "OUT: outside declared market pool" in status.reasons
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "classification"),
+    (
+        ("security_type", "fund", "legal_excluded"),
+        ("security_type", None, "missing"),
+        ("board_category", "sh_main", "legal_excluded"),
+        ("board_category", None, "missing"),
+        ("is_st", True, "legal_excluded"),
+        ("is_st", None, "missing"),
+        ("is_delisting", True, "legal_excluded"),
+        ("is_delisting", None, "missing"),
+    ),
+)
+def test_formal_role_state_fields_distinguish_legal_exclusion_from_missing(
+    field,
+    value,
+    classification,
+):
+    _, evaluate_core, evaluate_trend = _engine()
+    context = _context(
+        member_ids=("A",),
+        states=(
+            state(
+                security_id="A",
+                exchange="TEST",
+                effective_from=SESSIONS[0],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+                **{field: value},
+            ),
+        ),
+    )
+
+    for result in (
+        evaluate_trend(context, "topic-a"),
+        evaluate_core(context, "topic-a"),
+    ):
+        status = result.topic_status
+        expected_counts = (
+            (1, 0, 1, 0)
+            if classification == "legal_excluded"
+            else (1, 0, 0, 1)
+        )
+        assert status.status == "insufficient"
+        assert (
+            status.expected,
+            status.valid,
+            status.legal_excluded,
+            status.missing,
+        ) == expected_counts
+        assert any(
+            (
+                "ineligible security state"
+                if classification == "legal_excluded"
+                else "missing required security state"
+            )
+            in reason
+            for reason in status.reasons
+        )
+        assert result.candidates == ()
+
+
 def test_formal_roles_reject_cross_exchange_member_as_insufficient():
     _, evaluate_core, evaluate_trend = _engine()
     context = _context(
@@ -446,6 +665,40 @@ def test_formal_roles_reject_cross_exchange_topic_as_insufficient():
         assert "cross_exchange" in result.topic_status.reasons
 
 
+@pytest.mark.parametrize("source", ("market", "topic"))
+@pytest.mark.parametrize(
+    "grant_changes",
+    (
+        {"approved": False},
+        {"source_id": "other"},
+        {"reference": None},
+        {"starts_at": CUTOFF + timedelta(seconds=1)},
+        {"expires_at": CUTOFF},
+        {"local_storage": False},
+        {"local_display": False},
+    ),
+)
+def test_formal_roles_require_each_embedded_grant_at_knowledge_cutoff(
+    source,
+    grant_changes,
+):
+    _, _, evaluate_trend = _engine()
+    context_kwargs = {f"{source}_grant": grant(**grant_changes)}
+
+    result = evaluate_trend(_context(**context_kwargs), "topic-a")
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (3, 0, 0, 3)
+    assert status.reasons == (f"{source}_source_not_materializable",)
+    assert result.candidates == ()
+
+
 def test_every_call_returns_status_when_topic_is_missing():
     _, evaluate_core, evaluate_trend = _engine()
     context = _context()
@@ -477,8 +730,8 @@ def test_core_uses_t_minus_4_and_t_minus_19_inclusive_and_mad_sort_order():
         (row.security_id, row.status, row.tie_rank) for row in result.candidates
     ] == [
         ("B", "candidate", 1),
-        ("A", "candidate", 2),
-        ("C", "candidate", 3),
+        ("A", "eligible_non_candidate", 2),
+        ("C", "eligible_non_candidate", 3),
     ]
     assert result.candidates[0].factors == (
         Decimal("0.6"),
@@ -493,6 +746,25 @@ def test_core_uses_t_minus_4_and_t_minus_19_inclusive_and_mad_sort_order():
         Decimal("100"),
         Decimal("0"),
     )
+
+
+def test_core_marks_every_member_of_the_first_tie_group_as_candidate():
+    _, evaluate_core, _ = _engine()
+    amounts = {
+        security_id: (Decimal("100"),) * 20
+        for security_id in ("A", "B", "C")
+    }
+
+    result = evaluate_core(_context(amounts=amounts), "topic-a")
+
+    assert result.topic_status.status == "ready"
+    assert [
+        (row.security_id, row.status, row.tie_rank) for row in result.candidates
+    ] == [
+        ("A", "candidate", 1),
+        ("B", "candidate", 1),
+        ("C", "candidate", 1),
+    ]
 
 
 def test_core_daily_denominator_uses_each_days_effective_membership():
@@ -586,6 +858,69 @@ def test_core_requires_complete_daily_coverage_and_all_member_amounts():
     assert result.topic_status.status == "insufficient"
     assert result.candidates == ()
     assert any("coverage" in reason for reason in result.topic_status.reasons)
+
+
+@pytest.mark.parametrize("scenario", ("missing_state", "outside_pool"))
+def test_core_denominator_does_not_silently_drop_missing_share_day_member(scenario):
+    _, evaluate_core, _ = _engine()
+    missing_day = SESSIONS[-5]
+    memberships = (
+        topic_membership(
+            security_id="A",
+            effective_from=SESSIONS[0],
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+        topic_membership(
+            security_id="B",
+            effective_from=missing_day,
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+    states = (
+        state(
+            security_id="A",
+            exchange="TEST",
+            effective_from=SESSIONS[0],
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+            listing_date=SESSIONS[0],
+        ),
+    )
+    pool_ids = ("A",)
+    if scenario == "missing_state":
+        states += (
+            state(
+                security_id="B",
+                exchange="TEST",
+                effective_from=SESSIONS[-4],
+                available_at=datetime(2026, 1, 1, tzinfo=UTC),
+                listing_date=SESSIONS[0],
+            ),
+        )
+        pool_ids = ("A", "B")
+
+    result = evaluate_core(
+        _context(
+            member_ids=("A", "B"),
+            pool_ids=pool_ids,
+            memberships=memberships,
+            states=states,
+        ),
+        "topic-a",
+    )
+
+    status = result.topic_status
+    assert status.status == "insufficient"
+    assert (
+        status.expected,
+        status.valid,
+        status.legal_excluded,
+        status.missing,
+    ) == (2, 0, 0, 2)
+    assert any(
+        "B" in reason and missing_day.isoformat() in reason
+        for reason in status.reasons
+    )
+    assert result.candidates == ()
 
 
 def test_core_is_insufficient_when_one_denominator_member_amount_is_missing():
