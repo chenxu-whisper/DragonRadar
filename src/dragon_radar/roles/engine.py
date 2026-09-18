@@ -518,6 +518,25 @@ def _state_eligibility(
     return "legal_excluded", f"{security_id}: insufficient listing history"
 
 
+def _staged_member_state_eligibility(
+    prepared: _PreparedContext,
+    security_id: str,
+    day: date,
+) -> tuple[Eligibility, str | None]:
+    security_state = prepared.state_on(security_id, day)
+    if (
+        security_state is not None
+        and security_state.exchange != prepared.context.market.calendar.exchange
+    ):
+        return "cross_exchange", f"{security_id}: cross_exchange"
+    return _state_eligibility(
+        prepared,
+        security_id,
+        day,
+        check_listing=False,
+    )
+
+
 def _classify_current_members(
     prepared: _PreparedContext,
 ) -> tuple[dict[str, Eligibility], list[str]]:
@@ -1217,11 +1236,10 @@ def _staged_window_failure(
     has_cross_exchange = False
     for day in sessions:
         for security_id in prepared.members_on(day):
-            day_classification, reason = _state_eligibility(
+            day_classification, reason = _staged_member_state_eligibility(
                 prepared,
                 security_id,
                 day,
-                check_listing=False,
             )
             if day_classification not in {"missing", "cross_exchange"}:
                 continue
@@ -1282,7 +1300,15 @@ def _topic_return_median(
     sessions: Sequence[date],
 ) -> Decimal | None:
     returns: list[Decimal] = []
-    for security_id in prepared.members_on(sessions[-1]):
+    for security_id in prepared.members_on(prepared.trade_date):
+        observation_classification, _ = _state_eligibility(
+            prepared,
+            security_id,
+            prepared.trade_date,
+            check_listing=True,
+        )
+        if observation_classification != "valid":
+            continue
         classification, _ = _continuous_window_eligibility(
             prepared,
             security_id,

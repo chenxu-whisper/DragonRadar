@@ -509,10 +509,18 @@ EXPECTED_COMMON_CONTRACT = {
         "comparison_unit": "each_sort_key_declared_raw_unit",
         "cross_unit_comparison": "forbidden",
         "unit_conversion": "forbidden",
+        "population": "all_computable_rows_in_one_global_ranking",
         "tie_definition": "identical_complete_evidence_tuple",
         "rank_method": "dense",
         "rank_start": 1,
         "security_id": "stable_display_order_within_tie_only",
+        "positive_status_gate": {
+            "statuses": ["candidate", "simplified_candidate"],
+            "requires": [
+                "candidate_conditions_met",
+                "global_first_tie_group",
+            ],
+        },
     },
 }
 
@@ -962,11 +970,11 @@ def test_canonical_allowed_result_statuses_match_role_models():
 def test_rule_definition_digests_are_locked_and_detect_behavior_drift():
     assert (
         ROLE_RULE_SHA256
-        == "9489dd59d8751969a8eece960e7f3573671233589e0a0f7b57500f76304770ec"
+        == "dfc0405105f273c8e7a7a398bfd7f8f67e84c69551a6f08971ab84a6afd13d9c"
     )
     assert (
         ROLE_TEST_RULE_SHA256
-        == "633d7d1c96018168088c85c87e263e221d7aa6fe0730bb47eb86636be35183ae"
+        == "0503f5d24b1a554dddd9ca7444b750440f5fe2041e82c5f7be361fe6de6b42ab"
     )
     validate_rule_definition("role-v1", canonical_rule_json("role-v1"))
     validate_rule_definition("role-test-v1", canonical_rule_json("role-test-v1"))

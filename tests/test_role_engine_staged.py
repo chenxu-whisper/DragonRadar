@@ -999,6 +999,76 @@ def test_staged_benchmarks_do_not_skip_ineligible_observation_member(
     assert result.candidates == ()
 
 
+def test_catchup_topic_benchmark_excludes_short_listing_member():
+    from dragon_radar.roles.engine import evaluate_catchup
+
+    members = ("A", "B", "C", "D", "E", "NEW")
+    long_sessions = _sessions(130)
+
+    def evaluate_with_new_prior_end(prior_end: str) -> RoleEvaluation:
+        prior_ends = {
+            "A": "100",
+            "B": "110",
+            "C": "120",
+            "D": "130",
+            "E": "140",
+            "NEW": prior_end,
+        }
+        prices = {
+            security_id: (
+                Decimal("100"),
+                *(Decimal(end),) * 20,
+                *(Decimal("120") if security_id == "A" else Decimal(end),) * 5,
+            )
+            for security_id, end in prior_ends.items()
+        }
+        context = _context(member_ids=members, prices=prices)
+        calendar = context.market.calendar.model_copy(
+            update={"sessions": long_sessions}
+        )
+        states = tuple(
+            security_state.model_copy(
+                update={
+                    "board_category": "sh_main",
+                    "effective_from": long_sessions[0],
+                    "listing_date": (
+                        long_sessions[-60]
+                        if security_state.security_id == "NEW"
+                        else long_sessions[0]
+                    ),
+                }
+            )
+            for security_state in context.market.security_states
+        )
+        return evaluate_catchup(
+            RoleContext(
+                market=context.market.model_copy(
+                    update={
+                        "calendar": calendar,
+                        "security_states": states,
+                    }
+                ),
+                topic=context.topic.model_copy(update={"calendar": calendar}),
+                rule_version="role-v1",
+            ),
+            "topic-a",
+        )
+
+    low_return = evaluate_with_new_prior_end("50")
+    high_return = evaluate_with_new_prior_end("600")
+
+    for result in (low_return, high_return):
+        assert (
+            result.topic_status.expected,
+            result.topic_status.valid,
+            result.topic_status.legal_excluded,
+            result.topic_status.missing,
+        ) == (6, 5, 1, 0)
+    low_a = next(row for row in low_return.candidates if row.security_id == "A")
+    high_a = next(row for row in high_return.candidates if row.security_id == "A")
+    assert low_a.factors[1] == high_a.factors[1] == Decimal("0.2")
+
+
 def test_catchup_ignores_ordinary_missing_for_historical_exited_member():
     from dragon_radar.roles.engine import evaluate_catchup
 
@@ -1047,6 +1117,70 @@ def test_catchup_ignores_ordinary_missing_for_historical_exited_member():
         result.topic_status.missing,
     ) == (3, 3, 0, 0)
     assert {row.security_id for row in result.candidates} == set(MEMBERS)
+
+
+@pytest.mark.parametrize("evaluate_name", ("evaluate_catchup", "evaluate_relay"))
+def test_staged_windows_reject_cross_exchange_exited_member_outside_pool(
+    evaluate_name,
+):
+    from dragon_radar.roles import engine
+
+    context = (
+        _catchup_context()
+        if evaluate_name == "evaluate_catchup"
+        else _relay_context()
+    )
+    d_state = state(
+        security_id="D",
+        effective_from=SESSIONS[0],
+        available_at=datetime(2026, 1, 1, tzinfo=UTC),
+        listing_date=SESSIONS[0],
+        exchange="OTHER",
+    )
+    d_membership = context.topic.memberships[0].model_copy(
+        update={
+            "security_id": "D",
+            "effective_from": SESSIONS[-26],
+            "effective_to": T,
+            "available_at": datetime(2026, 1, 1, tzinfo=UTC),
+        }
+    )
+    coverage_cells = tuple(
+        cell.model_copy(
+            update={
+                "expected_member_count": 4,
+                "received_member_count": 4,
+            }
+        )
+        if SESSIONS[-26] <= cell.trade_date < T
+        else cell
+        for cell in context.topic.coverage_cells
+    )
+    context = RoleContext(
+        market=context.market.model_copy(
+            update={
+                "security_states": (*context.market.security_states, d_state),
+            }
+        ),
+        topic=context.topic.model_copy(
+            update={
+                "memberships": (*context.topic.memberships, d_membership),
+                "coverage_cells": coverage_cells,
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+    evaluate = getattr(engine, evaluate_name)
+
+    result = (
+        evaluate(context, "topic-a", _predecessor(context))
+        if evaluate_name == "evaluate_relay"
+        else evaluate(context, "topic-a")
+    )
+
+    assert result.topic_status.status == "insufficient"
+    assert "D: cross_exchange" in result.topic_status.reasons
+    assert result.candidates == ()
 
 
 @pytest.mark.parametrize("evaluate_name", ("evaluate_catchup", "evaluate_relay"))
