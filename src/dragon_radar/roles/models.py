@@ -1,6 +1,7 @@
 """Immutable contracts for deterministic role evaluation."""
 
 from collections.abc import Mapping
+from datetime import date
 from types import MappingProxyType
 from typing import Literal, Self
 
@@ -216,4 +217,152 @@ class RoleEvaluation(_StrictFrozenRoleModel):
             raise ValueError(
                 "successful role evaluation must contain matching positive output"
             )
+        return self
+
+
+class LimitRow(_StrictFrozenRoleModel):
+    """One materialized security row in a topic's daily limit ladder."""
+
+    trade_date: date
+    topic_id: Identifier
+    security_id: Identifier
+    closing_limit_streak: int | None = Field(default=None, ge=0)
+    limit_hits_10: int | None = Field(default=None, ge=0, le=10)
+    broken_board: bool | None
+    touched_not_sealed: bool | None
+    reasons: tuple[str, ...] = ()
+
+
+class RoleChange(_StrictFrozenRoleModel):
+    """One role assignment comparison against the selected comparable run."""
+
+    current_run_id: Identifier
+    previous_comparable_run_id: Identifier | None
+    topic_id: Identifier
+    security_id: Identifier
+    role: RoleName
+    comparison_status: Literal["comparable", "not_comparable"]
+    change_type: Literal["added", "exited", "tie_changed", "unchanged"] | None
+    membership_changed: bool
+    reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_comparison_result(self) -> Self:
+        if self.comparison_status == "not_comparable" and self.change_type is not None:
+            raise ValueError("not_comparable change_type must be None")
+        if self.comparison_status == "comparable" and self.change_type is None:
+            raise ValueError("comparable change_type is required")
+        return self
+
+
+class RoleValidation(_StrictFrozenRoleModel):
+    """Immutable post-window validation of one pending relay result."""
+
+    pending_result_id: Identifier
+    observation_run_id: Identifier
+    topic_id: Identifier
+    outcome: Literal["supported", "weakened", "refuted", "unavailable"]
+    window_start: date
+    window_end: date
+    return_start: date
+    return_end: date
+    old_security_id: Identifier
+    new_security_id: Identifier
+    old_return_raw: ExactDecimal | None = None
+    new_return_raw: ExactDecimal | None = None
+    topic_median_raw: ExactDecimal | None = None
+    input_run_ids: tuple[Identifier, ...]
+    reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_window_and_values(self) -> Self:
+        if not (
+            self.return_start < self.window_start <= self.window_end
+            and self.return_end == self.window_end
+        ):
+            raise ValueError("validation endpoints must describe T and T+1..T+5")
+        values = (
+            self.old_return_raw,
+            self.new_return_raw,
+            self.topic_median_raw,
+        )
+        if self.outcome != "unavailable" and any(value is None for value in values):
+            raise ValueError("available validation outcomes require all raw returns")
+        if self.outcome != "unavailable" and len(self.input_run_ids) != 5:
+            raise ValueError("relay validation requires five input run IDs")
+        return self
+
+
+class RoleRunEvidence(_StrictFrozenRoleModel):
+    """In-memory role run projection used by history and validation logic."""
+
+    role_run_id: Identifier
+    previous_comparable_run_id: Identifier | None = None
+    context: RoleContext
+    topic_id: Identifier
+    visibility_mode: Literal["contemporaneous", "retrospective"]
+    market_benchmark_definition: Identifier
+    topic_source_id: Identifier
+    topic_source_version: Identifier
+    taxonomy_version: Identifier
+    membership_version: Identifier
+    member_ids: tuple[Identifier, ...]
+    evaluations: tuple[RoleEvaluation, ...] = ()
+    active_run_count: Literal[1] = 1
+
+    @property
+    def trade_date(self) -> date:
+        return self.context.market.trade_date
+
+    @property
+    def rule_version(self) -> Literal["role-v1", "role-test-v1"]:
+        return self.context.rule_version
+
+    @model_validator(mode="after")
+    def validate_run_identity(self) -> Self:
+        if len(set(self.member_ids)) != len(self.member_ids):
+            raise ValueError("member_ids must not contain duplicates")
+        for evaluation in self.evaluations:
+            if evaluation.topic_status.topic_id != self.topic_id:
+                raise ValueError("evaluation topic_id must match run topic_id")
+        return self
+
+
+class PendingRelayValidation(_StrictFrozenRoleModel):
+    """The observation-time identity and fixed denominator for relay validation."""
+
+    pending_result_id: Identifier
+    observation_run_id: Identifier
+    observation_date: date
+    topic_id: Identifier
+    old_security_id: Identifier
+    new_security_id: Identifier
+    baseline_member_ids: tuple[Identifier, ...]
+    rule_version: Literal["role-v1", "role-test-v1"]
+    visibility_mode: Literal["contemporaneous", "retrospective"]
+    market_benchmark_definition: Identifier
+    topic_source_id: Identifier
+    topic_source_version: Identifier
+    taxonomy_version: Identifier
+    exchange: Identifier
+    calendar_version: Identifier
+    current_validation: RoleValidation | None = None
+
+    @model_validator(mode="after")
+    def validate_pending_identity(self) -> Self:
+        if len(set(self.baseline_member_ids)) != len(self.baseline_member_ids):
+            raise ValueError("baseline_member_ids must not contain duplicates")
+        if not self.baseline_member_ids:
+            raise ValueError("baseline_member_ids must not be empty")
+        if self.old_security_id == self.new_security_id:
+            raise ValueError("old and new security IDs must differ")
+        if not {
+            self.old_security_id,
+            self.new_security_id,
+        }.issubset(self.baseline_member_ids):
+            raise ValueError("old and new security IDs must be baseline members")
+        if self.current_validation is not None and (
+            self.current_validation.pending_result_id != self.pending_result_id
+        ):
+            raise ValueError("current_validation must belong to pending_result_id")
         return self
