@@ -899,6 +899,59 @@ def test_staged_topic_benchmarks_reject_missing_fixed_member(
     assert result.candidates == ()
 
 
+def test_catchup_preserves_current_exclusion_when_membership_window_is_incomplete():
+    from dragon_radar.roles.engine import evaluate_catchup
+
+    context = _catchup_context()
+    states = tuple(
+        security_state.model_copy(update={"suspended": True})
+        if security_state.security_id == "C"
+        else security_state
+        for security_state in context.market.security_states
+    )
+    memberships = tuple(
+        membership.model_copy(update={"effective_from": SESSIONS[-3]})
+        if membership.security_id == "C"
+        else membership
+        for membership in context.topic.memberships
+    )
+    coverage_cells = tuple(
+        cell.model_copy(
+            update={
+                "expected_member_count": 2,
+                "received_member_count": 2,
+            }
+        )
+        if cell.trade_date < SESSIONS[-3]
+        else cell
+        for cell in context.topic.coverage_cells
+    )
+    context = RoleContext(
+        market=context.market.model_copy(update={"security_states": states}),
+        topic=context.topic.model_copy(
+            update={
+                "memberships": memberships,
+                "coverage_cells": coverage_cells,
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+
+    result = evaluate_catchup(context, "topic-a")
+
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (3, 2, 1, 0)
+    assert result.topic_status.status == "insufficient"
+    assert "C: membership is not continuous for 26 sessions" in (
+        result.topic_status.reasons
+    )
+    assert result.candidates == ()
+
+
 @pytest.mark.parametrize("evaluate_name", ("evaluate_catchup", "evaluate_relay"))
 @pytest.mark.parametrize(
     ("scenario", "expected_legal_excluded", "expected_missing"),

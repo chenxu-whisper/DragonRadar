@@ -1229,7 +1229,10 @@ def _staged_window_failure(
             has_cross_exchange = (
                 has_cross_exchange or day_classification == "cross_exchange"
             )
-            if security_id in classifications:
+            if (
+                security_id in classifications
+                and classifications[security_id] == "valid"
+            ):
                 classifications[security_id] = day_classification
             if reason is not None:
                 reasons.append(reason)
@@ -1244,7 +1247,8 @@ def _staged_window_failure(
         if window_classification == "valid":
             continue
         window_incomplete = True
-        classifications[security_id] = window_classification
+        if classifications[security_id] == "valid":
+            classifications[security_id] = window_classification
         has_cross_exchange = (
             has_cross_exchange or window_classification == "cross_exchange"
         )
