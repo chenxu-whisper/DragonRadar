@@ -1124,6 +1124,21 @@ def test_compare_runs_records_current_declared_predecessor_on_mismatch():
     assert change.reasons == ("previous_comparable_run_mismatch",)
 
 
+@pytest.mark.parametrize("previous_id", (None, "current"))
+def test_role_change_requires_distinct_previous_run_when_comparable(previous_id):
+    with pytest.raises(ValidationError, match="previous_comparable_run_id"):
+        RoleChange(
+            current_run_id="current",
+            previous_comparable_run_id=previous_id,
+            topic_id=TOPIC,
+            security_id="A",
+            role="trend",
+            comparison_status="comparable",
+            change_type="unchanged",
+            membership_changed=False,
+        )
+
+
 def test_role_change_rejects_not_comparable_without_reasons():
     with pytest.raises(ValidationError, match="reasons"):
         RoleChange(

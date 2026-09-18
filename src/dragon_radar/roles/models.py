@@ -276,6 +276,18 @@ class RoleChange(_StrictFrozenRoleModel):
 
     @model_validator(mode="after")
     def validate_comparison_result(self) -> Self:
+        if (
+            self.comparison_status == "comparable"
+            and self.previous_comparable_run_id is None
+        ):
+            raise ValueError("comparable previous_comparable_run_id is required")
+        if (
+            self.comparison_status == "comparable"
+            and self.previous_comparable_run_id == self.current_run_id
+        ):
+            raise ValueError(
+                "comparable previous_comparable_run_id must differ from current_run_id"
+            )
         if self.comparison_status == "not_comparable" and self.change_type is not None:
             raise ValueError("not_comparable change_type must be None")
         if self.comparison_status == "not_comparable" and not self.reasons:
