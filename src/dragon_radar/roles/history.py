@@ -617,8 +617,21 @@ def validate_relay(
     )
     if not strict_future:
         return ()
+    maturity_runs = tuple(
+        run
+        for run in strict_future
+        if run.context.market.calendar.exchange == pending.exchange
+        and run.context.topic.exchange == pending.exchange
+        and run.context.market.calendar_version == pending.calendar_version
+        and run.context.topic.calendar_version == pending.calendar_version
+        and run.trade_date in run.context.market.calendar.sessions
+        and run.trade_date in run.context.topic.calendar.sessions
+    )
     validation_sessions = pending.validation_sessions
-    if max(run.trade_date for run in strict_future) < validation_sessions[-1]:
+    if (
+        not maturity_runs
+        or max(run.trade_date for run in maturity_runs) < validation_sessions[-1]
+    ):
         return ()
     ordered = tuple(run for run in strict_future if run.topic_id == pending.topic_id)
 

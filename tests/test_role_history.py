@@ -2132,6 +2132,36 @@ def test_validate_relay_uses_all_topics_for_maturity_clock():
     assert validation.reasons == ("window_incomplete",)
 
 
+def test_validate_relay_foreign_exchange_does_not_advance_maturity_clock():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    maturity_run = runs[-1]
+    foreign_context = _context(
+        trade_date=maturity_run.trade_date,
+        sessions=FUTURE_SESSIONS,
+        topic_id="topic-b",
+        member_ids=maturity_run.member_ids,
+        bars=maturity_run.context.market.bars,
+        states=tuple(
+            security_state.model_copy(update={"exchange": "OTHER"})
+            for security_state in maturity_run.context.market.security_states
+        ),
+        expected_security_ids=maturity_run.context.market.expected_security_ids,
+        exchange="OTHER",
+    )
+    foreign_run = _run(
+        "foreign-exchange-t5",
+        foreign_context,
+        topic_id="topic-b",
+        member_ids=maturity_run.member_ids,
+    )
+
+    assert validate_relay(pending, (*runs[:-1], foreign_run)) == ()
+
+
 @pytest.mark.parametrize("failure", ("suspended", "missing_price"))
 def test_validate_relay_does_not_silently_remove_benchmark_member(failure):
     pending, runs = _validation_fixture(
