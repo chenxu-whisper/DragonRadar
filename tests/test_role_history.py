@@ -1695,6 +1695,8 @@ def test_pending_relay_rejects_caller_forging_observation_adjusted_price():
 
     assert validation.outcome == "unavailable"
     assert "NEW: observation_adjusted_price_mismatch" in validation.reasons
+    assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))
+    assert pending.observation_run_id not in validation.input_run_ids
 
 
 def test_pending_relay_requires_five_strict_future_validation_sessions():
@@ -2147,10 +2149,7 @@ def test_validate_relay_rejects_changed_frozen_market_identity(
     )[0]
 
     assert validation.outcome == "unavailable"
-    if market_field == "source_id":
-        assert validation.reasons == ("authorization_unavailable",)
-    else:
-        assert validation.reasons == ("topic_incomparable", expected_reason)
+    assert validation.reasons == ("topic_incomparable", expected_reason)
 
 
 @pytest.mark.parametrize(
@@ -2295,6 +2294,60 @@ def test_pending_relay_rejects_duplicate_validation_input_run_ids():
 
     with pytest.raises(ValidationError, match="input_run_ids"):
         RoleValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "input_run_ids",
+    (
+        tuple(f"run-t{i}" for i in range(1, 5)),
+        tuple(f"run-t{i}" for i in range(1, 7)),
+    ),
+)
+def test_role_validation_unavailable_requires_exactly_five_input_runs(
+    input_run_ids,
+):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = validate_relay(pending, runs)[0].model_dump()
+    values.update(
+        outcome="unavailable",
+        old_return_raw=None,
+        new_return_raw=None,
+        topic_median_raw=None,
+        input_run_ids=input_run_ids,
+        reasons=("proof_unavailable",),
+    )
+
+    with pytest.raises(ValidationError, match="five input run IDs"):
+        RoleValidation.model_validate(values)
+
+
+def test_pending_relay_rejects_unavailable_validation_using_observation_run_id():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    validation_values = validate_relay(pending, runs)[0].model_dump()
+    validation_values.update(
+        outcome="unavailable",
+        old_return_raw=None,
+        new_return_raw=None,
+        topic_median_raw=None,
+        input_run_ids=(
+            pending.observation_run_id,
+            *(run.role_run_id for run in runs[:4]),
+        ),
+        reasons=("proof_unavailable",),
+    )
+    values = pending.model_dump()
+    values["current_validation"] = validation_values
+
+    with pytest.raises(ValidationError, match="current_validation"):
+        PendingRelayValidation.model_validate(values)
 
 
 def test_role_validation_rejects_zero_length_window():
@@ -2597,6 +2650,57 @@ def test_validate_relay_available_replay_requires_all_five_future_runs():
     assert validation.reasons == ("authorization_unavailable",)
 
 
+def test_validate_relay_replay_rejects_duplicate_supplied_run_ids():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    existing = validate_relay(pending, runs)[0]
+    persisted = pending.model_copy(update={"current_validation": existing})
+    duplicate = runs[0].model_copy()
+
+    with pytest.raises(ValueError, match="duplicate future run ID"):
+        validate_relay(persisted, (*runs, duplicate))
+
+
+@pytest.mark.parametrize("substitution", ("swapped_dates", "frozen_identity"))
+def test_validate_relay_replay_never_returns_supported_for_substituted_chain(
+    substitution,
+):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    existing = validate_relay(pending, runs)[0]
+    persisted = pending.model_copy(update={"current_validation": existing})
+    if substitution == "swapped_dates":
+        supplied = (
+            runs[0].model_copy(update={"role_run_id": runs[1].role_run_id}),
+            runs[1].model_copy(update={"role_run_id": runs[0].role_run_id}),
+            *runs[2:],
+        )
+    else:
+        target = runs[2]
+        changed_context = RoleContext(
+            market=target.context.market,
+            topic=target.context.topic.model_copy(update={"membership_version": "m2"}),
+            rule_version=target.context.rule_version,
+        )
+        substituted = _run(
+            target.role_run_id,
+            changed_context,
+            member_ids=target.member_ids,
+        )
+        supplied = (*runs[:2], substituted, *runs[3:])
+
+    validation = validate_relay(persisted, supplied)[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.input_run_ids == existing.input_run_ids
+
+
 @pytest.mark.parametrize(
     ("new_end", "old_end", "member_ends", "outcome"),
     [
@@ -2702,6 +2806,8 @@ def test_validate_relay_rejects_duplicate_same_topic_active_run_on_same_day():
 
     assert validation.outcome == "unavailable"
     assert validation.reasons == ("multiple_active_topic_runs",)
+    assert len(validation.input_run_ids) == 5
+    assert len(set(validation.input_run_ids)) == 5
 
 
 def test_validate_relay_ignores_extra_retrospective_run_on_same_day():
@@ -2729,7 +2835,7 @@ def test_validate_relay_ignores_extra_retrospective_run_on_same_day():
     assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))
 
 
-def test_validate_relay_returns_unavailable_for_duplicate_selected_run_ids():
+def test_validate_relay_rejects_duplicate_selected_run_ids():
     pending, runs = _validation_fixture(
         new_end="130",
         old_end="110",
@@ -2739,10 +2845,8 @@ def test_validate_relay_returns_unavailable_for_duplicate_selected_run_ids():
         run.model_copy(update={"role_run_id": "duplicate-run-id"}) for run in runs
     )
 
-    validation = validate_relay(pending, duplicate_ids)[0]
-
-    assert validation.outcome == "unavailable"
-    assert validation.reasons == ("duplicate_input_run_id",)
+    with pytest.raises(ValueError, match="duplicate_input_run_id"):
+        validate_relay(pending, duplicate_ids)
 
 
 def test_validate_relay_ignores_late_corrected_t_bar_in_future_snapshot():
@@ -2996,7 +3100,7 @@ def test_validate_relay_does_not_materialize_observation_mismatch_before_maturit
     assert validate_relay(mismatched, runs[:-1]) == ()
 
 
-def test_validate_relay_uses_all_topics_for_maturity_clock():
+def test_validate_relay_other_topic_does_not_complete_validation_chain():
     pending, runs = _validation_fixture(
         new_end="130",
         old_end="110",
@@ -3019,10 +3123,7 @@ def test_validate_relay_uses_all_topics_for_maturity_clock():
         member_ids=maturity_run.member_ids,
     )
 
-    validation = validate_relay(pending, (*runs[:-1], other_topic))[0]
-
-    assert validation.outcome == "unavailable"
-    assert validation.reasons == ("window_incomplete",)
+    assert validate_relay(pending, (*runs[:-1], other_topic)) == ()
 
 
 def test_validate_relay_foreign_exchange_does_not_advance_maturity_clock():
@@ -3369,6 +3470,59 @@ def test_validate_relay_authorization_revocation_makes_validation_unavailable():
 
     assert validation.outcome == "unavailable"
     assert validation.reasons == ("authorization_unavailable",)
+
+
+def test_validate_relay_ignores_revoked_unrelated_runs_for_authorization():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    other_topic_context = _context(
+        trade_date=target.trade_date,
+        sessions=FUTURE_SESSIONS,
+        topic_id="topic-b",
+        member_ids=target.member_ids,
+        bars=target.context.market.bars,
+        states=target.context.market.security_states,
+        expected_security_ids=target.context.market.expected_security_ids,
+    )
+    other_topic = _run(
+        "revoked-other-topic",
+        other_topic_context,
+        topic_id="topic-b",
+        member_ids=target.member_ids,
+    )
+    retrospective_context = RoleContext(
+        market=target.context.market.model_copy(update={"provenance": "retrospective"}),
+        topic=target.context.topic,
+        rule_version=target.rule_version,
+    )
+    retrospective = _run(
+        "revoked-retrospective",
+        retrospective_context,
+        member_ids=target.member_ids,
+        visibility_mode="retrospective",
+    )
+    other_date = pending.observation_run.model_copy(
+        update={"role_run_id": "revoked-other-date"}
+    )
+
+    for unrelated in (other_topic, retrospective, other_date):
+        revoked_context = unrelated.context.model_copy(
+            update={
+                "market": unrelated.context.market.model_copy(
+                    update={"grant": grant(approved=False)}
+                )
+            }
+        )
+        revoked = unrelated.model_copy(update={"context": revoked_context})
+
+        validation = validate_relay(pending, (*runs, revoked))[0]
+
+        assert validation.outcome == "supported"
+        assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))
 
 
 def test_validate_relay_rechecks_early_run_grant_at_validation_time():

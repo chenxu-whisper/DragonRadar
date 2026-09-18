@@ -429,9 +429,15 @@ def _unavailable_validation(
     pending: PendingRelayValidation,
     *,
     sessions: Sequence[date],
-    runs: Sequence[RoleRunEvidence],
+    runs: Sequence[RoleRunEvidence] = (),
+    input_run_ids: Sequence[str] | None = None,
     reasons: Sequence[str],
 ) -> tuple[RoleValidation, ...]:
+    bound_input_run_ids = (
+        tuple(input_run_ids)
+        if input_run_ids is not None
+        else tuple(dict.fromkeys(run.role_run_id for run in runs))
+    )
     return (
         RoleValidation(
             pending_result_id=pending.pending_result_id,
@@ -444,7 +450,7 @@ def _unavailable_validation(
             return_end=sessions[-1],
             old_security_id=pending.old_security_id,
             new_security_id=pending.new_security_id,
-            input_run_ids=tuple(dict.fromkeys(run.role_run_id for run in runs)),
+            input_run_ids=bound_input_run_ids,
             reasons=tuple(dict.fromkeys(reasons)),
         ),
     )
@@ -758,13 +764,27 @@ def validate_relay(
     """Validate a mature pending relay against fixed daily-visible run inputs."""
     pending = PendingRelayValidation.model_validate(pending.model_dump())
     if pending.current_validation is not None:
-        input_run_ids = frozenset(pending.current_validation.input_run_ids)
-        if pending.current_validation.outcome == "unavailable":
-            input_run_ids -= {pending.observation_run_id}
+        input_run_ids = pending.current_validation.input_run_ids
+        future_runs_by_id: dict[str, RoleRunEvidence] = {}
+        for run in future_runs:
+            if run.role_run_id in future_runs_by_id:
+                raise ValueError("duplicate future run ID")
+            future_runs_by_id[run.role_run_id] = run
+        referenced_runs = {
+            run_id: run
+            for run_id, run in future_runs_by_id.items()
+            if run_id in input_run_ids
+        }
+        if set(referenced_runs) != set(input_run_ids):
+            return _unavailable_validation(
+                pending,
+                sessions=pending.validation_sessions,
+                input_run_ids=input_run_ids,
+                reasons=("authorization_unavailable",),
+            )
         current_window_runs = tuple(
-            RoleRunEvidence.model_validate(run.model_dump())
-            for run in future_runs
-            if run.role_run_id in input_run_ids
+            RoleRunEvidence.model_validate(referenced_runs[run_id].model_dump())
+            for run_id in input_run_ids
         )
         if any(
             run.verification_status != "passed"
@@ -773,16 +793,34 @@ def validate_relay(
             for run in current_window_runs
         ):
             raise ValueError("relay validation runs must be passed and active")
-        if len(current_window_runs) != len(input_run_ids) or not (
-            _authorization_available(
-                pending,
+        binding_reasons = tuple(
+            reason
+            for session, run in zip(
+                pending.validation_sessions,
                 current_window_runs,
+                strict=True,
             )
+            for reason in (
+                ("validation_session_mismatch",)
+                if run.trade_date != session
+                else _run_identity_reasons(pending, run)
+            )
+        )
+        if binding_reasons:
+            return _unavailable_validation(
+                pending,
+                sessions=pending.validation_sessions,
+                input_run_ids=input_run_ids,
+                reasons=("validation_input_mismatch", *binding_reasons),
+            )
+        if not _authorization_available(
+            pending,
+            current_window_runs,
         ):
             return _unavailable_validation(
                 pending,
                 sessions=pending.validation_sessions,
-                runs=current_window_runs,
+                input_run_ids=input_run_ids,
                 reasons=("authorization_unavailable",),
             )
         observation_reasons = _observation_proof_reasons(pending)
@@ -790,7 +828,7 @@ def validate_relay(
             return _unavailable_validation(
                 pending,
                 sessions=pending.validation_sessions,
-                runs=(pending.observation_run,),
+                input_run_ids=input_run_ids,
                 reasons=observation_reasons,
             )
         return (pending.current_validation,)
@@ -830,21 +868,6 @@ def validate_relay(
         or max(run.trade_date for run in maturity_runs) < validation_sessions[-1]
     ):
         return ()
-    if not _authorization_available(pending, future_runs):
-        return _unavailable_validation(
-            pending,
-            sessions=validation_sessions,
-            runs=future_runs,
-            reasons=("authorization_unavailable",),
-        )
-    observation_reasons = _observation_proof_reasons(pending)
-    if observation_reasons:
-        return _unavailable_validation(
-            pending,
-            sessions=validation_sessions,
-            runs=(pending.observation_run,),
-            reasons=observation_reasons,
-        )
     ordered = tuple(
         run
         for run in strict_future
@@ -864,50 +887,61 @@ def validate_relay(
                 )
             else:
                 by_day.setdefault(run.trade_date, []).append(run)
-    window_runs = tuple(
-        run for day in validation_sessions for run in by_day.get(day, ())
+    selected = tuple(
+        runs[0] for day in validation_sessions if (runs := by_day.get(day, []))
     )
     if any(len(by_day.get(day, ())) > 1 for day in validation_sessions):
-        return _unavailable_validation(
-            pending,
-            sessions=validation_sessions,
-            runs=window_runs,
-            reasons=("multiple_active_topic_runs",),
-        )
-    selected = tuple(
-        runs[0] for day in validation_sessions if len(runs := by_day.get(day, [])) == 1
-    )
-    if len(selected) != 5:
-        missing_day_drift = tuple(
-            item
-            for day in validation_sessions
-            if not by_day.get(day)
-            for item in drift_by_day.get(day, ())
-        )
-        if missing_day_drift:
-            drift_runs = tuple(run for run, _ in missing_day_drift)
-            identity_reasons = tuple(
-                reason for _, reasons in missing_day_drift for reason in reasons
-            )
-            return _unavailable_validation(
-                pending,
-                sessions=validation_sessions,
-                runs=(*selected, *drift_runs),
-                reasons=("topic_incomparable", *identity_reasons),
-            )
+        if len(selected) != 5:
+            return ()
+        if len({run.role_run_id for run in selected}) != 5:
+            raise ValueError("duplicate_input_run_id")
         return _unavailable_validation(
             pending,
             sessions=validation_sessions,
             runs=selected,
-            reasons=("window_incomplete",),
+            reasons=("multiple_active_topic_runs",),
+        )
+    if len(selected) != 5:
+        bound_runs: list[RoleRunEvidence] = []
+        identity_reasons: list[str] = []
+        for day in validation_sessions:
+            matching = by_day.get(day, ())
+            drift = drift_by_day.get(day, ())
+            if matching:
+                bound_runs.append(matching[0])
+            elif len(drift) == 1:
+                run, reasons = drift[0]
+                bound_runs.append(run)
+                identity_reasons.extend(reasons)
+            else:
+                return ()
+        selected = tuple(bound_runs)
+        if len({run.role_run_id for run in selected}) != 5:
+            raise ValueError("duplicate_input_run_id")
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=selected,
+            reasons=("topic_incomparable", *identity_reasons),
         )
 
     if len({run.role_run_id for run in selected}) != len(selected):
+        raise ValueError("duplicate_input_run_id")
+
+    if not _authorization_available(pending, selected):
         return _unavailable_validation(
             pending,
             sessions=validation_sessions,
             runs=selected,
-            reasons=("duplicate_input_run_id",),
+            reasons=("authorization_unavailable",),
+        )
+    observation_reasons = _observation_proof_reasons(pending)
+    if observation_reasons:
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=selected,
+            reasons=observation_reasons,
         )
 
     observation_members = frozenset(pending.observation_member_ids)

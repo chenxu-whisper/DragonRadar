@@ -344,7 +344,7 @@ class RoleValidation(_StrictFrozenRoleModel):
                 )
         elif any(value is None for value in values):
             raise ValueError("available validation outcomes require all raw returns")
-        if self.outcome != "unavailable" and len(self.input_run_ids) != 5:
+        if len(self.input_run_ids) != 5:
             raise ValueError("relay validation requires five input run IDs")
         if self.outcome != "unavailable":
             outcome_reasons = tuple(
@@ -849,7 +849,7 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             validation = RoleValidation.model_validate(
                 self.current_validation.model_dump()
             )
-            if validation.outcome != "unavailable" and (
+            if (
                 len(validation.input_run_ids) != 5
                 or self.observation_run_id in validation.input_run_ids
             ):
