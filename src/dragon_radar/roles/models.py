@@ -323,14 +323,11 @@ class RoleValidation(_StrictFrozenRoleModel):
         if self.outcome == "unavailable":
             if any(value is not None for value in values):
                 raise ValueError("unavailable validation requires all raw returns null")
-            successful_reasons = {
-                "outcome:supported",
-                "outcome:weakened",
-                "outcome:refuted",
-            }
-            if not self.reasons or successful_reasons.intersection(self.reasons):
+            if not self.reasons or any(
+                reason.startswith("outcome:") for reason in self.reasons
+            ):
                 raise ValueError(
-                    "unavailable validation requires non-success failure reasons"
+                    "unavailable validation requires specific failure reasons"
                 )
         elif any(value is None for value in values):
             raise ValueError("available validation outcomes require all raw returns")

@@ -327,6 +327,29 @@ def test_limit_ladder_revalidates_role_context_before_use():
         build_limit_ladder(forged, TOPIC)
 
 
+def test_limit_ladder_returns_unavailable_rows_for_off_calendar_trade_date():
+    off_calendar_day = T + timedelta(days=1)
+    context = _context(
+        trade_date=off_calendar_day,
+        member_ids=("A", "B"),
+    )
+
+    rows = build_limit_ladder(context, TOPIC)
+
+    assert tuple(row.security_id for row in rows) == ("A", "B")
+    assert all(
+        (
+            row.closing_limit_streak,
+            row.limit_hits_10,
+            row.broken_board,
+            row.touched_not_sealed,
+            row.reasons,
+        )
+        == (None, None, None, None, ("trade_date_not_in_calendar_sessions",))
+        for row in rows
+    )
+
+
 @pytest.mark.parametrize(
     ("mismatch", "expected_reason"),
     (
@@ -1886,6 +1909,8 @@ def test_role_validation_allows_one_matching_outcome_reason_with_other_details()
         ("outcome:supported",),
         ("outcome:weakened",),
         ("outcome:refuted",),
+        ("outcome:unavailable",),
+        ("outcome:forged",),
     ),
 )
 def test_role_validation_rejects_unavailable_without_failure_reason(reasons):
@@ -2574,7 +2599,7 @@ def test_validate_relay_rejects_membership_version_change_with_same_members():
     )
 
 
-def test_validate_relay_uses_frozen_window_when_future_calendar_adds_session():
+def test_validate_relay_rejects_future_calendar_sessions_changed():
     pending, runs = _validation_fixture(
         new_end="130",
         old_end="110",
@@ -2601,10 +2626,45 @@ def test_validate_relay_uses_frozen_window_when_future_calendar_adds_session():
 
     validation = validate_relay(pending, (changed_first, *runs[1:]))[0]
 
-    assert validation.outcome == "supported"
+    assert validation.outcome == "unavailable"
     assert validation.window_start == pending.validation_sessions[0]
     assert validation.window_end == pending.validation_sessions[-1]
     assert validation.return_end == pending.validation_sessions[-1]
+    assert validation.reasons == (
+        "topic_incomparable",
+        "calendar_sessions_changed",
+    )
+
+
+def test_validate_relay_changed_calendar_does_not_advance_maturity():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    maturity_run = runs[-1]
+    changed_sessions = tuple(
+        sorted((*maturity_run.context.market.calendar.sessions, date(2026, 9, 16)))
+    )
+    changed_calendar = maturity_run.context.market.calendar.model_copy(
+        update={"sessions": changed_sessions}
+    )
+    changed_context = RoleContext(
+        market=maturity_run.context.market.model_copy(
+            update={"calendar": changed_calendar}
+        ),
+        topic=maturity_run.context.topic.model_copy(
+            update={"calendar": changed_calendar}
+        ),
+        rule_version=maturity_run.context.rule_version,
+    )
+    changed_maturity_run = _run(
+        maturity_run.role_run_id,
+        changed_context,
+        member_ids=maturity_run.member_ids,
+    )
+
+    assert validate_relay(pending, (*runs[:-1], changed_maturity_run)) == ()
 
 
 def test_validate_relay_requires_run_calendar_to_contain_its_trade_date():

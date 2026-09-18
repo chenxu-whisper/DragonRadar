@@ -102,7 +102,15 @@ def build_limit_ladder(
     """Build one conservative limit-ladder row per current topic member."""
     context = RoleContext.model_validate(context.model_dump())
     prepared = _PreparedContext.build(context, topic_id)
-    global_reasons = _global_reasons(prepared)
+    global_reasons = (
+        *_global_reasons(prepared),
+        *(
+            ("trade_date_not_in_calendar_sessions",)
+            if context.market.trade_date not in context.market.calendar.sessions
+            or context.topic.trade_date not in context.topic.calendar.sessions
+            else ()
+        ),
+    )
     if global_reasons:
         return tuple(
             LimitRow(
@@ -568,7 +576,8 @@ def _run_identity_reasons(
             "calendar_version_changed",
         ),
         (
-            run.context.market.calendar.sessions == run.context.topic.calendar.sessions
+            run.context.market.calendar.sessions == pending.calendar_sessions
+            and run.context.topic.calendar.sessions == pending.calendar_sessions
             and run.trade_date in run.context.market.calendar.sessions,
             "calendar_sessions_changed",
         ),
@@ -602,6 +611,8 @@ def validate_relay(
         and run.context.topic.exchange == pending.exchange
         and run.context.market.calendar_version == pending.calendar_version
         and run.context.topic.calendar_version == pending.calendar_version
+        and run.context.market.calendar.sessions == pending.calendar_sessions
+        and run.context.topic.calendar.sessions == pending.calendar_sessions
         and run.trade_date in run.context.market.calendar.sessions
         and run.trade_date in run.context.topic.calendar.sessions
     )
