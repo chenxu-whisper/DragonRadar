@@ -184,10 +184,12 @@ def _predecessor(context: RoleContext, **changes):
     from dragon_radar.roles.engine import RelayPredecessorRun
 
     values = {
+        "role_run_id": "role-run-previous",
+        "activation_event_id": "activation-previous",
         "trade_date": SESSIONS[-2],
         "active_run_count": 1,
         "rule_version": context.rule_version,
-        "visibility_mode": "local_display",
+        "visibility_mode": "contemporaneous",
         "market_benchmark_definition": RULE_DEFINITIONS[context.rule_version]["roles"][
             "trend"
         ]["required_inputs"]["market_benchmark"]["definition"],
@@ -232,7 +234,7 @@ def role_scenario():
             ).topic_status
         if scenario == "incomparable_predecessor":
             context = _relay_context()
-            predecessor = _predecessor(context, visibility_mode="export")
+            predecessor = _predecessor(context, visibility_mode="retrospective")
             return evaluate_relay(context, "topic-a", predecessor).topic_status
         raise AssertionError(f"unknown scenario: {scenario}")
 
@@ -297,6 +299,38 @@ def _relay_context() -> RoleContext:
     return _context(pool_ids=(*MEMBERS, "M1", "M2"), prices=prices)
 
 
+def _with_historical_cross_exchange(
+    context: RoleContext,
+    *,
+    security_id: str = "C",
+) -> RoleContext:
+    original = next(
+        security_state
+        for security_state in context.market.security_states
+        if security_state.security_id == security_id
+    )
+    states = tuple(
+        security_state
+        for security_state in context.market.security_states
+        if security_state.security_id != security_id
+    )
+    return RoleContext(
+        market=context.market.model_copy(
+            update={
+                "security_states": (
+                    *states,
+                    original.model_copy(
+                        update={"exchange": "OTHER", "effective_to": T}
+                    ),
+                    original.model_copy(update={"effective_from": T}),
+                )
+            }
+        ),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+
+
 def test_emotion_uses_exact_limit_streak_relative5_and_daily_share():
     from dragon_radar.roles.engine import evaluate_emotion
 
@@ -336,10 +370,12 @@ def test_emotion_uses_exact_limit_streak_relative5_and_daily_share():
         Decimal("0.1"),
         Decimal("0.6"),
     )
-    assert "daily_simplified_candidate_only" in candidate.reasons
-    assert not any(
-        claim in " ".join(candidate.reasons)
-        for claim in ("first_seal", "reseal", "order_quality")
+    assert candidate.reasons == (
+        "candidate_conditions_met",
+        "daily_simplified_candidate_only",
+        "first_limit_time_unavailable",
+        "open_reseal_evidence_unavailable",
+        "seal_order_quality_unavailable",
     )
 
 
@@ -377,7 +413,10 @@ def test_emotion_keeps_complete_first_business_tie_as_simplified_candidates():
     ]
 
 
-@pytest.mark.parametrize(("current", "prior"), (("100", "100"), ("200", "0")))
+@pytest.mark.parametrize(
+    ("current", "prior"),
+    (("100", "100"), ("200", "0"), ("0", "100")),
+)
 def test_catchup_strict_zero_boundary_and_zero_denominator(current, prior):
     from dragon_radar.roles.engine import evaluate_catchup
 
@@ -385,7 +424,7 @@ def test_catchup_strict_zero_boundary_and_zero_denominator(current, prior):
         _catchup_context(current_amount=current, prior_amount=prior), "topic-a"
     )
 
-    if prior == "0":
+    if prior == "0" or current == "0":
         assert result.topic_status.missing == 1
         assert any(
             "A" in reason and "mean" in reason for reason in result.topic_status.reasons
@@ -395,6 +434,41 @@ def test_catchup_strict_zero_boundary_and_zero_denominator(current, prior):
         assert not any(
             row.status == "simplified_candidate" for row in result.candidates
         )
+
+
+def test_catchup_ranks_only_hard_threshold_candidates_as_first_tie_group():
+    from dragon_radar.roles.engine import evaluate_catchup
+
+    members = ("A", "B", "C", "D", "E")
+    prices = {
+        "A": (Decimal("100"),) * 21 + (Decimal("130"),) * 5,
+        "B": (Decimal("100"),) + (Decimal("200"),) * 20 + (Decimal("600"),) * 5,
+        **{
+            security_id: (Decimal("100"),)
+            + (Decimal("200"),) * 20
+            + (Decimal("220"),) * 5
+            for security_id in ("C", "D", "E")
+        },
+    }
+    amounts = {
+        "A": (Decimal("100"),) * 20 + (Decimal("200"),) * 5,
+        **{
+            security_id: (Decimal("100"),) * 25
+            for security_id in ("B", "C", "D", "E")
+        },
+    }
+
+    result = evaluate_catchup(
+        _context(member_ids=members, prices=prices, amounts=amounts),
+        "topic-a",
+    )
+
+    rows = {row.security_id: row for row in result.candidates}
+    assert result.topic_status.status == "simplified"
+    assert (rows["A"].status, rows["A"].tie_rank) == ("simplified_candidate", 1)
+    assert rows["B"].status == "eligible_non_candidate"
+    assert rows["B"].tie_rank > rows["A"].tie_rank
+    assert set(rows) == set(members)
 
 
 def test_catchup_rejects_currency_change_and_incomplete_coverage():
@@ -484,6 +558,29 @@ def test_follower_zero_prior_amount_and_future_bar_are_not_silently_used():
     )
 
 
+def test_follower_allows_zero_current_amount_mean():
+    from dragon_radar.roles.engine import evaluate_follower
+
+    context = _follower_context()
+    changed_bars = tuple(
+        daily_bar.model_copy(update={"amount": Decimal("0")})
+        if daily_bar.security_id == "B" and daily_bar.trade_date in SESSIONS[-5:]
+        else daily_bar
+        for daily_bar in context.market.bars
+    )
+    changed = RoleContext(
+        market=context.market.model_copy(update={"bars": changed_bars}),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+
+    result = evaluate_follower(changed, "topic-a")
+
+    row = next(row for row in result.candidates if row.security_id == "B")
+    assert result.topic_status.valid == 3
+    assert row.factors == (Decimal("0.3"), Decimal("-1"))
+
+
 def test_follower_requires_prices_only_from_t_minus_5_through_t():
     from dragon_radar.roles.engine import evaluate_follower
 
@@ -537,13 +634,185 @@ def test_relay_without_predecessor_is_insufficient():
 
 
 @pytest.mark.parametrize(
+    ("changes", "error_text"),
+    (
+        ({"role_run_id": ""}, "role_run_id"),
+        ({"activation_event_id": ""}, "activation_event_id"),
+        ({"active_run_count": 0}, "active_run_count"),
+        ({"active_run_count": 2}, "active_run_count"),
+        ({"visibility_mode": "local_display"}, "visibility_mode"),
+    ),
+)
+def test_relay_predecessor_requires_frozen_unique_activation_identity(
+    changes,
+    error_text,
+):
+    from pydantic import ValidationError
+
+    context = _relay_context()
+    with pytest.raises(ValidationError, match=error_text):
+        _predecessor(context, **changes)
+
+
+@pytest.mark.parametrize(
+    "trend_evaluation",
+    (
+        _trend_evaluation(("B",), topic_id="topic-b"),
+        _trend_evaluation(("B",)).model_copy(
+            update={
+                "candidates": (
+                    _trend_evaluation(("B",))
+                    .candidates[0]
+                    .model_copy(update={"topic_id": "topic-b"}),
+                )
+            }
+        ),
+        _trend_evaluation(("B",)).model_copy(
+            update={
+                "candidates": (
+                    _trend_evaluation(("B",))
+                    .candidates[0]
+                    .model_copy(update={"role": "core"}),
+                )
+            }
+        ),
+    ),
+)
+def test_relay_predecessor_rejects_inconsistent_trend_identity(trend_evaluation):
+    from pydantic import ValidationError
+
+    context = _relay_context()
+    with pytest.raises(ValidationError, match="trend_evaluation"):
+        _predecessor(context, trend_evaluation=trend_evaluation)
+
+
+@pytest.mark.parametrize(
+    ("retrospective_input", "expected_status"),
+    (
+        ("market", "pending_validation"),
+        ("topic", "pending_validation"),
+        (None, "insufficient"),
+    ),
+)
+def test_relay_visibility_is_derived_from_both_snapshot_provenances(
+    retrospective_input,
+    expected_status,
+):
+    from dragon_radar.roles.engine import evaluate_relay
+
+    context = _relay_context()
+    if retrospective_input == "market":
+        context = RoleContext(
+            market=context.market.model_copy(update={"provenance": "retrospective"}),
+            topic=context.topic,
+            rule_version=context.rule_version,
+        )
+    elif retrospective_input == "topic":
+        context = RoleContext(
+            market=context.market,
+            topic=context.topic.model_copy(update={"provenance": "retrospective"}),
+            rule_version=context.rule_version,
+        )
+    predecessor = _predecessor(context, visibility_mode="retrospective")
+
+    result = evaluate_relay(context, "topic-a", predecessor)
+
+    assert result.topic_status.status == expected_status
+
+
+@pytest.mark.parametrize(
+    "evaluate_name",
+    ("evaluate_emotion", "evaluate_catchup", "evaluate_follower", "evaluate_relay"),
+)
+def test_staged_roles_reject_historical_cross_exchange_member(evaluate_name):
+    from dragon_radar.roles import engine
+
+    context = {
+        "evaluate_emotion": _context(),
+        "evaluate_catchup": _catchup_context(),
+        "evaluate_follower": _follower_context(),
+        "evaluate_relay": _relay_context(),
+    }[evaluate_name]
+    context = _with_historical_cross_exchange(context)
+    evaluate = getattr(engine, evaluate_name)
+
+    result = (
+        evaluate(context, "topic-a", _predecessor(context))
+        if evaluate_name == "evaluate_relay"
+        else evaluate(context, "topic-a")
+    )
+
+    assert result.topic_status.status == "insufficient"
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (3, 2, 0, 1)
+    assert result.topic_status.reasons[:2] == (
+        "cross_exchange",
+        "C: cross_exchange",
+    )
+    assert result.candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("evaluate_name", "context_factory", "missing_day"),
+    (
+        ("evaluate_emotion", _context, SESSIONS[-6]),
+        ("evaluate_catchup", _catchup_context, SESSIONS[-26]),
+        ("evaluate_relay", _relay_context, SESSIONS[-6]),
+    ),
+)
+def test_staged_topic_benchmarks_reject_missing_fixed_member(
+    evaluate_name,
+    context_factory,
+    missing_day,
+):
+    from dragon_radar.roles import engine
+
+    context = context_factory()
+    bars = tuple(
+        daily_bar
+        for daily_bar in context.market.bars
+        if not (
+            daily_bar.security_id == "C"
+            and daily_bar.trade_date == missing_day
+        )
+    )
+    context = RoleContext(
+        market=context.market.model_copy(update={"bars": bars}),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+    evaluate = getattr(engine, evaluate_name)
+
+    result = (
+        evaluate(context, "topic-a", _predecessor(context))
+        if evaluate_name == "evaluate_relay"
+        else evaluate(context, "topic-a")
+    )
+
+    assert result.topic_status.status == "insufficient"
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (3, 2, 0, 1)
+    assert "C: missing" in " ".join(result.topic_status.reasons)
+    assert result.candidates == ()
+
+
+@pytest.mark.parametrize(
     "changes",
     (
-        {"active_run_count": 2},
         {"trade_date": T},
         {"rule_version": "role-v1"},
         {"market_benchmark_definition": "other"},
+        {"topic_source_id": "other-source"},
         {"topic_source_version": "revision-2"},
+        {"taxonomy_version": "taxonomy-2"},
     ),
 )
 def test_relay_rejects_incomparable_predecessor_contract(changes):

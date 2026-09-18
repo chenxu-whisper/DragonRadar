@@ -7,7 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, model_validator
 
 from dragon_radar.domain.models import DailyBar, FrozenModel, Identifier, SecurityState
 from dragon_radar.domain.quality import grant_allows_local
@@ -54,10 +54,12 @@ class RelayPredecessorRun(FrozenModel):
         allow_inf_nan=False,
     )
 
+    role_run_id: Identifier
+    activation_event_id: Identifier
     trade_date: date
-    active_run_count: int = Field(ge=0)
+    active_run_count: Literal[1]
     rule_version: Literal["role-v1", "role-test-v1"]
-    visibility_mode: Identifier
+    visibility_mode: Literal["contemporaneous", "retrospective"]
     market_benchmark_definition: Identifier
     topic_id: Identifier
     topic_source_id: Identifier
@@ -66,6 +68,22 @@ class RelayPredecessorRun(FrozenModel):
     membership_version: Identifier
     member_ids: tuple[Identifier, ...]
     trend_evaluation: RoleEvaluation
+
+    @model_validator(mode="after")
+    def consistent_trend_identity(self):
+        evaluation = self.trend_evaluation
+        if (
+            evaluation.topic_status.topic_id != self.topic_id
+            or evaluation.topic_status.role != "trend"
+            or any(
+                row.topic_id != self.topic_id or row.role != "trend"
+                for row in evaluation.candidates
+            )
+        ):
+            raise ValueError(
+                "trend_evaluation topic and role must match predecessor topic"
+            )
+        return self
 
 
 def dense_rank(
@@ -348,13 +366,14 @@ def _insufficient(
     reasons: Sequence[str],
     expected: int | None = None,
     classifications: dict[str, Eligibility] | None = None,
+    valid: int = 0,
 ) -> RoleEvaluation:
     if expected is None:
         expected = _observation_expected_member_count(prepared)
     legal_excluded, missing = _partition_counts(
         expected,
         classifications or {},
-        valid=0,
+        valid=valid,
     )
     return RoleEvaluation(
         topic_status=_role_status(
@@ -362,7 +381,7 @@ def _insufficient(
             role=role,
             status="insufficient",
             expected=expected,
-            valid=0,
+            valid=valid,
             legal_excluded=legal_excluded,
             missing=missing,
             reasons=reasons,
@@ -1174,6 +1193,55 @@ def _continuous_window_eligibility(
     return "valid", None
 
 
+def _staged_window_failure(
+    prepared: _PreparedContext,
+    role: RoleName,
+    sessions: Sequence[date],
+    *,
+    expected: int,
+    classifications: dict[str, Eligibility],
+    reasons: list[str],
+    price_sessions: Sequence[date] | None = None,
+    fail_on_missing: bool,
+) -> RoleEvaluation | None:
+    changed = False
+    for security_id, classification in tuple(classifications.items()):
+        if classification != "valid":
+            continue
+        window_classification, reason = _continuous_window_eligibility(
+            prepared,
+            security_id,
+            sessions,
+            price_sessions=price_sessions,
+        )
+        if window_classification == "valid":
+            continue
+        changed = True
+        classifications[security_id] = window_classification
+        if reason is not None:
+            reasons.append(reason)
+    has_cross_exchange = "cross_exchange" in classifications.values()
+    if not has_cross_exchange and (not fail_on_missing or not changed):
+        return None
+    failure_reasons = tuple(
+        dict.fromkeys(
+            (
+                *(("cross_exchange",) if has_cross_exchange else ()),
+                *reasons,
+            )
+        )
+    )
+    valid = sum(value == "valid" for value in classifications.values())
+    return _insufficient(
+        prepared,
+        role,
+        reasons=failure_reasons,
+        expected=expected,
+        classifications=classifications,
+        valid=valid,
+    )
+
+
 def _topic_return_median(
     prepared: _PreparedContext,
     sessions: Sequence[date],
@@ -1219,6 +1287,8 @@ def _amount_series(
 def _amount_change(
     current: Sequence[Decimal],
     prior: Sequence[Decimal],
+    *,
+    require_current_positive: bool = False,
 ) -> Decimal:
     current_mean = decimal_mean(current)
     prior_mean = decimal_mean(prior)
@@ -1230,6 +1300,8 @@ def _amount_change(
         )
         if prior_mean <= 0:
             raise AnalysisUnavailable("prior amount mean must be positive")
+        if require_current_positive and current_mean <= 0:
+            raise AnalysisUnavailable("current amount mean must be positive")
         return current_mean / prior_mean - one
 
 
@@ -1416,6 +1488,17 @@ def evaluate_emotion(context: RoleContext, topic_id: str) -> RoleEvaluation:
             expected=expected,
             classifications=classifications,
         )
+    window_failure = _staged_window_failure(
+        prepared,
+        "emotion",
+        sessions,
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        fail_on_missing=True,
+    )
+    if window_failure is not None:
+        return window_failure
     daily_topic_amounts = _daily_topic_amounts(prepared, prepared.trade_date)
     if daily_topic_amounts is None:
         return _insufficient(
@@ -1439,16 +1522,6 @@ def evaluate_emotion(context: RoleContext, topic_id: str) -> RoleEvaluation:
     candidates: dict[str, bool] = {}
     for security_id, classification in tuple(classifications.items()):
         if classification != "valid":
-            continue
-        classification, reason = _continuous_window_eligibility(
-            prepared,
-            security_id,
-            sessions,
-        )
-        if classification != "valid":
-            classifications[security_id] = classification
-            if reason is not None:
-                reasons.append(reason)
             continue
         amount = _amount_on(prepared, security_id, prepared.trade_date)
         streak = _closing_limit_streak(prepared, security_id)
@@ -1498,6 +1571,9 @@ def evaluate_emotion(context: RoleContext, topic_id: str) -> RoleEvaluation:
                 (
                     "candidate_conditions_met",
                     "daily_simplified_candidate_only",
+                    "first_limit_time_unavailable",
+                    "open_reseal_evidence_unavailable",
+                    "seal_order_quality_unavailable",
                 )
                 if candidates[security_id]
                 else ("candidate_conditions_not_met",)
@@ -1553,6 +1629,17 @@ def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
             expected=expected,
             classifications=classifications,
         )
+    window_failure = _staged_window_failure(
+        prepared,
+        "catchup",
+        sessions,
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        fail_on_missing=True,
+    )
+    if window_failure is not None:
+        return window_failure
     prior_sessions = sessions[:21]
     current_sessions = sessions[-6:]
     prior_benchmark = _topic_return_median(prepared, prior_sessions)
@@ -1570,16 +1657,6 @@ def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
     for security_id, classification in tuple(classifications.items()):
         if classification != "valid":
             continue
-        classification, reason = _continuous_window_eligibility(
-            prepared,
-            security_id,
-            sessions,
-        )
-        if classification != "valid":
-            classifications[security_id] = classification
-            if reason is not None:
-                reasons.append(reason)
-            continue
         prices = _prices_for(prepared, security_id, sessions)
         if prices is None:
             classifications[security_id] = "missing"
@@ -1592,7 +1669,11 @@ def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
             factors_by_security[security_id] = (
                 relative_return(current_return, current_benchmark),
                 relative_return(prior_benchmark, prior_return),
-                _amount_change(amounts[-5:], amounts[:20]),
+                _amount_change(
+                    amounts[-5:],
+                    amounts[:20],
+                    require_current_positive=True,
+                ),
             )
         except AnalysisUnavailable as exc:
             classifications[security_id] = "missing"
@@ -1618,9 +1699,27 @@ def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
         for security_id, factors in factors_by_security.items()
     )
     try:
-        ranked = dense_rank(
-            rows,
+        candidate_rows = tuple(
+            row for row in rows if row.status == "simplified_candidate"
+        )
+        non_candidate_rows = tuple(
+            row for row in rows if row.status != "simplified_candidate"
+        )
+        ranked_candidates = dense_rank(
+            candidate_rows,
             key=lambda row: (-row.factors[0], -row.factors[1], -row.factors[2]),
+        )
+        ranked_non_candidates = dense_rank(
+            non_candidate_rows,
+            key=lambda row: (-row.factors[0], -row.factors[1], -row.factors[2]),
+        )
+        candidate_rank_count = max(
+            (row.tie_rank for row in ranked_candidates),
+            default=0,
+        )
+        ranked_non_candidates = tuple(
+            row.model_copy(update={"tie_rank": row.tie_rank + candidate_rank_count})
+            for row in ranked_non_candidates
         )
     except AnalysisUnavailable:
         return _insufficient(
@@ -1636,7 +1735,10 @@ def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
         expected=expected,
         classifications=classifications,
         reasons=reasons,
-        rows=_first_simplified_tie_group(ranked),
+        rows=(
+            *_first_simplified_tie_group(ranked_candidates),
+            *ranked_non_candidates,
+        ),
     )
 
 
@@ -1658,15 +1760,6 @@ def evaluate_follower(context: RoleContext, topic_id: str) -> RoleEvaluation:
     )
     if failure is not None:
         return failure
-    reference = _unique_first_trend_candidate(evaluate_trend(context, topic_id))
-    if reference is None:
-        return _insufficient(
-            prepared,
-            "follower",
-            reasons=(*reasons, "unique_trend_reference_unavailable"),
-            expected=expected,
-            classifications=classifications,
-        )
     sessions = _window(prepared, 10)
     if len(sessions) != 10:
         return _insufficient(
@@ -1682,6 +1775,27 @@ def evaluate_follower(context: RoleContext, topic_id: str) -> RoleEvaluation:
             prepared,
             "follower",
             reasons=(*reasons, coverage_reason),
+            expected=expected,
+            classifications=classifications,
+        )
+    window_failure = _staged_window_failure(
+        prepared,
+        "follower",
+        sessions,
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        price_sessions=sessions[-6:],
+        fail_on_missing=False,
+    )
+    if window_failure is not None:
+        return window_failure
+    reference = _unique_first_trend_candidate(evaluate_trend(context, topic_id))
+    if reference is None:
+        return _insufficient(
+            prepared,
+            "follower",
+            reasons=(*reasons, "unique_trend_reference_unavailable"),
             expected=expected,
             classifications=classifications,
         )
@@ -1708,17 +1822,6 @@ def evaluate_follower(context: RoleContext, topic_id: str) -> RoleEvaluation:
     factors_by_security: dict[str, tuple[Decimal, Decimal]] = {}
     for security_id, classification in tuple(classifications.items()):
         if classification != "valid":
-            continue
-        classification, reason = _continuous_window_eligibility(
-            prepared,
-            security_id,
-            sessions,
-            price_sessions=sessions[-6:],
-        )
-        if classification != "valid":
-            classifications[security_id] = classification
-            if reason is not None:
-                reasons.append(reason)
             continue
         prices = _prices_for(prepared, security_id, sessions[-6:])
         if prices is None:
@@ -1792,11 +1895,22 @@ def _relay_comparability_reasons(
     benchmark_definition = RULE_DEFINITIONS[context.rule_version]["roles"]["trend"][
         "required_inputs"
     ]["market_benchmark"]["definition"]
+    visibility_mode = (
+        "retrospective"
+        if (
+            context.market.provenance == "retrospective"
+            or context.topic.provenance == "retrospective"
+        )
+        else "contemporaneous"
+    )
     checks = (
         (predecessor.trade_date == _previous_session(prepared), "not_previous_session"),
         (predecessor.active_run_count == 1, "predecessor_not_unique_active"),
         (predecessor.rule_version == context.rule_version, "rule_version_changed"),
-        (predecessor.visibility_mode == "local_display", "visibility_mode_changed"),
+        (
+            predecessor.visibility_mode == visibility_mode,
+            "visibility_mode_changed",
+        ),
         (
             predecessor.market_benchmark_definition == benchmark_definition,
             "market_benchmark_changed",
@@ -1846,6 +1960,36 @@ def evaluate_relay(
             expected=expected,
             classifications=classifications,
         )
+    sessions = _window(prepared, 6)
+    daily_sessions = _window(prepared, 2)
+    if len(sessions) != 6 or len(daily_sessions) != 2:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, "market_calendar_missing_relay_window"),
+            expected=expected,
+            classifications=classifications,
+        )
+    coverage_reason = _complete_coverage_window(prepared, sessions)
+    if coverage_reason is not None:
+        return _insufficient(
+            prepared,
+            "relay",
+            reasons=(*reasons, coverage_reason),
+            expected=expected,
+            classifications=classifications,
+        )
+    window_failure = _staged_window_failure(
+        prepared,
+        "relay",
+        sessions,
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        fail_on_missing=True,
+    )
+    if window_failure is not None:
+        return window_failure
     old_core = _unique_first_trend_candidate(predecessor.trend_evaluation)
     current_core = _unique_first_trend_candidate(evaluate_trend(context, topic_id))
     if old_core is None or current_core is None:
@@ -1872,25 +2016,6 @@ def evaluate_relay(
                 missing=missing,
                 reasons=(*reasons, "trend_core_unchanged"),
             )
-        )
-    sessions = _window(prepared, 6)
-    daily_sessions = _window(prepared, 2)
-    if len(sessions) != 6 or len(daily_sessions) != 2:
-        return _insufficient(
-            prepared,
-            "relay",
-            reasons=(*reasons, "market_calendar_missing_relay_window"),
-            expected=expected,
-            classifications=classifications,
-        )
-    coverage_reason = _complete_coverage_window(prepared, sessions)
-    if coverage_reason is not None:
-        return _insufficient(
-            prepared,
-            "relay",
-            reasons=(*reasons, coverage_reason),
-            expected=expected,
-            classifications=classifications,
         )
     topic_return5 = _topic_return_median(prepared, sessions)
     topic_daily_return = _topic_return_median(prepared, daily_sessions)
