@@ -251,6 +251,8 @@ def _run(
         "membership_version": context.topic.membership_version,
         "member_ids": member_ids,
         "evaluations": evaluations,
+        "verification_status": "passed",
+        "activation_event_id": f"activation-{run_id}",
         "active_run_count": 1,
         **changes,
     }
@@ -349,6 +351,62 @@ def test_limit_ladder_rejects_high_above_limit_as_unavailable_touch_state():
 
     assert row.touched_not_sealed is None
     assert "touch_quality_gate_failed" in row.reasons
+
+
+def test_limit_ladder_materializes_member_missing_from_declared_market_pool():
+    row = build_limit_ladder(
+        _context(
+            member_ids=("A",),
+            expected_security_ids=("B",),
+            bars=tuple(_limited_bar("A", day) for day in SESSIONS[-10:]),
+        ),
+        TOPIC,
+    )[0]
+
+    assert row.security_id == "A"
+    assert row.closing_limit_streak is None
+    assert row.limit_hits_10 is None
+    assert row.broken_board is None
+    assert row.touched_not_sealed is None
+    assert row.reasons == ("member_not_in_market_pool",)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"closing_limit_streak": 4, "limit_hits_10": 3},
+        {"closing_limit_streak": 11, "limit_hits_10": 9},
+        {
+            "closing_limit_streak": 1,
+            "limit_hits_10": 1,
+            "broken_board": True,
+        },
+        {
+            "closing_limit_streak": 1,
+            "limit_hits_10": 1,
+            "touched_not_sealed": True,
+        },
+        {
+            "closing_limit_streak": 0,
+            "limit_hits_10": 0,
+            "broken_board": True,
+        },
+    ),
+)
+def test_limit_row_rejects_contradictory_known_metrics(changes):
+    values = {
+        "trade_date": T,
+        "topic_id": TOPIC,
+        "security_id": "A",
+        "closing_limit_streak": 0,
+        "limit_hits_10": 0,
+        "broken_board": False,
+        "touched_not_sealed": False,
+        **changes,
+    }
+
+    with pytest.raises(ValidationError):
+        LimitRow(**values)
 
 
 def test_compare_runs_reports_added_exited_tie_unchanged_and_membership_change():
@@ -642,6 +700,56 @@ def test_compare_runs_marks_same_day_topic_revision_not_comparable():
 
 
 @pytest.mark.parametrize(
+    ("previous_date", "current_date"),
+    (
+        (SESSIONS[-3], SESSIONS[-1]),
+        (SESSIONS[-2], date(2026, 9, 9)),
+        (SESSIONS[-1], SESSIONS[0]),
+    ),
+)
+def test_compare_runs_requires_strict_previous_frozen_calendar_session(
+    previous_date,
+    current_date,
+):
+    previous = _run(
+        "previous",
+        _context(trade_date=previous_date),
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        _context(trade_date=current_date),
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert "not_previous_comparable_session" in change.reasons
+
+
+def test_compare_runs_records_current_declared_predecessor_on_mismatch():
+    previous = _run(
+        "actual-previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id=None,
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert change.previous_comparable_run_id is None
+    assert change.reasons == ("previous_comparable_run_mismatch",)
+
+
+@pytest.mark.parametrize(
     ("field", "forged_value"),
     [
         ("topic_source_id", "forged-source"),
@@ -687,6 +795,47 @@ def test_role_run_requires_exactly_one_visible_effective_topic_definition():
     )
 
     with pytest.raises(ValidationError, match="exactly one"):
+        RoleRunEvidence.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("verification_status", None),
+        ("verification_status", "failed"),
+        ("activation_event_id", ""),
+    ),
+)
+def test_role_run_requires_verified_activated_projection(field, value):
+    values = _run("current", _context()).model_dump()
+    if value is None:
+        del values[field]
+    else:
+        values[field] = value
+
+    with pytest.raises(ValidationError):
+        RoleRunEvidence.model_validate(values)
+
+
+def test_role_run_rejects_candidate_outside_topic_members():
+    with pytest.raises(ValidationError, match="member_ids"):
+        _run(
+            "current",
+            _context(),
+            evaluations=(_evaluation("trend", (("OUTSIDE", 1),)),),
+        )
+
+
+def test_role_run_rejects_duplicate_role_evaluations():
+    evaluation = _evaluation("trend", (("A", 1),))
+    values = _run(
+        "current",
+        _context(),
+        evaluations=(evaluation,),
+    ).model_dump()
+    values["evaluations"] = (evaluation.model_dump(), evaluation.model_dump())
+
+    with pytest.raises(ValidationError, match="role"):
         RoleRunEvidence.model_validate(values)
 
 
@@ -766,6 +915,10 @@ def _validation_fixture(
             for security_id in member_ids
         ),
         membership_version="m1",
+        market_source_id="synthetic",
+        adjustment_version="a1",
+        pool_version="p1",
+        expected_security_ids=all_ids,
         validation_sessions=validation_days,
         calendar_sessions=FUTURE_SESSIONS,
         rule_version="role-test-v1",
@@ -920,6 +1073,124 @@ def test_pending_relay_requires_frozen_membership_and_sessions(field):
 
     with pytest.raises(ValidationError):
         PendingRelayValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("market_source_id", None),
+        ("adjustment_version", ""),
+        ("pool_version", None),
+        ("expected_security_ids", ()),
+        ("expected_security_ids", ("A", "A")),
+        ("expected_security_ids", ("B", "A")),
+    ),
+)
+def test_pending_relay_requires_canonical_frozen_market_identity(field, value):
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    if value is None:
+        del values[field]
+    else:
+        values[field] = value
+
+    with pytest.raises(ValidationError):
+        PendingRelayValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("market_field", "changed_value", "expected_reason"),
+    (
+        ("source_id", "other-source", "market_source_changed"),
+        ("adjustment_version", "a2", "adjustment_version_changed"),
+        ("pool_version", "p2", "pool_version_changed"),
+        ("expected_security_ids", ("A",), "market_pool_changed"),
+    ),
+)
+def test_validate_relay_rejects_changed_frozen_market_identity(
+    market_field,
+    changed_value,
+    expected_reason,
+):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={market_field: changed_value}
+            )
+        }
+    )
+    changed_run = target.model_copy(update={"context": changed_context})
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], changed_run, *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("topic_incomparable", expected_reason)
+
+
+def test_validate_relay_allows_daily_market_source_version_change():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={
+                    "source_version": "daily-s2",
+                    "bars": tuple(
+                        daily_bar.model_copy(update={"source_version": "daily-s2"})
+                        for daily_bar in target.context.market.bars
+                    ),
+                    "security_states": tuple(
+                        security_state.model_copy(update={"source_version": "daily-s2"})
+                        for security_state in target.context.market.security_states
+                    ),
+                }
+            )
+        }
+    )
+    changed_run = target.model_copy(update={"context": changed_context})
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], changed_run, *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "supported"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"verification_status": "failed"},
+        {"activation_event_id": ""},
+    ),
+)
+def test_validate_relay_rejects_unverified_or_unactivated_run(changes):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2].model_copy(update=changes)
+
+    with pytest.raises(ValidationError):
+        validate_relay(pending, (*runs[:2], target, *runs[3:]))
 
 
 def test_pending_relay_rejects_duplicate_validation_input_run_ids():

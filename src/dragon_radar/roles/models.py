@@ -232,6 +232,23 @@ class LimitRow(_StrictFrozenRoleModel):
     touched_not_sealed: bool | None
     reasons: tuple[str, ...] = ()
 
+    @model_validator(mode="after")
+    def validate_metric_consistency(self) -> Self:
+        streak = self.closing_limit_streak
+        hits = self.limit_hits_10
+        if streak is not None and hits is not None and min(streak, 10) > hits:
+            raise ValueError(
+                "closing_limit_streak must be consistent with limit_hits_10"
+            )
+        if self.broken_board is True:
+            if streak is not None and streak != 0:
+                raise ValueError("broken_board requires a zero closing_limit_streak")
+            if hits is not None and hits < 1:
+                raise ValueError("broken_board requires a known recent limit hit")
+        if self.touched_not_sealed is True and streak is not None and streak != 0:
+            raise ValueError("touched_not_sealed requires a zero closing_limit_streak")
+        return self
+
 
 class RoleChange(_StrictFrozenRoleModel):
     """One role assignment comparison against the selected comparable run."""
@@ -336,6 +353,8 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
     membership_version: Identifier
     member_ids: tuple[Identifier, ...]
     evaluations: tuple[RoleEvaluation, ...] = ()
+    verification_status: Literal["passed"]
+    activation_event_id: Identifier
     active_run_count: Literal[1] = 1
 
     @property
@@ -427,9 +446,19 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
             raise ValueError(
                 "member_ids must match visible effective topic memberships"
             )
+        evaluated_roles: set[RoleName] = set()
         for evaluation in self.evaluations:
             if evaluation.topic_status.topic_id != self.topic_id:
                 raise ValueError("evaluation topic_id must match run topic_id")
+            role = evaluation.topic_status.role
+            if role in evaluated_roles:
+                raise ValueError("each role may have at most one evaluation")
+            evaluated_roles.add(role)
+            if any(
+                candidate.security_id not in self.member_ids
+                for candidate in evaluation.candidates
+            ):
+                raise ValueError("evaluation candidates must belong to member_ids")
         return self
 
 
@@ -453,6 +482,10 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     baseline_member_ids: tuple[Identifier, ...]
     baseline_prices: tuple[RelayBaselinePrice, ...]
     membership_version: Identifier
+    market_source_id: Identifier
+    adjustment_version: Identifier
+    pool_version: Identifier
+    expected_security_ids: tuple[Identifier, ...]
     validation_sessions: tuple[date, date, date, date, date]
     calendar_sessions: tuple[date, ...]
     rule_version: Literal["role-v1", "role-test-v1"]
@@ -467,6 +500,14 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
 
     @model_validator(mode="after")
     def validate_pending_identity(self) -> Self:
+        if (
+            not self.expected_security_ids
+            or tuple(sorted(set(self.expected_security_ids)))
+            != self.expected_security_ids
+        ):
+            raise ValueError(
+                "expected_security_ids must be nonempty, sorted, and unique"
+            )
         if (
             not self.calendar_sessions
             or tuple(sorted(set(self.calendar_sessions))) != self.calendar_sessions

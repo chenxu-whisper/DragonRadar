@@ -131,7 +131,22 @@ def build_limit_ladder(
         if reason is not None
     )
     rows: list[LimitRow] = []
+    market_pool = frozenset(context.market.expected_security_ids)
     for security_id in prepared.members_on(context.market.trade_date):
+        if security_id not in market_pool:
+            rows.append(
+                LimitRow(
+                    trade_date=context.market.trade_date,
+                    topic_id=topic_id,
+                    security_id=security_id,
+                    closing_limit_streak=None,
+                    limit_hits_10=None,
+                    broken_board=None,
+                    touched_not_sealed=None,
+                    reasons=("member_not_in_market_pool",),
+                )
+            )
+            continue
         if global_reasons:
             rows.append(
                 LimitRow(
@@ -229,12 +244,46 @@ def _comparison_reasons(
     current: RoleRunEvidence,
     previous: RoleRunEvidence,
 ) -> tuple[str, ...]:
+    calculation_basis_matches = (
+        current.context.market.source_id,
+        current.context.market.adjustment_version,
+        current.context.market.pool_version,
+        current.context.market.expected_security_ids,
+        current.context.market.calendar_version,
+        current.context.market.calendar.exchange,
+        current.context.market.calendar.sessions,
+        current.context.topic.calendar_version,
+        current.context.topic.exchange,
+        current.context.topic.calendar.sessions,
+    ) == (
+        previous.context.market.source_id,
+        previous.context.market.adjustment_version,
+        previous.context.market.pool_version,
+        previous.context.market.expected_security_ids,
+        previous.context.market.calendar_version,
+        previous.context.market.calendar.exchange,
+        previous.context.market.calendar.sessions,
+        previous.context.topic.calendar_version,
+        previous.context.topic.exchange,
+        previous.context.topic.calendar.sessions,
+    )
+    is_previous_session = True
+    if calculation_basis_matches:
+        sessions = current.context.market.calendar.sessions
+        try:
+            current_index = sessions.index(current.trade_date)
+        except ValueError:
+            is_previous_session = False
+        else:
+            is_previous_session = (
+                current_index > 0 and sessions[current_index - 1] == previous.trade_date
+            )
     checks = (
         (
             current.previous_comparable_run_id == previous.role_run_id,
             "previous_comparable_run_mismatch",
         ),
-        (current.trade_date > previous.trade_date, "not_previous_comparable_session"),
+        (is_previous_session, "not_previous_comparable_session"),
         (current.rule_version == previous.rule_version, "rule_version_changed"),
         (
             current.visibility_mode == previous.visibility_mode,
@@ -257,33 +306,7 @@ def _comparison_reasons(
             current.taxonomy_version == previous.taxonomy_version,
             "taxonomy_version_changed",
         ),
-        (
-            (
-                current.context.market.source_id,
-                current.context.market.adjustment_version,
-                current.context.market.pool_version,
-                current.context.market.expected_security_ids,
-                current.context.market.calendar_version,
-                current.context.market.calendar.exchange,
-                current.context.market.calendar.sessions,
-                current.context.topic.calendar_version,
-                current.context.topic.exchange,
-                current.context.topic.calendar.sessions,
-            )
-            == (
-                previous.context.market.source_id,
-                previous.context.market.adjustment_version,
-                previous.context.market.pool_version,
-                previous.context.market.expected_security_ids,
-                previous.context.market.calendar_version,
-                previous.context.market.calendar.exchange,
-                previous.context.market.calendar.sessions,
-                previous.context.topic.calendar_version,
-                previous.context.topic.exchange,
-                previous.context.topic.calendar.sessions,
-            ),
-            "calculation_basis_changed",
-        ),
+        (calculation_basis_matches, "calculation_basis_changed"),
     )
     return tuple(dict.fromkeys(reason for matches, reason in checks if not matches))
 
@@ -322,7 +345,7 @@ def compare_runs(
         result.append(
             RoleChange(
                 current_run_id=current.role_run_id,
-                previous_comparable_run_id=previous.role_run_id,
+                previous_comparable_run_id=current.previous_comparable_run_id,
                 topic_id=current.topic_id,
                 security_id=security_id,
                 role=role,
@@ -462,6 +485,22 @@ def _run_identity_reasons(
             "membership_version_changed",
         ),
         (
+            run.context.market.source_id == pending.market_source_id,
+            "market_source_changed",
+        ),
+        (
+            run.context.market.adjustment_version == pending.adjustment_version,
+            "adjustment_version_changed",
+        ),
+        (
+            run.context.market.pool_version == pending.pool_version,
+            "pool_version_changed",
+        ),
+        (
+            run.context.market.expected_security_ids == pending.expected_security_ids,
+            "market_pool_changed",
+        ),
+        (
             run.context.market.calendar.exchange == pending.exchange
             and run.context.topic.exchange == pending.exchange,
             "exchange_changed",
@@ -514,6 +553,22 @@ def validate_relay(
             runs=selected,
             reasons=("window_incomplete",),
         )
+    for run in selected:
+        if run.verification_status != "passed" or not any(
+            not character.isspace() for character in run.activation_event_id
+        ):
+            RoleRunEvidence.model_validate(run.model_dump())
+
+    identity_reasons = tuple(
+        reason for run in selected for reason in _run_identity_reasons(pending, run)
+    )
+    if identity_reasons:
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=selected,
+            reasons=("topic_incomparable", *identity_reasons),
+        )
 
     validation_cutoff = selected[-1].context.knowledge_cutoff
     if any(
@@ -534,17 +589,6 @@ def validate_relay(
             sessions=validation_sessions,
             runs=selected,
             reasons=("authorization_unavailable",),
-        )
-
-    identity_reasons = tuple(
-        reason for run in selected for reason in _run_identity_reasons(pending, run)
-    )
-    if identity_reasons:
-        return _unavailable_validation(
-            pending,
-            sessions=validation_sessions,
-            runs=selected,
-            reasons=("topic_incomparable", *identity_reasons),
         )
 
     baseline = frozenset(pending.baseline_member_ids)
