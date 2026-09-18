@@ -1225,6 +1225,8 @@ def _staged_window_failure(
             )
             if day_classification not in {"missing", "cross_exchange"}:
                 continue
+            if day_classification == "missing" and security_id not in classifications:
+                continue
             window_incomplete = True
             has_cross_exchange = (
                 has_cross_exchange or day_classification == "cross_exchange"
@@ -1765,27 +1767,9 @@ def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
         for security_id, factors in factors_by_security.items()
     )
     try:
-        candidate_rows = tuple(
-            row for row in rows if row.status == "simplified_candidate"
-        )
-        non_candidate_rows = tuple(
-            row for row in rows if row.status != "simplified_candidate"
-        )
-        ranked_candidates = dense_rank(
-            candidate_rows,
+        ranked = dense_rank(
+            rows,
             key=lambda row: (-row.factors[0], -row.factors[1], -row.factors[2]),
-        )
-        ranked_non_candidates = dense_rank(
-            non_candidate_rows,
-            key=lambda row: (-row.factors[0], -row.factors[1], -row.factors[2]),
-        )
-        candidate_rank_count = max(
-            (row.tie_rank for row in ranked_candidates),
-            default=0,
-        )
-        ranked_non_candidates = tuple(
-            row.model_copy(update={"tie_rank": row.tie_rank + candidate_rank_count})
-            for row in ranked_non_candidates
         )
     except AnalysisUnavailable:
         return _insufficient(
@@ -1801,10 +1785,7 @@ def evaluate_catchup(context: RoleContext, topic_id: str) -> RoleEvaluation:
         expected=expected,
         classifications=classifications,
         reasons=reasons,
-        rows=(
-            *_first_simplified_tie_group(ranked_candidates),
-            *ranked_non_candidates,
-        ),
+        rows=_first_simplified_tie_group(ranked),
     )
 
 

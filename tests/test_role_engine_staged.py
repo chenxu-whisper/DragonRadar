@@ -500,7 +500,7 @@ def test_catchup_strict_zero_boundary_and_zero_denominator(current, prior):
         )
 
 
-def test_catchup_ranks_only_hard_threshold_candidates_as_first_tie_group():
+def test_catchup_uses_global_ranking_before_candidate_gate():
     from dragon_radar.roles.engine import evaluate_catchup
 
     members = ("A", "B", "C", "D", "E")
@@ -528,10 +528,10 @@ def test_catchup_ranks_only_hard_threshold_candidates_as_first_tie_group():
     )
 
     rows = {row.security_id: row for row in result.candidates}
-    assert result.topic_status.status == "simplified"
-    assert (rows["A"].status, rows["A"].tie_rank) == ("simplified_candidate", 1)
-    assert rows["B"].status == "eligible_non_candidate"
-    assert rows["B"].tie_rank > rows["A"].tie_rank
+    assert result.topic_status.status == "no_candidate"
+    assert (rows["B"].status, rows["B"].tie_rank) == ("eligible_non_candidate", 1)
+    assert (rows["A"].status, rows["A"].tie_rank) == ("eligible_non_candidate", 2)
+    assert not any(row.status == "simplified_candidate" for row in result.candidates)
     assert set(rows) == set(members)
 
 
@@ -997,6 +997,56 @@ def test_staged_benchmarks_do_not_skip_ineligible_observation_member(
     assert result.topic_status.legal_excluded == expected_legal_excluded
     assert result.topic_status.missing == expected_missing
     assert result.candidates == ()
+
+
+def test_catchup_ignores_ordinary_missing_for_historical_exited_member():
+    from dragon_radar.roles.engine import evaluate_catchup
+
+    context = _catchup_context()
+    d_membership = context.topic.memberships[0].model_copy(
+        update={
+            "security_id": "D",
+            "effective_from": SESSIONS[-26],
+            "effective_to": T,
+            "available_at": datetime(2026, 1, 1, tzinfo=UTC),
+        }
+    )
+    coverage_cells = tuple(
+        cell.model_copy(
+            update={
+                "expected_member_count": 4,
+                "received_member_count": 4,
+            }
+        )
+        if SESSIONS[-26] <= cell.trade_date < T
+        else cell
+        for cell in context.topic.coverage_cells
+    )
+    context = RoleContext(
+        market=context.market.model_copy(
+            update={
+                "expected_security_ids": (*context.market.expected_security_ids, "D"),
+            }
+        ),
+        topic=context.topic.model_copy(
+            update={
+                "memberships": (*context.topic.memberships, d_membership),
+                "coverage_cells": coverage_cells,
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+
+    result = evaluate_catchup(context, "topic-a")
+
+    assert result.topic_status.status == "simplified"
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (3, 3, 0, 0)
+    assert {row.security_id for row in result.candidates} == set(MEMBERS)
 
 
 @pytest.mark.parametrize("evaluate_name", ("evaluate_catchup", "evaluate_relay"))
