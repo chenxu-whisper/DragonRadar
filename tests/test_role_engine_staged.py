@@ -899,7 +899,7 @@ def test_staged_topic_benchmarks_reject_missing_fixed_member(
     assert result.candidates == ()
 
 
-def test_catchup_preserves_current_exclusion_when_membership_window_is_incomplete():
+def test_catchup_ignores_incomplete_window_for_currently_excluded_member():
     from dragon_radar.roles.engine import evaluate_catchup
 
     context = _catchup_context()
@@ -945,24 +945,17 @@ def test_catchup_preserves_current_exclusion_when_membership_window_is_incomplet
         result.topic_status.legal_excluded,
         result.topic_status.missing,
     ) == (3, 2, 1, 0)
-    assert result.topic_status.status == "insufficient"
-    assert "C: membership is not continuous for 26 sessions" in (
-        result.topic_status.reasons
+    assert result.topic_status.status == "simplified"
+    assert "C: ineligible security state" in result.topic_status.reasons
+    assert not any(
+        "membership is not continuous" in reason
+        for reason in result.topic_status.reasons
     )
-    assert result.candidates == ()
+    assert {row.security_id for row in result.candidates} == {"A", "B"}
 
 
 @pytest.mark.parametrize("evaluate_name", ("evaluate_catchup", "evaluate_relay"))
-@pytest.mark.parametrize(
-    ("scenario", "expected_legal_excluded", "expected_missing"),
-    (("missing_state", 0, 1), ("suspended", 1, 0)),
-)
-def test_staged_benchmarks_do_not_skip_ineligible_observation_member(
-    evaluate_name,
-    scenario,
-    expected_legal_excluded,
-    expected_missing,
-):
+def test_staged_benchmarks_reject_unknown_observation_member(evaluate_name):
     from dragon_radar.roles import engine
 
     context = (
@@ -973,13 +966,6 @@ def test_staged_benchmarks_do_not_skip_ineligible_observation_member(
         for security_state in context.market.security_states
         if security_state.security_id != "C"
     )
-    if scenario == "suspended":
-        original = next(
-            security_state
-            for security_state in context.market.security_states
-            if security_state.security_id == "C"
-        )
-        states = (*states, original.model_copy(update={"suspended": True}))
     context = RoleContext(
         market=context.market.model_copy(update={"security_states": states}),
         topic=context.topic,
@@ -994,9 +980,79 @@ def test_staged_benchmarks_do_not_skip_ineligible_observation_member(
     )
 
     assert result.topic_status.status == "insufficient"
-    assert result.topic_status.legal_excluded == expected_legal_excluded
-    assert result.topic_status.missing == expected_missing
+    assert result.topic_status.legal_excluded == 0
+    assert result.topic_status.missing == 1
     assert result.candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("suspended", True),
+        ("is_st", True),
+        ("is_delisting", True),
+        ("security_type", "fund"),
+    ),
+)
+def test_catchup_excludes_ineligible_observation_member_from_window_benchmarks(
+    field,
+    value,
+):
+    from dragon_radar.roles.engine import evaluate_catchup
+
+    members = ("A", "B", "C", "D", "E", "INELIGIBLE")
+    prices = {
+        "A": (Decimal("100"),) * 21 + (Decimal("120"),) * 5,
+        **{
+            security_id: (Decimal("100"),)
+            + (Decimal("120"),) * 20
+            + (Decimal("126"),) * 5
+            for security_id in ("B", "C", "D", "E")
+        },
+        "INELIGIBLE": (),
+    }
+    amounts = {
+        "A": (Decimal("100"),) * 20 + (Decimal("200"),) * 5,
+        **{security_id: (Decimal("100"),) * 25 for security_id in ("B", "C", "D", "E")},
+        "INELIGIBLE": (),
+    }
+    context = _context(member_ids=members, prices=prices, amounts=amounts)
+    long_sessions = _sessions(130)
+    states = tuple(
+        security_state.model_copy(
+            update={
+                "board_category": "sh_main",
+                "effective_from": long_sessions[0],
+                "listing_date": long_sessions[0],
+                **(
+                    {field: value} if security_state.security_id == "INELIGIBLE" else {}
+                ),
+            }
+        )
+        for security_state in context.market.security_states
+    )
+    calendar = context.market.calendar.model_copy(update={"sessions": long_sessions})
+    context = RoleContext(
+        market=context.market.model_copy(
+            update={"calendar": calendar, "security_states": states}
+        ),
+        topic=context.topic.model_copy(update={"calendar": calendar}),
+        rule_version="role-v1",
+    )
+
+    result = evaluate_catchup(context, "topic-a")
+
+    assert result.topic_status.status == "simplified"
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (6, 5, 1, 0)
+    assert {row.security_id for row in result.candidates} == {"A", "B", "C", "D", "E"}
+    assert result.candidates[0].security_id == "A"
+    assert result.candidates[0].status == "simplified_candidate"
+    assert "INELIGIBLE: ineligible security state" in result.topic_status.reasons
 
 
 def test_catchup_topic_benchmark_excludes_short_listing_member():

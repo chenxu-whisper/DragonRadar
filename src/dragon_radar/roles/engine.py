@@ -1258,6 +1258,8 @@ def _staged_window_failure(
                 reasons.append(reason)
 
     for security_id in tuple(classifications):
+        if classifications[security_id] != "valid":
+            continue
         window_classification, reason = _continuous_window_eligibility(
             prepared,
             security_id,
