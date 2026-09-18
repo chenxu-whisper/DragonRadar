@@ -379,6 +379,70 @@ def test_emotion_uses_exact_limit_streak_relative5_and_daily_share():
     )
 
 
+def test_emotion_rejects_cross_exchange_day_consumed_before_six_day_window():
+    from dragon_radar.roles.engine import evaluate_emotion
+
+    context = _context()
+    original = next(
+        security_state
+        for security_state in context.market.security_states
+        if security_state.security_id == "A"
+    )
+    states = tuple(
+        security_state
+        for security_state in context.market.security_states
+        if security_state.security_id != "A"
+    )
+    streak_days = frozenset(SESSIONS[-7:])
+    bars = tuple(
+        daily_bar.model_copy(
+            update={
+                "limit_status": "limited",
+                "limit_date": daily_bar.trade_date,
+                "limit_up": daily_bar.close,
+                "limit_down": Decimal("80"),
+            }
+        )
+        if daily_bar.security_id == "A" and daily_bar.trade_date in streak_days
+        else daily_bar
+        for daily_bar in context.market.bars
+    )
+    context = RoleContext(
+        market=context.market.model_copy(
+            update={
+                "security_states": (
+                    *states,
+                    original.model_copy(
+                        update={
+                            "exchange": "OTHER",
+                            "effective_to": SESSIONS[-6],
+                        }
+                    ),
+                    original.model_copy(update={"effective_from": SESSIONS[-6]}),
+                ),
+                "bars": bars,
+            }
+        ),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+
+    result = evaluate_emotion(context, "topic-a")
+
+    assert result.topic_status.status == "insufficient"
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (3, 2, 0, 1)
+    assert result.topic_status.reasons[:2] == (
+        "cross_exchange",
+        "A: cross_exchange",
+    )
+    assert result.candidates == ()
+
+
 def test_emotion_keeps_complete_first_business_tie_as_simplified_candidates():
     from dragon_radar.roles.engine import evaluate_emotion
 

@@ -543,6 +543,7 @@ def _cross_exchange_result(
     expected: int,
     classifications: dict[str, Eligibility],
     reasons: Sequence[str],
+    valid: int = 0,
 ) -> RoleEvaluation | None:
     if "cross_exchange" not in classifications.values():
         return None
@@ -552,6 +553,7 @@ def _cross_exchange_result(
         reasons=("cross_exchange", *reasons),
         expected=expected,
         classifications=classifications,
+        valid=valid,
     )
 
 
@@ -1373,19 +1375,31 @@ def _daily_topic_amounts(
 def _closing_limit_streak(
     prepared: _PreparedContext,
     security_id: str,
-) -> int | None:
+) -> tuple[int | None, Eligibility, str | None]:
     sessions = prepared.context.market.calendar.sessions
     try:
         endpoint = sessions.index(prepared.trade_date)
     except ValueError:
-        return None
+        return None, "missing", None
     count = 0
     for day in reversed(sessions[: endpoint + 1]):
+        classification, reason = _state_eligibility(
+            prepared,
+            security_id,
+            day,
+            check_listing=False,
+        )
         state = prepared.state_on(security_id, day)
+        if classification == "cross_exchange":
+            return None, classification, reason
+        if classification == "missing":
+            return None, classification, reason
         if state is None:
-            return None
+            raise AssertionError("classified limit streak state became unavailable")
         if state.suspended:
-            return count
+            return count, "valid", None
+        if classification != "valid":
+            return None, "missing", reason
         daily_bar = prepared.bar_on(security_id, day)
         if (
             daily_bar is None
@@ -1393,7 +1407,7 @@ def _closing_limit_streak(
             or not daily_bar.close.is_finite()
             or daily_bar.close <= 0
         ):
-            return None
+            return None, "missing", None
         if daily_bar.limit_status == "no_limit":
             if any(
                 value is not None
@@ -1403,8 +1417,8 @@ def _closing_limit_streak(
                     daily_bar.limit_down,
                 )
             ):
-                return None
-            return count
+                return None, "missing", None
+            return count, "valid", None
         if (
             daily_bar.limit_status != "limited"
             or daily_bar.limit_date != day
@@ -1416,11 +1430,11 @@ def _closing_limit_streak(
             or daily_bar.limit_down >= daily_bar.limit_up
             or not daily_bar.limit_down <= daily_bar.close <= daily_bar.limit_up
         ):
-            return None
+            return None, "missing", None
         if daily_bar.close != daily_bar.limit_up:
-            return count
+            return count, "valid", None
         count += 1
-    return None
+    return None, "missing", None
 
 
 def _finish_staged(
@@ -1551,8 +1565,18 @@ def evaluate_emotion(context: RoleContext, topic_id: str) -> RoleEvaluation:
         if classification != "valid":
             continue
         amount = _amount_on(prepared, security_id, prepared.trade_date)
-        streak = _closing_limit_streak(prepared, security_id)
+        streak, streak_classification, streak_reason = _closing_limit_streak(
+            prepared,
+            security_id,
+        )
         current_bar = prepared.bar_on(security_id, prepared.trade_date)
+        if streak_classification != "valid":
+            classifications[security_id] = streak_classification
+            reasons.append(
+                streak_reason
+                or f"{security_id}: unknown required daily limit input"
+            )
+            continue
         if amount is None or streak is None or current_bar is None:
             classifications[security_id] = "missing"
             reasons.append(f"{security_id}: unknown required daily limit input")
@@ -1582,6 +1606,17 @@ def evaluate_emotion(context: RoleContext, topic_id: str) -> RoleEvaluation:
             and current_bar.close == current_bar.limit_up
             and streak >= 1
         )
+
+    cross_exchange = _cross_exchange_result(
+        prepared,
+        "emotion",
+        expected=expected,
+        classifications=classifications,
+        reasons=reasons,
+        valid=sum(value == "valid" for value in classifications.values()),
+    )
+    if cross_exchange is not None:
+        return cross_exchange
 
     rows = tuple(
         RoleCandidate(
