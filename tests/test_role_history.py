@@ -21,6 +21,7 @@ from dragon_radar.roles.models import (
     LimitRow,
     PendingRelayValidation,
     RankedCandidate,
+    RelayBaselinePrice,
     RoleChange,
     RoleContext,
     RoleEvaluation,
@@ -382,6 +383,34 @@ def test_compare_runs_marks_every_member_of_changed_tie_group():
     ]
 
 
+def test_compare_runs_reports_unchanged_for_identical_assignment_and_tie_group():
+    previous_context = _context(trade_date=SESSIONS[-2], member_ids=("A", "B"))
+    current_context = _context(member_ids=("A", "B"))
+    previous = _run(
+        "previous",
+        previous_context,
+        evaluations=(_evaluation("trend", (("A", 1), ("B", 1))),),
+        member_ids=("A", "B"),
+    )
+    current = _run(
+        "current",
+        current_context,
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 1), ("B", 1))),),
+        member_ids=("A", "B"),
+    )
+
+    changes = compare_runs(current, previous)
+
+    assert [(change.security_id, change.change_type) for change in changes] == [
+        ("A", "unchanged"),
+        ("B", "unchanged"),
+    ]
+    assert all(change.comparison_status == "comparable" for change in changes)
+    assert all(change.membership_changed is False for change in changes)
+    assert all(change.reasons == () for change in changes)
+
+
 def test_compare_runs_allows_daily_market_source_version_change():
     previous_context = _context(trade_date=SESSIONS[-2])
     current_context = _context()
@@ -409,44 +438,53 @@ def test_compare_runs_allows_daily_market_source_version_change():
 
 
 @pytest.mark.parametrize(
-    ("changes", "reason"),
+    ("field", "forged_value"),
     [
-        ({"visibility_mode": "retrospective"}, "visibility_mode_changed"),
-        ({"market_benchmark_definition": "other"}, "market_benchmark_changed"),
-        ({"taxonomy_version": "t2"}, "taxonomy_version_changed"),
+        ("topic_source_id", "forged-source"),
+        ("topic_source_version", "forged-source-version"),
+        ("taxonomy_version", "forged-taxonomy"),
+        ("membership_version", "forged-membership"),
+        ("visibility_mode", "retrospective"),
+        ("market_benchmark_definition", "forged-benchmark"),
+        ("topic_id", "missing-topic"),
     ],
 )
-def test_compare_runs_marks_incompatible_runs_not_comparable(changes, reason):
-    previous_context = _context(trade_date=SESSIONS[-2])
+def test_role_run_rejects_identity_projection_forged_against_context(
+    field,
+    forged_value,
+):
     context = _context()
-    previous = _run(
-        "previous",
-        previous_context,
-        evaluations=(_evaluation("trend", (("A", 1),)),),
-    )
-    current = _run(
-        "current",
-        context,
-        previous_id="previous",
-        evaluations=(_evaluation("trend", (("A", 2),)),),
-        **changes,
+    valid = _run("current", context)
+    values = valid.model_dump()
+    values[field] = forged_value
+
+    with pytest.raises(ValidationError):
+        RoleRunEvidence.model_validate(values)
+
+
+def test_role_run_rejects_stale_projection_after_context_revision():
+    context = _context()
+    valid = _run("current", context)
+    values = valid.model_dump()
+    values["context"]["topic"]["membership_version"] = "m2"
+
+    with pytest.raises(ValidationError, match="membership_version"):
+        RoleRunEvidence.model_validate(values)
+
+
+def test_role_run_requires_exactly_one_visible_effective_topic_definition():
+    context = _context()
+    valid = _run("current", context)
+    values = valid.model_dump()
+    duplicate = dict(values["context"]["topic"]["topics"][0])
+    duplicate["name"] = "Duplicate Topic"
+    values["context"]["topic"]["topics"] = (
+        *values["context"]["topic"]["topics"],
+        duplicate,
     )
 
-    result = compare_runs(current, previous)
-
-    assert result == (
-        RoleChange(
-            current_run_id="current",
-            previous_comparable_run_id="previous",
-            topic_id=TOPIC,
-            security_id="A",
-            role="trend",
-            comparison_status="not_comparable",
-            change_type=None,
-            membership_changed=False,
-            reasons=(reason,),
-        ),
-    )
+    with pytest.raises(ValidationError, match="exactly one"):
+        RoleRunEvidence.model_validate(values)
 
 
 def _validation_fixture(
@@ -516,6 +554,13 @@ def _validation_fixture(
         old_security_id="OLD",
         new_security_id="NEW",
         baseline_member_ids=member_ids,
+        baseline_prices=tuple(
+            RelayBaselinePrice(
+                security_id=security_id,
+                adjusted_price_raw=starts[security_id],
+            )
+            for security_id in member_ids
+        ),
         rule_version="role-test-v1",
         visibility_mode="contemporaneous",
         market_benchmark_definition=("eligible_declared_market_pool_return_median"),
@@ -560,6 +605,69 @@ def test_validate_relay_matures_at_t_plus_5_with_exact_outcome(
     assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))
     assert validation.old_return_raw == Decimal(old_end) / Decimal("100") - 1
     assert validation.new_return_raw == Decimal(new_end) / Decimal("100") - 1
+
+
+def test_validate_relay_ignores_late_corrected_t_bar_in_future_snapshot():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    first = runs[0]
+    corrected_bars = tuple(
+        daily_bar.model_copy(update={"close": Decimal("1000")})
+        if daily_bar.trade_date == pending.observation_date
+        else daily_bar
+        for daily_bar in first.context.market.bars
+    )
+    corrected_context = first.context.model_copy(
+        update={
+            "market": first.context.market.model_copy(update={"bars": corrected_bars})
+        }
+    )
+
+    validation = validate_relay(
+        pending,
+        (first.model_copy(update={"context": corrected_context}), *runs[1:]),
+    )[0]
+
+    assert validation.outcome == "supported"
+    assert validation.old_return_raw == Decimal("0.1")
+    assert validation.new_return_raw == Decimal("0.3")
+
+
+def test_validate_relay_requires_each_future_daily_price_point():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    target_day = FUTURE_SESSIONS[-3]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={
+                    "bars": tuple(
+                        daily_bar
+                        for daily_bar in target.context.market.bars
+                        if not (
+                            daily_bar.security_id == "B"
+                            and daily_bar.trade_date == target_day
+                        )
+                    )
+                }
+            )
+        }
+    )
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], target.model_copy(update={"context": changed_context}), *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert "B: missing_price" in validation.reasons
 
 
 def test_validate_relay_returns_no_record_before_t_plus_5():
@@ -772,7 +880,7 @@ def test_validate_relay_rechecks_early_run_grant_at_validation_time():
 
 
 def test_history_outputs_are_strict_frozen_models():
-    for model in (LimitRow, RoleChange, RoleValidation):
+    for model in (LimitRow, RelayBaselinePrice, RoleChange, RoleValidation):
         assert model.model_config["strict"] is True
         assert model.model_config["frozen"] is True
         assert model.model_config["extra"] == "forbid"
@@ -795,6 +903,28 @@ def test_history_outputs_are_strict_frozen_models():
     (
         {"new_security_id": "OLD"},
         {"baseline_member_ids": ("A", "B")},
+        {
+            "baseline_prices": (
+                {"security_id": "A", "adjusted_price_raw": Decimal("100")},
+            )
+        },
+        {
+            "baseline_prices": (
+                {"security_id": "A", "adjusted_price_raw": Decimal("100")},
+                {"security_id": "A", "adjusted_price_raw": Decimal("101")},
+                {"security_id": "B", "adjusted_price_raw": Decimal("100")},
+                {"security_id": "NEW", "adjusted_price_raw": Decimal("100")},
+                {"security_id": "OLD", "adjusted_price_raw": Decimal("100")},
+            )
+        },
+        {
+            "baseline_prices": (
+                {"security_id": "A", "adjusted_price_raw": Decimal("100")},
+                {"security_id": "B", "adjusted_price_raw": Decimal("100")},
+                {"security_id": "EXTRA", "adjusted_price_raw": Decimal("100")},
+                {"security_id": "OLD", "adjusted_price_raw": Decimal("100")},
+            )
+        },
     ),
 )
 def test_pending_relay_rejects_invalid_object_identity(changes):

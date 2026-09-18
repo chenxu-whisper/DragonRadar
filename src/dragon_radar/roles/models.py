@@ -322,10 +322,99 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
     def validate_run_identity(self) -> Self:
         if len(set(self.member_ids)) != len(self.member_ids):
             raise ValueError("member_ids must not contain duplicates")
+        topic = self.context.topic
+        cutoff = self.context.knowledge_cutoff
+        expected_visibility = (
+            "retrospective"
+            if "retrospective" in {self.context.market.provenance, topic.provenance}
+            else "contemporaneous"
+        )
+        projections = (
+            (
+                self.topic_source_id,
+                topic.source_id,
+                "topic_source_id must match context.topic.source_id",
+            ),
+            (
+                self.topic_source_version,
+                topic.source_version,
+                "topic_source_version must match context.topic.source_version",
+            ),
+            (
+                self.taxonomy_version,
+                topic.taxonomy_version,
+                "taxonomy_version must match context.topic.taxonomy_version",
+            ),
+            (
+                self.membership_version,
+                topic.membership_version,
+                "membership_version must match context.topic.membership_version",
+            ),
+            (
+                self.visibility_mode,
+                expected_visibility,
+                "visibility_mode must match context provenance",
+            ),
+            (
+                self.market_benchmark_definition,
+                "eligible_declared_market_pool_return_median",
+                "market_benchmark_definition is fixed by rule version",
+            ),
+        )
+        for actual, expected, message in projections:
+            if actual != expected:
+                raise ValueError(message)
+        if (
+            self.context.market.calendar.exchange != topic.exchange
+            or self.context.market.calendar_version
+            != self.context.market.calendar.version
+            or topic.calendar_version != topic.calendar.version
+            or self.context.market.calendar.sessions != topic.calendar.sessions
+        ):
+            raise ValueError("context calendar identity must be consistent")
+        definitions = tuple(
+            definition
+            for definition in topic.topics
+            if definition.topic_id == self.topic_id
+            and definition.available_at <= cutoff
+            and definition.effective_from <= self.trade_date
+            and (
+                definition.effective_to is None
+                or self.trade_date < definition.effective_to
+            )
+        )
+        if len(definitions) != 1:
+            raise ValueError(
+                "topic_id must have exactly one visible effective definition"
+            )
+        context_member_ids = tuple(
+            membership.security_id
+            for membership in topic.memberships
+            if membership.topic_id == self.topic_id
+            and membership.available_at <= cutoff
+            and membership.effective_from <= self.trade_date
+            and (
+                membership.effective_to is None
+                or self.trade_date < membership.effective_to
+            )
+        )
+        if set(self.member_ids) != set(context_member_ids) or len(
+            context_member_ids
+        ) != len(set(context_member_ids)):
+            raise ValueError(
+                "member_ids must match visible effective topic memberships"
+            )
         for evaluation in self.evaluations:
             if evaluation.topic_status.topic_id != self.topic_id:
                 raise ValueError("evaluation topic_id must match run topic_id")
         return self
+
+
+class RelayBaselinePrice(_StrictFrozenRoleModel):
+    """One observation-time adjusted price frozen for relay validation."""
+
+    security_id: Identifier
+    adjusted_price_raw: ExactDecimal = Field(gt=0)
 
 
 class PendingRelayValidation(_StrictFrozenRoleModel):
@@ -338,6 +427,7 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     old_security_id: Identifier
     new_security_id: Identifier
     baseline_member_ids: tuple[Identifier, ...]
+    baseline_prices: tuple[RelayBaselinePrice, ...]
     rule_version: Literal["role-v1", "role-test-v1"]
     visibility_mode: Literal["contemporaneous", "retrospective"]
     market_benchmark_definition: Identifier
@@ -354,6 +444,16 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             raise ValueError("baseline_member_ids must not contain duplicates")
         if not self.baseline_member_ids:
             raise ValueError("baseline_member_ids must not be empty")
+        price_ids = tuple(price.security_id for price in self.baseline_prices)
+        if len(set(price_ids)) != len(price_ids):
+            raise ValueError("baseline price security IDs must not contain duplicates")
+        if set(price_ids) != set(self.baseline_member_ids) or len(price_ids) != len(
+            self.baseline_member_ids
+        ):
+            raise ValueError(
+                "baseline price security IDs must correspond one-to-one "
+                "with baseline members"
+            )
         if self.old_security_id == self.new_security_id:
             raise ValueError("old and new security IDs must differ")
         if not {

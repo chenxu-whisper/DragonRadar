@@ -545,10 +545,10 @@ def validate_relay(
             reasons=("membership_changed",),
         )
 
-    all_days = (pending.observation_date, *validation_sessions)
-    run_for_day = {pending.observation_date: selected[0]}
-    run_for_day.update(zip(validation_sessions, selected, strict=True))
-    if any(_members_on(run_for_day[day], day) != baseline for day in all_days):
+    if any(
+        _members_on(run, day) != baseline
+        for day, run in zip(validation_sessions, selected, strict=True)
+    ):
         return _unavailable_validation(
             pending,
             sessions=validation_sessions,
@@ -556,15 +556,12 @@ def validate_relay(
             reasons=("membership_changed",),
         )
     prices: dict[str, list[Decimal]] = {
-        security_id: []
-        for security_id in sorted(
-            baseline | {pending.old_security_id, pending.new_security_id}
-        )
+        price.security_id: [price.adjusted_price_raw]
+        for price in pending.baseline_prices
     }
     failures: list[str] = []
     for security_id in prices:
-        for day in all_days:
-            run = run_for_day[day]
+        for day, run in zip(validation_sessions, selected, strict=True):
             if not _is_member(run, security_id, day):
                 failures.append(f"{security_id}: membership_discontinuous")
                 break
