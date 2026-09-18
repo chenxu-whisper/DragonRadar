@@ -1179,9 +1179,10 @@ def test_validate_relay_allows_daily_market_source_version_change():
     (
         {"verification_status": "failed"},
         {"activation_event_id": ""},
+        {"active_run_count": 2},
     ),
 )
-def test_validate_relay_rejects_unverified_or_unactivated_run(changes):
+def test_validate_relay_rejects_invalid_future_run_projection(changes):
     pending, runs = _validation_fixture(
         new_end="130",
         old_end="110",
@@ -1526,7 +1527,7 @@ def test_validate_relay_returns_no_record_before_t_plus_5():
     assert validate_relay(pending, runs[:-1]) == ()
 
 
-@pytest.mark.parametrize("failure", ("suspended", "membership", "missing_price"))
+@pytest.mark.parametrize("failure", ("suspended", "missing_price"))
 def test_validate_relay_does_not_silently_remove_benchmark_member(failure):
     pending, runs = _validation_fixture(
         new_end="130",
@@ -1544,20 +1545,6 @@ def test_validate_relay_does_not_silently_remove_benchmark_member(failure):
                             if security_state.security_id == "B"
                             else security_state
                             for security_state in target.context.market.security_states
-                        )
-                    }
-                )
-            }
-        )
-    elif failure == "membership":
-        changed_context = target.context.model_copy(
-            update={
-                "topic": target.context.topic.model_copy(
-                    update={
-                        "memberships": tuple(
-                            membership
-                            for membership in target.context.topic.memberships
-                            if membership.security_id != "B"
                         )
                     }
                 )
@@ -1588,6 +1575,34 @@ def test_validate_relay_does_not_silently_remove_benchmark_member(failure):
     assert any(failure.split("_")[0] in reason for reason in validation.reasons)
 
 
+def test_validate_relay_rejects_removed_topic_member_with_stale_projection():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[-1]
+    changed_context = target.context.model_copy(
+        update={
+            "topic": target.context.topic.model_copy(
+                update={
+                    "memberships": tuple(
+                        membership
+                        for membership in target.context.topic.memberships
+                        if membership.security_id != "B"
+                    )
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValidationError, match="member_ids"):
+        validate_relay(
+            pending,
+            (*runs[:-1], target.model_copy(update={"context": changed_context})),
+        )
+
+
 def test_validate_relay_rejects_added_topic_member_even_if_projection_is_stale():
     pending, runs = _validation_fixture(
         new_end="130",
@@ -1610,13 +1625,11 @@ def test_validate_relay_rejects_added_topic_member_even_if_projection_is_stale()
         }
     )
 
-    validation = validate_relay(
-        pending,
-        (*runs[:-1], target.model_copy(update={"context": changed_context})),
-    )[0]
-
-    assert validation.outcome == "unavailable"
-    assert validation.reasons == ("membership_changed",)
+    with pytest.raises(ValidationError, match="member_ids"):
+        validate_relay(
+            pending,
+            (*runs[:-1], target.model_copy(update={"context": changed_context})),
+        )
 
 
 def test_validate_relay_rejects_cross_exchange_future_run():
@@ -1637,13 +1650,11 @@ def test_validate_relay_rejects_cross_exchange_future_run():
         }
     )
 
-    validation = validate_relay(
-        pending,
-        (*runs[:-1], target.model_copy(update={"context": changed_context})),
-    )[0]
-
-    assert validation.outcome == "unavailable"
-    assert validation.reasons == ("topic_incomparable", "exchange_changed")
+    with pytest.raises(ValidationError, match="calendar identity"):
+        validate_relay(
+            pending,
+            (*runs[:-1], target.model_copy(update={"context": changed_context})),
+        )
 
 
 def test_validate_relay_rejects_membership_version_change_with_same_members():

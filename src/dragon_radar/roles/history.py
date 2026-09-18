@@ -525,6 +525,9 @@ def validate_relay(
 ) -> tuple[RoleValidation, ...]:
     """Validate a mature pending relay against fixed daily-visible run inputs."""
     pending = PendingRelayValidation.model_validate(pending.model_dump())
+    future_runs = tuple(
+        RoleRunEvidence.model_validate(run.model_dump()) for run in future_runs
+    )
     if pending.current_validation is not None:
         return (pending.current_validation,)
     ordered = tuple(
@@ -553,11 +556,6 @@ def validate_relay(
             runs=selected,
             reasons=("window_incomplete",),
         )
-    for run in selected:
-        if run.verification_status != "passed" or not any(
-            not character.isspace() for character in run.activation_event_id
-        ):
-            RoleRunEvidence.model_validate(run.model_dump())
 
     identity_reasons = tuple(
         reason for run in selected for reason in _run_identity_reasons(pending, run)
