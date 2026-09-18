@@ -382,9 +382,9 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
     membership_version: Identifier
     member_ids: tuple[Identifier, ...]
     evaluations: tuple[RoleEvaluation, ...] = ()
-    verification_status: Literal["passed"]
-    activation_event_id: Identifier
-    active_run_count: Literal[1] = 1
+    verification_status: Literal["pending", "passed", "failed"]
+    activation_event_id: Identifier | None = None
+    active_run_count: Literal[0, 1] = 0
 
     @property
     def trade_date(self) -> date:
@@ -396,6 +396,14 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
 
     @model_validator(mode="after")
     def validate_run_identity(self) -> Self:
+        is_active = self.active_run_count == 1
+        if is_active != (self.activation_event_id is not None):
+            raise ValueError(
+                "activation_event_id and active_run_count must describe "
+                "the same activation state"
+            )
+        if is_active and self.verification_status != "passed":
+            raise ValueError("activation requires passed verification")
         if len(set(self.member_ids)) != len(self.member_ids):
             raise ValueError("member_ids must not contain duplicates")
         if self.previous_comparable_run_id == self.role_run_id:
@@ -519,18 +527,47 @@ class RelayObservationEligibility(_StrictFrozenRoleModel):
         Literal[
             "ineligible_security_state",
             "insufficient_listing_history",
+            "missing_identity_evidence",
         ]
         | None
     )
-    security_type: Identifier
-    board_category: Literal["sh_main", "sz_main", "synthetic_test"]
-    listing_date: date
-    suspended: bool
-    is_st: bool
-    is_delisting: bool
+    security_type: Identifier | None
+    board_category: Literal["sh_main", "sz_main", "synthetic_test"] | None
+    listing_date: date | None
+    suspended: bool | None
+    is_st: bool | None
+    is_delisting: bool | None
     exchange: Identifier
     source_id: Identifier
     pool_version: Identifier
+
+    @model_validator(mode="after")
+    def validate_missing_identity_evidence(self) -> Self:
+        identity_missing = any(
+            value is None
+            for value in (
+                self.security_type,
+                self.board_category,
+                self.listing_date,
+                self.suspended,
+                self.is_st,
+                self.is_delisting,
+            )
+        )
+        if identity_missing and (
+            self.eligible or self.eligibility_reason != "missing_identity_evidence"
+        ):
+            raise ValueError(
+                "missing identity fields require ineligible missing_identity_evidence"
+            )
+        if (
+            not identity_missing
+            and self.eligibility_reason == "missing_identity_evidence"
+        ):
+            raise ValueError(
+                "missing_identity_evidence requires at least one missing identity field"
+            )
+        return self
 
 
 class PendingRelayValidation(_StrictFrozenRoleModel):
@@ -569,6 +606,12 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
         observation_run = RoleRunEvidence.model_validate(
             self.observation_run.model_dump()
         )
+        if (
+            observation_run.verification_status != "passed"
+            or observation_run.activation_event_id is None
+            or observation_run.active_run_count != 1
+        ):
+            raise ValueError("observation_run must be passed and active")
         observation_context = observation_run.context
         market = observation_context.market
         topic = observation_context.topic
@@ -758,7 +801,10 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
                 or member.source_id != self.market_source_id
                 or member.pool_version != self.pool_version
                 or member.exchange != self.exchange
-                or member.listing_date > self.observation_date
+                or (
+                    member.listing_date is not None
+                    and member.listing_date > self.observation_date
+                )
             ):
                 raise ValueError(
                     "observation eligibility identity must match frozen "

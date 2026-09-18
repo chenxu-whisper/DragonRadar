@@ -2,7 +2,7 @@
 
 from bisect import bisect_left
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from dragon_radar.domain.models import DailyBar, SecurityState
@@ -356,6 +356,12 @@ def compare_runs(
     """Compare positive role assignments only against the selected predecessor."""
     current = RoleRunEvidence.model_validate(current.model_dump())
     previous = RoleRunEvidence.model_validate(previous.model_dump())
+    if (
+        previous.verification_status != "passed"
+        or previous.activation_event_id is None
+        or previous.active_run_count != 1
+    ):
+        raise ValueError("previous run must be passed and active")
     current_rows = _positive_rows(current)
     previous_rows = _positive_rows(previous)
     keys = tuple(sorted(current_rows.keys() | previous_rows.keys()))
@@ -648,25 +654,40 @@ def _observation_proof_reasons(
         ):
             reasons.append(f"{security_id}: observation_identity_mismatch")
             continue
-        eligibility, detail = _state_eligibility(
-            prepared,
-            security_id,
-            observation_day,
-            check_listing=True,
-        )
-        if eligibility == "valid":
-            expected_eligible = True
-            expected_reason = None
-        elif eligibility == "legal_excluded" and detail is not None:
-            expected_eligible = False
-            expected_reason = (
-                "insufficient_listing_history"
-                if detail.endswith("insufficient listing history")
-                else "ineligible_security_state"
+        missing_identity = any(
+            getattr(state, field) is None
+            for field in (
+                "security_type",
+                "board_category",
+                "listing_date",
+                "suspended",
+                "is_st",
+                "is_delisting",
             )
+        )
+        if missing_identity:
+            expected_eligible = False
+            expected_reason = "missing_identity_evidence"
         else:
-            reasons.append(f"{security_id}: observation_eligibility_unavailable")
-            continue
+            eligibility, detail = _state_eligibility(
+                prepared,
+                security_id,
+                observation_day,
+                check_listing=True,
+            )
+            if eligibility == "valid":
+                expected_eligible = True
+                expected_reason = None
+            elif eligibility == "legal_excluded" and detail is not None:
+                expected_eligible = False
+                expected_reason = (
+                    "insufficient_listing_history"
+                    if detail.endswith("insufficient listing history")
+                    else "ineligible_security_state"
+                )
+            else:
+                reasons.append(f"{security_id}: observation_eligibility_unavailable")
+                continue
         if (
             projected.eligible is not expected_eligible
             or projected.eligibility_reason != expected_reason
@@ -702,13 +723,67 @@ def _observation_proof_reasons(
     return tuple(dict.fromkeys(reasons))
 
 
+def _authorization_available(
+    pending: PendingRelayValidation,
+    runs: Sequence[RoleRunEvidence],
+    *,
+    operation_at: datetime,
+) -> bool:
+    return all(
+        grant_allows_local(
+            run.context.market.grant,
+            source_id=run.context.market.source_id,
+            now=operation_at,
+        )
+        and grant_allows_local(
+            run.context.topic.grant,
+            source_id=run.context.topic.source_id,
+            now=operation_at,
+        )
+        for run in (pending.observation_run, *runs)
+    )
+
+
 def validate_relay(
     pending: PendingRelayValidation,
     future_runs: Sequence[RoleRunEvidence],
+    *,
+    operation_at: datetime,
 ) -> tuple[RoleValidation, ...]:
     """Validate a mature pending relay against fixed daily-visible run inputs."""
+    if operation_at.tzinfo is None or operation_at.utcoffset() is None:
+        raise ValueError("operation_at requires a timezone")
+    operation_at = operation_at.astimezone(UTC)
     pending = PendingRelayValidation.model_validate(pending.model_dump())
     if pending.current_validation is not None:
+        input_run_ids = frozenset(pending.current_validation.input_run_ids) - {
+            pending.observation_run_id
+        }
+        current_window_runs = tuple(
+            RoleRunEvidence.model_validate(run.model_dump())
+            for run in future_runs
+            if run.role_run_id in input_run_ids
+        )
+        if any(
+            run.verification_status != "passed"
+            or run.activation_event_id is None
+            or run.active_run_count != 1
+            for run in current_window_runs
+        ):
+            raise ValueError("relay validation runs must be passed and active")
+        if len(current_window_runs) != len(input_run_ids) or not (
+            _authorization_available(
+                pending,
+                current_window_runs,
+                operation_at=operation_at,
+            )
+        ):
+            return _unavailable_validation(
+                pending,
+                sessions=pending.validation_sessions,
+                runs=current_window_runs,
+                reasons=("authorization_unavailable",),
+            )
         observation_reasons = _observation_proof_reasons(pending)
         if observation_reasons:
             return _unavailable_validation(
@@ -721,6 +796,13 @@ def validate_relay(
     future_runs = tuple(
         RoleRunEvidence.model_validate(run.model_dump()) for run in future_runs
     )
+    if any(
+        run.verification_status != "passed"
+        or run.activation_event_id is None
+        or run.active_run_count != 1
+        for run in future_runs
+    ):
+        raise ValueError("relay validation runs must be passed and active")
     strict_future = tuple(
         sorted(
             (run for run in future_runs if run.trade_date > pending.observation_date),
@@ -820,19 +902,10 @@ def validate_relay(
             reasons=("duplicate_input_run_id",),
         )
 
-    validation_cutoff = selected[-1].context.knowledge_cutoff
-    if any(
-        not grant_allows_local(
-            run.context.market.grant,
-            source_id=run.context.market.source_id,
-            now=validation_cutoff,
-        )
-        or not grant_allows_local(
-            run.context.topic.grant,
-            source_id=run.context.topic.source_id,
-            now=validation_cutoff,
-        )
-        for run in (pending.observation_run, *selected)
+    if not _authorization_available(
+        pending,
+        selected,
+        operation_at=operation_at,
     ):
         return _unavailable_validation(
             pending,

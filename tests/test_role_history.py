@@ -15,8 +15,8 @@ from dragon_radar.domain.models import ExchangeCalendar
 from dragon_radar.roles.history import (
     build_limit_ladder,
     compare_runs,
-    validate_relay,
 )
+from dragon_radar.roles.history import validate_relay as _validate_relay
 from dragon_radar.roles.models import (
     LimitRow,
     PendingRelayValidation,
@@ -48,6 +48,19 @@ def _sessions(count: int = 20, *, end: date = T) -> tuple[date, ...]:
 
 SESSIONS = _sessions()
 FUTURE_SESSIONS = _sessions(25, end=date(2026, 9, 15))
+
+
+def validate_relay(
+    pending: PendingRelayValidation,
+    future_runs: tuple[RoleRunEvidence, ...],
+    *,
+    operation_at: datetime = CUTOFF,
+) -> tuple[RoleValidation, ...]:
+    return _validate_relay(
+        pending,
+        future_runs,
+        operation_at=operation_at,
+    )
 
 
 def _limited_bar(
@@ -1304,6 +1317,90 @@ def test_role_run_requires_verified_activated_projection(field, value):
         RoleRunEvidence.model_validate(values)
 
 
+def test_role_run_allows_materialized_unverified_inactive_projection():
+    run = _run(
+        "current",
+        _context(),
+        verification_status="pending",
+        activation_event_id=None,
+        active_run_count=0,
+    )
+
+    assert run.verification_status == "pending"
+    assert run.activation_event_id is None
+    assert run.active_run_count == 0
+
+
+def test_compare_runs_allows_inactive_current_against_active_predecessor():
+    previous = _run(
+        "previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+        verification_status="pending",
+        activation_event_id=None,
+        active_run_count=0,
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "comparable"
+    assert change.change_type == "unchanged"
+
+
+def test_compare_runs_rejects_inactive_previous_as_comparable():
+    previous = _run(
+        "previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+        verification_status="pending",
+        activation_event_id=None,
+        active_run_count=0,
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+        verification_status="pending",
+        activation_event_id=None,
+        active_run_count=0,
+    )
+
+    with pytest.raises(ValueError, match="previous run must be passed and active"):
+        compare_runs(current, previous)
+
+
+@pytest.mark.parametrize(
+    ("verification_status", "activation_event_id", "active_run_count"),
+    (
+        ("pending", "activation-current", 1),
+        ("failed", "activation-current", 1),
+        ("passed", None, 1),
+        ("passed", "activation-current", 0),
+    ),
+)
+def test_role_run_rejects_inconsistent_lifecycle_projection(
+    verification_status,
+    activation_event_id,
+    active_run_count,
+):
+    values = _run("current", _context()).model_dump()
+    values.update(
+        verification_status=verification_status,
+        activation_event_id=activation_event_id,
+        active_run_count=active_run_count,
+    )
+
+    with pytest.raises(ValidationError, match="activation"):
+        RoleRunEvidence.model_validate(values)
+
+
 def test_role_run_rejects_previous_comparable_run_self_reference():
     values = _run("current", _context()).model_dump()
     values["previous_comparable_run_id"] = values["role_run_id"]
@@ -1788,6 +1885,110 @@ def test_pending_relay_eligible_member_order_does_not_change_semantics():
         for member in validated.observation_eligibility
         if member.eligible
     } == set(pending.baseline_member_ids)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "security_type",
+        "board_category",
+        "listing_date",
+        "suspended",
+        "is_st",
+        "is_delisting",
+    ),
+)
+def test_relay_observation_eligibility_accepts_missing_archived_identity(
+    missing_field,
+):
+    values = {
+        "security_id": "A",
+        "eligible": False,
+        "eligibility_reason": "missing_identity_evidence",
+        "security_type": "common_stock",
+        "board_category": "synthetic_test",
+        "listing_date": FUTURE_SESSIONS[0],
+        "suspended": False,
+        "is_st": False,
+        "is_delisting": False,
+        "exchange": "TEST",
+        "source_id": "synthetic",
+        "pool_version": "p1",
+        missing_field: None,
+    }
+
+    eligibility = RelayObservationEligibility(**values)
+
+    assert eligibility.eligible is False
+    assert eligibility.eligibility_reason == "missing_identity_evidence"
+
+
+def test_pending_relay_excludes_missing_archived_identity_from_baseline():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    missing_fields = {
+        "security_type": None,
+        "board_category": None,
+        "listing_date": None,
+        "suspended": None,
+        "is_st": None,
+        "is_delisting": None,
+    }
+    observation_run = pending.observation_run.model_copy(
+        update={
+            "context": pending.observation_run.context.model_copy(
+                update={
+                    "market": pending.observation_run.context.market.model_copy(
+                        update={
+                            "security_states": tuple(
+                                security_state.model_copy(update=missing_fields)
+                                if security_state.security_id == "A"
+                                else security_state
+                                for security_state in (
+                                    pending.observation_run.context.market.security_states
+                                )
+                            )
+                        }
+                    )
+                }
+            )
+        }
+    )
+    values = pending.model_dump()
+    values.update(
+        observation_run=observation_run,
+        observation_eligibility=tuple(
+            (
+                member.model_copy(
+                    update={
+                        **missing_fields,
+                        "eligible": False,
+                        "eligibility_reason": "missing_identity_evidence",
+                    }
+                )
+                if member.security_id == "A"
+                else member
+            )
+            for member in pending.observation_eligibility
+        ),
+        baseline_member_ids=tuple(
+            security_id
+            for security_id in pending.baseline_member_ids
+            if security_id != "A"
+        ),
+        baseline_prices=tuple(
+            price for price in pending.baseline_prices if price.security_id != "A"
+        ),
+    )
+
+    archived = PendingRelayValidation.model_validate(values)
+    validation = validate_relay(archived, runs, operation_at=CUTOFF)[0]
+
+    assert "A" not in archived.baseline_member_ids
+    assert validation.outcome == "supported"
 
 
 @pytest.mark.parametrize("observation_suspended", (True, None))
@@ -2331,6 +2532,28 @@ def test_validate_relay_rejects_forged_current_validation_outcome():
         validate_relay(forged_pending, runs)
 
 
+def test_validate_relay_replays_existing_observation_unavailable_validation():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["baseline_prices"] = tuple(
+        (
+            price.model_copy(update={"adjusted_price_raw": Decimal("110")})
+            if price.security_id == "NEW"
+            else price
+        )
+        for price in pending.baseline_prices
+    )
+    mismatched = PendingRelayValidation.model_validate(values)
+    existing = validate_relay(mismatched, runs)[0]
+    persisted = mismatched.model_copy(update={"current_validation": existing})
+
+    assert validate_relay(persisted, runs) == (existing,)
+
+
 def test_validate_relay_existing_validation_ignores_invalid_future_runs():
     pending, runs = _validation_fixture(
         new_end="130",
@@ -2339,7 +2562,12 @@ def test_validate_relay_existing_validation_ignores_invalid_future_runs():
     )
     existing = validate_relay(pending, runs)[0]
     persisted = pending.model_copy(update={"current_validation": existing})
-    forged_future = runs[-1].model_copy(update={"active_run_count": 2})
+    forged_future = runs[-1].model_copy(
+        update={
+            "role_run_id": "unrelated-future",
+            "active_run_count": 2,
+        }
+    )
 
     assert validate_relay(persisted, (*runs, forged_future)) == (existing,)
 
@@ -3142,6 +3370,78 @@ def test_validate_relay_rechecks_early_run_grant_at_validation_time():
     validation = validate_relay(
         pending,
         (first.model_copy(update={"context": early_context}), *runs[1:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("authorization_unavailable",)
+
+
+def test_validate_relay_blocks_existing_validation_after_observation_grant_revoked():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    existing = validate_relay(pending, runs, operation_at=CUTOFF)[0]
+    revoked_observation = pending.observation_run.model_copy(
+        update={
+            "context": pending.observation_run.context.model_copy(
+                update={
+                    "market": pending.observation_run.context.market.model_copy(
+                        update={"grant": grant(approved=False)}
+                    )
+                }
+            )
+        }
+    )
+    persisted = pending.model_copy(
+        update={
+            "observation_run": revoked_observation,
+            "current_validation": existing,
+        }
+    )
+
+    validation = validate_relay(persisted, runs, operation_at=CUTOFF)[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("authorization_unavailable",)
+    assert persisted.current_validation == existing
+
+
+def test_validate_relay_checks_all_grants_at_explicit_operation_time():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    operation_at = datetime(2026, 10, 1, tzinfo=UTC)
+    expires_after_snapshot_cutoff = datetime(2026, 9, 25, tzinfo=UTC)
+    expiring_runs = tuple(
+        run.model_copy(
+            update={
+                "context": run.context.model_copy(
+                    update={
+                        "market": run.context.market.model_copy(
+                            update={
+                                "grant": grant(expires_at=expires_after_snapshot_cutoff)
+                            }
+                        ),
+                        "topic": run.context.topic.model_copy(
+                            update={
+                                "grant": grant(expires_at=expires_after_snapshot_cutoff)
+                            }
+                        ),
+                    }
+                )
+            }
+        )
+        for run in runs
+    )
+
+    validation = validate_relay(
+        pending,
+        expiring_runs,
+        operation_at=operation_at,
     )[0]
 
     assert validation.outcome == "unavailable"
