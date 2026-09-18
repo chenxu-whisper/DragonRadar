@@ -90,6 +90,14 @@ def _context(
     market_grant=None,
     topic_grant=None,
     membership_version: str = "m1",
+    rule_version: str = "role-test-v1",
+    provenance: str = "contemporaneous",
+    taxonomy_version: str = "t1",
+    topic_source_version: str = "s1",
+    pool_version: str = "p1",
+    market_source_id: str = "synthetic",
+    adjustment_version: str = "a1",
+    calendar_version: str = "history-c1",
 ) -> RoleContext:
     known_at = datetime(2026, 1, 1, tzinfo=UTC)
     states = states or tuple(
@@ -98,6 +106,8 @@ def _context(
             effective_from=sessions[0],
             available_at=known_at,
             listing_date=sessions[0],
+            pool_version=pool_version,
+            source_id=market_source_id,
         )
         for security_id in member_ids
     )
@@ -111,13 +121,19 @@ def _context(
     )
     calendar = ExchangeCalendar(
         exchange="TEST",
-        version="history-c1",
+        version=calendar_version,
         sessions=sessions,
     )
     market = batch(
         trade_date=trade_date,
         as_of=CUTOFF,
-        grant=market_grant or grant(expires_at=datetime(2027, 1, 1, tzinfo=UTC)),
+        grant=market_grant
+        or grant(
+            source_id=market_source_id,
+            expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+        ),
+        source_id=market_source_id,
+        adjustment_version=adjustment_version,
         calendar=calendar,
         calendar_version=calendar.version,
         expected_security_ids=tuple(
@@ -129,6 +145,8 @@ def _context(
         ),
         security_states=tuple(states),
         bars=tuple(bars),
+        pool_version=pool_version,
+        provenance=provenance,
     )
     topic = topic_batch(
         trade_date=trade_date,
@@ -151,8 +169,11 @@ def _context(
         topics=(topic_definition(effective_from=sessions[0], available_at=known_at),),
         memberships=memberships,
         membership_version=membership_version,
+        taxonomy_version=taxonomy_version,
+        source_version=topic_source_version,
+        provenance=provenance,
     )
-    return RoleContext(market=market, topic=topic, rule_version="role-test-v1")
+    return RoleContext(market=market, topic=topic, rule_version=rule_version)
 
 
 def _evaluation(
@@ -213,7 +234,11 @@ def _run(
         "previous_comparable_run_id": previous_id,
         "context": context,
         "topic_id": TOPIC,
-        "visibility_mode": "contemporaneous",
+        "visibility_mode": (
+            "retrospective"
+            if "retrospective" in {context.market.provenance, context.topic.provenance}
+            else "contemporaneous"
+        ),
         "market_benchmark_definition": ("eligible_declared_market_pool_return_median"),
         "topic_source_id": context.topic.source_id,
         "topic_source_version": context.topic.source_version,
@@ -438,6 +463,99 @@ def test_compare_runs_allows_daily_market_source_version_change():
 
 
 @pytest.mark.parametrize(
+    ("current_context_changes", "run_changes", "expected_reasons"),
+    [
+        ({"rule_version": "role-v1"}, {}, ("rule_version_changed",)),
+        (
+            {"taxonomy_version": "t2"},
+            {},
+            ("taxonomy_version_changed",),
+        ),
+        (
+            {"provenance": "retrospective"},
+            {},
+            ("visibility_mode_changed",),
+        ),
+        (
+            {},
+            {"market_benchmark_definition": "revised-market-benchmark"},
+            ("market_benchmark_changed",),
+        ),
+        (
+            {"pool_version": "p2"},
+            {},
+            ("calculation_basis_changed",),
+        ),
+        (
+            {"market_source_id": "revised-market-source"},
+            {},
+            ("calculation_basis_changed",),
+        ),
+        (
+            {"adjustment_version": "a2"},
+            {},
+            ("calculation_basis_changed",),
+        ),
+        (
+            {"calendar_version": "history-c2"},
+            {},
+            ("calculation_basis_changed",),
+        ),
+    ],
+)
+def test_compare_runs_marks_changed_calculation_identity_not_comparable(
+    current_context_changes,
+    run_changes,
+    expected_reasons,
+):
+    previous_context = _context(trade_date=SESSIONS[-2])
+    current_context = _context(**current_context_changes)
+    previous = _run(
+        "previous",
+        previous_context,
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        current_context,
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 2),)),),
+        **run_changes,
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert change.change_type is None
+    assert change.reasons == expected_reasons
+
+
+def test_compare_runs_marks_same_day_topic_revision_not_comparable():
+    previous_context = _context(topic_source_version="s1")
+    current_context = _context(topic_source_version="s2")
+    previous = _run(
+        "previous",
+        previous_context,
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        current_context,
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 2),)),),
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert change.change_type is None
+    assert change.reasons == (
+        "not_previous_comparable_session",
+        "topic_revision_changed",
+    )
+
+
+@pytest.mark.parametrize(
     ("field", "forged_value"),
     [
         ("topic_source_id", "forged-source"),
@@ -445,7 +563,6 @@ def test_compare_runs_allows_daily_market_source_version_change():
         ("taxonomy_version", "forged-taxonomy"),
         ("membership_version", "forged-membership"),
         ("visibility_mode", "retrospective"),
-        ("market_benchmark_definition", "forged-benchmark"),
         ("topic_id", "missing-topic"),
     ],
 )
@@ -561,6 +678,8 @@ def _validation_fixture(
             )
             for security_id in member_ids
         ),
+        membership_version="m1",
+        validation_sessions=validation_days,
         rule_version="role-test-v1",
         visibility_mode="contemporaneous",
         market_benchmark_definition=("eligible_declared_market_pool_return_median"),
@@ -571,6 +690,113 @@ def _validation_fixture(
         calendar_version="history-c1",
     )
     return pending, tuple(runs)
+
+
+def test_pending_relay_requires_five_strict_future_validation_sessions():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+
+    invalid_sessions = (
+        pending.validation_sessions[:4],
+        (
+            pending.validation_sessions[0],
+            pending.validation_sessions[2],
+            pending.validation_sessions[1],
+            *pending.validation_sessions[3:],
+        ),
+        (
+            pending.observation_date,
+            *pending.validation_sessions[1:],
+        ),
+    )
+
+    for sessions in invalid_sessions:
+        values = pending.model_dump()
+        values["validation_sessions"] = sessions
+        with pytest.raises(ValidationError, match="validation_sessions"):
+            PendingRelayValidation.model_validate(values)
+
+
+@pytest.mark.parametrize("field", ("membership_version", "validation_sessions"))
+def test_pending_relay_requires_frozen_membership_and_sessions(field):
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    del values[field]
+
+    with pytest.raises(ValidationError):
+        PendingRelayValidation.model_validate(values)
+
+
+def test_pending_relay_rejects_duplicate_validation_input_run_ids():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    validation = validate_relay(pending, runs)[0]
+    values = validation.model_dump()
+    values["input_run_ids"] = ("run-t1",) * 5
+
+    with pytest.raises(ValidationError, match="input_run_ids"):
+        RoleValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("pending_result_id", "other-pending"),
+        ("observation_run_id", "other-observation"),
+        ("topic_id", "other-topic"),
+        ("old_security_id", "A"),
+        ("new_security_id", "B"),
+        ("return_start", FUTURE_SESSIONS[-7]),
+        ("window_start", FUTURE_SESSIONS[-4]),
+        ("window_end", FUTURE_SESSIONS[-2]),
+        ("return_end", FUTURE_SESSIONS[-2]),
+        ("input_run_ids", ("run-t1",) * 5),
+    ],
+)
+def test_pending_relay_rejects_mismatched_current_validation(field, value):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    validation_values = validate_relay(pending, runs)[0].model_dump()
+    validation_values[field] = value
+    if field == "window_start":
+        validation_values["return_start"] = FUTURE_SESSIONS[-5]
+    if field == "window_end":
+        validation_values["return_end"] = value
+    if field == "return_end":
+        validation_values["window_end"] = value
+    values = pending.model_dump()
+    values["current_validation"] = validation_values
+
+    with pytest.raises(ValidationError, match="current_validation"):
+        PendingRelayValidation.model_validate(values)
+
+
+def test_validate_relay_revalidates_existing_validation_before_idempotent_return():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    validation = validate_relay(pending, runs)[0].model_copy(
+        update={"observation_run_id": "other-observation"}
+    )
+    forged_pending = pending.model_copy(update={"current_validation": validation})
+
+    with pytest.raises(ValidationError, match="current_validation"):
+        validate_relay(forged_pending, runs)
 
 
 @pytest.mark.parametrize(
@@ -798,6 +1024,108 @@ def test_validate_relay_rejects_cross_exchange_future_run():
 
     assert validation.outcome == "unavailable"
     assert validation.reasons == ("topic_incomparable", "exchange_changed")
+
+
+def test_validate_relay_rejects_membership_version_change_with_same_members():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    changed_context = RoleContext(
+        market=target.context.market,
+        topic=target.context.topic.model_copy(update={"membership_version": "m2"}),
+        rule_version=target.context.rule_version,
+    )
+    changed_run = _run(
+        target.role_run_id,
+        changed_context,
+        member_ids=target.member_ids,
+    )
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], changed_run, *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == (
+        "topic_incomparable",
+        "membership_version_changed",
+    )
+
+
+def test_validate_relay_uses_frozen_window_when_future_calendar_adds_session():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    first = runs[0]
+    inserted_session = date(2026, 9, 13)
+    changed_sessions = tuple(
+        sorted((*first.context.market.calendar.sessions, inserted_session))
+    )
+    changed_calendar = first.context.market.calendar.model_copy(
+        update={"sessions": changed_sessions}
+    )
+    changed_context = RoleContext(
+        market=first.context.market.model_copy(update={"calendar": changed_calendar}),
+        topic=first.context.topic.model_copy(update={"calendar": changed_calendar}),
+        rule_version=first.context.rule_version,
+    )
+    changed_first = _run(
+        first.role_run_id,
+        changed_context,
+        member_ids=first.member_ids,
+    )
+
+    validation = validate_relay(pending, (changed_first, *runs[1:]))[0]
+
+    assert validation.outcome == "supported"
+    assert validation.window_start == pending.validation_sessions[0]
+    assert validation.window_end == pending.validation_sessions[-1]
+    assert validation.return_end == pending.validation_sessions[-1]
+
+
+def test_validate_relay_requires_run_calendar_to_contain_its_trade_date():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    changed_calendar = target.context.market.calendar.model_copy(
+        update={
+            "sessions": tuple(
+                day
+                for day in target.context.market.calendar.sessions
+                if day != target.trade_date
+            )
+        }
+    )
+    changed_context = RoleContext(
+        market=target.context.market.model_copy(update={"calendar": changed_calendar}),
+        topic=target.context.topic.model_copy(update={"calendar": changed_calendar}),
+        rule_version=target.context.rule_version,
+    )
+    changed_run = _run(
+        target.role_run_id,
+        changed_context,
+        member_ids=target.member_ids,
+    )
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], changed_run, *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == (
+        "topic_incomparable",
+        "calendar_sessions_changed",
+    )
 
 
 def test_validate_relay_is_idempotent_and_future_inputs_do_not_change_existing():

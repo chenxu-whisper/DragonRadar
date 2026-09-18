@@ -281,6 +281,10 @@ class RoleValidation(_StrictFrozenRoleModel):
             and self.return_end == self.window_end
         ):
             raise ValueError("validation endpoints must describe T and T+1..T+5")
+        if self.old_security_id == self.new_security_id:
+            raise ValueError("validation old and new security IDs must differ")
+        if len(set(self.input_run_ids)) != len(self.input_run_ids):
+            raise ValueError("validation input_run_ids must not contain duplicates")
         values = (
             self.old_return_raw,
             self.new_return_raw,
@@ -355,11 +359,6 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
                 expected_visibility,
                 "visibility_mode must match context provenance",
             ),
-            (
-                self.market_benchmark_definition,
-                "eligible_declared_market_pool_return_median",
-                "market_benchmark_definition is fixed by rule version",
-            ),
         )
         for actual, expected, message in projections:
             if actual != expected:
@@ -428,6 +427,8 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     new_security_id: Identifier
     baseline_member_ids: tuple[Identifier, ...]
     baseline_prices: tuple[RelayBaselinePrice, ...]
+    membership_version: Identifier
+    validation_sessions: tuple[date, date, date, date, date]
     rule_version: Literal["role-v1", "role-test-v1"]
     visibility_mode: Literal["contemporaneous", "retrospective"]
     market_benchmark_definition: Identifier
@@ -440,6 +441,20 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
 
     @model_validator(mode="after")
     def validate_pending_identity(self) -> Self:
+        if any(
+            current >= following
+            for current, following in zip(
+                self.validation_sessions,
+                self.validation_sessions[1:],
+                strict=False,
+            )
+        ) or any(
+            session <= self.observation_date for session in self.validation_sessions
+        ):
+            raise ValueError(
+                "validation_sessions must be five strictly increasing dates after "
+                "observation_date"
+            )
         if len(set(self.baseline_member_ids)) != len(self.baseline_member_ids):
             raise ValueError("baseline_member_ids must not contain duplicates")
         if not self.baseline_member_ids:
@@ -461,8 +476,29 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             self.new_security_id,
         }.issubset(self.baseline_member_ids):
             raise ValueError("old and new security IDs must be baseline members")
-        if self.current_validation is not None and (
-            self.current_validation.pending_result_id != self.pending_result_id
-        ):
-            raise ValueError("current_validation must belong to pending_result_id")
+        if self.current_validation is not None:
+            validation = RoleValidation.model_validate(
+                self.current_validation.model_dump()
+            )
+            expected = (
+                (
+                    validation.pending_result_id,
+                    self.pending_result_id,
+                ),
+                (
+                    validation.observation_run_id,
+                    self.observation_run_id,
+                ),
+                (validation.topic_id, self.topic_id),
+                (validation.old_security_id, self.old_security_id),
+                (validation.new_security_id, self.new_security_id),
+                (validation.return_start, self.observation_date),
+                (validation.window_start, self.validation_sessions[0]),
+                (validation.window_end, self.validation_sessions[-1]),
+                (validation.return_end, self.validation_sessions[-1]),
+            )
+            if any(actual != required for actual, required in expected):
+                raise ValueError(
+                    "current_validation identity and endpoints must match pending"
+                )
         return self

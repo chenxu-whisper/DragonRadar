@@ -261,12 +261,14 @@ def _comparison_reasons(
             (
                 current.context.market.source_id,
                 current.context.market.adjustment_version,
+                current.context.market.pool_version,
                 current.context.market.calendar_version,
                 current.context.topic.calendar_version,
             )
             == (
                 previous.context.market.source_id,
                 previous.context.market.adjustment_version,
+                previous.context.market.pool_version,
                 previous.context.market.calendar_version,
                 previous.context.topic.calendar_version,
             ),
@@ -446,6 +448,10 @@ def _run_identity_reasons(
             "taxonomy_version_changed",
         ),
         (
+            run.membership_version == pending.membership_version,
+            "membership_version_changed",
+        ),
+        (
             run.context.market.calendar.exchange == pending.exchange
             and run.context.topic.exchange == pending.exchange,
             "exchange_changed",
@@ -456,7 +462,8 @@ def _run_identity_reasons(
             "calendar_version_changed",
         ),
         (
-            run.context.market.calendar.sessions == run.context.topic.calendar.sessions,
+            run.context.market.calendar.sessions == run.context.topic.calendar.sessions
+            and run.trade_date in run.context.market.calendar.sessions,
             "calendar_sessions_changed",
         ),
     )
@@ -468,6 +475,7 @@ def validate_relay(
     future_runs: Sequence[RoleRunEvidence],
 ) -> tuple[RoleValidation, ...]:
     """Validate a mature pending relay against fixed daily-visible run inputs."""
+    pending = PendingRelayValidation.model_validate(pending.model_dump())
     if pending.current_validation is not None:
         return (pending.current_validation,)
     ordered = tuple(
@@ -478,14 +486,7 @@ def validate_relay(
     )
     if not ordered:
         return ()
-    calendar = ordered[0].context.market.calendar.sessions
-    try:
-        observation_index = calendar.index(pending.observation_date)
-    except ValueError:
-        return ()
-    validation_sessions = calendar[observation_index + 1 : observation_index + 6]
-    if len(validation_sessions) != 5:
-        return ()
+    validation_sessions = pending.validation_sessions
     if max(run.trade_date for run in ordered) < validation_sessions[-1]:
         return ()
 
