@@ -633,7 +633,13 @@ def validate_relay(
         or max(run.trade_date for run in maturity_runs) < validation_sessions[-1]
     ):
         return ()
-    ordered = tuple(run for run in strict_future if run.topic_id == pending.topic_id)
+    ordered = tuple(
+        run
+        for run in strict_future
+        if run.topic_id == pending.topic_id
+        and run.context.market.calendar.exchange == pending.exchange
+        and run.context.topic.exchange == pending.exchange
+    )
 
     by_day: dict[date, list[RoleRunEvidence]] = {}
     for run in ordered:

@@ -513,6 +513,35 @@ def test_limit_row_rejects_contradictory_known_metrics(changes):
         LimitRow(**values)
 
 
+@pytest.mark.parametrize(
+    ("flag", "limit_hits_10"),
+    (
+        ("broken_board", 1),
+        ("touched_not_sealed", 0),
+    ),
+)
+def test_limit_row_requires_explicit_zero_streak_when_not_sealed(
+    flag,
+    limit_hits_10,
+):
+    values = {
+        "trade_date": T,
+        "topic_id": TOPIC,
+        "security_id": "A",
+        "closing_limit_streak": None,
+        "limit_hits_10": limit_hits_10,
+        "broken_board": False,
+        "touched_not_sealed": False,
+        flag: True,
+    }
+
+    with pytest.raises(
+        ValidationError,
+        match="requires a zero closing_limit_streak",
+    ):
+        LimitRow(**values)
+
+
 def test_compare_runs_reports_added_exited_tie_unchanged_and_membership_change():
     market_pool = ("A", "B", "C", "D", "E")
     previous_context = _context(
@@ -1593,6 +1622,19 @@ def test_pending_relay_rejects_duplicate_validation_input_run_ids():
         RoleValidation.model_validate(values)
 
 
+def test_role_validation_rejects_zero_length_window():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = validate_relay(pending, runs)[0].model_dump()
+    values["window_start"] = values["window_end"]
+
+    with pytest.raises(ValidationError, match="validation endpoints"):
+        RoleValidation.model_validate(values)
+
+
 @pytest.mark.parametrize(
     ("old_return", "new_return", "topic_median", "incorrect_outcome"),
     (
@@ -1837,6 +1879,37 @@ def test_validate_relay_ignores_other_topic_run_on_same_day():
     )
 
     validation = validate_relay(pending, (*runs, other_topic))[0]
+
+    assert validation.outcome == "supported"
+    assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))
+
+
+def test_validate_relay_ignores_same_topic_run_from_other_exchange():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    foreign_context = _context(
+        trade_date=target.trade_date,
+        sessions=FUTURE_SESSIONS,
+        member_ids=target.member_ids,
+        bars=target.context.market.bars,
+        states=tuple(
+            security_state.model_copy(update={"exchange": "OTHER"})
+            for security_state in target.context.market.security_states
+        ),
+        expected_security_ids=target.context.market.expected_security_ids,
+        exchange="OTHER",
+    )
+    foreign_run = _run(
+        "foreign-exchange-run",
+        foreign_context,
+        member_ids=target.member_ids,
+    )
+
+    validation = validate_relay(pending, (*runs, foreign_run))[0]
 
     assert validation.outcome == "supported"
     assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))

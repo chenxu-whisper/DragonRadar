@@ -241,11 +241,11 @@ class LimitRow(_StrictFrozenRoleModel):
                 "closing_limit_streak must be consistent with limit_hits_10"
             )
         if self.broken_board is True:
-            if streak is not None and streak != 0:
+            if streak != 0:
                 raise ValueError("broken_board requires a zero closing_limit_streak")
             if hits is not None and hits < 1:
                 raise ValueError("broken_board requires a known recent limit hit")
-        if self.touched_not_sealed is True and streak is not None and streak != 0:
+        if self.touched_not_sealed is True and streak != 0:
             raise ValueError("touched_not_sealed requires a zero closing_limit_streak")
         return self
 
@@ -294,7 +294,7 @@ class RoleValidation(_StrictFrozenRoleModel):
     @model_validator(mode="after")
     def validate_window_and_values(self) -> Self:
         if not (
-            self.return_start < self.window_start <= self.window_end
+            self.return_start < self.window_start < self.window_end
             and self.return_end == self.window_end
         ):
             raise ValueError("validation endpoints must describe T and T+1..T+5")
