@@ -327,6 +327,91 @@ def test_limit_ladder_revalidates_role_context_before_use():
         build_limit_ladder(forged, TOPIC)
 
 
+@pytest.mark.parametrize(
+    ("mismatch", "expected_reason"),
+    (
+        ("market_topic_exchange", "cross_exchange"),
+        ("market_calendar_version", "market_calendar_version_mismatch"),
+        ("topic_calendar_version", "topic_calendar_version_mismatch"),
+        ("market_calendar_exchange", "cross_exchange"),
+        ("topic_calendar_exchange", "cross_exchange"),
+        ("topic_calendar_sessions", "market_topic_calendar_sessions_mismatch"),
+        ("market_calendar_sessions", "market_topic_calendar_sessions_mismatch"),
+    ),
+)
+def test_limit_ladder_blocks_inconsistent_global_context(
+    mismatch,
+    expected_reason,
+):
+    context = _context(bars=tuple(_limited_bar("A", day) for day in SESSIONS[-10:]))
+    if mismatch == "market_topic_exchange":
+        context = context.model_copy(
+            update={"topic": context.topic.model_copy(update={"exchange": "OTHER"})}
+        )
+    elif mismatch == "market_calendar_version":
+        context = context.model_copy(
+            update={
+                "market": context.market.model_copy(
+                    update={"calendar_version": "other-calendar"}
+                )
+            }
+        )
+    elif mismatch == "topic_calendar_version":
+        context = context.model_copy(
+            update={
+                "topic": context.topic.model_copy(
+                    update={"calendar_version": "other-calendar"}
+                )
+            }
+        )
+    elif mismatch in {"market_calendar_exchange", "topic_calendar_exchange"}:
+        side = "market" if mismatch == "market_calendar_exchange" else "topic"
+        snapshot = getattr(context, side)
+        context = context.model_copy(
+            update={
+                side: snapshot.model_copy(
+                    update={
+                        "calendar": snapshot.calendar.model_copy(
+                            update={"exchange": "OTHER"}
+                        )
+                    }
+                )
+            }
+        )
+    elif mismatch == "topic_calendar_sessions":
+        context = context.model_copy(
+            update={
+                "topic": context.topic.model_copy(
+                    update={
+                        "calendar": context.topic.calendar.model_copy(
+                            update={"sessions": context.topic.calendar.sessions[:-1]}
+                        )
+                    }
+                )
+            }
+        )
+    else:
+        context = context.model_copy(
+            update={
+                "market": context.market.model_copy(
+                    update={
+                        "calendar": context.market.calendar.model_copy(
+                            update={"sessions": context.market.calendar.sessions[:-1]}
+                        )
+                    }
+                )
+            }
+        )
+
+    row = build_limit_ladder(context, TOPIC)[0]
+
+    assert row.closing_limit_streak is None
+    assert row.limit_hits_10 is None
+    assert row.broken_board is None
+    assert row.touched_not_sealed is None
+    assert expected_reason in row.reasons
+
+
 @pytest.mark.parametrize("interruption", ("suspended", "no_limit"))
 def test_limit_ladder_suspension_and_no_limit_interrupt_streak(interruption):
     previous = SESSIONS[-2]
@@ -495,6 +580,17 @@ def test_limit_ladder_materializes_member_missing_from_declared_market_pool():
             "limit_hits_10": 0,
             "broken_board": True,
         },
+        {"closing_limit_streak": 9, "limit_hits_10": 10},
+        {
+            "closing_limit_streak": 0,
+            "limit_hits_10": 10,
+            "broken_board": True,
+        },
+        {
+            "closing_limit_streak": 0,
+            "limit_hits_10": 10,
+            "touched_not_sealed": True,
+        },
     ),
 )
 def test_limit_row_rejects_contradictory_known_metrics(changes):
@@ -511,6 +607,21 @@ def test_limit_row_rejects_contradictory_known_metrics(changes):
 
     with pytest.raises(ValidationError):
         LimitRow(**values)
+
+
+def test_limit_row_allows_streak_beyond_ten_day_hit_window():
+    row = LimitRow(
+        trade_date=T,
+        topic_id=TOPIC,
+        security_id="A",
+        closing_limit_streak=11,
+        limit_hits_10=10,
+        broken_board=False,
+        touched_not_sealed=False,
+    )
+
+    assert row.closing_limit_streak == 11
+    assert row.limit_hits_10 == 10
 
 
 @pytest.mark.parametrize(
@@ -836,11 +947,6 @@ def test_compare_runs_allows_declared_market_pool_reordering():
             ("visibility_mode_changed",),
         ),
         (
-            {},
-            {"market_benchmark_definition": "revised-market-benchmark"},
-            ("market_benchmark_changed",),
-        ),
-        (
             {"pool_version": "p2"},
             {},
             ("calculation_basis_changed",),
@@ -995,6 +1101,20 @@ def test_compare_runs_records_current_declared_predecessor_on_mismatch():
     assert change.reasons == ("previous_comparable_run_mismatch",)
 
 
+def test_role_change_rejects_not_comparable_without_reasons():
+    with pytest.raises(ValidationError, match="reasons"):
+        RoleChange(
+            current_run_id="current",
+            previous_comparable_run_id="previous",
+            topic_id=TOPIC,
+            security_id="A",
+            role="trend",
+            comparison_status="not_comparable",
+            change_type=None,
+            membership_changed=False,
+        )
+
+
 @pytest.mark.parametrize(
     ("side", "changes"),
     (
@@ -1054,6 +1174,14 @@ def test_role_run_rejects_stale_projection_after_context_revision():
     values["context"]["topic"]["membership_version"] = "m2"
 
     with pytest.raises(ValidationError, match="membership_version"):
+        RoleRunEvidence.model_validate(values)
+
+
+def test_role_run_rejects_forged_market_benchmark_definition():
+    values = _run("current", _context()).model_dump()
+    values["market_benchmark_definition"] = "forged-market-benchmark"
+
+    with pytest.raises(ValidationError, match="market_benchmark_definition"):
         RoleRunEvidence.model_validate(values)
 
 
@@ -1335,6 +1463,19 @@ def test_pending_relay_accepts_next_five_frozen_calendar_sessions():
     )
 
     assert PendingRelayValidation.model_validate(pending.model_dump()) == pending
+
+
+def test_pending_relay_rejects_forged_market_benchmark_definition():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["market_benchmark_definition"] = "forged-market-benchmark"
+
+    with pytest.raises(ValidationError, match="market_benchmark_definition"):
+        PendingRelayValidation.model_validate(values)
 
 
 def test_pending_relay_requires_observation_eligible_member_ids():
@@ -1656,19 +1797,18 @@ def test_role_validation_rejects_outcome_inconsistent_with_raw_returns(
     topic_median,
     incorrect_outcome,
 ):
+    expected_outcome = (
+        "refuted"
+        if Decimal(new_return) <= Decimal(old_return)
+        else (
+            "supported" if Decimal(new_return) > Decimal(topic_median) else "weakened"
+        )
+    )
     validation = RoleValidation(
         pending_result_id="pending-1",
         observation_run_id="run-t0",
         topic_id=TOPIC,
-        outcome=(
-            "refuted"
-            if Decimal(new_return) <= Decimal(old_return)
-            else (
-                "supported"
-                if Decimal(new_return) > Decimal(topic_median)
-                else "weakened"
-            )
-        ),
+        outcome=expected_outcome,
         window_start=FUTURE_SESSIONS[-5],
         window_end=FUTURE_SESSIONS[-1],
         return_start=FUTURE_SESSIONS[-6],
@@ -1679,9 +1819,11 @@ def test_role_validation_rejects_outcome_inconsistent_with_raw_returns(
         new_return_raw=Decimal(new_return),
         topic_median_raw=Decimal(topic_median),
         input_run_ids=tuple(f"run-t{i}" for i in range(1, 6)),
+        reasons=(f"outcome:{expected_outcome}",),
     )
     values = validation.model_dump()
     values["outcome"] = incorrect_outcome
+    values["reasons"] = (f"outcome:{incorrect_outcome}",)
 
     with pytest.raises(ValidationError, match="outcome"):
         RoleValidation.model_validate(values)
@@ -1698,6 +1840,43 @@ def test_role_validation_rejects_available_raw_returns_forged_as_unavailable():
 
     with pytest.raises(ValidationError, match="unavailable"):
         RoleValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    (
+        (),
+        ("outcome:weakened",),
+        ("outcome:supported", "outcome:supported"),
+        ("outcome:supported", "outcome:refuted"),
+        ("outcome:supported", "outcome:forged"),
+    ),
+)
+def test_role_validation_rejects_invalid_available_outcome_reasons(reasons):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = validate_relay(pending, runs)[0].model_dump()
+    values["reasons"] = reasons
+
+    with pytest.raises(ValidationError, match="outcome reason"):
+        RoleValidation.model_validate(values)
+
+
+def test_role_validation_allows_one_matching_outcome_reason_with_other_details():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = validate_relay(pending, runs)[0].model_dump()
+    values["reasons"] = ("outcome:supported", "calculation_complete")
+
+    validation = RoleValidation.model_validate(values)
+
+    assert validation.reasons == ("outcome:supported", "calculation_complete")
 
 
 @pytest.mark.parametrize(

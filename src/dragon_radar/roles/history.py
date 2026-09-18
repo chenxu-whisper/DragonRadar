@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from dragon_radar.domain.models import DailyBar, SecurityState
 from dragon_radar.domain.quality import bar_issues, grant_allows_local
-from dragon_radar.roles.engine import _effective, _PreparedContext
+from dragon_radar.roles.engine import _effective, _global_reasons, _PreparedContext
 from dragon_radar.roles.factors import (
     AnalysisUnavailable,
     adjusted_price,
@@ -102,36 +102,28 @@ def build_limit_ladder(
     """Build one conservative limit-ladder row per current topic member."""
     context = RoleContext.model_validate(context.model_dump())
     prepared = _PreparedContext.build(context, topic_id)
+    global_reasons = _global_reasons(prepared)
+    if global_reasons:
+        return tuple(
+            LimitRow(
+                trade_date=context.market.trade_date,
+                topic_id=topic_id,
+                security_id=security_id,
+                closing_limit_streak=None,
+                limit_hits_10=None,
+                broken_board=None,
+                touched_not_sealed=None,
+                reasons=global_reasons,
+            )
+            for security_id in prepared.members_on(context.market.trade_date)
+        )
+
     sessions = context.market.calendar.sessions
     try:
         endpoint = sessions.index(context.market.trade_date)
     except ValueError:
         return ()
     window = sessions[max(0, endpoint - 9) : endpoint + 1]
-    global_reasons = tuple(
-        reason
-        for reason in (
-            (
-                None
-                if grant_allows_local(
-                    context.market.grant,
-                    source_id=context.market.source_id,
-                    now=context.knowledge_cutoff,
-                )
-                else "market_source_not_materializable"
-            ),
-            (
-                None
-                if grant_allows_local(
-                    context.topic.grant,
-                    source_id=context.topic.source_id,
-                    now=context.knowledge_cutoff,
-                )
-                else "topic_source_not_materializable"
-            ),
-        )
-        if reason is not None
-    )
     rows: list[LimitRow] = []
     market_pool = frozenset(context.market.expected_security_ids)
     for security_id in prepared.members_on(context.market.trade_date):
@@ -146,20 +138,6 @@ def build_limit_ladder(
                     broken_board=None,
                     touched_not_sealed=None,
                     reasons=("member_not_in_market_pool",),
-                )
-            )
-            continue
-        if global_reasons:
-            rows.append(
-                LimitRow(
-                    trade_date=context.market.trade_date,
-                    topic_id=topic_id,
-                    security_id=security_id,
-                    closing_limit_streak=None,
-                    limit_hits_10=None,
-                    broken_board=None,
-                    touched_not_sealed=None,
-                    reasons=global_reasons,
                 )
             )
             continue

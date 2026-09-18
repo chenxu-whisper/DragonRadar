@@ -14,6 +14,7 @@ from dragon_radar.domain.models import (
     MarketBatch,
     UTCDateTime,
 )
+from dragon_radar.roles.rules import RULE_DEFINITIONS
 from dragon_radar.topics.models import TopicBatch
 
 RoleName = Literal["trend", "core", "emotion", "catchup", "follower", "relay"]
@@ -69,6 +70,12 @@ PRIMARY_RESULT_STATUS: Mapping[RoleCapability, CandidateStatus] = MappingProxyTy
         "pending_validation": "pending_validation",
     }
 )
+
+
+def _canonical_market_benchmark_definition(rule_version: str) -> str:
+    return RULE_DEFINITIONS[rule_version]["roles"]["trend"]["required_inputs"][
+        "market_benchmark"
+    ]["definition"]
 
 
 class _StrictFrozenRoleModel(FrozenModel):
@@ -240,6 +247,10 @@ class LimitRow(_StrictFrozenRoleModel):
             raise ValueError(
                 "closing_limit_streak must be consistent with limit_hits_10"
             )
+        if streak is not None and hits == 10 and streak < 10:
+            raise ValueError(
+                "ten limit hits require at least a ten-session closing streak"
+            )
         if self.broken_board is True:
             if streak != 0:
                 raise ValueError("broken_board requires a zero closing_limit_streak")
@@ -267,6 +278,8 @@ class RoleChange(_StrictFrozenRoleModel):
     def validate_comparison_result(self) -> Self:
         if self.comparison_status == "not_comparable" and self.change_type is not None:
             raise ValueError("not_comparable change_type must be None")
+        if self.comparison_status == "not_comparable" and not self.reasons:
+            raise ValueError("not_comparable reasons must not be empty")
         if self.comparison_status == "comparable" and self.change_type is None:
             raise ValueError("comparable change_type is required")
         return self
@@ -324,6 +337,13 @@ class RoleValidation(_StrictFrozenRoleModel):
         if self.outcome != "unavailable" and len(self.input_run_ids) != 5:
             raise ValueError("relay validation requires five input run IDs")
         if self.outcome != "unavailable":
+            outcome_reasons = tuple(
+                reason for reason in self.reasons if reason.startswith("outcome:")
+            )
+            if outcome_reasons != (f"outcome:{self.outcome}",):
+                raise ValueError(
+                    "available validation requires exactly one matching outcome reason"
+                )
             if self.new_return_raw <= self.old_return_raw:
                 expected_outcome = "refuted"
             elif self.new_return_raw > self.topic_median_raw:
@@ -369,6 +389,12 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
     def validate_run_identity(self) -> Self:
         if len(set(self.member_ids)) != len(self.member_ids):
             raise ValueError("member_ids must not contain duplicates")
+        if self.market_benchmark_definition != _canonical_market_benchmark_definition(
+            self.rule_version
+        ):
+            raise ValueError(
+                "market_benchmark_definition must match the frozen rule definition"
+            )
         topic = self.context.topic
         cutoff = self.context.knowledge_cutoff
         expected_visibility = (
@@ -502,6 +528,12 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
 
     @model_validator(mode="after")
     def validate_pending_identity(self) -> Self:
+        if self.market_benchmark_definition != _canonical_market_benchmark_definition(
+            self.rule_version
+        ):
+            raise ValueError(
+                "market_benchmark_definition must match the frozen rule definition"
+            )
         if (
             not self.expected_security_ids
             or tuple(sorted(set(self.expected_security_ids)))
