@@ -412,6 +412,24 @@ def test_limit_ladder_counts_exact_streak_from_first_listing_session():
     assert "history_boundary_unknown" not in row.reasons
 
 
+def test_limit_ladder_stops_exact_streak_at_later_listing_boundary():
+    listing_session = SESSIONS[-3]
+    bars = tuple(_limited_bar("A", day) for day in SESSIONS[-3:])
+    states = (
+        state(
+            security_id="A",
+            effective_from=listing_session,
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+            listing_date=listing_session,
+        ),
+    )
+
+    row = build_limit_ladder(_context(bars=bars, states=states), TOPIC)[0]
+
+    assert row.closing_limit_streak == 3
+    assert "history_boundary_unknown" not in row.reasons
+
+
 def test_limit_ladder_explains_unavailable_historical_observation():
     previous = SESSIONS[-2]
     bars = tuple(_limited_bar("A", day) for day in SESSIONS[-10:] if day != previous)
@@ -965,6 +983,50 @@ def test_role_run_rejects_stale_projection_after_context_revision():
         RoleRunEvidence.model_validate(values)
 
 
+def test_role_run_rejects_topic_calendar_exchange_mismatch():
+    values = _run("current", _context()).model_dump()
+    values["context"]["topic"]["calendar"]["exchange"] = "OTHER"
+
+    with pytest.raises(ValidationError, match="calendar identity"):
+        RoleRunEvidence.model_validate(values)
+
+
+def test_role_run_requires_shared_market_and_topic_calendar_version():
+    values = _run("current", _context()).model_dump()
+    values["context"]["topic"]["calendar"]["version"] = "history-c2"
+    values["context"]["topic"]["calendar_version"] = "history-c2"
+
+    with pytest.raises(ValidationError, match="calendar identity"):
+        RoleRunEvidence.model_validate(values)
+
+
+def test_compare_runs_rejects_forged_internal_calendar_version():
+    previous = _run(
+        "previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    forged_topic = current.context.topic.model_copy(
+        update={
+            "calendar": current.context.topic.calendar.model_copy(
+                update={"version": "history-c2"}
+            ),
+            "calendar_version": "history-c2",
+        }
+    )
+    forged_context = current.context.model_copy(update={"topic": forged_topic})
+    forged_current = current.model_copy(update={"context": forged_context})
+
+    with pytest.raises(ValidationError, match="calendar identity"):
+        compare_runs(forged_current, previous)
+
+
 def test_role_run_requires_exactly_one_visible_effective_topic_definition():
     context = _context()
     valid = _run("current", context)
@@ -1281,6 +1343,23 @@ def test_pending_relay_requires_canonical_frozen_market_identity(field, value):
         values[field] = value
 
     with pytest.raises(ValidationError):
+        PendingRelayValidation.model_validate(values)
+
+
+def test_pending_relay_baseline_members_must_belong_to_frozen_market_pool():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["expected_security_ids"] = tuple(
+        security_id
+        for security_id in pending.expected_security_ids
+        if security_id != pending.new_security_id
+    )
+
+    with pytest.raises(ValidationError, match="expected_security_ids"):
         PendingRelayValidation.model_validate(values)
 
 

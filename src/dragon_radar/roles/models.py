@@ -406,12 +406,13 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
         for actual, expected, message in projections:
             if actual != expected:
                 raise ValueError(message)
+        market = self.context.market
         if (
-            self.context.market.calendar.exchange != topic.exchange
-            or self.context.market.calendar_version
-            != self.context.market.calendar.version
+            not market.calendar.exchange == topic.calendar.exchange == topic.exchange
+            or market.calendar_version != topic.calendar_version
+            or market.calendar_version != market.calendar.version
             or topic.calendar_version != topic.calendar.version
-            or self.context.market.calendar.sessions != topic.calendar.sessions
+            or market.calendar.sessions != topic.calendar.sessions
         ):
             raise ValueError("context calendar identity must be consistent")
         definitions = tuple(
@@ -531,6 +532,10 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             raise ValueError("baseline_member_ids must not contain duplicates")
         if not self.baseline_member_ids:
             raise ValueError("baseline_member_ids must not be empty")
+        if not set(self.baseline_member_ids).issubset(self.expected_security_ids):
+            raise ValueError(
+                "baseline_member_ids must be a subset of expected_security_ids"
+            )
         price_ids = tuple(price.security_id for price in self.baseline_prices)
         if len(set(price_ids)) != len(price_ids):
             raise ValueError("baseline price security IDs must not contain duplicates")

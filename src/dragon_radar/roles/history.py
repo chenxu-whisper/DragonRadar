@@ -1,5 +1,6 @@
 """Pure materialization of limit, role-change, and relay-validation evidence."""
 
+from bisect import bisect_left
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
@@ -186,8 +187,32 @@ def build_limit_ladder(
                 observation[0] is True for observation in observations.values()
             )
 
+        current_state = prepared.state_on(security_id, context.market.trade_date)
+        listing_boundary: int | None = None
+        if (
+            current_state is not None
+            and current_state.listing_date is not None
+            and sessions[0] <= current_state.listing_date <= context.market.trade_date
+        ):
+            first_listing_index = bisect_left(
+                sessions,
+                current_state.listing_date,
+                hi=endpoint + 1,
+            )
+            first_listing_session = sessions[first_listing_index]
+            first_listing_state = prepared.state_on(
+                security_id,
+                first_listing_session,
+            )
+            if (
+                first_listing_state is not None
+                and first_listing_state.listing_date == current_state.listing_date
+            ):
+                listing_boundary = first_listing_index
+
         streak: int | None = 0
-        for day in reversed(sessions[: endpoint + 1]):
+        scan_start = listing_boundary if listing_boundary is not None else 0
+        for day in reversed(sessions[scan_start : endpoint + 1]):
             closed_limit, _, reason = _limit_observation(prepared, security_id, day)
             if closed_limit is None:
                 streak = None
@@ -200,14 +225,7 @@ def build_limit_ladder(
                 break
             streak += 1
         else:
-            first_session = sessions[0]
-            first_state = prepared.state_on(security_id, first_session)
-            listing_boundary_is_exact = (
-                first_state is not None
-                and first_state.listing_date == first_session
-                and first_state.listing_date in sessions
-            )
-            if not listing_boundary_is_exact:
+            if listing_boundary is None:
                 streak = None
                 reasons.append("history_boundary_unknown")
 
