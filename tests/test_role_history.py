@@ -147,9 +147,7 @@ def _context(
             for day in sessions
             if day <= trade_date
         ),
-        topics=(
-            topic_definition(effective_from=sessions[0], available_at=known_at),
-        ),
+        topics=(topic_definition(effective_from=sessions[0], available_at=known_at),),
         memberships=memberships,
         membership_version=membership_version,
     )
@@ -215,9 +213,7 @@ def _run(
         "context": context,
         "topic_id": TOPIC,
         "visibility_mode": "contemporaneous",
-        "market_benchmark_definition": (
-            "eligible_declared_market_pool_return_median"
-        ),
+        "market_benchmark_definition": ("eligible_declared_market_pool_return_median"),
         "topic_source_id": context.topic.source_id,
         "topic_source_version": context.topic.source_version,
         "taxonomy_version": context.topic.taxonomy_version,
@@ -522,9 +518,7 @@ def _validation_fixture(
         baseline_member_ids=member_ids,
         rule_version="role-test-v1",
         visibility_mode="contemporaneous",
-        market_benchmark_definition=(
-            "eligible_declared_market_pool_return_median"
-        ),
+        market_benchmark_definition=("eligible_declared_market_pool_return_median"),
         topic_source_id="synthetic",
         topic_source_version="s1",
         taxonomy_version="t1",

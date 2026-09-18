@@ -241,8 +241,7 @@ def _comparison_reasons(
             "visibility_mode_changed",
         ),
         (
-            current.market_benchmark_definition
-            == previous.market_benchmark_definition,
+            current.market_benchmark_definition == previous.market_benchmark_definition,
             "market_benchmark_changed",
         ),
         (current.topic_id == previous.topic_id, "topic_identity_changed"),
@@ -301,17 +300,13 @@ def compare_runs(
                 change_type = "added"
             elif current_row is None:
                 change_type = "exited"
-            elif (
-                current_row.tie_rank != previous_row.tie_rank
-                or _tie_group(current_rows, current_row)
-                != _tie_group(previous_rows, previous_row)
-            ):
+            elif current_row.tie_rank != previous_row.tie_rank or _tie_group(
+                current_rows, current_row
+            ) != _tie_group(previous_rows, previous_row):
                 change_type = "tie_changed"
             else:
                 change_type = "unchanged"
-            change_reasons = (
-                ("membership_changed",) if membership_changed else ()
-            )
+            change_reasons = ("membership_changed",) if membership_changed else ()
         result.append(
             RoleChange(
                 current_run_id=current.role_run_id,
@@ -319,9 +314,7 @@ def compare_runs(
                 topic_id=current.topic_id,
                 security_id=security_id,
                 role=role,
-                comparison_status=(
-                    "not_comparable" if reasons else "comparable"
-                ),
+                comparison_status=("not_comparable" if reasons else "comparable"),
                 change_type=change_type,
                 membership_changed=membership_changed,
                 reasons=change_reasons,
@@ -436,8 +429,7 @@ def _run_identity_reasons(
             "visibility_mode_changed",
         ),
         (
-            run.market_benchmark_definition
-            == pending.market_benchmark_definition,
+            run.market_benchmark_definition == pending.market_benchmark_definition,
             "market_benchmark_changed",
         ),
         (run.topic_id == pending.topic_id, "topic_identity_changed"),
@@ -464,8 +456,7 @@ def _run_identity_reasons(
             "calendar_version_changed",
         ),
         (
-            run.context.market.calendar.sessions
-            == run.context.topic.calendar.sessions,
+            run.context.market.calendar.sessions == run.context.topic.calendar.sessions,
             "calendar_sessions_changed",
         ),
     )
@@ -481,11 +472,7 @@ def validate_relay(
         return (pending.current_validation,)
     ordered = tuple(
         sorted(
-            (
-                run
-                for run in future_runs
-                if run.trade_date > pending.observation_date
-            ),
+            (run for run in future_runs if run.trade_date > pending.observation_date),
             key=lambda run: (run.trade_date, run.role_run_id),
         )
     )
@@ -507,9 +494,7 @@ def validate_relay(
         if run.trade_date in validation_sessions:
             by_day.setdefault(run.trade_date, []).append(run)
     selected = tuple(
-        runs[0]
-        for day in validation_sessions
-        if len(runs := by_day.get(day, [])) == 1
+        runs[0] for day in validation_sessions if len(runs := by_day.get(day, [])) == 1
     )
     if len(selected) != 5:
         return _unavailable_validation(
@@ -541,9 +526,7 @@ def validate_relay(
         )
 
     identity_reasons = tuple(
-        reason
-        for run in selected
-        for reason in _run_identity_reasons(pending, run)
+        reason for run in selected for reason in _run_identity_reasons(pending, run)
     )
     if identity_reasons:
         return _unavailable_validation(
