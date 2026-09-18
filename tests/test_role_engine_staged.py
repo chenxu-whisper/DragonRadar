@@ -516,10 +516,7 @@ def test_catchup_uses_global_ranking_before_candidate_gate():
     }
     amounts = {
         "A": (Decimal("100"),) * 20 + (Decimal("200"),) * 5,
-        **{
-            security_id: (Decimal("100"),) * 25
-            for security_id in ("B", "C", "D", "E")
-        },
+        **{security_id: (Decimal("100"),) * 25 for security_id in ("B", "C", "D", "E")},
     }
 
     result = evaluate_catchup(
@@ -870,10 +867,7 @@ def test_staged_topic_benchmarks_reject_missing_fixed_member(
     bars = tuple(
         daily_bar
         for daily_bar in context.market.bars
-        if not (
-            daily_bar.security_id == "C"
-            and daily_bar.trade_date == missing_day
-        )
+        if not (daily_bar.security_id == "C" and daily_bar.trade_date == missing_day)
     )
     context = RoleContext(
         market=context.market.model_copy(update={"bars": bars}),
@@ -897,6 +891,75 @@ def test_staged_topic_benchmarks_reject_missing_fixed_member(
     ) == (3, 2, 0, 1)
     assert "C: missing" in " ".join(result.topic_status.reasons)
     assert result.candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("evaluate_name", "expected_result_members"),
+    (
+        ("evaluate_emotion", {"A", "B", "C", "D", "E"}),
+        ("evaluate_catchup", {"A", "B", "C", "D", "E"}),
+        ("evaluate_relay", set()),
+    ),
+)
+def test_staged_windows_ignore_missing_history_for_currently_excluded_member(
+    evaluate_name,
+    expected_result_members,
+):
+    from dragon_radar.roles import engine
+
+    members = ("A", "B", "C", "D", "E", "INELIGIBLE")
+    pool = (*members, "M1", "M2")
+    prices = {
+        "A": (Decimal("100"),) * 60 + (Decimal("120"),),
+        "B": (Decimal("130"),) + (Decimal("100"),) * 60,
+        "C": (Decimal("100"),) * 60 + (Decimal("110"),),
+        **{
+            security_id: (Decimal("100"),) * 61
+            for security_id in ("D", "E", "M1", "M2")
+        },
+        "INELIGIBLE": (),
+    }
+    context = _context(member_ids=members, pool_ids=pool, prices=prices)
+    long_sessions = _sessions(130)
+    states = tuple(
+        security_state.model_copy(
+            update={
+                "board_category": "sh_main",
+                "effective_from": (
+                    T
+                    if security_state.security_id == "INELIGIBLE"
+                    else long_sessions[0]
+                ),
+                "listing_date": long_sessions[0],
+                "suspended": security_state.security_id == "INELIGIBLE",
+            }
+        )
+        for security_state in context.market.security_states
+    )
+    calendar = context.market.calendar.model_copy(update={"sessions": long_sessions})
+    context = RoleContext(
+        market=context.market.model_copy(
+            update={"calendar": calendar, "security_states": states}
+        ),
+        topic=context.topic.model_copy(update={"calendar": calendar}),
+        rule_version="role-v1",
+    )
+    evaluate = getattr(engine, evaluate_name)
+
+    result = (
+        evaluate(context, "topic-a", _predecessor(context))
+        if evaluate_name == "evaluate_relay"
+        else evaluate(context, "topic-a")
+    )
+
+    assert result.topic_status.status != "insufficient"
+    assert (
+        result.topic_status.expected,
+        result.topic_status.valid,
+        result.topic_status.legal_excluded,
+        result.topic_status.missing,
+    ) == (6, 5, 1, 0)
+    assert {row.security_id for row in result.candidates} == expected_result_members
 
 
 def test_catchup_ignores_incomplete_window_for_currently_excluded_member():
@@ -1182,9 +1245,7 @@ def test_staged_windows_reject_cross_exchange_exited_member_outside_pool(
     from dragon_radar.roles import engine
 
     context = (
-        _catchup_context()
-        if evaluate_name == "evaluate_catchup"
-        else _relay_context()
+        _catchup_context() if evaluate_name == "evaluate_catchup" else _relay_context()
     )
     d_state = state(
         security_id="D",
@@ -1244,9 +1305,7 @@ def test_staged_windows_reject_cross_exchange_historical_exited_member(evaluate_
     from dragon_radar.roles import engine
 
     context = (
-        _catchup_context()
-        if evaluate_name == "evaluate_catchup"
-        else _relay_context()
+        _catchup_context() if evaluate_name == "evaluate_catchup" else _relay_context()
     )
     d_state = state(
         security_id="D",

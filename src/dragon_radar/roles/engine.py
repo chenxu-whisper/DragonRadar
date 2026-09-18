@@ -204,9 +204,7 @@ class _PreparedContext:
         coverage_by_session = {
             day: tuple(cells) for day, cells in coverage_groups.items()
         }
-        coverage_actual_member_counts: dict[
-            tuple[date, datetime], int | None
-        ] = {}
+        coverage_actual_member_counts: dict[tuple[date, datetime], int | None] = {}
         for day, cells in coverage_by_session.items():
             for complete_as_of in {cell.complete_as_of for cell in cells}:
                 visible_definitions = tuple(
@@ -278,8 +276,7 @@ class _PreparedContext:
                 daily_bar.available_at <= cutoff
                 and daily_bar.source_id == context.market.source_id
                 and daily_bar.source_version == context.market.source_version
-                and daily_bar.adjustment_version
-                == context.market.adjustment_version
+                and daily_bar.adjustment_version == context.market.adjustment_version
             ):
                 bar_groups.setdefault(
                     (daily_bar.security_id, daily_bar.trade_date), []
@@ -586,9 +583,7 @@ def _global_failure_result(
     member_reasons: Sequence[str],
 ) -> RoleEvaluation:
     cross_exchange_reasons = (
-        ("cross_exchange",)
-        if "cross_exchange" in classifications.values()
-        else ()
+        ("cross_exchange",) if "cross_exchange" in classifications.values() else ()
     )
     reasons = tuple(
         dict.fromkeys((*global_reasons, *cross_exchange_reasons, *member_reasons))
@@ -613,9 +608,7 @@ def _prices_for(
         if daily_bar is None or daily_bar.close is None:
             return None
         try:
-            prices.append(
-                adjusted_price(daily_bar.close, daily_bar.adjustment_factor)
-            )
+            prices.append(adjusted_price(daily_bar.close, daily_bar.adjustment_factor))
         except AnalysisUnavailable:
             return None
     return tuple(prices)
@@ -830,17 +823,13 @@ def evaluate_trend(context: RoleContext, topic_id: str) -> RoleEvaluation:
             role="trend",
             status=(
                 "candidate"
-                if factors[0] > 0
-                and factors[1] > 0
-                and factors[2] <= topic_mdd
+                if factors[0] > 0 and factors[1] > 0 and factors[2] <= topic_mdd
                 else "eligible_non_candidate"
             ),
             factors=factors,
             reasons=(
                 ("candidate_conditions_met",)
-                if factors[0] > 0
-                and factors[1] > 0
-                and factors[2] <= topic_mdd
+                if factors[0] > 0 and factors[1] > 0 and factors[2] <= topic_mdd
                 else ("candidate_conditions_not_met",)
             ),
         )
@@ -1037,9 +1026,7 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
                 f"{security_id}: incomplete membership in 5-session share window"
             )
             continue
-        observations = tuple(
-            _amount_on(prepared, security_id, day) for day in sessions
-        )
+        observations = tuple(_amount_on(prepared, security_id, day) for day in sessions)
         if any(observation is None for observation in observations):
             classifications[security_id] = "missing"
             reasons.append(f"{security_id}: missing 20 daily amounts")
@@ -1091,9 +1078,7 @@ def evaluate_core(context: RoleContext, topic_id: str) -> RoleEvaluation:
             )
         )
 
-    share_median = decimal_median(
-        tuple(factors[0] for factors in raw_factors.values())
-    )
+    share_median = decimal_median(tuple(factors[0] for factors in raw_factors.values()))
     amount_median = decimal_median(
         tuple(factors[1] for factors in raw_factors.values())
     )
@@ -1243,7 +1228,10 @@ def _staged_window_failure(
             )
             if day_classification not in {"missing", "cross_exchange"}:
                 continue
-            if day_classification == "missing" and security_id not in classifications:
+            if day_classification == "missing" and (
+                security_id not in classifications
+                or classifications[security_id] == "legal_excluded"
+            ):
                 continue
             window_incomplete = True
             has_cross_exchange = (
@@ -1607,8 +1595,7 @@ def evaluate_emotion(context: RoleContext, topic_id: str) -> RoleEvaluation:
         if streak_classification != "valid":
             classifications[security_id] = streak_classification
             reasons.append(
-                streak_reason
-                or f"{security_id}: unknown required daily limit input"
+                streak_reason or f"{security_id}: unknown required daily limit input"
             )
             continue
         if amount is None or streak is None or current_bar is None:
