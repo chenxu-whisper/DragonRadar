@@ -7,7 +7,12 @@ from decimal import Decimal
 
 from dragon_radar.domain.models import DailyBar, SecurityState
 from dragon_radar.domain.quality import bar_issues, grant_allows_local
-from dragon_radar.roles.engine import _effective, _global_reasons, _PreparedContext
+from dragon_radar.roles.engine import (
+    _effective,
+    _global_reasons,
+    _PreparedContext,
+    _state_eligibility,
+)
 from dragon_radar.roles.factors import (
     AnalysisUnavailable,
     adjusted_price,
@@ -605,12 +610,112 @@ def _run_identity_reasons(
     return tuple(reason for matches, reason in checks if not matches)
 
 
+def _observation_proof_reasons(
+    pending: PendingRelayValidation,
+) -> tuple[str, ...]:
+    run = pending.observation_run
+    prepared = _PreparedContext.build(run.context, run.topic_id)
+    observation_day = pending.observation_date
+    reasons: list[str] = []
+    actual_members = frozenset(prepared.members_on(observation_day))
+    if actual_members != frozenset(pending.observation_member_ids):
+        reasons.append("observation_members_mismatch")
+
+    projected_members = {
+        member.security_id: member for member in pending.observation_eligibility
+    }
+    actual_eligible_ids: set[str] = set()
+    identity_fields = (
+        "security_type",
+        "board_category",
+        "listing_date",
+        "suspended",
+        "is_st",
+        "is_delisting",
+        "exchange",
+        "source_id",
+        "pool_version",
+    )
+    for security_id in sorted(actual_members):
+        projected = projected_members.get(security_id)
+        state = prepared.state_on(security_id, observation_day)
+        if projected is None or state is None:
+            reasons.append(f"{security_id}: observation_eligibility_unavailable")
+            continue
+        if any(
+            getattr(projected, field) != getattr(state, field)
+            for field in identity_fields
+        ):
+            reasons.append(f"{security_id}: observation_identity_mismatch")
+            continue
+        eligibility, detail = _state_eligibility(
+            prepared,
+            security_id,
+            observation_day,
+            check_listing=True,
+        )
+        if eligibility == "valid":
+            expected_eligible = True
+            expected_reason = None
+        elif eligibility == "legal_excluded" and detail is not None:
+            expected_eligible = False
+            expected_reason = (
+                "insufficient_listing_history"
+                if detail.endswith("insufficient listing history")
+                else "ineligible_security_state"
+            )
+        else:
+            reasons.append(f"{security_id}: observation_eligibility_unavailable")
+            continue
+        if (
+            projected.eligible is not expected_eligible
+            or projected.eligibility_reason != expected_reason
+        ):
+            reasons.append(f"{security_id}: observation_eligibility_mismatch")
+            continue
+        if expected_eligible:
+            actual_eligible_ids.add(security_id)
+
+    if actual_eligible_ids != set(pending.baseline_member_ids):
+        reasons.append("observation_eligible_members_mismatch")
+
+    projected_prices = {
+        price.security_id: price.adjusted_price_raw for price in pending.baseline_prices
+    }
+    for security_id in sorted(actual_eligible_ids):
+        daily_bar, bar_failure = _bar_for(run, security_id, observation_day)
+        if daily_bar is None:
+            reasons.append(
+                f"{security_id}: observation_{bar_failure or 'price_unavailable'}"
+            )
+            continue
+        try:
+            actual_price = adjusted_price(
+                daily_bar.close,
+                daily_bar.adjustment_factor,
+            )
+        except AnalysisUnavailable:
+            reasons.append(f"{security_id}: observation_adjusted_price_unavailable")
+            continue
+        if projected_prices.get(security_id) != actual_price:
+            reasons.append(f"{security_id}: observation_adjusted_price_mismatch")
+    return tuple(dict.fromkeys(reasons))
+
+
 def validate_relay(
     pending: PendingRelayValidation,
     future_runs: Sequence[RoleRunEvidence],
 ) -> tuple[RoleValidation, ...]:
     """Validate a mature pending relay against fixed daily-visible run inputs."""
     pending = PendingRelayValidation.model_validate(pending.model_dump())
+    observation_reasons = _observation_proof_reasons(pending)
+    if observation_reasons:
+        return _unavailable_validation(
+            pending,
+            sessions=pending.validation_sessions,
+            runs=(pending.observation_run,),
+            reasons=observation_reasons,
+        )
     if pending.current_validation is not None:
         return (pending.current_validation,)
     future_runs = tuple(
@@ -706,7 +811,7 @@ def validate_relay(
             source_id=run.context.topic.source_id,
             now=validation_cutoff,
         )
-        for run in selected
+        for run in (pending.observation_run, *selected)
     ):
         return _unavailable_validation(
             pending,

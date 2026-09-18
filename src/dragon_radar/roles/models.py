@@ -538,6 +538,7 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
 
     pending_result_id: Identifier
     observation_run_id: Identifier
+    observation_run: RoleRunEvidence
     observation_date: date
     topic_id: Identifier
     old_security_id: Identifier
@@ -565,6 +566,127 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
 
     @model_validator(mode="after")
     def validate_pending_identity(self) -> Self:
+        observation_run = RoleRunEvidence.model_validate(
+            self.observation_run.model_dump()
+        )
+        observation_context = observation_run.context
+        market = observation_context.market
+        topic = observation_context.topic
+        expected_visibility = (
+            "retrospective"
+            if "retrospective" in {market.provenance, topic.provenance}
+            else "contemporaneous"
+        )
+        observation_bindings = (
+            (
+                observation_run.role_run_id,
+                self.observation_run_id,
+                "observation_run_id must match observation_run.role_run_id",
+            ),
+            (
+                observation_run.trade_date,
+                self.observation_date,
+                "observation_date must match observation_run trade date",
+            ),
+            (
+                observation_run.topic_id,
+                self.topic_id,
+                "topic_id must match observation_run topic_id",
+            ),
+            (
+                observation_run.rule_version,
+                self.rule_version,
+                "rule_version must match observation_run rule_version",
+            ),
+            (
+                observation_run.visibility_mode,
+                self.visibility_mode,
+                "visibility_mode must match observation_run visibility_mode",
+            ),
+            (
+                expected_visibility,
+                self.visibility_mode,
+                "visibility_mode must match observation context provenance",
+            ),
+            (
+                observation_run.market_benchmark_definition,
+                self.market_benchmark_definition,
+                "market_benchmark_definition must match observation_run",
+            ),
+            (
+                observation_run.membership_version,
+                self.membership_version,
+                "membership_version must match observation_run",
+            ),
+            (
+                observation_run.topic_source_id,
+                self.topic_source_id,
+                "topic_source_id must match observation_run",
+            ),
+            (
+                observation_run.topic_source_version,
+                self.topic_source_version,
+                "topic_source_version must match observation_run",
+            ),
+            (
+                observation_run.taxonomy_version,
+                self.taxonomy_version,
+                "taxonomy_version must match observation_run",
+            ),
+            (
+                market.source_id,
+                self.market_source_id,
+                "market_source_id must match observation_run",
+            ),
+            (
+                market.adjustment_version,
+                self.adjustment_version,
+                "adjustment_version must match observation_run",
+            ),
+            (
+                market.pool_version,
+                self.pool_version,
+                "pool_version must match observation_run",
+            ),
+            (
+                market.expected_security_ids,
+                self.expected_security_ids,
+                "expected_security_ids must match observation_run",
+            ),
+            (
+                market.calendar.exchange,
+                self.exchange,
+                "exchange must match observation_run",
+            ),
+            (
+                topic.exchange,
+                self.exchange,
+                "exchange must match observation_run topic",
+            ),
+            (
+                market.calendar_version,
+                self.calendar_version,
+                "calendar_version must match observation_run",
+            ),
+            (
+                topic.calendar_version,
+                self.calendar_version,
+                "calendar_version must match observation_run topic",
+            ),
+            (
+                market.calendar.sessions,
+                self.calendar_sessions,
+                "calendar_sessions must match observation_run",
+            ),
+            (
+                topic.calendar.sessions,
+                self.calendar_sessions,
+                "calendar_sessions must match observation_run topic",
+            ),
+        )
+        for actual, expected, message in observation_bindings:
+            if actual != expected:
+                raise ValueError(message)
         if self.market_benchmark_definition != _canonical_market_benchmark_definition(
             self.rule_version
         ):
@@ -606,6 +728,10 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             set(self.observation_member_ids)
         ) != len(self.observation_member_ids):
             raise ValueError("observation_member_ids must be nonempty and unique")
+        if set(self.observation_member_ids) != set(observation_run.member_ids):
+            raise ValueError(
+                "observation_member_ids must match observation_run member_ids"
+            )
         projected_ids = tuple(
             member.security_id for member in self.observation_eligibility
         )
@@ -620,10 +746,6 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
                 "baseline_member_ids must be a subset of expected_security_ids"
             )
         expected_eligible_ids: set[str] = set()
-        allowed_boards = RULE_DEFINITIONS[self.rule_version]["allowed_boards"]
-        minimum_listing_sessions = RULE_DEFINITIONS[self.rule_version][
-            "minimum_listing_sessions"
-        ]
         for member in self.observation_eligibility:
             if (
                 member.security_id not in self.expected_security_ids
@@ -636,37 +758,9 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
                     "observation eligibility identity must match frozen "
                     "market pool and observation date"
                 )
-            if (
-                member.security_type != "common_stock"
-                or member.board_category not in allowed_boards
-                or member.suspended
-                or member.is_st
-                or member.is_delisting
-            ):
-                expected_reason = "ineligible_security_state"
-            elif member.listing_date < self.calendar_sessions[0]:
-                raise ValueError(
-                    "observation eligibility requires complete listing calendar"
-                )
-            else:
-                listed_sessions = sum(
-                    member.listing_date <= session <= self.observation_date
-                    for session in self.calendar_sessions
-                )
-                expected_reason = (
-                    None
-                    if listed_sessions >= minimum_listing_sessions
-                    else "insufficient_listing_history"
-                )
-            expected_eligible = expected_reason is None
-            if (
-                member.eligible is not expected_eligible
-                or member.eligibility_reason != expected_reason
-            ):
-                raise ValueError(
-                    "observation eligibility must match frozen identity and rule"
-                )
-            if expected_eligible:
+            if member.eligible != (member.eligibility_reason is None):
+                raise ValueError("observation eligibility status and reason must agree")
+            if member.eligible:
                 expected_eligible_ids.add(member.security_id)
         if expected_eligible_ids != set(self.baseline_member_ids):
             raise ValueError(

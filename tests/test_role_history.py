@@ -1442,9 +1442,37 @@ def _validation_fixture(
         security_state.security_id: security_state
         for security_state in runs[0].context.market.security_states
     }
+    observation_bars = tuple(
+        bar(
+            security_id=security_id,
+            trade_date=observation_date,
+            close=starts[security_id],
+            available_at=datetime(
+                observation_date.year,
+                observation_date.month,
+                observation_date.day,
+                16,
+                tzinfo=UTC,
+            ),
+        )
+        for security_id in all_ids
+    )
+    observation_context = _context(
+        trade_date=observation_date,
+        sessions=FUTURE_SESSIONS,
+        member_ids=member_ids,
+        bars=observation_bars,
+        states=tuple(observation_states.values()),
+    )
+    observation_run = _run(
+        "run-t0",
+        observation_context,
+        member_ids=member_ids,
+    )
     pending = PendingRelayValidation(
         pending_result_id="pending-1",
         observation_run_id="run-t0",
+        observation_run=observation_run,
         observation_date=observation_date,
         topic_id=TOPIC,
         old_security_id="OLD",
@@ -1495,7 +1523,29 @@ def _validation_fixture(
     return pending, tuple(runs)
 
 
-def test_pending_relay_rejects_caller_shrinking_eligible_denominator():
+def test_pending_relay_rejects_observation_run_id_mismatch():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["observation_run_id"] = "different-run"
+
+    with pytest.raises(ValidationError, match="observation_run_id"):
+        PendingRelayValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "identity_change",
+    (
+        {"security_type": "fund"},
+        {"suspended": True},
+    ),
+)
+def test_pending_relay_rejects_caller_shrinking_eligible_denominator(
+    identity_change,
+):
     pending, runs = _validation_fixture(
         new_end="123",
         old_end="110",
@@ -1518,6 +1568,7 @@ def test_pending_relay_rejects_caller_shrinking_eligible_denominator():
                     update={
                         "eligible": False,
                         "eligibility_reason": "ineligible_security_state",
+                        **identity_change,
                     }
                 )
                 if member.security_id == "INELIGIBLE"
@@ -1530,8 +1581,34 @@ def test_pending_relay_rejects_caller_shrinking_eligible_denominator():
     )
 
     assert full_validation.outcome == "weakened"
-    with pytest.raises(ValidationError, match="observation eligibility"):
-        PendingRelayValidation.model_validate(values)
+    forged = PendingRelayValidation.model_validate(values)
+    validation = validate_relay(forged, runs)[0]
+
+    assert validation.outcome == "unavailable"
+    assert "INELIGIBLE: observation_identity_mismatch" in validation.reasons
+
+
+def test_pending_relay_rejects_caller_forging_observation_adjusted_price():
+    pending, runs = _validation_fixture(
+        new_end="123",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["baseline_prices"] = tuple(
+        (
+            price.model_copy(update={"adjusted_price_raw": Decimal("110")})
+            if price.security_id == "NEW"
+            else price
+        )
+        for price in pending.baseline_prices
+    )
+
+    forged = PendingRelayValidation.model_validate(values)
+    validation = validate_relay(forged, runs)[0]
+
+    assert validation.outcome == "unavailable"
+    assert "NEW: observation_adjusted_price_mismatch" in validation.reasons
 
 
 def test_pending_relay_requires_five_strict_future_validation_sessions():
@@ -1660,7 +1737,7 @@ def test_pending_relay_requires_baseline_members_to_be_observation_members():
 
     with pytest.raises(
         ValidationError,
-        match="observation eligibility must cover observation_member_ids",
+        match="observation_member_ids must match observation_run member_ids",
     ):
         PendingRelayValidation.model_validate(values)
 
