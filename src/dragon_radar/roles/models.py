@@ -480,6 +480,7 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     topic_id: Identifier
     old_security_id: Identifier
     new_security_id: Identifier
+    observation_eligible_member_ids: tuple[Identifier, ...]
     baseline_member_ids: tuple[Identifier, ...]
     baseline_prices: tuple[RelayBaselinePrice, ...]
     membership_version: Identifier
@@ -532,6 +533,17 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             raise ValueError("baseline_member_ids must not contain duplicates")
         if not self.baseline_member_ids:
             raise ValueError("baseline_member_ids must not be empty")
+        if not self.observation_eligible_member_ids or len(
+            set(self.observation_eligible_member_ids)
+        ) != len(self.observation_eligible_member_ids):
+            raise ValueError(
+                "observation_eligible_member_ids must be nonempty and unique"
+            )
+        if set(self.observation_eligible_member_ids) != set(self.baseline_member_ids):
+            raise ValueError(
+                "observation_eligible_member_ids security IDs must match "
+                "baseline_member_ids"
+            )
         if not set(self.baseline_member_ids).issubset(self.expected_security_ids):
             raise ValueError(
                 "baseline_member_ids must be a subset of expected_security_ids"

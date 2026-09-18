@@ -313,6 +313,20 @@ def test_limit_ladder_counts_ten_day_hits_and_exact_closing_streak():
     )
 
 
+def test_limit_ladder_revalidates_role_context_before_use():
+    context = _context()
+    forged = context.model_copy(
+        update={
+            "topic": context.topic.model_copy(
+                update={"trade_date": SESSIONS[-2]},
+            )
+        }
+    )
+
+    with pytest.raises(ValidationError, match="trade_date"):
+        build_limit_ladder(forged, TOPIC)
+
+
 @pytest.mark.parametrize("interruption", ("suspended", "no_limit"))
 def test_limit_ladder_suspension_and_no_limit_interrupt_streak(interruption):
     previous = SESSIONS[-2]
@@ -1180,6 +1194,7 @@ def _validation_fixture(
         topic_id=TOPIC,
         old_security_id="OLD",
         new_security_id="NEW",
+        observation_eligible_member_ids=member_ids,
         baseline_member_ids=member_ids,
         baseline_prices=tuple(
             RelayBaselinePrice(
@@ -1291,6 +1306,56 @@ def test_pending_relay_accepts_next_five_frozen_calendar_sessions():
     )
 
     assert PendingRelayValidation.model_validate(pending.model_dump()) == pending
+
+
+def test_pending_relay_requires_observation_eligible_member_ids():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    del values["observation_eligible_member_ids"]
+
+    with pytest.raises(ValidationError, match="observation_eligible_member_ids"):
+        PendingRelayValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "observation_eligible_member_ids",
+    ((), ("A", "A"), ("A", "B", "OLD")),
+)
+def test_pending_relay_rejects_invalid_observation_eligible_member_ids(
+    observation_eligible_member_ids,
+):
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["observation_eligible_member_ids"] = observation_eligible_member_ids
+
+    with pytest.raises(ValidationError, match="observation_eligible_member_ids"):
+        PendingRelayValidation.model_validate(values)
+
+
+def test_pending_relay_eligible_member_order_does_not_change_semantics():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["observation_eligible_member_ids"] = tuple(
+        reversed(pending.observation_eligible_member_ids)
+    )
+
+    validated = PendingRelayValidation.model_validate(values)
+
+    assert set(validated.observation_eligible_member_ids) == set(
+        pending.baseline_member_ids
+    )
 
 
 @pytest.mark.parametrize("observation_suspended", (True, None))
@@ -1700,6 +1765,19 @@ def test_validate_relay_rejects_forged_current_validation_outcome():
 
     with pytest.raises(ValidationError, match="outcome"):
         validate_relay(forged_pending, runs)
+
+
+def test_validate_relay_existing_validation_ignores_invalid_future_runs():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    existing = validate_relay(pending, runs)[0]
+    persisted = pending.model_copy(update={"current_validation": existing})
+    forged_future = runs[-1].model_copy(update={"active_run_count": 2})
+
+    assert validate_relay(persisted, (*runs, forged_future)) == (existing,)
 
 
 @pytest.mark.parametrize(

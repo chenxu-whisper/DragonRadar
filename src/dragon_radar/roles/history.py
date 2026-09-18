@@ -100,6 +100,7 @@ def build_limit_ladder(
     topic_id: str,
 ) -> tuple[LimitRow, ...]:
     """Build one conservative limit-ladder row per current topic member."""
+    context = RoleContext.model_validate(context.model_dump())
     prepared = _PreparedContext.build(context, topic_id)
     sessions = context.market.calendar.sessions
     try:
@@ -603,11 +604,11 @@ def validate_relay(
 ) -> tuple[RoleValidation, ...]:
     """Validate a mature pending relay against fixed daily-visible run inputs."""
     pending = PendingRelayValidation.model_validate(pending.model_dump())
+    if pending.current_validation is not None:
+        return (pending.current_validation,)
     future_runs = tuple(
         RoleRunEvidence.model_validate(run.model_dump()) for run in future_runs
     )
-    if pending.current_validation is not None:
-        return (pending.current_validation,)
     strict_future = tuple(
         sorted(
             (run for run in future_runs if run.trade_date > pending.observation_date),
