@@ -1874,6 +1874,37 @@ def test_pending_relay_requires_canonical_frozen_market_identity(field, value):
         PendingRelayValidation.model_validate(values)
 
 
+def test_pending_relay_canonicalizes_observation_market_pool_identity():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    observation_run = pending.observation_run
+    values["observation_run"] = observation_run.model_copy(
+        update={
+            "context": observation_run.context.model_copy(
+                update={
+                    "market": observation_run.context.market.model_copy(
+                        update={
+                            "expected_security_ids": tuple(
+                                reversed(pending.expected_security_ids)
+                            )
+                        }
+                    )
+                }
+            )
+        }
+    )
+
+    validated = PendingRelayValidation.model_validate(values)
+
+    assert validated.expected_security_ids == tuple(
+        sorted(set(pending.expected_security_ids))
+    )
+
+
 def test_pending_relay_baseline_members_must_belong_to_frozen_market_pool():
     pending, _ = _validation_fixture(
         new_end="130",
@@ -2420,6 +2451,31 @@ def test_validate_relay_rejects_duplicate_same_topic_active_run_on_same_day():
     assert validation.reasons == ("multiple_active_topic_runs",)
 
 
+def test_validate_relay_ignores_extra_retrospective_run_on_same_day():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    retrospective_context = RoleContext(
+        market=target.context.market.model_copy(update={"provenance": "retrospective"}),
+        topic=target.context.topic,
+        rule_version=target.rule_version,
+    )
+    retrospective = _run(
+        "retrospective-topic-run",
+        retrospective_context,
+        member_ids=target.member_ids,
+        visibility_mode="retrospective",
+    )
+
+    validation = validate_relay(pending, (*runs, retrospective))[0]
+
+    assert validation.outcome == "supported"
+    assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))
+
+
 def test_validate_relay_returns_unavailable_for_duplicate_selected_run_ids():
     pending, runs = _validation_fixture(
         new_end="130",
@@ -2665,6 +2721,26 @@ def test_validate_relay_returns_no_record_before_t_plus_5():
     )
 
     assert validate_relay(pending, runs[:-1]) == ()
+
+
+def test_validate_relay_does_not_materialize_observation_mismatch_before_maturity():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["baseline_prices"] = tuple(
+        (
+            price.model_copy(update={"adjusted_price_raw": Decimal("110")})
+            if price.security_id == "NEW"
+            else price
+        )
+        for price in pending.baseline_prices
+    )
+    mismatched = PendingRelayValidation.model_validate(values)
+
+    assert validate_relay(mismatched, runs[:-1]) == ()
 
 
 def test_validate_relay_uses_all_topics_for_maturity_clock():

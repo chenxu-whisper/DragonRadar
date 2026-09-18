@@ -708,15 +708,15 @@ def validate_relay(
 ) -> tuple[RoleValidation, ...]:
     """Validate a mature pending relay against fixed daily-visible run inputs."""
     pending = PendingRelayValidation.model_validate(pending.model_dump())
-    observation_reasons = _observation_proof_reasons(pending)
-    if observation_reasons:
-        return _unavailable_validation(
-            pending,
-            sessions=pending.validation_sessions,
-            runs=(pending.observation_run,),
-            reasons=observation_reasons,
-        )
     if pending.current_validation is not None:
+        observation_reasons = _observation_proof_reasons(pending)
+        if observation_reasons:
+            return _unavailable_validation(
+                pending,
+                sessions=pending.validation_sessions,
+                runs=(pending.observation_run,),
+                reasons=observation_reasons,
+            )
         return (pending.current_validation,)
     future_runs = tuple(
         RoleRunEvidence.model_validate(run.model_dump()) for run in future_runs
@@ -747,6 +747,14 @@ def validate_relay(
         or max(run.trade_date for run in maturity_runs) < validation_sessions[-1]
     ):
         return ()
+    observation_reasons = _observation_proof_reasons(pending)
+    if observation_reasons:
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=(pending.observation_run,),
+            reasons=observation_reasons,
+        )
     ordered = tuple(
         run
         for run in strict_future
@@ -756,9 +764,16 @@ def validate_relay(
     )
 
     by_day: dict[date, list[RoleRunEvidence]] = {}
+    drift_by_day: dict[date, list[tuple[RoleRunEvidence, tuple[str, ...]]]] = {}
     for run in ordered:
         if run.trade_date in validation_sessions:
-            by_day.setdefault(run.trade_date, []).append(run)
+            identity_reasons = _run_identity_reasons(pending, run)
+            if identity_reasons:
+                drift_by_day.setdefault(run.trade_date, []).append(
+                    (run, identity_reasons)
+                )
+            else:
+                by_day.setdefault(run.trade_date, []).append(run)
     window_runs = tuple(
         run for day in validation_sessions for run in by_day.get(day, ())
     )
@@ -773,6 +788,23 @@ def validate_relay(
         runs[0] for day in validation_sessions if len(runs := by_day.get(day, [])) == 1
     )
     if len(selected) != 5:
+        missing_day_drift = tuple(
+            item
+            for day in validation_sessions
+            if not by_day.get(day)
+            for item in drift_by_day.get(day, ())
+        )
+        if missing_day_drift:
+            drift_runs = tuple(run for run, _ in missing_day_drift)
+            identity_reasons = tuple(
+                reason for _, reasons in missing_day_drift for reason in reasons
+            )
+            return _unavailable_validation(
+                pending,
+                sessions=validation_sessions,
+                runs=(*selected, *drift_runs),
+                reasons=("topic_incomparable", *identity_reasons),
+            )
         return _unavailable_validation(
             pending,
             sessions=validation_sessions,
@@ -786,17 +818,6 @@ def validate_relay(
             sessions=validation_sessions,
             runs=selected,
             reasons=("duplicate_input_run_id",),
-        )
-
-    identity_reasons = tuple(
-        reason for run in selected for reason in _run_identity_reasons(pending, run)
-    )
-    if identity_reasons:
-        return _unavailable_validation(
-            pending,
-            sessions=validation_sessions,
-            runs=selected,
-            reasons=("topic_incomparable", *identity_reasons),
         )
 
     validation_cutoff = selected[-1].context.knowledge_cutoff

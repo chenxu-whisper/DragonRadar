@@ -572,6 +572,12 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
         observation_context = observation_run.context
         market = observation_context.market
         topic = observation_context.topic
+        observation_pool = market.expected_security_ids
+        if len(set(observation_pool)) != len(observation_pool):
+            raise ValueError(
+                "observation_run expected_security_ids must not contain duplicates"
+            )
+        canonical_observation_pool = tuple(sorted(observation_pool))
         expected_visibility = (
             "retrospective"
             if "retrospective" in {market.provenance, topic.provenance}
@@ -649,7 +655,7 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
                 "pool_version must match observation_run",
             ),
             (
-                market.expected_security_ids,
+                canonical_observation_pool,
                 self.expected_security_ids,
                 "expected_security_ids must match observation_run",
             ),
