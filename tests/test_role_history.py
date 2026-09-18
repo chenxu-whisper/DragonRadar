@@ -84,6 +84,7 @@ def _context(
     *,
     trade_date: date = T,
     sessions: tuple[date, ...] = SESSIONS,
+    topic_id: str = TOPIC,
     member_ids: tuple[str, ...] = ("A",),
     bars=(),
     states=(),
@@ -116,6 +117,7 @@ def _context(
     )
     memberships = tuple(
         topic_membership(
+            topic_id=topic_id,
             security_id=security_id,
             effective_from=sessions[0],
             available_at=known_at,
@@ -163,6 +165,7 @@ def _context(
         coverage_to=trade_date,
         coverage_cells=tuple(
             coverage_cell(
+                topic_id=topic_id,
                 trade_date=day,
                 expected_member_count=len(member_ids),
                 received_member_count=len(member_ids),
@@ -171,7 +174,13 @@ def _context(
             for day in sessions
             if day <= trade_date
         ),
-        topics=(topic_definition(effective_from=sessions[0], available_at=known_at),),
+        topics=(
+            topic_definition(
+                topic_id=topic_id,
+                effective_from=sessions[0],
+                available_at=known_at,
+            ),
+        ),
         memberships=memberships,
         membership_version=membership_version,
         taxonomy_version=taxonomy_version,
@@ -225,10 +234,34 @@ def _evaluation(
     return RoleEvaluation(topic_status=status, candidates=candidates)
 
 
+def _insufficient_evaluation(role: str) -> RoleEvaluation:
+    capability = {
+        "trend": "ready",
+        "core": "ready",
+        "emotion": "simplified",
+        "catchup": "simplified",
+        "follower": "watch_only",
+        "relay": "pending_validation",
+    }[role]
+    return RoleEvaluation(
+        topic_status=RoleTopicStatus(
+            topic_id=TOPIC,
+            role=role,
+            capability=capability,
+            status="insufficient",
+            expected=1,
+            valid=0,
+            legal_excluded=0,
+            missing=1,
+        )
+    )
+
+
 def _run(
     run_id: str,
     context: RoleContext,
     *,
+    topic_id: str = TOPIC,
     evaluations: tuple[RoleEvaluation, ...] = (),
     previous_id: str | None = None,
     member_ids: tuple[str, ...] = ("A",),
@@ -238,7 +271,7 @@ def _run(
         "role_run_id": run_id,
         "previous_comparable_run_id": previous_id,
         "context": context,
-        "topic_id": TOPIC,
+        "topic_id": topic_id,
         "visibility_mode": (
             "retrospective"
             if "retrospective" in {context.market.provenance, context.topic.provenance}
@@ -351,6 +384,44 @@ def test_limit_ladder_rejects_high_above_limit_as_unavailable_touch_state():
 
     assert row.touched_not_sealed is None
     assert "touch_quality_gate_failed" in row.reasons
+
+
+def test_limit_ladder_does_not_treat_calendar_boundary_as_exact_streak():
+    bars = tuple(_limited_bar("A", day) for day in SESSIONS)
+    states = (
+        state(
+            security_id="A",
+            effective_from=SESSIONS[0],
+            available_at=datetime(2026, 1, 1, tzinfo=UTC),
+            listing_date=SESSIONS[0] - timedelta(days=1),
+        ),
+    )
+
+    row = build_limit_ladder(_context(bars=bars, states=states), TOPIC)[0]
+
+    assert row.closing_limit_streak is None
+    assert "history_boundary_unknown" in row.reasons
+
+
+def test_limit_ladder_counts_exact_streak_from_first_listing_session():
+    bars = tuple(_limited_bar("A", day) for day in SESSIONS)
+
+    row = build_limit_ladder(_context(bars=bars), TOPIC)[0]
+
+    assert row.closing_limit_streak == len(SESSIONS)
+    assert "history_boundary_unknown" not in row.reasons
+
+
+def test_limit_ladder_explains_unavailable_historical_observation():
+    previous = SESSIONS[-2]
+    bars = tuple(_limited_bar("A", day) for day in SESSIONS[-10:] if day != previous)
+
+    row = build_limit_ladder(_context(bars=bars), TOPIC)[0]
+
+    assert row.closing_limit_streak is None
+    assert row.limit_hits_10 is None
+    assert row.broken_board is None
+    assert row.reasons == (f"{previous.isoformat()}: daily_bar_unavailable",)
 
 
 def test_limit_ladder_materializes_member_missing_from_declared_market_pool():
@@ -500,6 +571,89 @@ def test_compare_runs_reports_unchanged_for_identical_assignment_and_tie_group()
     assert all(change.comparison_status == "comparable" for change in changes)
     assert all(change.membership_changed is False for change in changes)
     assert all(change.reasons == () for change in changes)
+
+
+@pytest.mark.parametrize("insufficient_side", ("current", "previous"))
+def test_compare_runs_does_not_infer_change_from_insufficient_role(
+    insufficient_side,
+):
+    previous_evaluation = _evaluation("trend", (("A", 1),))
+    current_evaluation = _evaluation("trend", (("A", 1),))
+    if insufficient_side == "current":
+        current_evaluation = _insufficient_evaluation("trend")
+    else:
+        previous_evaluation = _insufficient_evaluation("trend")
+    previous = _run(
+        "previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(previous_evaluation,),
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id="previous",
+        evaluations=(current_evaluation,),
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert change.change_type is None
+    assert change.reasons == ("role_input_insufficient",)
+
+
+def test_compare_runs_does_not_infer_exit_when_role_evaluation_is_missing():
+    previous = _run(
+        "previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id="previous",
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert change.change_type is None
+    assert change.reasons == ("role_input_insufficient",)
+
+
+def test_compare_runs_role_insufficiency_does_not_block_complete_role():
+    previous = _run(
+        "previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(
+            _evaluation("trend", (("A", 1),)),
+            _evaluation("core", (("A", 1),)),
+        ),
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id="previous",
+        evaluations=(
+            _insufficient_evaluation("trend"),
+            _evaluation("core", (("A", 1),)),
+        ),
+    )
+
+    changes = compare_runs(current, previous)
+
+    assert [
+        (
+            change.role,
+            change.comparison_status,
+            change.change_type,
+            change.reasons,
+        )
+        for change in changes
+    ] == [
+        ("core", "comparable", "unchanged", ()),
+        ("trend", "not_comparable", None, ("role_input_insufficient",)),
+    ]
 
 
 def test_compare_runs_allows_daily_market_source_version_change():
@@ -747,6 +901,34 @@ def test_compare_runs_records_current_declared_predecessor_on_mismatch():
     assert change.comparison_status == "not_comparable"
     assert change.previous_comparable_run_id is None
     assert change.reasons == ("previous_comparable_run_mismatch",)
+
+
+@pytest.mark.parametrize(
+    ("side", "changes"),
+    (
+        ("current", {"topic_id": "forged-topic"}),
+        ("previous", {"active_run_count": 2}),
+    ),
+)
+def test_compare_runs_revalidates_both_input_projections(side, changes):
+    previous = _run(
+        "previous",
+        _context(trade_date=SESSIONS[-2]),
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        _context(),
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    if side == "current":
+        current = current.model_copy(update=changes)
+    else:
+        previous = previous.model_copy(update=changes)
+
+    with pytest.raises(ValidationError):
+        compare_runs(current, previous)
 
 
 @pytest.mark.parametrize(
@@ -1416,6 +1598,64 @@ def test_validate_relay_matures_at_t_plus_5_with_exact_outcome(
     assert validation.new_return_raw == Decimal(new_end) / Decimal("100") - 1
 
 
+def test_validate_relay_ignores_other_topic_run_on_same_day():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    other_context = _context(
+        trade_date=target.trade_date,
+        sessions=FUTURE_SESSIONS,
+        topic_id="topic-b",
+        member_ids=target.member_ids,
+        bars=target.context.market.bars,
+        states=target.context.market.security_states,
+    )
+    other_topic = _run(
+        "other-topic-run",
+        other_context,
+        topic_id="topic-b",
+        member_ids=target.member_ids,
+    )
+
+    validation = validate_relay(pending, (*runs, other_topic))[0]
+
+    assert validation.outcome == "supported"
+    assert validation.input_run_ids == tuple(f"run-t{i}" for i in range(1, 6))
+
+
+def test_validate_relay_rejects_duplicate_same_topic_active_run_on_same_day():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    duplicate = runs[2].model_copy(update={"role_run_id": "duplicate-topic-run"})
+
+    validation = validate_relay(pending, (*runs, duplicate))[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("multiple_active_topic_runs",)
+
+
+def test_validate_relay_returns_unavailable_for_duplicate_selected_run_ids():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    duplicate_ids = tuple(
+        run.model_copy(update={"role_run_id": "duplicate-run-id"}) for run in runs
+    )
+
+    validation = validate_relay(pending, duplicate_ids)[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("duplicate_input_run_id",)
+
+
 def test_validate_relay_ignores_late_corrected_t_bar_in_future_snapshot():
     pending, runs = _validation_fixture(
         new_end="130",
@@ -1477,6 +1717,126 @@ def test_validate_relay_requires_each_future_daily_price_point():
 
     assert validation.outcome == "unavailable"
     assert "B: missing_price" in validation.reasons
+
+
+@pytest.mark.parametrize(
+    ("state_changes", "expected_reason"),
+    (
+        ({"exchange": "OTHER"}, "A: security_state_unavailable"),
+        ({"listing_date": None}, "A: security_state_unavailable"),
+        (
+            {"listing_date": FUTURE_SESSIONS[-2]},
+            "A: security_state_unavailable",
+        ),
+    ),
+)
+def test_validate_relay_rejects_invalid_security_state_quality(
+    state_changes,
+    expected_reason,
+):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[0]
+    changed_states = tuple(
+        security_state.model_copy(update=state_changes)
+        if security_state.security_id == "A"
+        else security_state
+        for security_state in target.context.market.security_states
+    )
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={"security_states": changed_states}
+            )
+        }
+    )
+
+    validation = validate_relay(
+        pending,
+        (target.model_copy(update={"context": changed_context}), *runs[1:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == (expected_reason,)
+
+
+@pytest.mark.parametrize(
+    "bar_changes",
+    (
+        {"open": Decimal("120"), "high": Decimal("110"), "low": Decimal("90")},
+        {
+            "limit_status": "limited",
+            "limit_date": FUTURE_SESSIONS[-3],
+            "limit_up": Decimal("90"),
+            "limit_down": Decimal("110"),
+        },
+    ),
+)
+def test_validate_relay_rejects_bar_failing_domain_quality(bar_changes):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    target_day = target.trade_date
+    changed_bars = tuple(
+        daily_bar.model_copy(update=bar_changes)
+        if daily_bar.security_id == "A" and daily_bar.trade_date == target_day
+        else daily_bar
+        for daily_bar in target.context.market.bars
+    )
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(update={"bars": changed_bars})
+        }
+    )
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], target.model_copy(update={"context": changed_context}), *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("A: bar_quality_unavailable",)
+
+
+def test_validate_relay_failure_reasons_ignore_baseline_price_order():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[-1]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={
+                    "bars": tuple(
+                        daily_bar
+                        for daily_bar in target.context.market.bars
+                        if not (
+                            daily_bar.security_id in {"A", "B"}
+                            and daily_bar.trade_date == target.trade_date
+                        )
+                    )
+                }
+            )
+        }
+    )
+    changed_runs = (*runs[:-1], target.model_copy(update={"context": changed_context}))
+    reversed_pending = pending.model_copy(
+        update={"baseline_prices": tuple(reversed(pending.baseline_prices))}
+    )
+
+    forward = validate_relay(pending, changed_runs)[0]
+    reversed_result = validate_relay(reversed_pending, changed_runs)[0]
+
+    assert forward.reasons == reversed_result.reasons
+    assert forward.reasons == ("A: missing_price", "B: missing_price")
 
 
 @pytest.mark.parametrize("security_id", ("OLD", "NEW", "A"))

@@ -169,6 +169,13 @@ def build_limit_ladder(
         reasons: list[str] = []
         if current[2] is not None:
             reasons.append(current[2])
+        reasons.extend(
+            f"{day.isoformat()}: {observation[2]}"
+            for day, observation in observations.items()
+            if day != context.market.trade_date
+            and observation[0] is None
+            and observation[2] is not None
+        )
 
         if len(window) != 10 or any(
             observation[0] is None for observation in observations.values()
@@ -186,10 +193,23 @@ def build_limit_ladder(
                 streak = None
                 if reason is not None and day == context.market.trade_date:
                     reasons.append(reason)
+                elif reason is not None:
+                    reasons.append(f"{day.isoformat()}: {reason}")
                 break
             if not closed_limit:
                 break
             streak += 1
+        else:
+            first_session = sessions[0]
+            first_state = prepared.state_on(security_id, first_session)
+            listing_boundary_is_exact = (
+                first_state is not None
+                and first_state.listing_date == first_session
+                and first_state.listing_date in sessions
+            )
+            if not listing_boundary_is_exact:
+                streak = None
+                reasons.append("history_boundary_unknown")
 
         broken: bool | None = False
         if endpoint == 0:
@@ -316,10 +336,18 @@ def compare_runs(
     previous: RoleRunEvidence,
 ) -> tuple[RoleChange, ...]:
     """Compare positive role assignments only against the selected predecessor."""
+    current = RoleRunEvidence.model_validate(current.model_dump())
+    previous = RoleRunEvidence.model_validate(previous.model_dump())
     current_rows = _positive_rows(current)
     previous_rows = _positive_rows(previous)
     keys = tuple(sorted(current_rows.keys() | previous_rows.keys()))
     reasons = _comparison_reasons(current, previous)
+    current_evaluations = {
+        evaluation.topic_status.role: evaluation for evaluation in current.evaluations
+    }
+    previous_evaluations = {
+        evaluation.topic_status.role: evaluation for evaluation in previous.evaluations
+    }
     membership_changed = (
         current.membership_version != previous.membership_version
         or frozenset(current.member_ids) != frozenset(previous.member_ids)
@@ -327,8 +355,21 @@ def compare_runs(
     result: list[RoleChange] = []
     for role, security_id in keys:
         change_type = None
-        change_reasons = reasons
-        if not reasons:
+        role_inputs = (
+            current_evaluations.get(role),
+            previous_evaluations.get(role),
+        )
+        role_reasons = (
+            ("role_input_insufficient",)
+            if any(
+                evaluation is None or evaluation.topic_status.status == "insufficient"
+                for evaluation in role_inputs
+            )
+            else ()
+        )
+        comparison_reasons = tuple(dict.fromkeys((*reasons, *role_reasons)))
+        change_reasons = comparison_reasons
+        if not comparison_reasons:
             current_row = current_rows.get((role, security_id))
             previous_row = previous_rows.get((role, security_id))
             if previous_row is None:
@@ -349,7 +390,9 @@ def compare_runs(
                 topic_id=current.topic_id,
                 security_id=security_id,
                 role=role,
-                comparison_status=("not_comparable" if reasons else "comparable"),
+                comparison_status=(
+                    "not_comparable" if comparison_reasons else "comparable"
+                ),
                 change_type=change_type,
                 membership_changed=membership_changed,
                 reasons=change_reasons,
@@ -377,7 +420,7 @@ def _unavailable_validation(
             return_end=sessions[-1],
             old_security_id=pending.old_security_id,
             new_security_id=pending.new_security_id,
-            input_run_ids=tuple(run.role_run_id for run in runs),
+            input_run_ids=tuple(dict.fromkeys(run.role_run_id for run in runs)),
             reasons=tuple(dict.fromkeys(reasons)),
         ),
     )
@@ -397,6 +440,9 @@ def _state_for(
         and security_state.source_id == context.market.source_id
         and security_state.source_version == context.market.source_version
         and security_state.pool_version == context.market.pool_version
+        and security_state.exchange == context.market.calendar.exchange
+        and security_state.listing_date is not None
+        and security_state.listing_date <= day
         and _effective(
             security_state.effective_from,
             security_state.effective_to,
@@ -410,7 +456,7 @@ def _bar_for(
     run: RoleRunEvidence,
     security_id: str,
     day: date,
-) -> DailyBar | None:
+) -> tuple[DailyBar | None, str | None]:
     context = run.context
     matches = tuple(
         daily_bar
@@ -422,7 +468,12 @@ def _bar_for(
         and daily_bar.source_version == context.market.source_version
         and daily_bar.adjustment_version == context.market.adjustment_version
     )
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) != 1:
+        return None, "missing_price"
+    daily_bar = matches[0]
+    if bar_issues(daily_bar, context.market):
+        return None, "bar_quality_unavailable"
+    return daily_bar, None
 
 
 def _is_member(
@@ -532,7 +583,12 @@ def validate_relay(
         return (pending.current_validation,)
     ordered = tuple(
         sorted(
-            (run for run in future_runs if run.trade_date > pending.observation_date),
+            (
+                run
+                for run in future_runs
+                if run.topic_id == pending.topic_id
+                and run.trade_date > pending.observation_date
+            ),
             key=lambda run: (run.trade_date, run.role_run_id),
         )
     )
@@ -546,6 +602,16 @@ def validate_relay(
     for run in ordered:
         if run.trade_date in validation_sessions:
             by_day.setdefault(run.trade_date, []).append(run)
+    window_runs = tuple(
+        run for day in validation_sessions for run in by_day.get(day, ())
+    )
+    if any(len(by_day.get(day, ())) > 1 for day in validation_sessions):
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=window_runs,
+            reasons=("multiple_active_topic_runs",),
+        )
     selected = tuple(
         runs[0] for day in validation_sessions if len(runs := by_day.get(day, [])) == 1
     )
@@ -555,6 +621,14 @@ def validate_relay(
             sessions=validation_sessions,
             runs=selected,
             reasons=("window_incomplete",),
+        )
+
+    if len({run.role_run_id for run in selected}) != len(selected):
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=selected,
+            reasons=("duplicate_input_run_id",),
         )
 
     identity_reasons = tuple(
@@ -610,7 +684,10 @@ def validate_relay(
         )
     prices: dict[str, list[Decimal]] = {
         price.security_id: [price.adjusted_price_raw]
-        for price in pending.baseline_prices
+        for price in sorted(
+            pending.baseline_prices,
+            key=lambda price: price.security_id,
+        )
     }
     failures: list[str] = []
     for security_id in prices:
@@ -628,9 +705,9 @@ def validate_relay(
             if security_state.suspended:
                 failures.append(f"{security_id}: suspended")
                 break
-            daily_bar = _bar_for(run, security_id, day)
-            if daily_bar is None or daily_bar.close is None:
-                failures.append(f"{security_id}: missing_price")
+            daily_bar, bar_failure = _bar_for(run, security_id, day)
+            if daily_bar is None:
+                failures.append(f"{security_id}: {bar_failure}")
                 break
             try:
                 prices[security_id].append(
