@@ -687,6 +687,37 @@ def test_relay_predecessor_rejects_inconsistent_trend_identity(trend_evaluation)
 
 
 @pytest.mark.parametrize(
+    "changes",
+    (
+        {"member_ids": ("A", "A", "C")},
+        {
+            "member_ids": ("A", "C"),
+            "trend_evaluation": _trend_evaluation(("B",)),
+        },
+    ),
+)
+def test_relay_predecessor_rejects_inconsistent_frozen_members(changes):
+    from pydantic import ValidationError
+
+    context = _relay_context()
+    with pytest.raises(ValidationError, match="member_ids"):
+        _predecessor(context, **changes)
+
+
+def test_relay_predecessor_accepts_trend_rows_from_frozen_members():
+    context = _relay_context()
+
+    predecessor = _predecessor(
+        context,
+        member_ids=("A", "C"),
+        trend_evaluation=_trend_evaluation(("A",)),
+    )
+
+    assert predecessor.member_ids == ("A", "C")
+    assert predecessor.trend_evaluation.candidates[0].security_id == "A"
+
+
+@pytest.mark.parametrize(
     ("retrospective_input", "expected_status"),
     (
         ("market", "pending_validation"),
@@ -801,6 +832,126 @@ def test_staged_topic_benchmarks_reject_missing_fixed_member(
         result.topic_status.missing,
     ) == (3, 2, 0, 1)
     assert "C: missing" in " ".join(result.topic_status.reasons)
+    assert result.candidates == ()
+
+
+@pytest.mark.parametrize("evaluate_name", ("evaluate_catchup", "evaluate_relay"))
+@pytest.mark.parametrize(
+    ("scenario", "expected_legal_excluded", "expected_missing"),
+    (("missing_state", 0, 1), ("suspended", 1, 0)),
+)
+def test_staged_benchmarks_do_not_skip_ineligible_observation_member(
+    evaluate_name,
+    scenario,
+    expected_legal_excluded,
+    expected_missing,
+):
+    from dragon_radar.roles import engine
+
+    context = (
+        _catchup_context() if evaluate_name == "evaluate_catchup" else _relay_context()
+    )
+    states = tuple(
+        security_state
+        for security_state in context.market.security_states
+        if security_state.security_id != "C"
+    )
+    if scenario == "suspended":
+        original = next(
+            security_state
+            for security_state in context.market.security_states
+            if security_state.security_id == "C"
+        )
+        states = (*states, original.model_copy(update={"suspended": True}))
+    context = RoleContext(
+        market=context.market.model_copy(update={"security_states": states}),
+        topic=context.topic,
+        rule_version=context.rule_version,
+    )
+    evaluate = getattr(engine, evaluate_name)
+
+    result = (
+        evaluate(context, "topic-a", _predecessor(context))
+        if evaluate_name == "evaluate_relay"
+        else evaluate(context, "topic-a")
+    )
+
+    assert result.topic_status.status == "insufficient"
+    assert result.topic_status.legal_excluded == expected_legal_excluded
+    assert result.topic_status.missing == expected_missing
+    assert result.candidates == ()
+
+
+@pytest.mark.parametrize("evaluate_name", ("evaluate_catchup", "evaluate_relay"))
+def test_staged_windows_reject_cross_exchange_historical_exited_member(evaluate_name):
+    from dragon_radar.roles import engine
+
+    context = (
+        _catchup_context()
+        if evaluate_name == "evaluate_catchup"
+        else _relay_context()
+    )
+    d_state = state(
+        security_id="D",
+        effective_from=SESSIONS[0],
+        available_at=datetime(2026, 1, 1, tzinfo=UTC),
+        listing_date=SESSIONS[0],
+        exchange="OTHER",
+    )
+    d_bars = tuple(
+        bar(
+            security_id="D",
+            trade_date=day,
+            close=Decimal("100"),
+            amount=Decimal("100"),
+        )
+        for day in SESSIONS[-26:-1]
+    )
+    d_membership = context.topic.memberships[0].model_copy(
+        update={
+            "security_id": "D",
+            "effective_from": SESSIONS[-26],
+            "effective_to": T,
+            "available_at": datetime(2026, 1, 1, tzinfo=UTC),
+        }
+    )
+    coverage_cells = tuple(
+        cell.model_copy(
+            update={
+                "expected_member_count": 4,
+                "received_member_count": 4,
+            }
+        )
+        if SESSIONS[-26] <= cell.trade_date < T
+        else cell
+        for cell in context.topic.coverage_cells
+    )
+    context = RoleContext(
+        market=context.market.model_copy(
+            update={
+                "expected_security_ids": (*context.market.expected_security_ids, "D"),
+                "security_states": (*context.market.security_states, d_state),
+                "bars": (*context.market.bars, *d_bars),
+            }
+        ),
+        topic=context.topic.model_copy(
+            update={
+                "memberships": (*context.topic.memberships, d_membership),
+                "coverage_cells": coverage_cells,
+            }
+        ),
+        rule_version=context.rule_version,
+    )
+    evaluate = getattr(engine, evaluate_name)
+
+    result = (
+        evaluate(context, "topic-a", _predecessor(context))
+        if evaluate_name == "evaluate_relay"
+        else evaluate(context, "topic-a")
+    )
+
+    assert result.topic_status.status == "insufficient"
+    assert "D: cross_exchange" in result.topic_status.reasons
     assert result.candidates == ()
 
 

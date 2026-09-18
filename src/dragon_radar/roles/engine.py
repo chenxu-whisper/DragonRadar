@@ -72,6 +72,9 @@ class RelayPredecessorRun(FrozenModel):
     @model_validator(mode="after")
     def consistent_trend_identity(self):
         evaluation = self.trend_evaluation
+        member_ids = frozenset(self.member_ids)
+        if len(member_ids) != len(self.member_ids):
+            raise ValueError("member_ids must not contain duplicates")
         if (
             evaluation.topic_status.topic_id != self.topic_id
             or evaluation.topic_status.role != "trend"
@@ -82,6 +85,10 @@ class RelayPredecessorRun(FrozenModel):
         ):
             raise ValueError(
                 "trend_evaluation topic and role must match predecessor topic"
+            )
+        if any(row.security_id not in member_ids for row in evaluation.candidates):
+            raise ValueError(
+                "trend_evaluation security_id must belong to predecessor member_ids"
             )
         return self
 
@@ -1204,10 +1211,28 @@ def _staged_window_failure(
     price_sessions: Sequence[date] | None = None,
     fail_on_missing: bool,
 ) -> RoleEvaluation | None:
-    changed = False
-    for security_id, classification in tuple(classifications.items()):
-        if classification != "valid":
-            continue
+    window_incomplete = False
+    has_cross_exchange = False
+    for day in sessions:
+        for security_id in prepared.members_on(day):
+            day_classification, reason = _state_eligibility(
+                prepared,
+                security_id,
+                day,
+                check_listing=False,
+            )
+            if day_classification not in {"missing", "cross_exchange"}:
+                continue
+            window_incomplete = True
+            has_cross_exchange = (
+                has_cross_exchange or day_classification == "cross_exchange"
+            )
+            if security_id in classifications:
+                classifications[security_id] = day_classification
+            if reason is not None:
+                reasons.append(reason)
+
+    for security_id in tuple(classifications):
         window_classification, reason = _continuous_window_eligibility(
             prepared,
             security_id,
@@ -1216,12 +1241,14 @@ def _staged_window_failure(
         )
         if window_classification == "valid":
             continue
-        changed = True
+        window_incomplete = True
         classifications[security_id] = window_classification
+        has_cross_exchange = (
+            has_cross_exchange or window_classification == "cross_exchange"
+        )
         if reason is not None:
             reasons.append(reason)
-    has_cross_exchange = "cross_exchange" in classifications.values()
-    if not has_cross_exchange and (not fail_on_missing or not changed):
+    if not has_cross_exchange and (not fail_on_missing or not window_incomplete):
         return None
     failure_reasons = tuple(
         dict.fromkeys(
