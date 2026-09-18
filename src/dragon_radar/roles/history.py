@@ -263,14 +263,22 @@ def _comparison_reasons(
                 current.context.market.adjustment_version,
                 current.context.market.pool_version,
                 current.context.market.calendar_version,
+                current.context.market.calendar.exchange,
+                current.context.market.calendar.sessions,
                 current.context.topic.calendar_version,
+                current.context.topic.exchange,
+                current.context.topic.calendar.sessions,
             )
             == (
                 previous.context.market.source_id,
                 previous.context.market.adjustment_version,
                 previous.context.market.pool_version,
                 previous.context.market.calendar_version,
+                previous.context.market.calendar.exchange,
+                previous.context.market.calendar.sessions,
                 previous.context.topic.calendar_version,
+                previous.context.topic.exchange,
+                previous.context.topic.calendar.sessions,
             ),
             "calculation_basis_changed",
         ),
@@ -569,6 +577,9 @@ def validate_relay(
             security_state = _state_for(run, security_id, day)
             if security_state is None:
                 failures.append(f"{security_id}: security_state_unavailable")
+                break
+            if security_state.suspended is None:
+                failures.append(f"{security_id}: suspension_status_unknown")
                 break
             if security_state.suspended:
                 failures.append(f"{security_id}: suspended")

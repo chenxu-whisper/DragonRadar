@@ -294,6 +294,18 @@ class RoleValidation(_StrictFrozenRoleModel):
             raise ValueError("available validation outcomes require all raw returns")
         if self.outcome != "unavailable" and len(self.input_run_ids) != 5:
             raise ValueError("relay validation requires five input run IDs")
+        if self.outcome != "unavailable":
+            if self.new_return_raw <= self.old_return_raw:
+                expected_outcome = "refuted"
+            elif self.new_return_raw > self.topic_median_raw:
+                expected_outcome = "supported"
+            else:
+                expected_outcome = "weakened"
+            if self.outcome != expected_outcome:
+                raise ValueError(
+                    "outcome must match old_return_raw, new_return_raw, "
+                    "and topic_median_raw"
+                )
         return self
 
 
@@ -429,6 +441,7 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     baseline_prices: tuple[RelayBaselinePrice, ...]
     membership_version: Identifier
     validation_sessions: tuple[date, date, date, date, date]
+    calendar_sessions: tuple[date, ...]
     rule_version: Literal["role-v1", "role-test-v1"]
     visibility_mode: Literal["contemporaneous", "retrospective"]
     market_benchmark_definition: Identifier
@@ -441,19 +454,24 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
 
     @model_validator(mode="after")
     def validate_pending_identity(self) -> Self:
-        if any(
-            current >= following
-            for current, following in zip(
-                self.validation_sessions,
-                self.validation_sessions[1:],
-                strict=False,
-            )
-        ) or any(
-            session <= self.observation_date for session in self.validation_sessions
+        if (
+            not self.calendar_sessions
+            or tuple(sorted(set(self.calendar_sessions))) != self.calendar_sessions
         ):
+            raise ValueError("calendar_sessions must be nonempty, sorted, and unique")
+        try:
+            observation_index = self.calendar_sessions.index(self.observation_date)
+        except ValueError as error:
             raise ValueError(
-                "validation_sessions must be five strictly increasing dates after "
-                "observation_date"
+                "calendar_sessions must contain observation_date"
+            ) from error
+        expected_sessions = self.calendar_sessions[
+            observation_index + 1 : observation_index + 6
+        ]
+        if len(expected_sessions) != 5 or self.validation_sessions != expected_sessions:
+            raise ValueError(
+                "validation_sessions must be the next five calendar_sessions "
+                "after observation_date"
             )
         if len(set(self.baseline_member_ids)) != len(self.baseline_member_ids):
             raise ValueError("baseline_member_ids must not contain duplicates")

@@ -98,6 +98,7 @@ def _context(
     market_source_id: str = "synthetic",
     adjustment_version: str = "a1",
     calendar_version: str = "history-c1",
+    exchange: str = "TEST",
 ) -> RoleContext:
     known_at = datetime(2026, 1, 1, tzinfo=UTC)
     states = states or tuple(
@@ -108,6 +109,7 @@ def _context(
             listing_date=sessions[0],
             pool_version=pool_version,
             source_id=market_source_id,
+            exchange=exchange,
         )
         for security_id in member_ids
     )
@@ -120,7 +122,7 @@ def _context(
         for security_id in member_ids
     )
     calendar = ExchangeCalendar(
-        exchange="TEST",
+        exchange=exchange,
         version=calendar_version,
         sessions=sessions,
     )
@@ -152,6 +154,7 @@ def _context(
         trade_date=trade_date,
         as_of=CUTOFF,
         grant=topic_grant or grant(expires_at=datetime(2027, 1, 1, tzinfo=UTC)),
+        exchange=exchange,
         calendar=calendar,
         calendar_version=calendar.version,
         coverage_from=sessions[0],
@@ -530,6 +533,37 @@ def test_compare_runs_marks_changed_calculation_identity_not_comparable(
     assert change.reasons == expected_reasons
 
 
+@pytest.mark.parametrize(
+    "current_context_changes",
+    (
+        {"exchange": "OTHER"},
+        {"sessions": (date(2026, 8, 1), *SESSIONS[1:])},
+    ),
+)
+def test_compare_runs_rejects_changed_exchange_or_calendar_sessions(
+    current_context_changes,
+):
+    previous_context = _context(trade_date=SESSIONS[-2])
+    current_context = _context(**current_context_changes)
+    previous = _run(
+        "previous",
+        previous_context,
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        current_context,
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 2),)),),
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert change.change_type is None
+    assert change.reasons == ("calculation_basis_changed",)
+
+
 def test_compare_runs_marks_same_day_topic_revision_not_comparable():
     previous_context = _context(topic_source_version="s1")
     current_context = _context(topic_source_version="s2")
@@ -680,6 +714,7 @@ def _validation_fixture(
         ),
         membership_version="m1",
         validation_sessions=validation_days,
+        calendar_sessions=FUTURE_SESSIONS,
         rule_version="role-test-v1",
         visibility_mode="contemporaneous",
         market_benchmark_definition=("eligible_declared_market_pool_return_median"),
@@ -720,7 +755,67 @@ def test_pending_relay_requires_five_strict_future_validation_sessions():
             PendingRelayValidation.model_validate(values)
 
 
-@pytest.mark.parametrize("field", ("membership_version", "validation_sessions"))
+@pytest.mark.parametrize(
+    "calendar_sessions",
+    (
+        tuple(day for day in FUTURE_SESSIONS if day != FUTURE_SESSIONS[-6]),
+        FUTURE_SESSIONS[:-1],
+        (
+            *FUTURE_SESSIONS[:-2],
+            FUTURE_SESSIONS[-1],
+            FUTURE_SESSIONS[-2],
+        ),
+    ),
+)
+def test_pending_relay_rejects_invalid_frozen_calendar(calendar_sessions):
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["calendar_sessions"] = calendar_sessions
+
+    with pytest.raises(ValidationError, match="calendar_sessions"):
+        PendingRelayValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "validation_sessions",
+    (
+        (*FUTURE_SESSIONS[-4:], date(2026, 9, 16)),
+        tuple(date(2026, 10, day) for day in range(1, 6)),
+    ),
+)
+def test_pending_relay_requires_next_five_frozen_calendar_sessions(
+    validation_sessions,
+):
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["validation_sessions"] = validation_sessions
+
+    with pytest.raises(ValidationError, match="validation_sessions"):
+        PendingRelayValidation.model_validate(values)
+
+
+def test_pending_relay_accepts_next_five_frozen_calendar_sessions():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+
+    assert PendingRelayValidation.model_validate(pending.model_dump()) == pending
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("membership_version", "validation_sessions", "calendar_sessions"),
+)
 def test_pending_relay_requires_frozen_membership_and_sessions(field):
     pending, _ = _validation_fixture(
         new_end="130",
@@ -745,6 +840,58 @@ def test_pending_relay_rejects_duplicate_validation_input_run_ids():
     values["input_run_ids"] = ("run-t1",) * 5
 
     with pytest.raises(ValidationError, match="input_run_ids"):
+        RoleValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("old_return", "new_return", "topic_median", "incorrect_outcome"),
+    (
+        ("0.10", "0.05", "0.00", "supported"),
+        ("0.10", "0.05", "0.00", "weakened"),
+        ("0.10", "0.10", "0.00", "supported"),
+        ("0.10", "0.10", "0.00", "weakened"),
+        ("0.10", "0.20", "0.15", "refuted"),
+        ("0.10", "0.20", "0.15", "weakened"),
+        ("0.10", "0.20", "0.20", "refuted"),
+        ("0.10", "0.20", "0.20", "supported"),
+        ("0.10", "0.20", "0.25", "refuted"),
+        ("0.10", "0.20", "0.25", "supported"),
+    ),
+)
+def test_role_validation_rejects_outcome_inconsistent_with_raw_returns(
+    old_return,
+    new_return,
+    topic_median,
+    incorrect_outcome,
+):
+    validation = RoleValidation(
+        pending_result_id="pending-1",
+        observation_run_id="run-t0",
+        topic_id=TOPIC,
+        outcome=(
+            "refuted"
+            if Decimal(new_return) <= Decimal(old_return)
+            else (
+                "supported"
+                if Decimal(new_return) > Decimal(topic_median)
+                else "weakened"
+            )
+        ),
+        window_start=FUTURE_SESSIONS[-5],
+        window_end=FUTURE_SESSIONS[-1],
+        return_start=FUTURE_SESSIONS[-6],
+        return_end=FUTURE_SESSIONS[-1],
+        old_security_id="OLD",
+        new_security_id="NEW",
+        old_return_raw=Decimal(old_return),
+        new_return_raw=Decimal(new_return),
+        topic_median_raw=Decimal(topic_median),
+        input_run_ids=tuple(f"run-t{i}" for i in range(1, 6)),
+    )
+    values = validation.model_dump()
+    values["outcome"] = incorrect_outcome
+
+    with pytest.raises(ValidationError, match="outcome"):
         RoleValidation.model_validate(values)
 
 
@@ -796,6 +943,21 @@ def test_validate_relay_revalidates_existing_validation_before_idempotent_return
     forged_pending = pending.model_copy(update={"current_validation": validation})
 
     with pytest.raises(ValidationError, match="current_validation"):
+        validate_relay(forged_pending, runs)
+
+
+def test_validate_relay_rejects_forged_current_validation_outcome():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    validation = validate_relay(pending, runs)[0].model_copy(
+        update={"outcome": "refuted"}
+    )
+    forged_pending = pending.model_copy(update={"current_validation": validation})
+
+    with pytest.raises(ValidationError, match="outcome"):
         validate_relay(forged_pending, runs)
 
 
@@ -894,6 +1056,44 @@ def test_validate_relay_requires_each_future_daily_price_point():
 
     assert validation.outcome == "unavailable"
     assert "B: missing_price" in validation.reasons
+
+
+@pytest.mark.parametrize("security_id", ("OLD", "NEW", "A"))
+@pytest.mark.parametrize("run_index", range(5))
+def test_validate_relay_marks_unknown_suspension_status_unavailable(
+    security_id,
+    run_index,
+):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[run_index]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={
+                    "security_states": tuple(
+                        security_state.model_copy(update={"suspended": None})
+                        if security_state.security_id == security_id
+                        else security_state
+                        for security_state in target.context.market.security_states
+                    )
+                }
+            )
+        }
+    )
+    changed_runs = (
+        *runs[:run_index],
+        target.model_copy(update={"context": changed_context}),
+        *runs[run_index + 1 :],
+    )
+
+    validation = validate_relay(pending, changed_runs)[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == (f"{security_id}: suspension_status_unknown",)
 
 
 def test_validate_relay_returns_no_record_before_t_plus_5():
