@@ -99,6 +99,7 @@ def _context(
     adjustment_version: str = "a1",
     calendar_version: str = "history-c1",
     exchange: str = "TEST",
+    expected_security_ids: tuple[str, ...] | None = None,
 ) -> RoleContext:
     known_at = datetime(2026, 1, 1, tzinfo=UTC)
     states = states or tuple(
@@ -138,7 +139,8 @@ def _context(
         adjustment_version=adjustment_version,
         calendar=calendar,
         calendar_version=calendar.version,
-        expected_security_ids=tuple(
+        expected_security_ids=expected_security_ids
+        or tuple(
             sorted(
                 set(member_ids)
                 | {daily_bar.security_id for daily_bar in bars}
@@ -350,13 +352,16 @@ def test_limit_ladder_rejects_high_above_limit_as_unavailable_touch_state():
 
 
 def test_compare_runs_reports_added_exited_tie_unchanged_and_membership_change():
+    market_pool = ("A", "B", "C", "D", "E")
     previous_context = _context(
         trade_date=SESSIONS[-2],
         member_ids=("A", "B", "C", "D"),
+        expected_security_ids=market_pool,
     )
     current_context = _context(
         member_ids=("A", "B", "C", "E"),
         membership_version="m2",
+        expected_security_ids=market_pool,
     )
     previous = _run(
         "previous",
@@ -463,6 +468,53 @@ def test_compare_runs_allows_daily_market_source_version_change():
     )
 
     assert compare_runs(current, previous)[0].comparison_status == "comparable"
+
+
+@pytest.mark.parametrize(
+    ("previous_pool_ids", "current_pool_ids"),
+    (
+        (("A",), ("A", "B")),
+        (("A", "B"), ("A",)),
+        (("A", "B"), ("B", "A")),
+    ),
+)
+def test_compare_runs_rejects_changed_declared_market_pool_members(
+    previous_pool_ids,
+    current_pool_ids,
+):
+    previous_context = _context(trade_date=SESSIONS[-2])
+    current_context = _context()
+    previous_context = previous_context.model_copy(
+        update={
+            "market": previous_context.market.model_copy(
+                update={"expected_security_ids": previous_pool_ids}
+            )
+        }
+    )
+    current_context = current_context.model_copy(
+        update={
+            "market": current_context.market.model_copy(
+                update={"expected_security_ids": current_pool_ids}
+            )
+        }
+    )
+    previous = _run(
+        "previous",
+        previous_context,
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+    )
+    current = _run(
+        "current",
+        current_context,
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 2),)),),
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "not_comparable"
+    assert change.change_type is None
+    assert change.reasons == ("calculation_basis_changed",)
 
 
 @pytest.mark.parametrize(
@@ -709,6 +761,7 @@ def _validation_fixture(
             RelayBaselinePrice(
                 security_id=security_id,
                 adjusted_price_raw=starts[security_id],
+                observation_suspended=False,
             )
             for security_id in member_ids
         ),
@@ -812,6 +865,46 @@ def test_pending_relay_accepts_next_five_frozen_calendar_sessions():
     assert PendingRelayValidation.model_validate(pending.model_dump()) == pending
 
 
+@pytest.mark.parametrize("observation_suspended", (True, None))
+def test_relay_baseline_rejects_member_not_explicitly_trading_at_observation(
+    observation_suspended,
+):
+    with pytest.raises(ValidationError, match="observation_suspended"):
+        RelayBaselinePrice(
+            security_id="A",
+            adjusted_price_raw=Decimal("100"),
+            observation_suspended=observation_suspended,
+        )
+
+
+def test_relay_baseline_accepts_explicitly_trading_observation():
+    baseline = RelayBaselinePrice(
+        security_id="A",
+        adjusted_price_raw=Decimal("100"),
+        observation_suspended=False,
+    )
+
+    assert baseline.observation_suspended is False
+
+
+def test_validate_relay_revalidates_observation_suspension_before_supported():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    forged_prices = tuple(
+        price.model_copy(update={"observation_suspended": True})
+        if price.security_id == "NEW"
+        else price
+        for price in pending.baseline_prices
+    )
+    forged_pending = pending.model_copy(update={"baseline_prices": forged_prices})
+
+    with pytest.raises(ValidationError, match="observation_suspended"):
+        validate_relay(forged_pending, runs)
+
+
 @pytest.mark.parametrize(
     "field",
     ("membership_version", "validation_sessions", "calendar_sessions"),
@@ -892,6 +985,62 @@ def test_role_validation_rejects_outcome_inconsistent_with_raw_returns(
     values["outcome"] = incorrect_outcome
 
     with pytest.raises(ValidationError, match="outcome"):
+        RoleValidation.model_validate(values)
+
+
+def test_role_validation_rejects_available_raw_returns_forged_as_unavailable():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = validate_relay(pending, runs)[0].model_dump()
+    values["outcome"] = "unavailable"
+
+    with pytest.raises(ValidationError, match="unavailable"):
+        RoleValidation.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    (
+        (),
+        ("outcome:supported",),
+        ("outcome:weakened",),
+        ("outcome:refuted",),
+    ),
+)
+def test_role_validation_rejects_unavailable_without_failure_reason(reasons):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[-1]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={
+                    "bars": tuple(
+                        daily_bar
+                        for daily_bar in target.context.market.bars
+                        if not (
+                            daily_bar.security_id == "B"
+                            and daily_bar.trade_date == FUTURE_SESSIONS[-1]
+                        )
+                    )
+                }
+            )
+        }
+    )
+    unavailable = validate_relay(
+        pending,
+        (*runs[:-1], target.model_copy(update={"context": changed_context})),
+    )[0]
+    values = unavailable.model_dump()
+    values["reasons"] = reasons
+
+    with pytest.raises(ValidationError, match="unavailable"):
         RoleValidation.model_validate(values)
 
 

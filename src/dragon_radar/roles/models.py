@@ -290,7 +290,19 @@ class RoleValidation(_StrictFrozenRoleModel):
             self.new_return_raw,
             self.topic_median_raw,
         )
-        if self.outcome != "unavailable" and any(value is None for value in values):
+        if self.outcome == "unavailable":
+            if any(value is not None for value in values):
+                raise ValueError("unavailable validation requires all raw returns null")
+            successful_reasons = {
+                "outcome:supported",
+                "outcome:weakened",
+                "outcome:refuted",
+            }
+            if not self.reasons or successful_reasons.intersection(self.reasons):
+                raise ValueError(
+                    "unavailable validation requires non-success failure reasons"
+                )
+        elif any(value is None for value in values):
             raise ValueError("available validation outcomes require all raw returns")
         if self.outcome != "unavailable" and len(self.input_run_ids) != 5:
             raise ValueError("relay validation requires five input run IDs")
@@ -426,6 +438,7 @@ class RelayBaselinePrice(_StrictFrozenRoleModel):
 
     security_id: Identifier
     adjusted_price_raw: ExactDecimal = Field(gt=0)
+    observation_suspended: Literal[False]
 
 
 class PendingRelayValidation(_StrictFrozenRoleModel):
