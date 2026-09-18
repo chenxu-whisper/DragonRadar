@@ -2,7 +2,7 @@
 
 from bisect import bisect_left
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
 from dragon_radar.domain.models import DailyBar, SecurityState
@@ -726,39 +726,41 @@ def _observation_proof_reasons(
 def _authorization_available(
     pending: PendingRelayValidation,
     runs: Sequence[RoleRunEvidence],
-    *,
-    operation_at: datetime,
 ) -> bool:
-    return all(
-        grant_allows_local(
-            run.context.market.grant,
-            source_id=run.context.market.source_id,
-            now=operation_at,
+    operation_at = pending.operation_at
+    current_grants = {grant.source_id: grant for grant in pending.current_grants}
+    for run in (pending.observation_run, *runs):
+        embedded_grants = (
+            (run.context.market.source_id, run.context.market.grant),
+            (run.context.topic.source_id, run.context.topic.grant),
         )
-        and grant_allows_local(
-            run.context.topic.grant,
-            source_id=run.context.topic.source_id,
-            now=operation_at,
-        )
-        for run in (pending.observation_run, *runs)
-    )
+        for source_id, embedded_grant in embedded_grants:
+            current_grant = current_grants.get(source_id)
+            if current_grant is None or not grant_allows_local(
+                current_grant,
+                source_id=source_id,
+                now=operation_at,
+            ):
+                return False
+            if not grant_allows_local(
+                embedded_grant,
+                source_id=source_id,
+                now=operation_at,
+            ):
+                return False
+    return True
 
 
 def validate_relay(
     pending: PendingRelayValidation,
     future_runs: Sequence[RoleRunEvidence],
-    *,
-    operation_at: datetime,
 ) -> tuple[RoleValidation, ...]:
     """Validate a mature pending relay against fixed daily-visible run inputs."""
-    if operation_at.tzinfo is None or operation_at.utcoffset() is None:
-        raise ValueError("operation_at requires a timezone")
-    operation_at = operation_at.astimezone(UTC)
     pending = PendingRelayValidation.model_validate(pending.model_dump())
     if pending.current_validation is not None:
-        input_run_ids = frozenset(pending.current_validation.input_run_ids) - {
-            pending.observation_run_id
-        }
+        input_run_ids = frozenset(pending.current_validation.input_run_ids)
+        if pending.current_validation.outcome == "unavailable":
+            input_run_ids -= {pending.observation_run_id}
         current_window_runs = tuple(
             RoleRunEvidence.model_validate(run.model_dump())
             for run in future_runs
@@ -775,7 +777,6 @@ def validate_relay(
             _authorization_available(
                 pending,
                 current_window_runs,
-                operation_at=operation_at,
             )
         ):
             return _unavailable_validation(
@@ -829,6 +830,13 @@ def validate_relay(
         or max(run.trade_date for run in maturity_runs) < validation_sessions[-1]
     ):
         return ()
+    if not _authorization_available(pending, future_runs):
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=future_runs,
+            reasons=("authorization_unavailable",),
+        )
     observation_reasons = _observation_proof_reasons(pending)
     if observation_reasons:
         return _unavailable_validation(
@@ -900,18 +908,6 @@ def validate_relay(
             sessions=validation_sessions,
             runs=selected,
             reasons=("duplicate_input_run_id",),
-        )
-
-    if not _authorization_available(
-        pending,
-        selected,
-        operation_at=operation_at,
-    ):
-        return _unavailable_validation(
-            pending,
-            sessions=validation_sessions,
-            runs=selected,
-            reasons=("authorization_unavailable",),
         )
 
     observation_members = frozenset(pending.observation_member_ids)

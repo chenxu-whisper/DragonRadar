@@ -12,6 +12,7 @@ from dragon_radar.domain.models import (
     FrozenModel,
     Identifier,
     MarketBatch,
+    SourceGrant,
     UTCDateTime,
 )
 from dragon_radar.roles.rules import RULE_DEFINITIONS
@@ -599,6 +600,8 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     taxonomy_version: Identifier
     exchange: Identifier
     calendar_version: Identifier
+    operation_at: UTCDateTime
+    current_grants: tuple[SourceGrant, ...]
     current_validation: RoleValidation | None = None
 
     @model_validator(mode="after")
@@ -615,6 +618,13 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
         observation_context = observation_run.context
         market = observation_context.market
         topic = observation_context.topic
+        current_source_ids = tuple(grant.source_id for grant in self.current_grants)
+        if len(set(current_source_ids)) != len(current_source_ids):
+            raise ValueError("current_grants source IDs must be unique")
+        if not {market.source_id, topic.source_id}.issubset(current_source_ids):
+            raise ValueError(
+                "current_grants must cover observation market and topic sources"
+            )
         observation_pool = market.expected_security_ids
         if len(set(observation_pool)) != len(observation_pool):
             raise ValueError(
@@ -839,6 +849,13 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             validation = RoleValidation.model_validate(
                 self.current_validation.model_dump()
             )
+            if validation.outcome != "unavailable" and (
+                len(validation.input_run_ids) != 5
+                or self.observation_run_id in validation.input_run_ids
+            ):
+                raise ValueError(
+                    "current_validation must contain exactly five future run IDs"
+                )
             expected = (
                 (
                     validation.pending_result_id,

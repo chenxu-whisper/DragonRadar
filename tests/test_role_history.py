@@ -15,8 +15,8 @@ from dragon_radar.domain.models import ExchangeCalendar
 from dragon_radar.roles.history import (
     build_limit_ladder,
     compare_runs,
+    validate_relay,
 )
-from dragon_radar.roles.history import validate_relay as _validate_relay
 from dragon_radar.roles.models import (
     LimitRow,
     PendingRelayValidation,
@@ -48,19 +48,6 @@ def _sessions(count: int = 20, *, end: date = T) -> tuple[date, ...]:
 
 SESSIONS = _sessions()
 FUTURE_SESSIONS = _sessions(25, end=date(2026, 9, 15))
-
-
-def validate_relay(
-    pending: PendingRelayValidation,
-    future_runs: tuple[RoleRunEvidence, ...],
-    *,
-    operation_at: datetime = CUTOFF,
-) -> tuple[RoleValidation, ...]:
-    return _validate_relay(
-        pending,
-        future_runs,
-        operation_at=operation_at,
-    )
 
 
 def _limited_bar(
@@ -1616,6 +1603,8 @@ def _validation_fixture(
         taxonomy_version="t1",
         exchange="TEST",
         calendar_version="history-c1",
+        operation_at=CUTOFF,
+        current_grants=(grant(),),
     )
     return pending, tuple(runs)
 
@@ -1985,7 +1974,7 @@ def test_pending_relay_excludes_missing_archived_identity_from_baseline():
     )
 
     archived = PendingRelayValidation.model_validate(values)
-    validation = validate_relay(archived, runs, operation_at=CUTOFF)[0]
+    validation = validate_relay(archived, runs)[0]
 
     assert "A" not in archived.baseline_member_ids
     assert validation.outcome == "supported"
@@ -2158,7 +2147,10 @@ def test_validate_relay_rejects_changed_frozen_market_identity(
     )[0]
 
     assert validation.outcome == "unavailable"
-    assert validation.reasons == ("topic_incomparable", expected_reason)
+    if market_field == "source_id":
+        assert validation.reasons == ("authorization_unavailable",)
+    else:
+        assert validation.reasons == ("topic_incomparable", expected_reason)
 
 
 @pytest.mark.parametrize(
@@ -2502,6 +2494,24 @@ def test_pending_relay_rejects_mismatched_current_validation(field, value):
         PendingRelayValidation.model_validate(values)
 
 
+def test_pending_relay_rejects_available_validation_using_observation_run_id():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    validation_values = validate_relay(pending, runs)[0].model_dump()
+    validation_values["input_run_ids"] = (
+        pending.observation_run_id,
+        *(run.role_run_id for run in runs[:4]),
+    )
+    values = pending.model_dump()
+    values["current_validation"] = validation_values
+
+    with pytest.raises(ValidationError, match="current_validation"):
+        PendingRelayValidation.model_validate(values)
+
+
 def test_validate_relay_revalidates_existing_validation_before_idempotent_return():
     pending, runs = _validation_fixture(
         new_end="130",
@@ -2570,6 +2580,21 @@ def test_validate_relay_existing_validation_ignores_invalid_future_runs():
     )
 
     assert validate_relay(persisted, (*runs, forged_future)) == (existing,)
+
+
+def test_validate_relay_available_replay_requires_all_five_future_runs():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    existing = validate_relay(pending, runs)[0]
+    persisted = pending.model_copy(update={"current_validation": existing})
+
+    validation = validate_relay(persisted, runs[:-1])[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("authorization_unavailable",)
 
 
 @pytest.mark.parametrize(
@@ -3382,7 +3407,7 @@ def test_validate_relay_blocks_existing_validation_after_observation_grant_revok
         old_end="110",
         member_ends={"A": "120", "B": "125"},
     )
-    existing = validate_relay(pending, runs, operation_at=CUTOFF)[0]
+    existing = validate_relay(pending, runs)[0]
     revoked_observation = pending.observation_run.model_copy(
         update={
             "context": pending.observation_run.context.model_copy(
@@ -3401,14 +3426,44 @@ def test_validate_relay_blocks_existing_validation_after_observation_grant_revok
         }
     )
 
-    validation = validate_relay(persisted, runs, operation_at=CUTOFF)[0]
+    validation = validate_relay(persisted, runs)[0]
 
     assert validation.outcome == "unavailable"
     assert validation.reasons == ("authorization_unavailable",)
     assert persisted.current_validation == existing
 
 
-def test_validate_relay_checks_all_grants_at_explicit_operation_time():
+def test_validate_relay_blocks_replay_when_current_registry_grant_is_revoked():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    existing = validate_relay(pending, runs)[0]
+    persisted = pending.model_copy(
+        update={
+            "current_validation": existing,
+            "current_grants": (grant(approved=False),),
+        }
+    )
+
+    validation = validate_relay(persisted, runs)[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("authorization_unavailable",)
+
+
+def test_validate_relay_public_api_accepts_exactly_two_arguments():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+
+    assert validate_relay(pending, runs)[0].outcome == "supported"
+
+
+def test_validate_relay_checks_all_grants_at_command_operation_time():
     pending, runs = _validation_fixture(
         new_end="130",
         old_end="110",
@@ -3438,11 +3493,8 @@ def test_validate_relay_checks_all_grants_at_explicit_operation_time():
         for run in runs
     )
 
-    validation = validate_relay(
-        pending,
-        expiring_runs,
-        operation_at=operation_at,
-    )[0]
+    pending = pending.model_copy(update={"operation_at": operation_at})
+    validation = validate_relay(pending, expiring_runs)[0]
 
     assert validation.outcome == "unavailable"
     assert validation.reasons == ("authorization_unavailable",)
