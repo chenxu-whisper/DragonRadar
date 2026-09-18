@@ -22,6 +22,7 @@ from dragon_radar.roles.models import (
     PendingRelayValidation,
     RankedCandidate,
     RelayBaselinePrice,
+    RelayObservationEligibility,
     RoleChange,
     RoleContext,
     RoleEvaluation,
@@ -1437,6 +1438,10 @@ def _validation_fixture(
                 member_ids=member_ids,
             )
         )
+    observation_states = {
+        security_state.security_id: security_state
+        for security_state in runs[0].context.market.security_states
+    }
     pending = PendingRelayValidation(
         pending_result_id="pending-1",
         observation_run_id="run-t0",
@@ -1444,8 +1449,24 @@ def _validation_fixture(
         topic_id=TOPIC,
         old_security_id="OLD",
         new_security_id="NEW",
-        observation_eligible_member_ids=member_ids,
         observation_member_ids=member_ids,
+        observation_eligibility=tuple(
+            RelayObservationEligibility(
+                security_id=security_id,
+                eligible=True,
+                eligibility_reason=None,
+                security_type=observation_states[security_id].security_type,
+                board_category=observation_states[security_id].board_category,
+                listing_date=observation_states[security_id].listing_date,
+                suspended=observation_states[security_id].suspended,
+                is_st=observation_states[security_id].is_st,
+                is_delisting=observation_states[security_id].is_delisting,
+                exchange=observation_states[security_id].exchange,
+                source_id=observation_states[security_id].source_id,
+                pool_version=observation_states[security_id].pool_version,
+            )
+            for security_id in member_ids
+        ),
         baseline_member_ids=member_ids,
         baseline_prices=tuple(
             RelayBaselinePrice(
@@ -1474,12 +1495,13 @@ def _validation_fixture(
     return pending, tuple(runs)
 
 
-def test_validate_relay_preserves_full_membership_and_fixed_eligible_denominator():
+def test_pending_relay_rejects_caller_shrinking_eligible_denominator():
     pending, runs = _validation_fixture(
         new_end="123",
         old_end="110",
         member_ends={"A": "120", "B": "125", "INELIGIBLE": "200"},
     )
+    full_validation = validate_relay(pending, runs)[0]
     eligible_member_ids = tuple(
         security_id
         for security_id in pending.baseline_member_ids
@@ -1488,18 +1510,28 @@ def test_validate_relay_preserves_full_membership_and_fixed_eligible_denominator
     eligible_prices = tuple(
         price for price in pending.baseline_prices if price.security_id != "INELIGIBLE"
     )
-    pending = pending.model_copy(
-        update={
-            "observation_eligible_member_ids": eligible_member_ids,
-            "baseline_member_ids": eligible_member_ids,
-            "baseline_prices": eligible_prices,
-        }
+    values = pending.model_dump()
+    values.update(
+        observation_eligibility=tuple(
+            (
+                member.model_copy(
+                    update={
+                        "eligible": False,
+                        "eligibility_reason": "ineligible_security_state",
+                    }
+                )
+                if member.security_id == "INELIGIBLE"
+                else member
+            )
+            for member in pending.observation_eligibility
+        ),
+        baseline_member_ids=eligible_member_ids,
+        baseline_prices=eligible_prices,
     )
 
-    validation = validate_relay(pending, runs)[0]
-
-    assert validation.outcome == "supported"
-    assert validation.topic_median_raw == Decimal("0.215")
+    assert full_validation.outcome == "weakened"
+    with pytest.raises(ValidationError, match="observation eligibility"):
+        PendingRelayValidation.model_validate(values)
 
 
 def test_pending_relay_requires_five_strict_future_validation_sessions():
@@ -1600,16 +1632,16 @@ def test_pending_relay_rejects_forged_market_benchmark_definition():
         PendingRelayValidation.model_validate(values)
 
 
-def test_pending_relay_requires_observation_eligible_member_ids():
+def test_pending_relay_requires_observation_eligibility():
     pending, _ = _validation_fixture(
         new_end="130",
         old_end="110",
         member_ends={"A": "120", "B": "125"},
     )
     values = pending.model_dump()
-    del values["observation_eligible_member_ids"]
+    del values["observation_eligibility"]
 
-    with pytest.raises(ValidationError, match="observation_eligible_member_ids"):
+    with pytest.raises(ValidationError, match="observation_eligibility"):
         PendingRelayValidation.model_validate(values)
 
 
@@ -1628,17 +1660,23 @@ def test_pending_relay_requires_baseline_members_to_be_observation_members():
 
     with pytest.raises(
         ValidationError,
-        match="baseline_member_ids must be a subset of observation_member_ids",
+        match="observation eligibility must cover observation_member_ids",
     ):
         PendingRelayValidation.model_validate(values)
 
 
 @pytest.mark.parametrize(
-    "observation_eligible_member_ids",
-    ((), ("A", "A"), ("A", "B", "OLD")),
+    "projection_change",
+    (
+        lambda members: (),
+        lambda members: (members[0], members[0], *members[2:]),
+        lambda members: tuple(
+            member for member in members if member.security_id != "A"
+        ),
+    ),
 )
-def test_pending_relay_rejects_invalid_observation_eligible_member_ids(
-    observation_eligible_member_ids,
+def test_pending_relay_rejects_incomplete_or_duplicate_observation_eligibility(
+    projection_change,
 ):
     pending, _ = _validation_fixture(
         new_end="130",
@@ -1646,9 +1684,14 @@ def test_pending_relay_rejects_invalid_observation_eligible_member_ids(
         member_ends={"A": "120", "B": "125"},
     )
     values = pending.model_dump()
-    values["observation_eligible_member_ids"] = observation_eligible_member_ids
+    values["observation_eligibility"] = projection_change(
+        pending.observation_eligibility
+    )
 
-    with pytest.raises(ValidationError, match="observation_eligible_member_ids"):
+    with pytest.raises(
+        ValidationError,
+        match="observation eligibility must cover observation_member_ids",
+    ):
         PendingRelayValidation.model_validate(values)
 
 
@@ -1659,15 +1702,15 @@ def test_pending_relay_eligible_member_order_does_not_change_semantics():
         member_ends={"A": "120", "B": "125"},
     )
     values = pending.model_dump()
-    values["observation_eligible_member_ids"] = tuple(
-        reversed(pending.observation_eligible_member_ids)
-    )
+    values["observation_eligibility"] = tuple(reversed(pending.observation_eligibility))
 
     validated = PendingRelayValidation.model_validate(values)
 
-    assert set(validated.observation_eligible_member_ids) == set(
-        pending.baseline_member_ids
-    )
+    assert {
+        member.security_id
+        for member in validated.observation_eligibility
+        if member.eligible
+    } == set(pending.baseline_member_ids)
 
 
 @pytest.mark.parametrize("observation_suspended", (True, None))
@@ -1807,6 +1850,54 @@ def test_validate_relay_rejects_changed_frozen_market_identity(
 
     assert validation.outcome == "unavailable"
     assert validation.reasons == ("topic_incomparable", expected_reason)
+
+
+@pytest.mark.parametrize(
+    ("state_field", "changed_value"),
+    (
+        ("security_type", "fund"),
+        ("board_category", "sh_main"),
+        ("listing_date", FUTURE_SESSIONS[1]),
+        ("is_st", True),
+        ("is_delisting", True),
+        ("exchange", "OTHER"),
+        ("source_id", "other-source"),
+        ("pool_version", "other-pool"),
+    ),
+)
+def test_validate_relay_rejects_changed_observation_security_identity(
+    state_field,
+    changed_value,
+):
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={
+                    "security_states": tuple(
+                        security_state.model_copy(update={state_field: changed_value})
+                        if security_state.security_id == "A"
+                        else security_state
+                        for security_state in target.context.market.security_states
+                    )
+                }
+            )
+        }
+    )
+    changed_run = target.model_copy(update={"context": changed_context})
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], changed_run, *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == (f"A: identity_changed:{state_field}",)
 
 
 def test_validate_relay_allows_declared_market_pool_reordering():
@@ -2334,11 +2425,11 @@ def test_validate_relay_requires_each_future_daily_price_point():
 @pytest.mark.parametrize(
     ("state_changes", "expected_reason"),
     (
-        ({"exchange": "OTHER"}, "A: security_state_unavailable"),
-        ({"listing_date": None}, "A: security_state_unavailable"),
+        ({"exchange": "OTHER"}, "A: identity_changed:exchange"),
+        ({"listing_date": None}, "A: identity_changed:listing_date"),
         (
             {"listing_date": FUTURE_SESSIONS[-2]},
-            "A: security_state_unavailable",
+            "A: identity_changed:listing_date",
         ),
     ),
 )
@@ -2905,7 +2996,13 @@ def test_validate_relay_rechecks_early_run_grant_at_validation_time():
 
 
 def test_history_outputs_are_strict_frozen_models():
-    for model in (LimitRow, RelayBaselinePrice, RoleChange, RoleValidation):
+    for model in (
+        LimitRow,
+        RelayBaselinePrice,
+        RelayObservationEligibility,
+        RoleChange,
+        RoleValidation,
+    ):
         assert model.model_config["strict"] is True
         assert model.model_config["frozen"] is True
         assert model.model_config["extra"] == "forbid"

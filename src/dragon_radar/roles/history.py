@@ -465,6 +465,26 @@ def _state_for(
     return matches[0] if len(matches) == 1 else None
 
 
+def _identity_state_for(
+    run: RoleRunEvidence,
+    security_id: str,
+    day: date,
+) -> SecurityState | None:
+    context = run.context
+    matches = tuple(
+        security_state
+        for security_state in context.market.security_states
+        if security_state.security_id == security_id
+        and security_state.available_at <= context.knowledge_cutoff
+        and _effective(
+            security_state.effective_from,
+            security_state.effective_to,
+            day,
+        )
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
 def _bar_for(
     run: RoleRunEvidence,
     security_id: str,
@@ -715,6 +735,49 @@ def validate_relay(
             reasons=("membership_changed",),
         )
     baseline = frozenset(pending.baseline_member_ids)
+    frozen_members = {
+        member.security_id: member
+        for member in pending.observation_eligibility
+        if member.security_id in baseline
+    }
+    identity_fields = (
+        "security_type",
+        "board_category",
+        "listing_date",
+        "is_st",
+        "is_delisting",
+        "exchange",
+        "source_id",
+        "pool_version",
+    )
+    identity_failures: list[str] = []
+    for security_id in sorted(baseline):
+        frozen = frozen_members[security_id]
+        for day, run in zip(validation_sessions, selected, strict=True):
+            security_state = _identity_state_for(run, security_id, day)
+            if security_state is None:
+                identity_failures.append(f"{security_id}: identity_unavailable")
+                break
+            changed_field = next(
+                (
+                    field
+                    for field in identity_fields
+                    if getattr(security_state, field) != getattr(frozen, field)
+                ),
+                None,
+            )
+            if changed_field is not None:
+                identity_failures.append(
+                    f"{security_id}: identity_changed:{changed_field}"
+                )
+                break
+    if identity_failures:
+        return _unavailable_validation(
+            pending,
+            sessions=validation_sessions,
+            runs=selected,
+            reasons=identity_failures,
+        )
     prices: dict[str, list[Decimal]] = {
         price.security_id: [price.adjusted_price_raw]
         for price in sorted(

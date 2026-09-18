@@ -510,6 +510,29 @@ class RelayBaselinePrice(_StrictFrozenRoleModel):
     observation_suspended: Literal[False]
 
 
+class RelayObservationEligibility(_StrictFrozenRoleModel):
+    """One auditable observation-time eligibility and identity projection."""
+
+    security_id: Identifier
+    eligible: bool
+    eligibility_reason: (
+        Literal[
+            "ineligible_security_state",
+            "insufficient_listing_history",
+        ]
+        | None
+    )
+    security_type: Identifier
+    board_category: Literal["sh_main", "sz_main", "synthetic_test"]
+    listing_date: date
+    suspended: bool
+    is_st: bool
+    is_delisting: bool
+    exchange: Identifier
+    source_id: Identifier
+    pool_version: Identifier
+
+
 class PendingRelayValidation(_StrictFrozenRoleModel):
     """The observation-time identity and fixed denominator for relay validation."""
 
@@ -519,8 +542,8 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     topic_id: Identifier
     old_security_id: Identifier
     new_security_id: Identifier
-    observation_eligible_member_ids: tuple[Identifier, ...]
     observation_member_ids: tuple[Identifier, ...]
+    observation_eligibility: tuple[RelayObservationEligibility, ...]
     baseline_member_ids: tuple[Identifier, ...]
     baseline_prices: tuple[RelayBaselinePrice, ...]
     membership_version: Identifier
@@ -579,28 +602,75 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             raise ValueError("baseline_member_ids must not contain duplicates")
         if not self.baseline_member_ids:
             raise ValueError("baseline_member_ids must not be empty")
-        if not self.observation_eligible_member_ids or len(
-            set(self.observation_eligible_member_ids)
-        ) != len(self.observation_eligible_member_ids):
-            raise ValueError(
-                "observation_eligible_member_ids must be nonempty and unique"
-            )
-        if set(self.observation_eligible_member_ids) != set(self.baseline_member_ids):
-            raise ValueError(
-                "observation_eligible_member_ids security IDs must match "
-                "baseline_member_ids"
-            )
         if not self.observation_member_ids or len(
             set(self.observation_member_ids)
         ) != len(self.observation_member_ids):
             raise ValueError("observation_member_ids must be nonempty and unique")
-        if not set(self.baseline_member_ids).issubset(self.observation_member_ids):
+        projected_ids = tuple(
+            member.security_id for member in self.observation_eligibility
+        )
+        if len(set(projected_ids)) != len(projected_ids) or set(projected_ids) != set(
+            self.observation_member_ids
+        ):
             raise ValueError(
-                "baseline_member_ids must be a subset of observation_member_ids"
+                "observation eligibility must cover observation_member_ids exactly once"
             )
         if not set(self.baseline_member_ids).issubset(self.expected_security_ids):
             raise ValueError(
                 "baseline_member_ids must be a subset of expected_security_ids"
+            )
+        expected_eligible_ids: set[str] = set()
+        allowed_boards = RULE_DEFINITIONS[self.rule_version]["allowed_boards"]
+        minimum_listing_sessions = RULE_DEFINITIONS[self.rule_version][
+            "minimum_listing_sessions"
+        ]
+        for member in self.observation_eligibility:
+            if (
+                member.security_id not in self.expected_security_ids
+                or member.source_id != self.market_source_id
+                or member.pool_version != self.pool_version
+                or member.exchange != self.exchange
+                or member.listing_date > self.observation_date
+            ):
+                raise ValueError(
+                    "observation eligibility identity must match frozen "
+                    "market pool and observation date"
+                )
+            if (
+                member.security_type != "common_stock"
+                or member.board_category not in allowed_boards
+                or member.suspended
+                or member.is_st
+                or member.is_delisting
+            ):
+                expected_reason = "ineligible_security_state"
+            elif member.listing_date < self.calendar_sessions[0]:
+                raise ValueError(
+                    "observation eligibility requires complete listing calendar"
+                )
+            else:
+                listed_sessions = sum(
+                    member.listing_date <= session <= self.observation_date
+                    for session in self.calendar_sessions
+                )
+                expected_reason = (
+                    None
+                    if listed_sessions >= minimum_listing_sessions
+                    else "insufficient_listing_history"
+                )
+            expected_eligible = expected_reason is None
+            if (
+                member.eligible is not expected_eligible
+                or member.eligibility_reason != expected_reason
+            ):
+                raise ValueError(
+                    "observation eligibility must match frozen identity and rule"
+                )
+            if expected_eligible:
+                expected_eligible_ids.add(member.security_id)
+        if expected_eligible_ids != set(self.baseline_member_ids):
+            raise ValueError(
+                "observation eligibility security IDs must match baseline_member_ids"
             )
         price_ids = tuple(price.security_id for price in self.baseline_prices)
         if len(set(price_ids)) != len(price_ids):
