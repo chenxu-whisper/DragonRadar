@@ -193,6 +193,8 @@ def _context(
 def _evaluation(
     role: str,
     rows: tuple[tuple[str, int], ...],
+    *,
+    expected: int | None = None,
 ) -> RoleEvaluation:
     positive = {
         "trend": "candidate",
@@ -215,8 +217,8 @@ def _evaluation(
         role=role,
         capability=capability,
         status=capability,
-        expected=len(rows),
-        valid=len(rows),
+        expected=expected if expected is not None else len(rows),
+        valid=expected if expected is not None else len(rows),
         legal_excluded=0,
         missing=0,
     )
@@ -691,14 +693,14 @@ def test_compare_runs_reports_added_exited_tie_unchanged_and_membership_change()
     previous = _run(
         "previous",
         previous_context,
-        evaluations=(_evaluation("trend", (("A", 1), ("B", 2), ("D", 3))),),
+        evaluations=(_evaluation("trend", (("A", 1), ("B", 2), ("D", 3)), expected=4),),
         member_ids=("A", "B", "C", "D"),
     )
     current = _run(
         "current",
         current_context,
         previous_id="previous",
-        evaluations=(_evaluation("trend", (("A", 1), ("B", 1), ("E", 3))),),
+        evaluations=(_evaluation("trend", (("A", 1), ("B", 1), ("E", 3)), expected=4),),
         member_ids=("A", "B", "C", "E"),
     )
 
@@ -937,14 +939,14 @@ def test_compare_runs_allows_declared_market_pool_reordering():
     previous = _run(
         "previous",
         previous_context,
-        evaluations=(_evaluation("trend", (("A", 1),)),),
+        evaluations=(_evaluation("trend", (("A", 1),), expected=2),),
         member_ids=("A", "B"),
     )
     current = _run(
         "current",
         current_context,
         previous_id="previous",
-        evaluations=(_evaluation("trend", (("A", 1),)),),
+        evaluations=(_evaluation("trend", (("A", 1),), expected=2),),
         member_ids=("A", "B"),
     )
 
@@ -1301,6 +1303,59 @@ def test_role_run_requires_verified_activated_projection(field, value):
         RoleRunEvidence.model_validate(values)
 
 
+def test_role_run_rejects_previous_comparable_run_self_reference():
+    values = _run("current", _context()).model_dump()
+    values["previous_comparable_run_id"] = values["role_run_id"]
+
+    with pytest.raises(
+        ValidationError,
+        match="previous_comparable_run_id must differ from role_run_id",
+    ):
+        RoleRunEvidence.model_validate(values)
+
+
+def test_passed_role_run_rejects_evaluation_expected_below_visible_members():
+    evaluation = RoleEvaluation(
+        topic_status=RoleTopicStatus(
+            topic_id=TOPIC,
+            role="trend",
+            capability="ready",
+            status="insufficient",
+            expected=0,
+            valid=0,
+            legal_excluded=0,
+            missing=0,
+        )
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="evaluation expected must not be less than member_ids",
+    ):
+        _run("current", _context(), evaluations=(evaluation,))
+
+
+def test_passed_role_run_allows_evaluation_expected_above_visible_members():
+    evaluation = _insufficient_evaluation("trend").model_copy(
+        update={
+            "topic_status": RoleTopicStatus(
+                topic_id=TOPIC,
+                role="trend",
+                capability="ready",
+                status="insufficient",
+                expected=2,
+                valid=0,
+                legal_excluded=0,
+                missing=2,
+            )
+        }
+    )
+
+    run = _run("current", _context(), evaluations=(evaluation,))
+
+    assert run.evaluations[0].topic_status.expected == 2
+
+
 def test_role_run_rejects_candidate_outside_topic_members():
     with pytest.raises(ValidationError, match="member_ids"):
         _run(
@@ -1390,6 +1445,7 @@ def _validation_fixture(
         old_security_id="OLD",
         new_security_id="NEW",
         observation_eligible_member_ids=member_ids,
+        observation_member_ids=member_ids,
         baseline_member_ids=member_ids,
         baseline_prices=tuple(
             RelayBaselinePrice(
@@ -1416,6 +1472,34 @@ def _validation_fixture(
         calendar_version="history-c1",
     )
     return pending, tuple(runs)
+
+
+def test_validate_relay_preserves_full_membership_and_fixed_eligible_denominator():
+    pending, runs = _validation_fixture(
+        new_end="123",
+        old_end="110",
+        member_ends={"A": "120", "B": "125", "INELIGIBLE": "200"},
+    )
+    eligible_member_ids = tuple(
+        security_id
+        for security_id in pending.baseline_member_ids
+        if security_id != "INELIGIBLE"
+    )
+    eligible_prices = tuple(
+        price for price in pending.baseline_prices if price.security_id != "INELIGIBLE"
+    )
+    pending = pending.model_copy(
+        update={
+            "observation_eligible_member_ids": eligible_member_ids,
+            "baseline_member_ids": eligible_member_ids,
+            "baseline_prices": eligible_prices,
+        }
+    )
+
+    validation = validate_relay(pending, runs)[0]
+
+    assert validation.outcome == "supported"
+    assert validation.topic_median_raw == Decimal("0.215")
 
 
 def test_pending_relay_requires_five_strict_future_validation_sessions():
@@ -1526,6 +1610,26 @@ def test_pending_relay_requires_observation_eligible_member_ids():
     del values["observation_eligible_member_ids"]
 
     with pytest.raises(ValidationError, match="observation_eligible_member_ids"):
+        PendingRelayValidation.model_validate(values)
+
+
+def test_pending_relay_requires_baseline_members_to_be_observation_members():
+    pending, _ = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["observation_member_ids"] = tuple(
+        security_id
+        for security_id in pending.observation_member_ids
+        if security_id != "A"
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="baseline_member_ids must be a subset of observation_member_ids",
+    ):
         PendingRelayValidation.model_validate(values)
 
 

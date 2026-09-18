@@ -695,8 +695,8 @@ def validate_relay(
             reasons=("authorization_unavailable",),
         )
 
-    baseline = frozenset(pending.baseline_member_ids)
-    if any(frozenset(run.member_ids) != baseline for run in selected):
+    observation_members = frozenset(pending.observation_member_ids)
+    if any(frozenset(run.member_ids) != observation_members for run in selected):
         return _unavailable_validation(
             pending,
             sessions=validation_sessions,
@@ -705,7 +705,7 @@ def validate_relay(
         )
 
     if any(
-        _members_on(run, day) != baseline
+        _members_on(run, day) != observation_members
         for day, run in zip(validation_sessions, selected, strict=True)
     ):
         return _unavailable_validation(
@@ -714,6 +714,7 @@ def validate_relay(
             runs=selected,
             reasons=("membership_changed",),
         )
+    baseline = frozenset(pending.baseline_member_ids)
     prices: dict[str, list[Decimal]] = {
         price.security_id: [price.adjusted_price_raw]
         for price in sorted(

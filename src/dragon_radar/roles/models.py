@@ -398,6 +398,8 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
     def validate_run_identity(self) -> Self:
         if len(set(self.member_ids)) != len(self.member_ids):
             raise ValueError("member_ids must not contain duplicates")
+        if self.previous_comparable_run_id == self.role_run_id:
+            raise ValueError("previous_comparable_run_id must differ from role_run_id")
         if self.market_benchmark_definition != _canonical_market_benchmark_definition(
             self.rule_version
         ):
@@ -490,6 +492,8 @@ class RoleRunEvidence(_StrictFrozenRoleModel):
             if role in evaluated_roles:
                 raise ValueError("each role may have at most one evaluation")
             evaluated_roles.add(role)
+            if evaluation.topic_status.expected < len(self.member_ids):
+                raise ValueError("evaluation expected must not be less than member_ids")
             if any(
                 candidate.security_id not in self.member_ids
                 for candidate in evaluation.candidates
@@ -516,6 +520,7 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
     old_security_id: Identifier
     new_security_id: Identifier
     observation_eligible_member_ids: tuple[Identifier, ...]
+    observation_member_ids: tuple[Identifier, ...]
     baseline_member_ids: tuple[Identifier, ...]
     baseline_prices: tuple[RelayBaselinePrice, ...]
     membership_version: Identifier
@@ -584,6 +589,14 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
             raise ValueError(
                 "observation_eligible_member_ids security IDs must match "
                 "baseline_member_ids"
+            )
+        if not self.observation_member_ids or len(
+            set(self.observation_member_ids)
+        ) != len(self.observation_member_ids):
+            raise ValueError("observation_member_ids must be nonempty and unique")
+        if not set(self.baseline_member_ids).issubset(self.observation_member_ids):
+            raise ValueError(
+                "baseline_member_ids must be a subset of observation_member_ids"
             )
         if not set(self.baseline_member_ids).issubset(self.expected_security_ids):
             raise ValueError(
