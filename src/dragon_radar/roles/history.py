@@ -163,30 +163,6 @@ def build_limit_ladder(
             )
             continue
 
-        observations = {
-            day: _limit_observation(prepared, security_id, day) for day in window
-        }
-        current = observations[context.market.trade_date]
-        reasons: list[str] = []
-        if current[2] is not None:
-            reasons.append(current[2])
-        reasons.extend(
-            f"{day.isoformat()}: {observation[2]}"
-            for day, observation in observations.items()
-            if day != context.market.trade_date
-            and observation[0] is None
-            and observation[2] is not None
-        )
-
-        if len(window) != 10 or any(
-            observation[0] is None for observation in observations.values()
-        ):
-            hit_count = None
-        else:
-            hit_count = sum(
-                observation[0] is True for observation in observations.values()
-            )
-
         current_state = prepared.state_on(security_id, context.market.trade_date)
         listing_boundary: int | None = None
         if (
@@ -209,6 +185,37 @@ def build_limit_ladder(
                 and first_listing_state.listing_date == current_state.listing_date
             ):
                 listing_boundary = first_listing_index
+
+        window_start = endpoint - len(window) + 1
+        observations = {
+            day: (
+                (False, False, None)
+                if listing_boundary is not None
+                and window_start + offset < listing_boundary
+                else _limit_observation(prepared, security_id, day)
+            )
+            for offset, day in enumerate(window)
+        }
+        current = observations[context.market.trade_date]
+        reasons: list[str] = []
+        if current[2] is not None:
+            reasons.append(current[2])
+        reasons.extend(
+            f"{day.isoformat()}: {observation[2]}"
+            for day, observation in observations.items()
+            if day != context.market.trade_date
+            and observation[0] is None
+            and observation[2] is not None
+        )
+
+        if len(window) != 10 or any(
+            observation[0] is None for observation in observations.values()
+        ):
+            hit_count = None
+        else:
+            hit_count = sum(
+                observation[0] is True for observation in observations.values()
+            )
 
         streak: int | None = 0
         scan_start = listing_boundary if listing_boundary is not None else 0
@@ -233,11 +240,12 @@ def build_limit_ladder(
         if endpoint == 0:
             broken = None
         else:
-            previous = _limit_observation(
-                prepared,
-                security_id,
-                sessions[endpoint - 1],
-            )[0]
+            previous_day = sessions[endpoint - 1]
+            previous = (
+                observations[previous_day][0]
+                if previous_day in observations
+                else _limit_observation(prepared, security_id, previous_day)[0]
+            )
             if previous is None or current[0] is None:
                 broken = None
             else:
@@ -286,7 +294,7 @@ def _comparison_reasons(
         current.context.market.source_id,
         current.context.market.adjustment_version,
         current.context.market.pool_version,
-        current.context.market.expected_security_ids,
+        frozenset(current.context.market.expected_security_ids),
         current.context.market.calendar_version,
         current.context.market.calendar.exchange,
         current.context.market.calendar.sessions,
@@ -297,7 +305,7 @@ def _comparison_reasons(
         previous.context.market.source_id,
         previous.context.market.adjustment_version,
         previous.context.market.pool_version,
-        previous.context.market.expected_security_ids,
+        frozenset(previous.context.market.expected_security_ids),
         previous.context.market.calendar_version,
         previous.context.market.calendar.exchange,
         previous.context.market.calendar.sessions,
@@ -566,7 +574,8 @@ def _run_identity_reasons(
             "pool_version_changed",
         ),
         (
-            run.context.market.expected_security_ids == pending.expected_security_ids,
+            frozenset(run.context.market.expected_security_ids)
+            == frozenset(pending.expected_security_ids),
             "market_pool_changed",
         ),
         (
@@ -599,22 +608,18 @@ def validate_relay(
     )
     if pending.current_validation is not None:
         return (pending.current_validation,)
-    ordered = tuple(
+    strict_future = tuple(
         sorted(
-            (
-                run
-                for run in future_runs
-                if run.topic_id == pending.topic_id
-                and run.trade_date > pending.observation_date
-            ),
+            (run for run in future_runs if run.trade_date > pending.observation_date),
             key=lambda run: (run.trade_date, run.role_run_id),
         )
     )
-    if not ordered:
+    if not strict_future:
         return ()
     validation_sessions = pending.validation_sessions
-    if max(run.trade_date for run in ordered) < validation_sessions[-1]:
+    if max(run.trade_date for run in strict_future) < validation_sessions[-1]:
         return ()
+    ordered = tuple(run for run in strict_future if run.topic_id == pending.topic_id)
 
     by_day: dict[date, list[RoleRunEvidence]] = {}
     for run in ordered:

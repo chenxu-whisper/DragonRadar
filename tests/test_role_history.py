@@ -427,7 +427,8 @@ def test_limit_ladder_stops_exact_streak_at_later_listing_boundary():
     row = build_limit_ladder(_context(bars=bars, states=states), TOPIC)[0]
 
     assert row.closing_limit_streak == 3
-    assert "history_boundary_unknown" not in row.reasons
+    assert row.limit_hits_10 == 3
+    assert row.reasons == ()
 
 
 def test_limit_ladder_explains_unavailable_historical_observation():
@@ -705,7 +706,6 @@ def test_compare_runs_allows_daily_market_source_version_change():
     (
         (("A",), ("A", "B")),
         (("A", "B"), ("A",)),
-        (("A", "B"), ("B", "A")),
     ),
 )
 def test_compare_runs_rejects_changed_declared_market_pool_members(
@@ -745,6 +745,37 @@ def test_compare_runs_rejects_changed_declared_market_pool_members(
     assert change.comparison_status == "not_comparable"
     assert change.change_type is None
     assert change.reasons == ("calculation_basis_changed",)
+
+
+def test_compare_runs_allows_declared_market_pool_reordering():
+    previous_context = _context(
+        trade_date=SESSIONS[-2],
+        member_ids=("A", "B"),
+        expected_security_ids=("A", "B"),
+    )
+    current_context = _context(
+        member_ids=("A", "B"),
+        expected_security_ids=("B", "A"),
+    )
+    previous = _run(
+        "previous",
+        previous_context,
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+        member_ids=("A", "B"),
+    )
+    current = _run(
+        "current",
+        current_context,
+        previous_id="previous",
+        evaluations=(_evaluation("trend", (("A", 1),)),),
+        member_ids=("A", "B"),
+    )
+
+    change = compare_runs(current, previous)[0]
+
+    assert change.comparison_status == "comparable"
+    assert change.change_type == "unchanged"
+    assert change.reasons == ()
 
 
 @pytest.mark.parametrize(
@@ -1401,6 +1432,34 @@ def test_validate_relay_rejects_changed_frozen_market_identity(
     assert validation.reasons == ("topic_incomparable", expected_reason)
 
 
+def test_validate_relay_allows_declared_market_pool_reordering():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    target = runs[2]
+    changed_context = target.context.model_copy(
+        update={
+            "market": target.context.market.model_copy(
+                update={
+                    "expected_security_ids": tuple(
+                        reversed(target.context.market.expected_security_ids)
+                    )
+                }
+            )
+        }
+    )
+    changed_run = target.model_copy(update={"context": changed_context})
+
+    validation = validate_relay(
+        pending,
+        (*runs[:2], changed_run, *runs[3:]),
+    )[0]
+
+    assert validation.outcome == "supported"
+
+
 def test_validate_relay_allows_daily_market_source_version_change():
     pending, runs = _validation_fixture(
         new_end="130",
@@ -1964,6 +2023,35 @@ def test_validate_relay_returns_no_record_before_t_plus_5():
     )
 
     assert validate_relay(pending, runs[:-1]) == ()
+
+
+def test_validate_relay_uses_all_topics_for_maturity_clock():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    maturity_run = runs[-1]
+    other_context = _context(
+        trade_date=maturity_run.trade_date,
+        sessions=FUTURE_SESSIONS,
+        topic_id="topic-b",
+        member_ids=maturity_run.member_ids,
+        bars=maturity_run.context.market.bars,
+        states=maturity_run.context.market.security_states,
+        expected_security_ids=maturity_run.context.market.expected_security_ids,
+    )
+    other_topic = _run(
+        "other-topic-t5",
+        other_context,
+        topic_id="topic-b",
+        member_ids=maturity_run.member_ids,
+    )
+
+    validation = validate_relay(pending, (*runs[:-1], other_topic))[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.reasons == ("window_incomplete",)
 
 
 @pytest.mark.parametrize("failure", ("suspended", "missing_price"))
