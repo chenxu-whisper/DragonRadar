@@ -343,9 +343,7 @@ def test_prepared_pool_is_materialized_once_before_repeated_eligibility_checks()
             return iter(self.values)
 
     context = _context()
-    expected_security_ids = CountingSecurityIds(
-        context.market.expected_security_ids
-    )
+    expected_security_ids = CountingSecurityIds(context.market.expected_security_ids)
     market = context.market.model_copy(
         update={"expected_security_ids": expected_security_ids}
     )
@@ -383,16 +381,22 @@ def test_listed_session_count_uses_bisect_with_inclusive_endpoints(monkeypatch):
     monkeypatch.setattr(engine, "bisect_right", tracked_right, raising=False)
     sessions = tuple(date(2026, 1, day) for day in (2, 5, 8, 12, 20))
 
-    assert engine._listed_session_count(
-        sessions,
-        listing_date=date(2026, 1, 5),
-        day=date(2026, 1, 12),
-    ) == 3
-    assert engine._listed_session_count(
-        sessions,
-        listing_date=date(2026, 1, 3),
-        day=date(2026, 1, 19),
-    ) == 3
+    assert (
+        engine._listed_session_count(
+            sessions,
+            listing_date=date(2026, 1, 5),
+            day=date(2026, 1, 12),
+        )
+        == 3
+    )
+    assert (
+        engine._listed_session_count(
+            sessions,
+            listing_date=date(2026, 1, 3),
+            day=date(2026, 1, 19),
+        )
+        == 3
+    )
     assert sorted(calls) == sorted(
         [
             ("left", date(2026, 1, 5)),
@@ -512,9 +516,7 @@ def test_trend_contains_ranking_unavailable_with_exact_partition(monkeypatch):
             state(
                 security_id=security_id,
                 exchange="TEST",
-                security_type=(
-                    "fund" if security_id == "EXCLUDED" else "common_stock"
-                ),
+                security_type=("fund" if security_id == "EXCLUDED" else "common_stock"),
                 effective_from=SESSIONS[0],
                 available_at=datetime(2026, 1, 1, tzinfo=UTC),
                 listing_date=SESSIONS[0],
@@ -563,9 +565,7 @@ def test_core_contains_ranking_unavailable_with_exact_partition(monkeypatch):
             state(
                 security_id=security_id,
                 exchange="TEST",
-                security_type=(
-                    "fund" if security_id == "EXCLUDED" else "common_stock"
-                ),
+                security_type=("fund" if security_id == "EXCLUDED" else "common_stock"),
                 effective_from=SESSIONS[0],
                 available_at=datetime(2026, 1, 1, tzinfo=UTC),
                 listing_date=SESSIONS[0],
@@ -649,11 +649,7 @@ def test_trend_is_no_candidate_when_only_later_ranks_meet_candidate_conditions()
         member_ids=("A", "B", "C"),
         pool_ids=("A", "B", "C", "M1", "M2", "M3"),
         prices={
-            "A": (
-                (Decimal("100"),)
-                + (Decimal("200"),) * 59
-                + (Decimal("150"),)
-            ),
+            "A": ((Decimal("100"),) + (Decimal("200"),) * 59 + (Decimal("150"),)),
             "B": _window_prices("100", "120", "140"),
             "C": _window_prices("100", "110", "130"),
             "M1": _window_prices("100", "100", "105"),
@@ -706,10 +702,7 @@ def test_trend_returns_insufficient_when_benchmark_returns_are_unavailable():
     from dragon_radar.roles.engine import _market_return_median, _PreparedContext
 
     _, _, evaluate_trend = _engine()
-    prices = (
-        (Decimal("1e-999999"),) * 40
-        + (Decimal("1e999999"),) * 21
-    )
+    prices = (Decimal("1e-999999"),) * 40 + (Decimal("1e999999"),) * 21
     context = _context(
         member_ids=("A", "B"),
         prices={"A": prices, "B": prices},
@@ -734,10 +727,7 @@ def test_trend_returns_insufficient_when_benchmark_returns_are_unavailable():
 
 def test_trend_marks_unavailable_candidate_factors_missing_and_recomputes():
     _, _, evaluate_trend = _engine()
-    extreme = (
-        (Decimal("1e-999999"),) * 40
-        + (Decimal("1e999999"),) * 21
-    )
+    extreme = (Decimal("1e-999999"),) * 40 + (Decimal("1e999999"),) * 21
     context = _context(
         member_ids=("A", "B"),
         pool_ids=("A", "B", "M"),
@@ -758,9 +748,7 @@ def test_trend_marks_unavailable_candidate_factors_missing_and_recomputes():
         status.legal_excluded,
         status.missing,
     ) == (2, 1, 0, 1)
-    assert status.reasons == (
-        "A: period_return: Decimal34 arithmetic unavailable",
-    )
+    assert status.reasons == ("A: period_return: Decimal34 arithmetic unavailable",)
     assert [row.security_id for row in result.candidates] == ["B"]
 
 
@@ -872,9 +860,7 @@ def test_topic_coverage_rejects_day_absent_from_topic_calendar():
     result = evaluate_trend(forged, "topic-a")
 
     assert result.topic_status.status == "insufficient"
-    assert result.topic_status.reasons == (
-        "market_topic_calendar_sessions_mismatch",
-    )
+    assert result.topic_status.reasons == ("market_topic_calendar_sessions_mismatch",)
     prepared = _PreparedContext.build(forged, "topic-a")
     assert not _coverage_complete(prepared, missing_day)
 
@@ -905,12 +891,8 @@ def test_trend_indexes_global_topic_coverage_inputs_once_during_build():
         for cell in context.topic.coverage_cells
     )
     topics = CountingRows((*context.topic.topics, other_definition))
-    memberships = CountingRows(
-        (*context.topic.memberships, *other_memberships)
-    )
-    coverage_cells = CountingRows(
-        (*context.topic.coverage_cells, *other_cells)
-    )
+    memberships = CountingRows((*context.topic.memberships, *other_memberships))
+    coverage_cells = CountingRows((*context.topic.coverage_cells, *other_cells))
     topic = context.topic.model_copy(
         update={
             "topics": topics,
@@ -989,8 +971,7 @@ def test_formal_roles_recompute_coverage_members_at_cell_completion(forgery):
     ):
         assert result.topic_status.status == "insufficient"
         assert any(
-            "coverage incomplete" in reason
-            for reason in result.topic_status.reasons
+            "coverage incomplete" in reason for reason in result.topic_status.reasons
         )
         assert result.candidates == ()
 
@@ -1169,9 +1150,7 @@ def test_formal_roles_ignore_daily_bars_not_bound_to_market_batch(field, value):
         evaluate_core(mismatched, "topic-a"),
     ):
         status = result.topic_status
-        expected_counts = (
-            (3, 2, 0, 1) if status.role == "trend" else (3, 0, 0, 3)
-        )
+        expected_counts = (3, 2, 0, 1) if status.role == "trend" else (3, 0, 0, 3)
         assert (
             status.expected,
             status.valid,
@@ -1230,9 +1209,7 @@ def test_duplicate_bound_bars_remain_unavailable():
         evaluate_core(context, "topic-a"),
     ):
         status = result.topic_status
-        expected_counts = (
-            (3, 2, 0, 1) if status.role == "trend" else (3, 0, 0, 3)
-        )
+        expected_counts = (3, 2, 0, 1) if status.role == "trend" else (3, 0, 0, 3)
         assert (
             status.expected,
             status.valid,
@@ -1508,8 +1485,7 @@ def test_formal_roles_count_incomplete_listing_calendar_as_missing():
             status.missing,
         ) == (5, 0, 0, 5)
         assert status.reasons[: len(member_ids)] == tuple(
-            f"{security_id}: incomplete listing calendar"
-            for security_id in member_ids
+            f"{security_id}: incomplete listing calendar" for security_id in member_ids
         )
 
 
@@ -1573,9 +1549,7 @@ def test_formal_role_state_fields_distinguish_legal_exclusion_from_missing(
     ):
         status = result.topic_status
         expected_counts = (
-            (1, 0, 1, 0)
-            if classification == "legal_excluded"
-            else (1, 0, 0, 1)
+            (1, 0, 1, 0) if classification == "legal_excluded" else (1, 0, 0, 1)
         )
         assert status.status == "insufficient"
         assert (
@@ -1895,9 +1869,7 @@ def test_formal_roles_do_not_use_future_observation_expected_count(role):
         status.legal_excluded,
         status.missing,
     ) == (3, 0, 0, 3)
-    assert status.reasons == (
-        f"{T.isoformat()}: topic coverage incomplete",
-    )
+    assert status.reasons == (f"{T.isoformat()}: topic coverage incomplete",)
     assert result.candidates == ()
 
 
@@ -2223,10 +2195,7 @@ def test_core_uses_t_minus_4_and_t_minus_19_inclusive_and_mad_sort_order():
 
 def test_core_marks_every_member_of_the_first_tie_group_as_candidate():
     _, evaluate_core, _ = _engine()
-    amounts = {
-        security_id: (Decimal("100"),) * 20
-        for security_id in ("A", "B", "C")
-    }
+    amounts = {security_id: (Decimal("100"),) * 20 for security_id in ("A", "B", "C")}
 
     result = evaluate_core(_context(amounts=amounts), "topic-a")
 
@@ -2410,8 +2379,7 @@ def test_core_denominator_does_not_silently_drop_missing_share_day_member(scenar
         status.missing,
     ) == (2, 0, 0, 2)
     assert any(
-        "B" in reason and missing_day.isoformat() in reason
-        for reason in status.reasons
+        "B" in reason and missing_day.isoformat() in reason for reason in status.reasons
     )
     assert result.candidates == ()
 

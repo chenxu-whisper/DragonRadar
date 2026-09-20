@@ -48,11 +48,11 @@ uv run python -m compileall -q src tests
 
 ```python
 OwnerRepository(database, clock=None)
-repo.initialize()                       # 单安装稳定主体 UUID
-repo.issue_pairing(origin)               # 仅 CLI 调用，返回短期一次性明文
-repo.exchange_pairing(code, origin)      # 返回 session token、csrf token、主体与期限
-repo.authenticate(token)                # 返回服务端主体与会话身份
-repo.revoke_all()                       # 包括待用配对码
+repo.initialize()  # 单安装稳定主体 UUID
+repo.issue_pairing(origin)  # 仅 CLI 调用，返回短期一次性明文
+repo.exchange_pairing(code, origin)  # 返回 session token、csrf token、主体与期限
+repo.authenticate(token)  # 返回服务端主体与会话身份
+repo.revoke_all()  # 包括待用配对码
 repo.logout(token)
 ```
 

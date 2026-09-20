@@ -139,9 +139,7 @@ def validate_topic_batch(batch: TopicBatch, *, now: datetime) -> TopicQualityRep
                 for membership in memberships_by_topic[cell.topic_id]
                 if topic is not None
                 and topic.effective_from <= cell.trade_date
-                and (
-                    topic.effective_to is None or cell.trade_date < topic.effective_to
-                )
+                and (topic.effective_to is None or cell.trade_date < topic.effective_to)
                 and topic.available_at <= cell.complete_as_of
                 and membership.effective_from <= cell.trade_date
                 and (
