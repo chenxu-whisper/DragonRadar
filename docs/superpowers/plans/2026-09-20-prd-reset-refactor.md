@@ -344,13 +344,13 @@ export function sameSavedValue(
 
 **文件：** 新建 `publication/{models,tables,repository,service,retention}.py`、迁移 `0005_publications.py`、`tests/test_reset_publication.py`、`tests/test_reset_retention.py`；修改 `storage/database.py`、`cli.py`、`http/selection.py`。
 
-- [ ] 写失败用例：某域物化失败不能发布半成品；重放相同发布命令不重复；修订生成新ID；旧笔记snapshot_id仍返回旧版本；撤销展示许可后不返回旧数据。
-- [ ] 运行 `uv run pytest tests/test_reset_publication.py -q` 确认失败。
-- [ ] 建workbench发布表，记录trade_date、version、market/topic/news/regulation/role输入引用、各域状态、published_at、coverage和quality_flags；缺域明确标missing/disabled。
-- [ ] 在同一事务中写物化结果与发布清单，最后将draft切为published；失败保留attempt，不保留可见部分发布；更新只追加修订。
-- [ ] 注册 `/api/snapshots/list`，固定快照选择复用02；默认只返回有资格展示的发布记录。
-- [ ] 建来源→归档→派生结果依赖索引和撤回记录。仅展示权撤回时阻断读取并清理应用缓存；存储/保留权撤回时依据已批准策略删除或去标识化派生内容并保留非敏感墓碑。未有明确保留策略时关闭相关模块、阻断恢复启用，不擅自清库。恢复演练先重放撤回记录，再开放来源。
-- [ ] 跑发布回归及数据库迁移测试；提交 `feat: publish atomic versioned read models`。
+- [x] 写失败用例：某域物化失败不能发布半成品；重放相同发布命令不重复；修订生成新ID；旧笔记snapshot_id仍返回旧版本；撤销展示许可后不返回旧数据。
+- [x] 运行 `uv run pytest tests/test_reset_publication.py -q` 确认失败。
+- [x] 建workbench发布表，记录trade_date、version、market/topic/news/regulation/role输入引用、各域状态、published_at、coverage和quality_flags；缺域明确标missing/disabled。
+- [x] 在同一事务中写物化结果与发布清单，最后将draft切为published；失败保留attempt，不保留可见部分发布；更新只追加修订。
+- [x] 注册 `/api/snapshots/list`，固定快照选择复用02；默认只返回有资格展示的发布记录。
+- [x] 建来源→归档→派生结果依赖索引和撤回记录。仅展示权撤回时阻断读取并清理应用缓存；存储/保留权撤回时依据已批准策略删除或去标识化派生内容并保留非敏感墓碑。未有明确保留策略时关闭相关模块、阻断恢复启用，不擅自清库。恢复演练先重放撤回记录，再开放来源。
+- [x] 跑发布回归及数据库迁移测试；提交 `feat: publish atomic versioned read models`。
 
 **完成条件：** 发布完整性指“计划纳入的域及其质量状态一致”，不是要求尚未开发模块用假数据补齐。
 
