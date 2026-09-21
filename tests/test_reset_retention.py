@@ -154,6 +154,112 @@ def test_storage_withdrawal_without_policy_disables_modules_without_deleting(
         service.repository.get_snapshot(record.id)
 
 
+def test_display_block_cannot_mask_pending_storage_policy_requirement(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage("synthetic")
+    retention.withdraw_display("synthetic")
+    retention.replay_withdrawals("synthetic")
+
+    with pytest.raises(Conflict):
+        retention.restore_source("synthetic", grant())
+
+    with database.engine.connect() as connection:
+        controls = (
+            connection.execute(
+                select(publication_module_controls).where(
+                    publication_module_controls.c.source_id == "synthetic"
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert controls
+    assert all(not row["enabled"] for row in controls)
+    assert all(row["blocked_by_withdrawal"] for row in controls)
+
+
+def test_approved_storage_policy_survives_later_display_block(
+    published, database, repository
+):
+    service, record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-storage-before-display",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.withdraw_display("synthetic")
+    retention.replay_withdrawals("synthetic")
+
+    restored = retention.restore_source("synthetic", grant())
+
+    assert restored.action == "restored"
+    with database.engine.connect() as connection:
+        controls = (
+            connection.execute(
+                select(publication_module_controls).where(
+                    publication_module_controls.c.source_id == "synthetic"
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert controls
+    assert all(row["enabled"] for row in controls)
+    assert all(not row["blocked_by_withdrawal"] for row in controls)
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(record.id)
+
+
+def test_restore_rejects_replay_below_latest_pending_block(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    blocked = retention.withdraw_display("synthetic")
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=uuid4(),
+                source_id="synthetic",
+                scope="display",
+                action="replayed",
+                policy_reference=None,
+                details={"through_sequence": blocked.sequence - 1},
+                occurred_at=NOW,
+            )
+        )
+
+    with pytest.raises(Conflict):
+        retention.restore_source("synthetic", grant())
+
+
+def test_replay_ignores_withdrawals_before_latest_restore(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-closed-ledger",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
+    with pytest.raises(Conflict):
+        retention.replay_withdrawals("synthetic")
+
+
 def test_approved_policy_deidentifies_derived_content_and_keeps_tombstones(
     published, database, repository
 ):
@@ -434,6 +540,127 @@ def test_database_rejects_mixed_withdrawal_dependency_shape(published, database)
     )
     with pytest.raises(DBAPIError), database.engine.begin() as connection:
         connection.execute(insert(withdrawal_dependencies).values(**values))
+
+
+@pytest.mark.parametrize(
+    ("scope", "action", "policy_reference"),
+    [
+        ("display", "deidentified", "forged-policy"),
+        ("display", "deleted", "forged-policy"),
+        ("storage", "deidentified", None),
+        ("storage", "deleted", None),
+        ("display", "blocked", "forged-policy"),
+        ("storage", "replayed", "forged-policy"),
+        ("display", "restored", "forged-policy"),
+    ],
+)
+def test_database_rejects_invalid_withdrawal_scope_action_policy(
+    published,
+    database,
+    scope,
+    action,
+    policy_reference,
+):
+    _service, record = published
+    with database.engine.connect() as connection:
+        before = (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == record.id
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=uuid4(),
+                source_id="synthetic",
+                scope=scope,
+                action=action,
+                policy_reference=policy_reference,
+                details={},
+                occurred_at=NOW,
+            )
+        )
+
+    with database.engine.connect() as connection:
+        after = (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == record.id
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert after == before
+
+
+def test_result_retention_trigger_rejects_display_deleted_legacy_record(
+    published, database
+):
+    _service, record = published
+    withdrawal_id = uuid4()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_records DROP CONSTRAINT IF EXISTS "
+                "withdrawal_records_scope_action_policy"
+            )
+        )
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="display",
+                action="deleted",
+                policy_reference="forged-display-policy",
+                details={},
+                occurred_at=NOW,
+            )
+        )
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                id=uuid4(),
+                withdrawal_id=withdrawal_id,
+                source_dependency_id=dependency["id"],
+                created_at=NOW,
+            )
+        )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            delete(publication_results).where(
+                publication_results.c.publication_id == record.id,
+                publication_results.c.domain == "market",
+            )
+        )
+
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(text("count(*)"))
+                .select_from(publication_results)
+                .where(
+                    publication_results.c.publication_id == record.id,
+                    publication_results.c.domain == "market",
+                )
+            )
+            == 1
+        )
 
 
 def test_archive_tombstone_uniqueness_cannot_be_bypassed_by_null(

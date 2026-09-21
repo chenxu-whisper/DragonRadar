@@ -101,6 +101,10 @@ publication_attempts = Table(
     Column("details", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("status IN ('failed', 'published')"),
+    CheckConstraint(
+        "(status = 'published' AND publication_id IS NOT NULL) "
+        "OR (status = 'failed' AND publication_id IS NULL)"
+    ),
     Index(
         "publication_attempts_published_key",
         "idempotency_key",
@@ -160,6 +164,13 @@ withdrawal_records = Table(
     CheckConstraint("scope IN ('display', 'storage')"),
     CheckConstraint(
         "action IN ('blocked', 'deidentified', 'deleted', 'replayed', 'restored')"
+    ),
+    CheckConstraint(
+        "(action IN ('deidentified', 'deleted') "
+        "AND scope = 'storage' AND policy_reference IS NOT NULL) "
+        "OR (action IN ('blocked', 'replayed', 'restored') "
+        "AND policy_reference IS NULL)",
+        name="withdrawal_records_scope_action_policy",
     ),
     Index("withdrawal_records_source", "source_id", "sequence"),
 )

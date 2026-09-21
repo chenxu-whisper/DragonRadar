@@ -101,6 +101,10 @@ def upgrade():
         sa.Column("details", JSONB, nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint("status IN ('failed', 'published')"),
+        sa.CheckConstraint(
+            "(status = 'published' AND publication_id IS NOT NULL) "
+            "OR (status = 'failed' AND publication_id IS NULL)"
+        ),
     )
     op.create_index(
         "publication_attempts_published_key",
@@ -162,6 +166,13 @@ def upgrade():
         sa.CheckConstraint(
             "action IN ('blocked', 'deidentified', 'deleted', 'replayed', 'restored')"
         ),
+        sa.CheckConstraint(
+            "(action IN ('deidentified', 'deleted') "
+            "AND scope = 'storage' AND policy_reference IS NOT NULL) "
+            "OR (action IN ('blocked', 'replayed', 'restored') "
+            "AND policy_reference IS NULL)",
+            name="withdrawal_records_scope_action_policy",
+        ),
     )
     op.create_index(
         "withdrawal_records_source",
@@ -212,6 +223,27 @@ def upgrade():
         sa.Column("blocked_by_withdrawal", sa.Boolean, nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
+    op.execute("""
+        CREATE FUNCTION guard_publication_attempt_authority() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.status = 'published'
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM publications publication
+                    WHERE publication.id = NEW.publication_id
+                      AND publication.status = 'published'
+                      AND publication.command_hash = NEW.command_hash
+               )
+            THEN
+                RAISE EXCEPTION 'invalid published attempt authority';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER publication_attempts_authority
+        BEFORE INSERT OR UPDATE ON publication_attempts
+        FOR EACH ROW EXECUTE FUNCTION guard_publication_attempt_authority();
+    """)
     op.execute("""
         CREATE FUNCTION guard_withdrawal_dependency_insert() RETURNS trigger AS $$
         DECLARE
@@ -361,6 +393,7 @@ def upgrade():
                      ON withdrawal.id = dependency.withdrawal_id
                    WHERE source_dependency.publication_id = OLD.publication_id
                      AND source_dependency.derived_type = OLD.domain
+                     AND withdrawal.scope = 'storage'
                      AND withdrawal.action = 'deidentified'
                      AND withdrawal.policy_reference IS NOT NULL
                )
@@ -377,6 +410,7 @@ def upgrade():
                      ON withdrawal.id = dependency.withdrawal_id
                    WHERE source_dependency.publication_id = OLD.publication_id
                      AND source_dependency.derived_type = OLD.domain
+                     AND withdrawal.scope = 'storage'
                      AND withdrawal.action = 'deleted'
                      AND withdrawal.policy_reference IS NOT NULL
                )

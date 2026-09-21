@@ -1,5 +1,6 @@
 """Unified publication manifests and atomic materialization."""
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -290,6 +291,89 @@ def test_replay_is_idempotent_conflicting_key_rejected_and_revision_appends(
             )
             == 2
         )
+
+
+@pytest.mark.parametrize(
+    ("status", "publication_reference", "command_hash"),
+    [
+        ("published", False, "0" * 64),
+        ("failed", True, "0" * 64),
+        ("published", True, "f" * 64),
+    ],
+)
+def test_database_rejects_invalid_publication_attempt_authority(
+    publication,
+    database,
+    status,
+    publication_reference,
+    command_hash,
+):
+    service, command = publication
+    record = service.publish(command, key="attempt-authority-source")
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(publication_attempts).values(
+                id=uuid4(),
+                idempotency_key="forged-attempt",
+                command_hash=command_hash,
+                publication_id=record.id if publication_reference else None,
+                status=status,
+                stage=status,
+                details={},
+                created_at=NOW,
+            )
+        )
+
+
+def test_database_rejects_published_attempt_for_draft_publication(
+    publication, database
+):
+    service, command = publication
+    record = service.publish(command, key="attempt-draft-source")
+    draft_id = _clone_publication_with_dependencies(
+        database,
+        record,
+        topic_snapshot_id=record.topic_snapshot_id,
+        dependency_domains=("market", "topic"),
+        status="draft",
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(publication_attempts).values(
+                id=uuid4(),
+                idempotency_key="forged-draft-attempt",
+                command_hash=hashlib.sha256(
+                    command.canonical_json().encode()
+                ).hexdigest(),
+                publication_id=draft_id,
+                status="published",
+                stage="published",
+                details={},
+                created_at=NOW,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "UPDATE publications SET command_hash = repeat('f', 64) WHERE id = :id",
+        "UPDATE publications SET status = 'draft', published_at = NULL WHERE id = :id",
+    ],
+)
+def test_replay_rejects_inconsistent_published_attempt(publication, database, tamper):
+    service, command = publication
+    record = service.publish(command, key="defensive-replay")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE publications DISABLE TRIGGER publications_transition")
+        )
+        connection.execute(text(tamper), {"id": record.id})
+
+    with pytest.raises(Conflict):
+        service.publish(command, key="defensive-replay")
 
 
 def test_missing_domains_are_explicit_and_materialized_results_are_stored(publication):

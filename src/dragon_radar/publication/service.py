@@ -220,7 +220,26 @@ class PublicationService:
                     None,
                 )
                 if published_attempt is not None:
-                    if published_attempt["command_hash"] != digest:
+                    authoritative_publication = (
+                        connection.execute(
+                            select(
+                                publications.c.id,
+                                publications.c.status,
+                                publications.c.command_hash,
+                            ).where(
+                                publications.c.id == published_attempt["publication_id"]
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if (
+                        published_attempt["command_hash"] != digest
+                        or authoritative_publication is None
+                        or authoritative_publication["status"] != "published"
+                        or authoritative_publication["command_hash"]
+                        != published_attempt["command_hash"]
+                    ):
                         raise Conflict(
                             "Idempotency key already belongs to another command"
                         )

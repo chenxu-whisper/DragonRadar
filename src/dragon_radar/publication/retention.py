@@ -289,29 +289,33 @@ class RetentionService:
         _identifier(source_id)
         with self.database.engine.begin() as connection:
             self.repository._source(connection, source_id)
-            prior = (
+            rows = (
                 connection.execute(
                     select(withdrawal_records)
-                    .where(
-                        withdrawal_records.c.source_id == source_id,
-                        withdrawal_records.c.action.in_(
-                            ("blocked", "deidentified", "deleted")
-                        ),
-                    )
-                    .order_by(withdrawal_records.c.sequence.desc())
-                    .limit(1)
+                    .where(withdrawal_records.c.source_id == source_id)
+                    .order_by(withdrawal_records.c.sequence)
                 )
                 .mappings()
-                .first()
+                .all()
             )
-            if prior is None:
+            restored_sequence = max(
+                (row["sequence"] for row in rows if row["action"] == "restored"),
+                default=0,
+            )
+            pending_blocks = [
+                row
+                for row in rows
+                if row["sequence"] > restored_sequence and row["action"] == "blocked"
+            ]
+            if not pending_blocks:
                 raise Conflict("No withdrawal records to replay")
+            latest_block = pending_blocks[-1]
             row = self._append(
                 connection,
                 source_id=source_id,
-                scope=prior["scope"],
+                scope=latest_block["scope"],
                 action="replayed",
-                details={"through_sequence": prior["sequence"]},
+                details={"through_sequence": latest_block["sequence"]},
             )
         self.cache.clear_source(source_id)
         return _record(row)
@@ -335,20 +339,34 @@ class RetentionService:
                 .mappings()
                 .all()
             )
-            blocked = [row for row in rows if row["action"] == "blocked"]
-            replayed = [row for row in rows if row["action"] == "replayed"]
-            if (
-                not blocked
-                or not replayed
-                or replayed[-1]["sequence"] < blocked[-1]["sequence"]
-            ):
+            restored_sequence = max(
+                (row["sequence"] for row in rows if row["action"] == "restored"),
+                default=0,
+            )
+            pending = [row for row in rows if row["sequence"] > restored_sequence]
+            blocked = [row for row in pending if row["action"] == "blocked"]
+            if not blocked:
                 raise Conflict("Withdrawal ledger must be replayed before restore")
-            if blocked[-1]["scope"] == "storage":
+            latest_block = blocked[-1]
+            replayed = [
+                row
+                for row in pending
+                if row["action"] == "replayed"
+                and row["sequence"] > latest_block["sequence"]
+                and type(row["details"].get("through_sequence")) is int
+                and row["details"]["through_sequence"] >= latest_block["sequence"]
+            ]
+            if not replayed:
+                raise Conflict("Withdrawal ledger must be replayed before restore")
+            storage_blocks = [row for row in blocked if row["scope"] == "storage"]
+            if storage_blocks:
+                latest_storage_block = storage_blocks[-1]
                 applied = [
                     row
-                    for row in rows
+                    for row in pending
                     if row["action"] in ("deidentified", "deleted")
-                    and row["sequence"] > blocked[-1]["sequence"]
+                    and row["scope"] == "storage"
+                    and row["sequence"] > latest_storage_block["sequence"]
                 ]
                 if not applied or not grant.local_storage:
                     raise Conflict("Approved storage retention action is required")
@@ -369,7 +387,7 @@ class RetentionService:
             row = self._append(
                 connection,
                 source_id=source_id,
-                scope=blocked[-1]["scope"],
+                scope=latest_block["scope"],
                 action="restored",
                 details={},
             )
