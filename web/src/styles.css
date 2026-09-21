@@ -59,6 +59,10 @@ main { padding: 24px 28px 40px; min-width: 0; }
 footer { padding: 12px 28px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
 .page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
 .eyebrow { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+.module-state { max-width: 880px; padding: 20px 0; border-block: 1px solid var(--line); }
+.module-state h2 { color: var(--muted); }
+.module-state ul { padding-left: 20px; margin-block: 16px; }
+.module-state li { margin-block: 8px; }
 .muted { color: var(--muted); font-size: 13px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
 .breadth-layout { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); gap: 32px; align-items: center; }
