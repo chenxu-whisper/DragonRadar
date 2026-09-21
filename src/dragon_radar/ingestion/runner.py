@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, insert, or_, select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
@@ -457,8 +457,9 @@ class MarketIngestionRunner:
         )
         return _result(row)
 
-    @staticmethod
-    def _materialize(connection, batch: MarketBatch, archive_id: UUID) -> None:
+    def _materialize(
+        self, connection, batch: MarketBatch, archive_id: UUID
+    ) -> None:
         states_by_security = {}
         for item in batch.security_states:
             states_by_security.setdefault(item.security_id, []).append(item)
@@ -470,6 +471,9 @@ class MarketIngestionRunner:
             ) or max(states, key=lambda item: item.effective_from)
 
         for item in identity_states.values():
+            self.repository._lock(
+                connection, "market-security:" + item.security_id
+            )
             values = {
                 "security_id": item.security_id,
                 "code": item.code,
@@ -488,35 +492,69 @@ class MarketIngestionRunner:
                 "available_at": item.available_at,
                 "source_archive_id": archive_id,
             }
-            statement = pg_insert(security).values(**values)
-            existing_archive_is_older = security.c.source_archive_id.in_(
-                select(import_batches.c.id).where(
-                    import_batches.c.trade_date < batch.trade_date
+            existing = (
+                connection.execute(
+                    select(
+                        security,
+                        import_batches.c.trade_date.label("archive_trade_date"),
+                    )
+                    .select_from(
+                        security.join(
+                            import_batches,
+                            security.c.source_archive_id == import_batches.c.id,
+                        )
+                    )
+                    .where(security.c.security_id == item.security_id)
                 )
+                .mappings()
+                .first()
             )
-            existing_archive_is_same_date = security.c.source_archive_id.in_(
-                select(import_batches.c.id).where(
-                    import_batches.c.trade_date == batch.trade_date
+            if existing is None:
+                connection.execute(insert(security).values(**values))
+                continue
+
+            existing_precedence = (
+                existing["archive_trade_date"],
+                existing["available_at"],
+                existing["source"],
+                existing["source_version"],
+            )
+            # Source metadata is a stable lexical tie-breaker, not chronology.
+            incoming_precedence = (
+                batch.trade_date,
+                item.available_at,
+                item.source_id,
+                item.source_version,
+            )
+            identity_fields = (
+                "code",
+                "name",
+                "security_type",
+                "exchange",
+                "board",
+                "list_date",
+                "delist_date",
+                "is_st",
+                "is_suspended",
+            )
+            if existing_precedence == incoming_precedence and any(
+                existing[field] != values[field] for field in identity_fields
+            ):
+                raise Conflict(
+                    "Conflicting security identity has the same precedence key"
                 )
-            )
-            connection.execute(
-                statement
-                .on_conflict_do_update(
-                    index_elements=[security.c.security_id],
-                    set_={
-                        key: value
-                        for key, value in values.items()
-                        if key != "security_id"
-                    },
-                    where=or_(
-                        existing_archive_is_older,
-                        and_(
-                            existing_archive_is_same_date,
-                            security.c.available_at < item.available_at,
-                        ),
-                    ),
+            if incoming_precedence > existing_precedence:
+                connection.execute(
+                    update(security)
+                    .where(security.c.security_id == item.security_id)
+                    .values(
+                        **{
+                            key: value
+                            for key, value in values.items()
+                            if key != "security_id"
+                        }
+                    )
                 )
-            )
 
         state_fields = {
             "code": "code",
@@ -605,32 +643,40 @@ class MarketIngestionRunner:
             item_state = state_at(batch, item.security_id, item.trade_date)
             if item_state is None or item_state.suspended:
                 continue
-            connection.execute(
-                pg_insert(limit_up_record)
-                .values(
-                    security_id=item.security_id,
-                    trade_date=item.trade_date,
-                    is_limit_up=item.is_limit_up,
-                    touched_limit=item.touched_limit,
-                    first_seal_time=item.first_seal_time,
-                    last_seal_time=item.last_seal_time,
-                    break_count=item.break_count,
-                    seal_amount=item.seal_amount,
-                    continuous_boards=item.continuous_boards,
-                    source=item.source_id,
-                    source_version=item.source_version,
-                    available_at=item.available_at,
-                    source_archive_id=archive_id,
+            values = {
+                "security_id": item.security_id,
+                "trade_date": item.trade_date,
+                "is_limit_up": item.is_limit_up,
+                "touched_limit": item.touched_limit,
+                "first_seal_time": item.first_seal_time,
+                "last_seal_time": item.last_seal_time,
+                "break_count": item.break_count,
+                "seal_amount": item.seal_amount,
+                "continuous_boards": item.continuous_boards,
+                "source": item.source_id,
+                "source_version": item.source_version,
+                "available_at": item.available_at,
+                "source_archive_id": archive_id,
+            }
+            existing = (
+                connection.execute(
+                    select(limit_up_record).where(
+                        limit_up_record.c.security_id == item.security_id,
+                        limit_up_record.c.trade_date == item.trade_date,
+                        limit_up_record.c.source == item.source_id,
+                        limit_up_record.c.source_version
+                        == item.source_version,
+                    )
                 )
-                .on_conflict_do_nothing(
-                    index_elements=[
-                        limit_up_record.c.security_id,
-                        limit_up_record.c.trade_date,
-                        limit_up_record.c.source,
-                        limit_up_record.c.source_version,
-                    ]
-                )
+                .mappings()
+                .first()
             )
+            if existing is None:
+                connection.execute(insert(limit_up_record).values(**values))
+            elif any(existing[key] != value for key, value in values.items()):
+                raise Conflict(
+                    "Conflicting limit-up payload or lineage for source version"
+                )
 
     def list_tasks(self) -> tuple[MarketImportTask, ...]:
         with self.database.engine.begin() as connection:

@@ -373,6 +373,104 @@ def test_same_date_older_revision_does_not_replace_later_available_identity(
     assert row == ("LATER", NOW - timedelta(hours=2), later.batch_id)
 
 
+def test_equal_timestamp_security_revisions_converge_in_opposite_import_orders(
+    database, repository
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.readmodels.tables import security
+
+    runner = MarketIngestionRunner(repository)
+    available_at = NOW - timedelta(hours=2)
+
+    def revision(security_id, version, code):
+        return batch(
+            source_version=version,
+            pool_version=version,
+            expected_security_ids=(security_id,),
+            security_states=(
+                state(
+                    security_id=security_id,
+                    code=code,
+                    source_version=version,
+                    pool_version=version,
+                    available_at=available_at,
+                ),
+            ),
+            bars=(bar(security_id=security_id, source_version=version),),
+        )
+
+    imports = (
+        ("A", "revision-a", "FIRST"),
+        ("A", "revision-b", "SECOND"),
+        ("B", "revision-b", "SECOND"),
+        ("B", "revision-a", "FIRST"),
+    )
+    for index, values in enumerate(imports):
+        runner.import_batch(
+            licensed_batch(revision(*values)),
+            key=f"equal-timestamp-{index}",
+        )
+
+    with database.engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                security.c.security_id,
+                security.c.code,
+                security.c.source_version,
+            )
+            .where(security.c.security_id.in_(("A", "B")))
+            .order_by(security.c.security_id)
+        ).all()
+    assert rows == [
+        ("A", "SECOND", "revision-b"),
+        ("B", "SECOND", "revision-b"),
+    ]
+
+
+def test_conflicting_security_identity_at_same_precedence_rolls_back(
+    database, repository
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.readmodels.tables import security
+    from dragon_radar.storage.repository import Conflict
+
+    runner = MarketIngestionRunner(repository)
+
+    def revision(code):
+        return batch(
+            security_states=(state(code=code),),
+            bars=(bar(),),
+        )
+
+    first = runner.import_batch(
+        licensed_batch(revision("ORIGINAL")),
+        key="identity-precedence-original",
+    )
+    with pytest.raises(Conflict, match="security identity"):
+        runner.import_batch(
+            licensed_batch(revision("CONFLICT")),
+            key="identity-precedence-conflict",
+        )
+
+    with database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                security.c.code,
+                security.c.source_archive_id,
+            ).where(security.c.security_id == "A")
+        ).one()
+        counts = connection.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM import_batches), "
+                "(SELECT count(*) FROM market_import_tasks), "
+                "(SELECT count(*) FROM market_import_attempts)"
+            )
+        ).one()
+    assert row == ("ORIGINAL", first.batch_id)
+    assert counts == (1, 1, 1)
+
+
 def test_runner_preserves_nullable_market_fields(database, repository):
     from dragon_radar.ingestion.runner import MarketIngestionRunner
     from dragon_radar.readmodels.tables import daily_kline
@@ -447,6 +545,63 @@ def test_limit_up_source_revisions_are_preserved_with_archive_lineage(
         ("s1", 1, first.batch_id),
         ("s2", 2, second.batch_id),
     ]
+
+
+def test_conflicting_limit_up_source_version_rolls_back_new_workflow(
+    database, repository
+):
+    from dragon_radar.domain.models import LimitUpEvent
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.readmodels.tables import limit_up_record
+    from dragon_radar.storage.repository import Conflict
+
+    runner = MarketIngestionRunner(repository)
+
+    def revision(continuous_boards):
+        return batch(
+            security_states=(state(code="000001"),),
+            bars=(bar(),),
+            limit_up_events=(
+                LimitUpEvent(
+                    security_id="A",
+                    trade_date=DAYS[-1],
+                    available_at=NOW - timedelta(hours=1),
+                    source_id="synthetic",
+                    source_version="s1",
+                    is_limit_up=True,
+                    continuous_boards=continuous_boards,
+                ),
+            ),
+        )
+
+    first = runner.import_batch(
+        licensed_batch(revision(1)),
+        key="limit-up-conflict-original",
+    )
+    with pytest.raises(Conflict, match="limit-up"):
+        runner.import_batch(
+            licensed_batch(revision(2)),
+            key="limit-up-conflict-new-workflow",
+        )
+
+    with database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                limit_up_record.c.continuous_boards,
+                limit_up_record.c.source_archive_id,
+            )
+        ).one()
+        counts = connection.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM import_batches), "
+                "(SELECT count(*) FROM market_import_tasks), "
+                "(SELECT count(*) FROM market_import_attempts), "
+                "(SELECT count(*) FROM limit_up_record)"
+            )
+        ).one()
+    assert row == (1, first.batch_id)
+    assert counts == (1, 1, 1, 1)
 
 
 @pytest.mark.parametrize(
