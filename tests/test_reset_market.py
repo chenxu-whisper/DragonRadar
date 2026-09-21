@@ -1,5 +1,6 @@
 """Versioned market materialization and read API contracts."""
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -711,7 +712,8 @@ async def test_publication_materializes_all_market_views_and_routes_only_read_th
         "heatmap",
         "search",
     }
-    assert market.payload["overview"]["breadth"]["members"]["flat"] == [
+    flat_members = market.payload["overview"]["breadth"]["members"]["flat"]
+    assert [dict(member) for member in flat_members] == [
         {
             "security_id": "A",
             "code": "000001",
@@ -810,9 +812,20 @@ async def test_legacy_market_jsonb_projects_overview_and_controls_new_views(
         )
 
     assert overview.status_code == 200
-    assert overview.json()["data"] == {
+    overview_body = json.loads(overview.content, parse_float=Decimal)
+    assert (
+        overview_body["data"]["returns"][0]["value"].as_tuple()
+        == Decimal("0.1000").as_tuple()
+    )
+    assert overview_body["data"] == {
         **legacy_payload,
-        "coverage": overview.json()["coverage"],
+        "returns": [
+            {
+                **legacy_payload["returns"][0],
+                "value": Decimal("0.1000"),
+            }
+        ],
+        "coverage": overview_body["coverage"],
     }
     for response in unavailable:
         assert response.status_code == 200
