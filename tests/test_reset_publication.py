@@ -26,6 +26,7 @@ from dragon_radar.publication.tables import (
     publications,
     source_dependencies,
 )
+from dragon_radar.storage.database import SCHEMA_REVISION
 from dragon_radar.storage.models import source_grants
 from dragon_radar.storage.repository import Conflict, Forbidden
 from dragon_radar.topics.repository import TopicRepository
@@ -102,7 +103,7 @@ def test_migration_creates_publication_schema_and_readiness(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0005_publications"
+            == SCHEMA_REVISION
         )
 
 
@@ -1441,7 +1442,7 @@ def test_migration_upgrades_0004a_without_rewriting_history(database_url):
             )
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0005_publications"
+                == SCHEMA_REVISION
             )
     finally:
         database.close()

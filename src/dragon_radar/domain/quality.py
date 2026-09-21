@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from dragon_radar.domain.models import (
     DailyBar,
     FrozenModel,
+    LimitUpEvent,
     MarketBatch,
     SecurityState,
     SourceGrant,
@@ -125,6 +126,9 @@ def bar_issues(bar: DailyBar, batch: MarketBatch) -> tuple[QualityIssue, ...]:
         "adjustment_factor",
         "volume",
         "amount",
+        "turnover_rate",
+        "float_mv",
+        "total_mv",
         "limit_up",
         "limit_down",
     )
@@ -143,10 +147,25 @@ def bar_issues(bar: DailyBar, batch: MarketBatch) -> tuple[QualityIssue, ...]:
         add("missing_price", "Close is missing")
     if "adjustment_factor" not in nonfinite and bar.adjustment_factor <= 0:
         add("invalid_factor", "Adjustment factor must be positive")
-    for name in ("volume", "amount"):
+    nonnegative_fields = (
+        ("volume", "negative_volume"),
+        ("amount", "negative_amount"),
+        ("turnover_rate", "negative_turnover_rate"),
+        ("float_mv", "negative_float_market_cap"),
+        ("total_mv", "negative_total_market_cap"),
+    )
+    for name, code in nonnegative_fields:
         value = getattr(bar, name)
         if value is not None and name not in nonfinite and value < 0:
-            add(f"negative_{name}", f"{name} must be nonnegative")
+            add(code, f"{name} must be nonnegative")
+    if (
+        bar.price_unit != "currency/share"
+        or bar.volume_unit not in {"share", "lot"}
+        or bar.amount_unit != "currency"
+        or bar.turnover_rate_unit != "fraction"
+        or bar.market_cap_unit != "currency"
+    ):
+        add("unit_contract", "Bar units do not match the canonical unit contract")
     ohlc = (bar.open, bar.high, bar.low)
     if any(v is not None for v in ohlc):
         if any(v is None for v in (*ohlc, bar.close)):
@@ -172,6 +191,53 @@ def bar_issues(bar: DailyBar, batch: MarketBatch) -> tuple[QualityIssue, ...]:
                 add("invalid_limits", "Raw close falls outside supplied limits")
     elif any(v is not None for v in limits) or bar.limit_date is not None:
         add("invalid_limits", "Only a limited session may supply limit prices/date")
+    return tuple(issues)
+
+
+def limit_up_event_issues(
+    event: LimitUpEvent, batch: MarketBatch
+) -> tuple[QualityIssue, ...]:
+    issues: list[QualityIssue] = []
+
+    def add(code: str, message: str) -> None:
+        issues.append(
+            QualityIssue(
+                code=code,
+                message=message,
+                security_id=event.security_id,
+                trade_date=event.trade_date,
+            )
+        )
+
+    if (event.source_id, event.source_version) != (
+        batch.source_id,
+        batch.source_version,
+    ):
+        add("source_mismatch", "Limit-up source/version differs from batch")
+    if event.available_at > batch.as_of:
+        add("late_limit_up_event", "Limit-up event was not known at the batch cutoff")
+    if (
+        event.trade_date not in batch.calendar.sessions
+        or event.trade_date > batch.trade_date
+    ):
+        add("limit_up_date", "Limit-up event is outside the supplied batch history")
+    for name in ("break_count", "continuous_boards"):
+        value = getattr(event, name)
+        if value is not None and value < 0:
+            add(f"negative_{name}", f"{name} must be nonnegative")
+    if event.seal_amount is not None:
+        if not event.seal_amount.is_finite():
+            add("nonfinite", "seal_amount must be finite")
+        elif event.seal_amount < 0:
+            add("negative_seal_amount", "seal_amount must be nonnegative")
+    if event.seal_amount_unit != "currency":
+        add("unit_contract", "Seal amount unit must be currency")
+    if (
+        event.first_seal_time is not None
+        and event.last_seal_time is not None
+        and event.last_seal_time < event.first_seal_time
+    ):
+        add("invalid_seal_times", "Last seal time precedes first seal time")
     return tuple(issues)
 
 
@@ -266,6 +332,16 @@ def validate_batch(batch: MarketBatch, *, now: datetime) -> QualityReport:
         if len(bars) > 1:
             add("duplicate_bar", "Duplicate security/date bars", *key)
             valid_keys.discard(key)
+
+    event_keys: set[tuple[str, date]] = set()
+    for event in batch.limit_up_events:
+        key = (event.security_id, event.trade_date)
+        if key in event_keys:
+            add("duplicate_limit_up_event", "Duplicate security/date event", *key)
+        event_keys.add(key)
+        issues.extend(limit_up_event_issues(event, batch))
+        if event.security_id not in known:
+            add("unknown_id", "Limit-up event ID has no security state", *key)
 
     valid = legal_excluded = missing = 0
     for sid in sorted(expected):

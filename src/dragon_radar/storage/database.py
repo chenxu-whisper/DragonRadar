@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0005_publications"
+SCHEMA_REVISION = "0006_market_readmodels"
 
 
 class Database:
@@ -73,6 +73,13 @@ class Database:
                     "withdrawal_dependencies",
                     "withdrawal_binding_seals",
                     "publication_module_controls",
+                    "market_import_tasks",
+                    "market_import_attempts",
+                    "security",
+                    "security_state_history",
+                    "daily_kline",
+                    "index_daily_kline",
+                    "limit_up_record",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True

@@ -10,6 +10,9 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
+from dragon_radar.ingestion.contracts import MarketImportAttempt, MarketImportTask
+from dragon_radar.ingestion.local_json import load_licensed_market_json
+from dragon_radar.ingestion.runner import MarketIngestionRunner
 from dragon_radar.owner.cli import COMMANDS, add_commands, execute
 from dragon_radar.owner.security import OWNER_ERRORS
 from dragon_radar.publication.models import PublicationCommand
@@ -50,6 +53,36 @@ def _topic_attempt_result(attempt: TopicAttempt) -> dict[str, object]:
     }
 
 
+def _market_attempt_result(attempt: MarketImportAttempt) -> dict[str, object]:
+    return {
+        "attempt_id": str(attempt.id),
+        "task_id": str(attempt.task_id),
+        "batch_id": str(attempt.batch_id),
+        "status": attempt.status,
+        "stage": attempt.stage,
+        "missing_items": list(attempt.missing_items),
+        "failed_cursor": attempt.failed_cursor,
+        "request_from": attempt.request_from.isoformat(),
+        "request_to": attempt.request_to.isoformat(),
+        "retry_from": (
+            attempt.retry_from.isoformat() if attempt.retry_from is not None else None
+        ),
+        "retry_to": (
+            attempt.retry_to.isoformat() if attempt.retry_to is not None else None
+        ),
+    }
+
+
+def _market_task_result(task: MarketImportTask) -> dict[str, object]:
+    return {
+        "task_id": str(task.id),
+        "status": task.status,
+        "source_id": task.source_id,
+        "request_from": task.request_from.isoformat(),
+        "request_to": task.request_to.isoformat(),
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dragon-radar")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -65,6 +98,30 @@ def _parser() -> argparse.ArgumentParser:
     importer = commands.add_parser("import", help="Archive a local batch JSON file")
     importer.add_argument("path", type=Path)
     importer.add_argument("--key", required=True)
+    market_import = commands.add_parser(
+        "market-import", help="Import an explicitly licensed local market JSON batch"
+    )
+    market_import.add_argument("path", type=Path)
+    market_import.add_argument("--key", required=True)
+    commands.add_parser("market-tasks", help="List licensed market import tasks")
+    market_task_show = commands.add_parser(
+        "market-task-show", help="Show a licensed market import task"
+    )
+    market_task_show.add_argument("task_id")
+    market_attempts = commands.add_parser(
+        "market-attempts", help="List licensed market import attempts"
+    )
+    market_attempts.add_argument("--status")
+    market_attempt_show = commands.add_parser(
+        "market-attempt-show", help="Show a licensed market import attempt"
+    )
+    market_attempt_show.add_argument("attempt_id")
+    market_retry = commands.add_parser(
+        "market-retry", help="Retry a quarantined licensed market import"
+    )
+    market_retry.add_argument("attempt_id")
+    market_retry.add_argument("--path", required=True, type=Path)
+    market_retry.add_argument("--key", required=True)
     publish = commands.add_parser("publish", help="Publish a quality-gated batch")
     publish.add_argument("batch_id")
     topic_import = commands.add_parser(
@@ -111,6 +168,11 @@ def main(argv: list[str] | None = None) -> int:
         topic_repository = (
             TopicRepository(database) if args.command.startswith("topic-") else None
         )
+        market_runner = (
+            MarketIngestionRunner(repository)
+            if args.command.startswith("market-")
+            else None
+        )
         if args.command in COMMANDS:
             result = execute(args, repository)
             if result is None:
@@ -135,6 +197,51 @@ def main(argv: list[str] | None = None) -> int:
                 "batch_id": str(record.id),
                 "payload_hash": record.payload_hash,
                 "quality_report": record.quality_report,
+            }
+        elif args.command == "market-import":
+            imported = market_runner.import_batch(
+                load_licensed_market_json(args.path), key=args.key
+            )
+            if imported.status == "quarantined":
+                raise QualityRejected("Licensed market batch was quarantined")
+            result = {
+                "task_id": str(imported.task_id),
+                "attempt_id": str(imported.attempt_id),
+                "batch_id": str(imported.batch_id),
+                "status": imported.status,
+            }
+        elif args.command == "market-tasks":
+            result = {
+                "tasks": [
+                    _market_task_result(task) for task in market_runner.list_tasks()
+                ]
+            }
+        elif args.command == "market-task-show":
+            result = _market_task_result(market_runner.get_task(args.task_id))
+        elif args.command == "market-attempts":
+            result = {
+                "attempts": [
+                    _market_attempt_result(attempt)
+                    for attempt in market_runner.list_attempts(status=args.status)
+                ]
+            }
+        elif args.command == "market-attempt-show":
+            result = _market_attempt_result(
+                market_runner.get_attempt(args.attempt_id)
+            )
+        elif args.command == "market-retry":
+            imported = market_runner.retry_attempt(
+                args.attempt_id,
+                load_licensed_market_json(args.path),
+                key=args.key,
+            )
+            if imported.status == "quarantined":
+                raise QualityRejected("Licensed market batch was quarantined")
+            result = {
+                "task_id": str(imported.task_id),
+                "attempt_id": str(imported.attempt_id),
+                "batch_id": str(imported.batch_id),
+                "status": imported.status,
             }
         elif args.command == "publish":
             snapshot = repository.publish(args.batch_id)

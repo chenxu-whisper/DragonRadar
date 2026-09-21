@@ -8,12 +8,13 @@ All effective intervals are [effective_from, effective_to), with None unbounded.
 Availability and grant timestamps normalize to UTC. Unknown state is never False.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from typing import Annotated, Literal
 
 from pydantic import (
     AfterValidator,
+    AliasChoices,
     AwareDatetime,
     BaseModel,
     BeforeValidator,
@@ -90,6 +91,7 @@ class SecurityState(FrozenModel):
     """Versioned, point-in-time identity/state; None means not known."""
 
     security_id: Identifier
+    code: Identifier | None = None
     name: Identifier
     board: Identifier
     security_type: Identifier | None = None
@@ -130,15 +132,52 @@ class DailyBar(FrozenModel):
     adjustment_factor: ExactDecimal
     adjustment_version: Identifier
     currency: Identifier
-    price_unit: Literal["currency/share"]
-    volume_unit: Literal["share", "lot"]
-    amount_unit: Literal["currency"]
+    price_unit: Identifier
+    volume_unit: Identifier
+    amount_unit: Identifier
     volume: ExactDecimal | None = None
     amount: ExactDecimal | None = None
+    turnover_rate: ExactDecimal | None = None
+    turnover_rate_unit: Identifier = "fraction"
+    float_mv: ExactDecimal | None = Field(
+        default=None,
+        validation_alias=AliasChoices("float_mv", "float_market_cap"),
+    )
+    total_mv: ExactDecimal | None = Field(
+        default=None,
+        validation_alias=AliasChoices("total_mv", "total_market_cap"),
+    )
+    market_cap_unit: Identifier = "currency"
     limit_status: Literal["unknown", "limited", "no_limit"] = "unknown"
     limit_date: date | None = None
     limit_up: ExactDecimal | None = None
     limit_down: ExactDecimal | None = None
+
+    @property
+    def float_market_cap(self) -> Decimal | None:
+        return self.float_mv
+
+    @property
+    def total_market_cap(self) -> Decimal | None:
+        return self.total_mv
+
+
+class LimitUpEvent(FrozenModel):
+    """Provider-supplied close/touch/seal facts; unknown intraday fields stay null."""
+
+    security_id: Identifier
+    trade_date: date
+    available_at: UTCDateTime
+    source_id: Identifier
+    source_version: Identifier
+    is_limit_up: StrictBool
+    touched_limit: StrictBool | None = None
+    first_seal_time: time | None = None
+    last_seal_time: time | None = None
+    break_count: int | None = None
+    seal_amount: ExactDecimal | None = None
+    seal_amount_unit: Identifier = "currency"
+    continuous_boards: int = 0
 
 
 class MarketBatch(FrozenModel):
@@ -162,5 +201,6 @@ class MarketBatch(FrozenModel):
     expected_security_ids: tuple[Identifier, ...]
     security_states: tuple[SecurityState, ...]
     bars: tuple[DailyBar, ...]
+    limit_up_events: tuple[LimitUpEvent, ...] = ()
     complete_pages: StrictBool
     provenance: Provenance
