@@ -149,10 +149,10 @@ def test_export_maps_legacy_fields_and_preserves_complete_history(repository, da
 
 def test_export_uses_one_read_only_repeatable_read_transaction(repository, database):
     populated_review(repository, database)
-    transaction_settings = []
+    observed_selects = []
 
     def inspect_transaction(connection, _cursor, statement, *_):
-        if transaction_settings or "FROM owner_principals" not in statement:
+        if not statement.lstrip().upper().startswith("SELECT"):
             return
         raw = connection.connection.driver_connection
         with raw.cursor() as cursor:
@@ -160,7 +160,15 @@ def test_export_uses_one_read_only_repeatable_read_transaction(repository, datab
                 "SELECT current_setting('transaction_isolation'), "
                 "current_setting('transaction_read_only')"
             )
-            transaction_settings.append(cursor.fetchone())
+            settings = cursor.fetchone()
+        observed_selects.append(
+            (
+                connection,
+                connection.get_transaction(),
+                connection.in_transaction(),
+                settings,
+            )
+        )
 
     event.listen(database.engine, "before_cursor_execute", inspect_transaction)
     try:
@@ -168,7 +176,12 @@ def test_export_uses_one_read_only_repeatable_read_transaction(repository, datab
     finally:
         event.remove(database.engine, "before_cursor_execute", inspect_transaction)
 
-    assert transaction_settings == [("repeatable read", "on")]
+    assert len(observed_selects) == 5
+    connection, transaction, _, _ = observed_selects[0]
+    assert all(item[0] is connection for item in observed_selects)
+    assert all(item[1] is transaction for item in observed_selects)
+    assert all(item[2] is True for item in observed_selects)
+    assert all(item[3] == ("repeatable read", "on") for item in observed_selects)
 
 
 def test_export_is_local_owner_scoped_and_contains_no_server_secrets_or_market_facts(

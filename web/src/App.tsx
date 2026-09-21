@@ -16,6 +16,7 @@ import { SecurityDrawer, SecurityPage } from './pages/SecurityDetail';
 import { News } from './pages/News';
 import { Leaders } from './pages/Leaders';
 import { Regulation } from './pages/Regulation';
+import { verifiedSnapshotTradeDate } from './features/local-review/note-command';
 
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const LocalReview = import.meta.env.VITE_RESET_WORKBENCH === '1'
@@ -137,7 +138,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载本地复盘…</p>}>
               <LocalReview
                 snapshot={state.snapshot || undefined}
-                tradeDate={state.date || undefined}
+                tradeDate={verifiedSnapshotTradeDate(state.snapshot, summary.data)}
                 security={state.security || undefined}
               />
             </Suspense></LazyLoadBoundary>

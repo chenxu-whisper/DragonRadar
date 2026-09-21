@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { ID, mockMarket } from '../fixtures/market';
+import { ID, mockMarket, snapshot } from '../fixtures/market';
 
 test('local notes survive reload and offline; watchlist needs no owner session', async ({ page }) => {
   await mockMarket(page);
@@ -23,6 +23,58 @@ test('local notes survive reload and offline; watchlist needs no owner session',
   await page.getByRole('button', { name: '保存笔记', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: '回读验证通过' })).toContainText('revision 2');
   expect(privateRequests).toEqual([]);
+});
+
+test('a mismatched URL date is never persisted before its snapshot summary is verified', async ({ page }) => {
+  await mockMarket(page);
+  let releaseSummary!: () => void;
+  let markRequested!: () => void;
+  const summaryReleased = new Promise<void>(resolve => { releaseSummary = resolve; });
+  const summaryRequested = new Promise<void>(resolve => { markRequested = resolve; });
+  await page.route(`**/api/v1/snapshots/${ID}`, async route => {
+    markRequested();
+    await summaryReleased;
+    await route.fulfill({ json: snapshot });
+  });
+
+  await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-09`);
+  await summaryRequested;
+  await page.getByLabel('标题', { exact: true }).fill('未验证日期');
+  await page.getByRole('button', { name: '保存笔记', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: '回读验证通过' })).toBeVisible();
+
+  const persistedBeforeCorrection = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = indexedDB.open('dragon-radar-local-v3');
+      opening.onsuccess = () => resolve(opening.result);
+      opening.onerror = () => reject(opening.error);
+    });
+    const query = db.transaction('notes').objectStore('notes').getAll();
+    const notes = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+      query.onsuccess = () => resolve(query.result);
+      query.onerror = () => reject(query.error);
+    });
+    db.close();
+    return notes;
+  });
+  expect(persistedBeforeCorrection).toMatchObject([{ trade_date: '' }]);
+
+  releaseSummary();
+  await expect(page).toHaveURL(/date=2026-09-10/);
+  expect(await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = indexedDB.open('dragon-radar-local-v3');
+      opening.onsuccess = () => resolve(opening.result);
+      opening.onerror = () => reject(opening.error);
+    });
+    const query = db.transaction('notes').objectStore('notes').getAll();
+    const notes = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+      query.onsuccess = () => resolve(query.result);
+      query.onerror = () => reject(query.error);
+    });
+    db.close();
+    return notes.map(note => note.trade_date);
+  })).toEqual(['']);
 });
 
 test('two tabs preserve unsaved input and offer save-as on revision conflict', async ({ page, context }) => {

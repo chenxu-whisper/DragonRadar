@@ -39,9 +39,13 @@ describe('local review transactions', () => {
   });
   test('same command replays; changed payload with same key fails', async () => {
     const repo = repository();
-    const command = { note_id: 'n1', expected_revision: 0, key: 'k1', snapshot_id: 'snapshot', content };
+    const command = {
+      note_id: 'n1', expected_revision: 0, key: 'k1', snapshot_id: 'snapshot',
+      trade_date: '2026-09-10', content,
+    };
     expect(await repo.putNote(command)).toEqual(await repo.putNote(command));
     await expect(repo.putNote({ ...command, content: { ...content, title: 'different' } })).rejects.toThrow('幂等');
+    await expect(repo.putNote({ ...command, trade_date: '2026-09-11' })).rejects.toThrow('幂等');
     expect((await repo.revisions('n1'))).toHaveLength(1);
     repo.close();
   });

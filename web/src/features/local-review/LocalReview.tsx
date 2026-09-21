@@ -5,6 +5,7 @@ import {
 } from '../../repositories/local/migrate';
 import { localRepository as repo, type LocalNote, type LocalWatch, type NoteContent, type StoredNoteContent } from '../../repositories/local/repository';
 import { registerLeaveGuard } from '../review/navigation';
+import { localNoteCommandSignature } from './note-command';
 import './local-review.css';
 
 const empty = (): NoteContent => ({ title: '', content: '', judgment: '', evidence: '', invalid_condition: '', verify_date: '' });
@@ -72,7 +73,12 @@ export default function LocalReview({
   const save = async (copy = false) => {
     if (saving.current) return;
     saving.current = true; setBusy(true); setStatus(''); setError('');
-    const signature = JSON.stringify([copy, selected?.note_id, selected?.revision, snapshot, content]);
+    const snapshotId = copy ? snapshot || selected?.snapshot_id || '' : selected?.snapshot_id ?? snapshot;
+    const effectiveTradeDate = copy ? tradeDate || selected?.trade_date : selected?.trade_date ?? tradeDate;
+    const signature = localNoteCommandSignature({
+      copy, noteId: selected?.note_id, revision: selected?.revision,
+      snapshotId, tradeDate: effectiveTradeDate, content,
+    });
     if (command.current?.signature !== signature) {
       command.current = { signature, id: !copy && selected ? selected.note_id : crypto.randomUUID(), key: crypto.randomUUID() };
     }
@@ -80,8 +86,8 @@ export default function LocalReview({
       const result = await repo.putNote({
         note_id: command.current.id, key: command.current.key,
         expected_revision: copy ? 0 : selected?.revision ?? 0,
-        snapshot_id: copy ? snapshot || selected?.snapshot_id || '' : selected?.snapshot_id ?? snapshot,
-        trade_date: copy ? tradeDate || selected?.trade_date : selected?.trade_date ?? tradeDate,
+        snapshot_id: snapshotId,
+        trade_date: effectiveTradeDate,
         content,
       });
       if (!mounted.current) return;

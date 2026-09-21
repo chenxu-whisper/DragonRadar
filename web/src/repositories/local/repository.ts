@@ -291,7 +291,9 @@ export class LocalRepository {
     const canonical = JSON.stringify([input.snapshot_id, normalized.title, normalized.content, normalized.judgment,
       normalized.evidence, normalized.invalid_condition, normalized.verify_date]);
     const content_hash = await digest(canonical);
-    const payload = await digest(JSON.stringify(['putNote', input.note_id, input.expected_revision, input.key, canonical]));
+    const payload = await digest(JSON.stringify([
+      'putNote', input.note_id, input.expected_revision, input.key, input.trade_date ?? null, canonical,
+    ]));
     const profile = await this.profile(), db = await this.db();
     const tx = db.transaction(['notes', 'note_revisions', 'commands'], 'readwrite');
     const done = completion(tx);
