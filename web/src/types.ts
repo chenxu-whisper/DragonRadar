@@ -51,22 +51,56 @@ export interface ResetSnapshotData {
 export interface ResetRatio {
   numerator: number; denominator: number; value: number | null; reason: string | null;
 }
+export interface ResetSecurityIdentity {
+  security_id: string; code: string | null; name: string;
+}
 export interface ResetSector {
   sector_id: string; name: string; member_count: number; valid_returns: number;
   median_return: number | null; change_ratio: number | null; limit_up_count: number | null;
+  up_ratio: ResetRatio; limit_up_ratio: ResetRatio;
   net_inflow: number | null; net_inflow_reason: string | null; quality_flags: string[];
   coverage: WorkbenchCoverage;
 }
+export interface ResetFactors {
+  'FAC-M01': {
+    advancing: ResetRatio & { coverage: WorkbenchCoverage };
+    above_ma20: ResetRatio & { coverage: WorkbenchCoverage };
+    method: string;
+  };
+  'FAC-M02': {
+    value: number | null; today_total: number | null; baseline_mean: number | null;
+    baseline_days: number; baseline_excludes_current: boolean;
+    coverage: WorkbenchCoverage; reason: string | null; method: string;
+  };
+  'FAC-M03': {
+    indexes: {
+      security_id: string; code: string | null; name: string; close: number | null;
+      close_over_ma20: number | null; close_over_ma60: number | null;
+      volatility_20: number | null; volatility_method: string;
+      coverage: { ma20: WorkbenchCoverage; ma60: WorkbenchCoverage; return20: WorkbenchCoverage };
+      close_over_ma20_reason: string | null; close_over_ma60_reason: string | null;
+      volatility_20_reason: string | null; reason: string | null;
+    }[];
+    method: string;
+  };
+}
 export interface ResetOverview {
   indexes: { security_id: string; code: string | null; name: string; last: number | null; change_ratio: number | null; amount: number | null; reason: string | null }[];
-  breadth: { up: number; down: number; flat: number; valid_total: number; coverage: WorkbenchCoverage; seal_rate: ResetRatio };
+  breadth: {
+    up: number; down: number; flat: number; valid_total: number;
+    coverage: WorkbenchCoverage;
+    members: Record<'up' | 'down' | 'flat', ResetSecurityIdentity[]>;
+    seal_rate: ResetRatio & { coverage: WorkbenchCoverage };
+  };
   sentiment: {
     limit_up_count: number; limit_down_count: number; max_boards: number;
     promote_rate: ResetRatio & { yesterday_ge2: number; excluded: number; missing: number };
     yesterday_limit_up_median_return: number | null;
+    yesterday_limit_up_return_coverage: WorkbenchCoverage;
+    yesterday_limit_up_return_reason: string | null;
   };
   hot_sectors: ResetSector[];
-  factors: Record<string, unknown>;
+  factors: ResetFactors;
   historical_topic_analysis: { enabled: boolean; reason: string | null };
 }
 export interface ResetHeatmap {

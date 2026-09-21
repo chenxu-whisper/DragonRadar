@@ -48,22 +48,73 @@ async function mockResetMarket(page: Page) {
         indexes: [],
         breadth: {
           up: 3, down: 1, flat: 1, valid_total: 5,
-          coverage, seal_rate: { numerator: 2, denominator: 3, value: 0.6667, reason: null },
+          coverage,
+          members: {
+            up: [
+              { security_id: 'A', code: '000001', name: '合成甲' },
+              { security_id: 'C', code: '000003', name: '合成丙' },
+              { security_id: 'E', code: '000005', name: '合成戊' },
+            ],
+            down: [{ security_id: 'B', code: '000002', name: '合成乙' }],
+            flat: [{ security_id: 'D', code: '000004', name: '合成丁' }],
+          },
+          seal_rate: {
+            numerator: 2, denominator: 3, value: null,
+            reason: 'incomplete_touched_limit_coverage',
+            coverage: { expected: 5, valid: 4, excluded: 0, missing: 1 },
+          },
         },
         sentiment: {
           limit_up_count: 2, limit_down_count: 0, max_boards: 2,
-          promote_rate: { yesterday_ge2: 2, numerator: 1, denominator: 2, value: 0.5, excluded: 0, missing: 0, reason: null },
-          yesterday_limit_up_median_return: 0.012,
+          promote_rate: { yesterday_ge2: 3, numerator: 1, denominator: 2, value: 0.5, excluded: 0, missing: 1, reason: null },
+          yesterday_limit_up_median_return: null,
+          yesterday_limit_up_return_coverage: { expected: 2, valid: 1, excluded: 0, missing: 1 },
+          yesterday_limit_up_return_reason: 'partial_yesterday_limit_up_return_coverage',
         },
         hot_sectors: [{
           sector_id: 'SEC001', name: '合成题材甲', member_count: 3,
           valid_returns: 3, median_return: 0.024, change_ratio: 0.024,
           limit_up_count: 1, quality_flags: ['sample_insufficient'],
+          up_ratio: { numerator: 2, denominator: 3, value: 0.6667, reason: null },
+          limit_up_ratio: { numerator: 1, denominator: 3, value: 0.3333, reason: null },
           net_inflow: null, net_inflow_reason: 'source_field_unavailable',
           coverage: { expected: 3, valid: 3, excluded: 0, missing: 0 },
         }],
-        factors: {},
-        historical_topic_analysis: { enabled: false, reason: 'historical_topic_membership_unavailable' },
+        factors: {
+          'FAC-M01': {
+            advancing: { numerator: 3, denominator: 5, value: 0.6, reason: null, coverage },
+            above_ma20: {
+              numerator: 2, denominator: 4, value: 0.5, reason: null,
+              coverage: { expected: 5, valid: 4, excluded: 0, missing: 1 },
+            },
+            method: 'adjusted_close_ma20_including_current',
+          },
+          'FAC-M02': {
+            value: null, today_total: null, baseline_mean: null,
+            baseline_days: 20, baseline_excludes_current: true,
+            coverage: { expected: 21, valid: 19, excluded: 0, missing: 2 },
+            reason: 'requires_complete_current_and_prior_20_sessions',
+            method: 'same_pool_amount_vs_prior_20_session_mean',
+          },
+          'FAC-M03': {
+            indexes: [{
+              security_id: 'IDX', code: '000300', name: '合成指数', close: 1234,
+              close_over_ma20: 0.031, close_over_ma60: null, volatility_20: 0.018,
+              volatility_method: 'sample_stddev_non_annualized',
+              coverage: {
+                ma20: { expected: 20, valid: 20, excluded: 0, missing: 0 },
+                ma60: { expected: 60, valid: 59, excluded: 0, missing: 1 },
+                return20: { expected: 20, valid: 20, excluded: 0, missing: 0 },
+              },
+              close_over_ma20_reason: null,
+              close_over_ma60_reason: 'requires_60_consecutive_index_closes',
+              volatility_20_reason: null,
+              reason: null,
+            }],
+            method: 'close_over_ma20_ma60_and_20_return_sample_stddev_non_annualized',
+          },
+        },
+        historical_topic_analysis: { enabled: false, reason: 'historical_topic_coverage_unavailable' },
       }));
     }
     if (url.pathname === '/api/market/heatmap') {
@@ -93,7 +144,25 @@ test('reset overview uses versioned APIs and persists drill-down context in URL'
   await expect(page.getByText('来源 synthetic-market / market-v1', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '上涨 3' }).click();
   await expect(page).toHaveURL(/market_filter=up/);
-  await expect(page.getByText('当前筛选上下文：上涨')).toBeVisible();
+  const upMembers = page.getByRole('region', { name: '上涨成员清单' });
+  await expect(upMembers.getByText('共 3 家')).toBeVisible();
+  await expect(upMembers.getByText('合成甲')).toBeVisible();
+  await expect(upMembers.getByText('000003')).toBeVisible();
+
+  await page.getByRole('button', { name: '下跌 1' }).click();
+  await expect(page).toHaveURL(/market_filter=down/);
+  const downMembers = page.getByRole('region', { name: '下跌成员清单' });
+  await expect(downMembers.getByText('共 1 家')).toBeVisible();
+  await expect(downMembers.getByText('合成乙')).toBeVisible();
+  await expect(downMembers.getByText('合成甲')).toHaveCount(0);
+
+  await expect(page.getByText(/FAC-M01/)).toBeVisible();
+  await expect(page.getByText('requires_complete_current_and_prior_20_sessions')).toBeVisible();
+  await expect(page.getByText('requires_60_consecutive_index_closes')).toBeVisible();
+  await expect(page.getByText('incomplete_touched_limit_coverage')).toBeVisible();
+  await expect(page.getByText('partial_yesterday_limit_up_return_coverage')).toBeVisible();
+  await expect(page.getByText('source_field_unavailable')).toBeVisible();
+  await expect(page.getByText('涨停占比 1/3 · 33.33%')).toBeVisible();
 
   await page.getByRole('button', { name: /合成题材甲/ }).click();
   await expect(page).toHaveURL(/view=leaders/);

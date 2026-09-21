@@ -37,6 +37,15 @@ def _coverage(expected: int, valid: int, excluded: int, missing: int) -> dict:
     }
 
 
+def _expected_common_stock_ids(batch: MarketBatch) -> tuple[str, ...]:
+    security_ids = []
+    for security_id in dict.fromkeys(batch.expected_security_ids):
+        current_state = state_at(batch, security_id, batch.trade_date)
+        if current_state is None or current_state.security_type == "common_stock":
+            security_ids.append(security_id)
+    return tuple(security_ids)
+
+
 def _valid_events(batch: MarketBatch) -> dict[tuple[date, str], LimitUpEvent]:
     grouped: dict[tuple[date, str], list[LimitUpEvent]] = defaultdict(list)
     for event in batch.limit_up_events:
@@ -120,7 +129,9 @@ def _median(values: list[Decimal]) -> Decimal | None:
     return _mean([ordered[middle - 1], ordered[middle]])
 
 
-def _market_factors(batch: MarketBatch, returns: dict[str, Decimal]) -> dict:
+def _market_factors(
+    batch: MarketBatch, returns: dict[str, Decimal], return_coverage: dict
+) -> dict:
     sessions = batch.calendar.sessions
     position = sessions.index(batch.trade_date)
     bars = _index(batch)
@@ -149,7 +160,7 @@ def _market_factors(batch: MarketBatch, returns: dict[str, Decimal]) -> dict:
 
     advancing = sum(value > 0 for value in returns.values())
     breadth_ratio = _ratio(advancing, len(returns), "no_valid_daily_returns")
-    breadth_ratio.pop("reason")
+    breadth_ratio["coverage"] = return_coverage
     ma_ratio = _ratio(above, ma_valid, "no_valid_ma20_samples")
     ma_ratio["coverage"] = _coverage(expected, ma_valid, 0, ma_missing)
 
@@ -213,7 +224,14 @@ def _market_factors(batch: MarketBatch, returns: dict[str, Decimal]) -> dict:
             closes.append(
                 observation.close if observation is not None and not reasons else None
             )
-        available = [value for value in closes if value is not None]
+        consecutive_closes = []
+        for value in reversed(closes):
+            if value is None:
+                break
+            consecutive_closes.append(value)
+        consecutive_closes.reverse()
+        consecutive_count = len(consecutive_closes)
+        return_count = min(max(consecutive_count - 1, 0), 20)
         item = {
             "security_id": index_state.security_id,
             "code": index_state.code,
@@ -224,36 +242,51 @@ def _market_factors(batch: MarketBatch, returns: dict[str, Decimal]) -> dict:
             "volatility_20": None,
             "volatility_method": "sample_stddev_non_annualized",
             "coverage": {
-                "ma20": min(len(available), 20),
-                "ma60": min(len(available), 60),
-                "return20": 0,
+                "ma20": _coverage(
+                    20, min(consecutive_count, 20), 0, max(20 - consecutive_count, 0)
+                ),
+                "ma60": _coverage(
+                    60, min(consecutive_count, 60), 0, max(60 - consecutive_count, 0)
+                ),
+                "return20": _coverage(20, return_count, 0, 20 - return_count),
             },
-            "reason": None,
+            "close_over_ma20_reason": "requires_20_consecutive_index_closes",
+            "close_over_ma60_reason": "requires_60_consecutive_index_closes",
+            "volatility_20_reason": "requires_21_consecutive_index_closes",
+            "reason": (
+                None
+                if closes and closes[-1] is not None
+                else "current_index_close_unavailable"
+            ),
         }
-        if len(closes) < 60 or any(value is None for value in closes[-60:]):
-            item["reason"] = "requires_60_consecutive_index_closes"
-            indexes.append(item)
-            continue
-        latest = closes[-1]
-        with localcontext(_decimal_context()):
-            item["close_over_ma20"] = (latest / _mean(closes[-20:]) - 1).quantize(
-                RATIO_SCALE, rounding=ROUND_HALF_UP
-            )
-            item["close_over_ma60"] = (latest / _mean(closes[-60:]) - 1).quantize(
-                RATIO_SCALE, rounding=ROUND_HALF_UP
-            )
-            returns20 = [
-                closes[offset] / closes[offset - 1] - 1
-                for offset in range(len(closes) - 20, len(closes))
-            ]
-            average_return = _mean(returns20)
-            variance = sum(
-                ((value - average_return) ** 2 for value in returns20), Decimal(0)
-            ) / Decimal(len(returns20) - 1)
-            item["volatility_20"] = variance.sqrt().quantize(
-                RATIO_SCALE, rounding=ROUND_HALF_UP
-            )
-            item["coverage"]["return20"] = 20
+        latest = consecutive_closes[-1] if consecutive_closes else None
+        if consecutive_count >= 20:
+            with localcontext(_decimal_context()):
+                item["close_over_ma20"] = (
+                    latest / _mean(consecutive_closes[-20:]) - 1
+                ).quantize(RATIO_SCALE, rounding=ROUND_HALF_UP)
+            item["close_over_ma20_reason"] = None
+        if consecutive_count >= 60:
+            with localcontext(_decimal_context()):
+                item["close_over_ma60"] = (
+                    latest / _mean(consecutive_closes[-60:]) - 1
+                ).quantize(RATIO_SCALE, rounding=ROUND_HALF_UP)
+            item["close_over_ma60_reason"] = None
+        if consecutive_count >= 21:
+            with localcontext(_decimal_context()):
+                returns20 = [
+                    consecutive_closes[offset] / consecutive_closes[offset - 1] - 1
+                    for offset in range(consecutive_count - 20, consecutive_count)
+                ]
+                average_return = _mean(returns20)
+                variance = sum(
+                    ((value - average_return) ** 2 for value in returns20),
+                    Decimal(0),
+                ) / Decimal(len(returns20) - 1)
+                item["volatility_20"] = variance.sqrt().quantize(
+                    RATIO_SCALE, rounding=ROUND_HALF_UP
+                )
+            item["volatility_20_reason"] = None
         indexes.append(item)
 
     return {
@@ -341,6 +374,18 @@ def _sentiment(
         day_returns = (
             returns if day == batch.trade_date else _daily_returns(batch, day)[0]
         )
+        feedback_values = [
+            day_returns[item] for item in prior_limit_up if item in day_returns
+        ]
+        feedback_missing = len(prior_limit_up) - len(feedback_values)
+        if not prior_limit_up:
+            feedback_reason = "no_yesterday_limit_up_members"
+        elif not feedback_values:
+            feedback_reason = "no_valid_returns_for_yesterday_limit_up_members"
+        elif feedback_missing:
+            feedback_reason = "partial_yesterday_limit_up_return_coverage"
+        else:
+            feedback_reason = None
         return {
             "trade_date": day,
             "limit_up_count": len(sealed),
@@ -354,15 +399,14 @@ def _sentiment(
                 default=0,
             ),
             "promote_rate": promote,
-            "yesterday_limit_up_median_return": _median(
-                [day_returns[item] for item in prior_limit_up if item in day_returns]
-            ),
+            "yesterday_limit_up_median_return": _median(feedback_values),
             "yesterday_limit_up_return_coverage": {
                 "expected": len(prior_limit_up),
-                "valid": sum(item in day_returns for item in prior_limit_up),
+                "valid": len(feedback_values),
                 "excluded": 0,
-                "missing": sum(item not in day_returns for item in prior_limit_up),
+                "missing": feedback_missing,
             },
+            "yesterday_limit_up_return_reason": feedback_reason,
         }
 
     series = []
@@ -431,15 +475,19 @@ def _topics(
             cell is not None
             and cell.status == "complete"
             and cell.received_member_count == cell.expected_member_count
+            and len(ids) == cell.received_member_count
         )
-        values = (
-            [returns[item] for item in ids if item in returns] if coverage_ready else []
+        valid_ids = (
+            {security_id for security_id in ids if security_id in returns}
+            if coverage_ready
+            else set()
         )
+        values = [returns[security_id] for security_id in sorted(valid_ids)]
         limit_count = (
             sum(
-                events.get((batch.trade_date, item)) is not None
-                and events[(batch.trade_date, item)].is_limit_up
-                for item in ids
+                events.get((batch.trade_date, security_id)) is not None
+                and events[(batch.trade_date, security_id)].is_limit_up
+                for security_id in valid_ids
             )
             if coverage_ready
             else None
@@ -449,7 +497,10 @@ def _topics(
             flags.append("sample_insufficient")
         if not coverage_ready:
             flags.append("topic_coverage_unavailable")
-        expected = cell.expected_member_count if cell is not None else len(ids)
+        expected = max(
+            cell.expected_member_count if cell is not None else 0,
+            len(ids),
+        )
         sectors.append(
             {
                 "sector_id": topic_id,
@@ -485,12 +536,27 @@ def _topics(
             }
         )
     historical = any(
-        membership.effective_from < batch.trade_date
-        for membership in topic_batch.memberships
+        cell.trade_date < batch.trade_date
+        and cell.complete_as_of <= topic_batch.as_of
+        and cell.status == "complete"
+        and cell.expected_member_count > 0
+        and cell.received_member_count == cell.expected_member_count
+        and cell.received_member_count
+        == sum(
+            membership.topic_id == cell.topic_id
+            and membership.available_at <= topic_batch.as_of
+            and membership.effective_from <= cell.trade_date
+            and (
+                membership.effective_to is None
+                or cell.trade_date < membership.effective_to
+            )
+            for membership in topic_batch.memberships
+        )
+        for cell in topic_batch.coverage_cells
     )
     return sectors, {
         "enabled": historical,
-        "reason": None if historical else "historical_topic_membership_unavailable",
+        "reason": None if historical else "historical_topic_coverage_unavailable",
     }
 
 
@@ -501,29 +567,65 @@ def materialize_market(
     returns, return_coverage = _daily_returns(batch, batch.trade_date)
     events = _valid_events(batch)
     sentiment, sentiment_series, heatmap = _sentiment(batch, returns, events)
-    factors = _market_factors(batch, returns)
+    factors = _market_factors(batch, returns, return_coverage)
     sectors, historical_topics = _topics(batch, topic_batch, returns, events)
+    common_stock_ids = _expected_common_stock_ids(batch)
+    current_events = {
+        security_id: events.get((batch.trade_date, security_id))
+        for security_id in common_stock_ids
+    }
+    known_touched = {
+        security_id: event
+        for security_id, event in current_events.items()
+        if event is not None and event.touched_limit is not None
+    }
+    seal_rate = _ratio(
+        sum(
+            event.is_limit_up and event.touched_limit
+            for event in known_touched.values()
+        ),
+        sum(event.touched_limit for event in known_touched.values()),
+        "no_touched_limit_events",
+    )
+    seal_rate["coverage"] = _coverage(
+        len(common_stock_ids),
+        len(known_touched),
+        0,
+        len(common_stock_ids) - len(known_touched),
+    )
+    if seal_rate["coverage"]["missing"]:
+        seal_rate["value"] = None
+        seal_rate["reason"] = "incomplete_touched_limit_coverage"
+
+    def identity(security_id: str) -> dict:
+        security_state = state_at(batch, security_id, batch.trade_date)
+        return {
+            "security_id": security_id,
+            "code": security_state.code if security_state is not None else None,
+            "name": (
+                security_state.name if security_state is not None else security_id
+            ),
+        }
+
     breadth = {
         "up": sum(value > 0 for value in returns.values()),
         "down": sum(value < 0 for value in returns.values()),
         "flat": sum(value == 0 for value in returns.values()),
         "valid_total": len(returns),
         "coverage": return_coverage,
-        "seal_rate": _ratio(
-            sum(
-                event.is_limit_up and event.touched_limit is True
-                for (day, security_id), event in events.items()
-                if day == batch.trade_date
-                and security_id in batch.expected_security_ids
-            ),
-            sum(
-                event.touched_limit is True
-                for (day, security_id), event in events.items()
-                if day == batch.trade_date
-                and security_id in batch.expected_security_ids
-            ),
-            "no_known_touched_limit_observations",
-        ),
+        "members": {
+            direction: [
+                identity(security_id)
+                for security_id, value in sorted(returns.items())
+                if matches(value)
+            ]
+            for direction, matches in (
+                ("up", lambda value: value > 0),
+                ("down", lambda value: value < 0),
+                ("flat", lambda value: value == 0),
+            )
+        },
+        "seal_rate": seal_rate,
     }
     securities = []
     for security_id in sorted(set(batch.expected_security_ids)):

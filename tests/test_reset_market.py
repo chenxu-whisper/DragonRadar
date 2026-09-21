@@ -30,10 +30,12 @@ def _sessions(count: int = 61) -> tuple[date, ...]:
     return tuple(reversed(days))
 
 
-def _market_batch(*, include_touch=True, mismatched_touch=False):
+def _market_batch(
+    *, include_touch=True, mismatched_touch=False, session_count: int = 61
+):
     from dragon_radar.domain.models import ExchangeCalendar, LimitUpEvent
 
-    sessions = _sessions()
+    sessions = _sessions(session_count)
     security_ids = ("A", "B", "C")
     states = tuple(
         state(
@@ -145,8 +147,14 @@ def test_breadth_partitions_valid_sample_and_zero_rates_are_not_applicable():
     assert breadth["seal_rate"] == {
         "numerator": 1,
         "denominator": 1,
-        "value": Decimal("1.0000"),
-        "reason": None,
+        "value": None,
+        "reason": "incomplete_touched_limit_coverage",
+        "coverage": {"expected": 3, "valid": 2, "excluded": 0, "missing": 1},
+    }
+    assert breadth["members"] == {
+        "up": [{"security_id": "A", "code": "000001", "name": "Synthetic A"}],
+        "down": [{"security_id": "B", "code": "000002", "name": "Synthetic B"}],
+        "flat": [{"security_id": "C", "code": "000003", "name": "Synthetic C"}],
     }
 
     no_events = _market_batch(include_touch=False).model_copy(
@@ -155,7 +163,13 @@ def test_breadth_partitions_valid_sample_and_zero_rates_are_not_applicable():
     rate = materialize_market(no_events, None)["overview"]["breadth"]["seal_rate"]
     assert rate["value"] is None
     assert rate["denominator"] == 0
-    assert rate["reason"] == "no_known_touched_limit_observations"
+    assert rate["reason"] == "incomplete_touched_limit_coverage"
+    assert rate["coverage"] == {
+        "expected": 3,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 3,
+    }
     promoted = materialize_market(no_events, None)["overview"]["sentiment"][
         "promote_rate"
     ]
@@ -211,7 +225,35 @@ def test_limit_rate_never_mixes_sources_between_numerator_and_denominator():
 
     assert rate["numerator"] == 1
     assert rate["denominator"] == 1
-    assert rate["value"] == Decimal("1.0000")
+    assert rate["value"] is None
+    assert rate["reason"] == "incomplete_touched_limit_coverage"
+    assert rate["coverage"]["missing"] == 1
+
+
+def test_limit_rate_unknown_status_disables_value_for_expected_common_stock_pool():
+    from dragon_radar.readmodels.market import materialize_market
+
+    payload = _market_batch()
+    payload = payload.model_copy(
+        update={
+            "limit_up_events": tuple(
+                event.model_copy(update={"touched_limit": None})
+                if event.trade_date == payload.trade_date and event.security_id == "C"
+                else event
+                for event in payload.limit_up_events
+            )
+        }
+    )
+
+    rate = materialize_market(payload, None)["overview"]["breadth"]["seal_rate"]
+
+    assert rate == {
+        "numerator": 1,
+        "denominator": 1,
+        "value": None,
+        "reason": "incomplete_touched_limit_coverage",
+        "coverage": {"expected": 3, "valid": 2, "excluded": 0, "missing": 1},
+    }
 
 
 def test_sentiment_series_and_heatmap_share_materialized_daily_counts():
@@ -233,6 +275,44 @@ def test_sentiment_series_and_heatmap_share_materialized_daily_counts():
         if cell["trade_date"] == latest["trade_date"]
     ]
     assert sum(cell["count"] for cell in latest_cells) == latest["limit_up_count"]
+    assert latest["yesterday_limit_up_return_coverage"] == {
+        "expected": 2,
+        "valid": 2,
+        "excluded": 0,
+        "missing": 0,
+    }
+    assert latest["yesterday_limit_up_return_reason"] is None
+
+
+def test_yesterday_limit_up_feedback_discloses_missing_reason():
+    from dragon_radar.readmodels.market import materialize_market
+
+    payload = _market_batch()
+    payload = payload.model_copy(
+        update={
+            "bars": tuple(
+                item
+                for item in payload.bars
+                if not (
+                    item.trade_date == payload.trade_date
+                    and item.security_id in {"A", "B"}
+                )
+            )
+        }
+    )
+
+    feedback = materialize_market(payload, None)["overview"]["sentiment"]
+
+    assert feedback["yesterday_limit_up_median_return"] is None
+    assert feedback["yesterday_limit_up_return_coverage"] == {
+        "expected": 2,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 2,
+    }
+    assert feedback["yesterday_limit_up_return_reason"] == (
+        "no_valid_returns_for_yesterday_limit_up_members"
+    )
 
 
 def test_topic_metrics_respect_bound_coverage_and_never_substitute_turnover():
@@ -263,6 +343,92 @@ def test_topic_metrics_respect_bound_coverage_and_never_substitute_turnover():
     assert "topic_coverage_unavailable" in sector["quality_flags"]
 
 
+def test_topic_limit_up_ratio_uses_same_valid_return_pool_as_denominator():
+    from topic_factories import topic_batch
+
+    from dragon_radar.readmodels.market import materialize_market
+
+    payload = _market_batch()
+    payload = payload.model_copy(
+        update={
+            "bars": tuple(
+                item
+                for item in payload.bars
+                if not (
+                    item.security_id == "A" and item.trade_date == payload.trade_date
+                )
+            )
+        }
+    )
+
+    sector = materialize_market(payload, topic_batch())["overview"]["hot_sectors"][0]
+
+    assert sector["up_ratio"]["denominator"] == 0
+    assert sector["limit_up_ratio"] == {
+        "numerator": 0,
+        "denominator": 0,
+        "value": None,
+        "reason": "no_valid_member_returns",
+    }
+    assert sector["limit_up_count"] == 0
+    assert sector["coverage"] == {
+        "expected": 1,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 1,
+    }
+
+
+def test_topic_coverage_missing_never_becomes_negative():
+    from topic_factories import topic_batch, topic_membership
+
+    from dragon_radar.readmodels.market import materialize_market
+
+    topics = topic_batch(
+        memberships=(
+            topic_membership(),
+            topic_membership(security_id="B"),
+            topic_membership(security_id="C"),
+        )
+    )
+
+    sector = materialize_market(_market_batch(), topics)["overview"]["hot_sectors"][0]
+
+    assert sector["coverage"] == {
+        "expected": 3,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 3,
+    }
+    assert sector["reason"] == "topic_coverage_unavailable"
+
+
+def test_historical_topic_analysis_requires_historical_coverage_cell():
+    from topic_factories import topic_batch
+
+    from dragon_radar.readmodels.market import materialize_market
+
+    topics = topic_batch()
+    topics = topics.model_copy(
+        update={
+            "coverage_cells": tuple(
+                cell
+                for cell in topics.coverage_cells
+                if cell.trade_date == topics.trade_date
+            )
+        }
+    )
+
+    historical = materialize_market(_market_batch(), topics)["overview"][
+        "historical_topic_analysis"
+    ]
+
+    assert historical == {
+        "enabled": False,
+        "reason": "historical_topic_coverage_unavailable",
+    }
+
+
 def test_fac_m01_m02_m03_follow_explicit_decimal_hand_calculations():
     from dragon_radar.readmodels.market import materialize_market
 
@@ -273,6 +439,8 @@ def test_fac_m01_m02_m03_follow_explicit_decimal_hand_calculations():
         "numerator": 1,
         "denominator": 3,
         "value": Decimal("0.3333"),
+        "reason": None,
+        "coverage": {"expected": 3, "valid": 3, "excluded": 0, "missing": 0},
     }
     assert factors["FAC-M01"]["above_ma20"] == {
         "numerator": 1,
@@ -300,10 +468,76 @@ def test_fac_m01_m02_m03_follow_explicit_decimal_hand_calculations():
     ).quantize(Decimal("0.0001"))
     assert index["volatility_20"] == Decimal("0.0000")
     assert index["volatility_method"] == "sample_stddev_non_annualized"
+    assert index["coverage"] == {
+        "ma20": {"expected": 20, "valid": 20, "excluded": 0, "missing": 0},
+        "ma60": {"expected": 60, "valid": 60, "excluded": 0, "missing": 0},
+        "return20": {"expected": 20, "valid": 20, "excluded": 0, "missing": 0},
+    }
+    assert index["close_over_ma20_reason"] is None
+    assert index["close_over_ma60_reason"] is None
+    assert index["volatility_20_reason"] is None
     strip = result["overview"]["indexes"][0]
     assert strip["last"] == closes[-1]
     assert strip["change_ratio"] == Decimal("0.01")
     assert strip["amount"] == Decimal("1000")
+
+
+@pytest.mark.parametrize(
+    (
+        "session_count",
+        "ma20_available",
+        "ma60_available",
+        "volatility_available",
+        "return_coverage",
+    ),
+    [
+        (20, True, False, False, 19),
+        (21, True, False, True, 20),
+        (59, True, False, True, 20),
+        (60, True, True, True, 20),
+    ],
+)
+def test_fac_m03_windows_are_independent_at_session_boundaries(
+    session_count,
+    ma20_available,
+    ma60_available,
+    volatility_available,
+    return_coverage,
+):
+    from dragon_radar.readmodels.market import materialize_market
+
+    index = materialize_market(_market_batch(session_count=session_count), None)[
+        "overview"
+    ]["factors"]["FAC-M03"]["indexes"][0]
+
+    assert (index["close_over_ma20"] is not None) is ma20_available
+    assert (index["close_over_ma60"] is not None) is ma60_available
+    assert (index["volatility_20"] is not None) is volatility_available
+    assert index["coverage"]["ma20"] == {
+        "expected": 20,
+        "valid": 20,
+        "excluded": 0,
+        "missing": 0,
+    }
+    assert index["coverage"]["ma60"] == {
+        "expected": 60,
+        "valid": min(session_count, 60),
+        "excluded": 0,
+        "missing": max(60 - session_count, 0),
+    }
+    assert index["coverage"]["return20"] == {
+        "expected": 20,
+        "valid": return_coverage,
+        "excluded": 0,
+        "missing": 20 - return_coverage,
+    }
+    assert index["close_over_ma20_reason"] is None
+    assert index["close_over_ma60_reason"] == (
+        None if ma60_available else "requires_60_consecutive_index_closes"
+    )
+    assert index["volatility_20_reason"] == (
+        None if volatility_available else "requires_21_consecutive_index_closes"
+    )
 
 
 @pytest.fixture
@@ -341,6 +575,13 @@ async def test_publication_materializes_all_market_views_and_routes_only_read_th
         "heatmap",
         "search",
     }
+    assert market.payload["overview"]["breadth"]["members"]["flat"] == [
+        {
+            "security_id": "A",
+            "code": "000001",
+            "name": "Synthetic Alpha",
+        }
+    ]
 
     def recomputation_is_forbidden(*_args, **_kwargs):
         raise AssertionError("market read model was recomputed")
