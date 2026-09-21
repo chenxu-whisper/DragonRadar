@@ -470,6 +470,7 @@ def _topics(
                 "source": None,
                 "source_version": None,
                 "as_of": None,
+                "source_time": None,
                 "cutoff": batch.as_of,
             },
         )
@@ -478,6 +479,7 @@ def _topics(
         "source": topic_batch.source_id,
         "source_version": topic_batch.source_version,
         "as_of": topic_batch.as_of,
+        "source_time": topic_batch.source_time,
         "cutoff": cutoff,
     }
     definitions = {

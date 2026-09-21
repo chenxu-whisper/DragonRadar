@@ -480,7 +480,11 @@ def test_topic_coverage_missing_never_becomes_negative():
     assert sector["reason"] == "topic_coverage_unavailable"
 
 
-def test_topic_metrics_use_market_as_of_as_the_knowledge_cutoff():
+@pytest.mark.parametrize(
+    "source_time",
+    [datetime(2026, 9, 8, 18, tzinfo=UTC), None],
+)
+def test_topic_metrics_use_market_as_of_as_the_knowledge_cutoff(source_time):
     from topic_factories import topic_batch, topic_definition, topic_membership
 
     from dragon_radar.readmodels.market import materialize_market
@@ -492,7 +496,7 @@ def test_topic_metrics_use_market_as_of_as_the_knowledge_cutoff():
     )
     topics = topic_batch(
         as_of=datetime(2026, 9, 8, 18, tzinfo=UTC),
-        source_time=datetime(2026, 9, 8, 18, tzinfo=UTC),
+        source_time=source_time,
         topics=(
             topic_definition(),
             topic_definition(
@@ -527,6 +531,7 @@ def test_topic_metrics_use_market_as_of_as_the_knowledge_cutoff():
         "source": topics.source_id,
         "source_version": topics.source_version,
         "as_of": topics.as_of,
+        "source_time": source_time,
         "cutoff": market.as_of,
     }
     assert result["overview"]["topic_basis"] == result["sector_flow"]["topic_basis"]
