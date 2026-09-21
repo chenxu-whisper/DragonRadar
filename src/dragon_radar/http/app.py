@@ -1,0 +1,137 @@
+"""Independent local read-only workbench API, not a public sharing gateway."""
+
+import os
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+
+from dragon_radar.analytics.metrics import market_breadth
+from dragon_radar.http.contracts import (
+    archived_coverage,
+    empty_envelope,
+    snapshot_envelope,
+    snapshot_summary,
+)
+from dragon_radar.http.errors import (
+    StorageUnavailable,
+    error_response,
+    register_error_handlers,
+)
+from dragon_radar.http.selection import (
+    query_date,
+    query_integer,
+    query_values,
+    select_snapshot,
+    selectors,
+)
+from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.readmodels.securities import security_detail
+from dragon_radar.storage.database import Database
+from dragon_radar.storage.repository import Repository
+
+
+def get_repository(request: Request) -> Repository:
+    repository = request.app.state.repository
+    if repository is None:
+        raise StorageUnavailable
+    return repository
+
+
+def create_workbench_app(
+    database_url: str | None = None, *, repository: Repository | None = None
+) -> FastAPI:
+    """No implicit migrations, ingestion, environment files, or private routers."""
+    owned = repository is None
+    if repository is not None:
+        database = repository.database
+    else:
+        value = (
+            database_url
+            if database_url is not None
+            else os.getenv("DRAGON_DATABASE_URL")
+        )
+        database = Database(value) if value else None
+        repository = Repository(database) if database is not None else None
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            if owned and database is not None:
+                database.close()
+
+    app = FastAPI(
+        title="Dragon Radar local workbench read API",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+    app.state.repository = repository
+    register_error_handlers(app)
+
+    @app.middleware("http")
+    async def readonly(request: Request, call_next):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            return error_response(403, "FORBIDDEN", "Read-only API")
+        return await call_next(request)
+
+    @app.get("/health/live")
+    def live():
+        return {"status": "ok"}
+
+    @app.get("/health/ready")
+    def ready():
+        if database is None or not database.ready():
+            raise StorageUnavailable
+        return {"status": "ok"}
+
+    @app.get("/api/snapshots/list")
+    def list_snapshots(request: Request):
+        query = query_values(request, {"date", "limit", "offset"})
+        trade_date = query_date(query.get("date"))
+        limit = query_integer(query.get("limit", "50"), 1, 100)
+        offset = query_integer(query.get("offset", "0"), 0, 10000)
+        snapshots = get_repository(request).list_snapshots(
+            trade_date=trade_date, limit=limit, offset=offset
+        )
+        payload = empty_envelope(trade_date)
+        payload["source"] = "snapshot_store"
+        payload["quality_flags"] = [] if snapshots else ["no_data"]
+        payload["data"] = {
+            "snapshots": [snapshot_summary(snapshot) for snapshot in snapshots]
+        }
+        return DecimalJSONResponse(payload)
+
+    @app.get("/api/market/overview")
+    def overview(request: Request):
+        trade_date, snapshot_id = selectors(request)
+        snapshot = select_snapshot(get_repository(request), trade_date, snapshot_id)
+        if snapshot is None:
+            return DecimalJSONResponse(empty_envelope(trade_date))
+        result = market_breadth(snapshot.batch)
+        coverage = archived_coverage(result.coverage.model_dump())
+        data = result.model_dump(
+            mode="python",
+            include={"advancing", "declining", "unchanged", "returns", "exclusions"},
+        )
+        data["coverage"] = coverage
+        return DecimalJSONResponse(
+            snapshot_envelope(snapshot, data, unit="ratio", coverage=coverage)
+        )
+
+    @app.get("/api/stock/{security_id}")
+    def stock(security_id: str, request: Request):
+        trade_date, snapshot_id = selectors(request)
+        snapshot = select_snapshot(get_repository(request), trade_date, snapshot_id)
+        if snapshot is None:
+            return DecimalJSONResponse(empty_envelope(trade_date))
+        result = security_detail(snapshot.batch, security_id)
+        return DecimalJSONResponse(
+            snapshot_envelope(
+                snapshot, result.model_dump(mode="python"), unit="currency/share"
+            )
+        )
+
+    return app

@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "psycopg[binary]>=3.3.5",
     "pydantic>=2.12,<3",
+    "simplejson>=3.20.1",
     "sqlalchemy>=2.0.52",
     "tzdata>=2026.3",
     "uvicorn>=0.52.4",
