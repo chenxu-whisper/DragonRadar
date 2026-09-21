@@ -313,9 +313,7 @@ def test_unsupported_security_type_is_a_quality_issue():
         ({"suspended": True}, "suspended_limit_up_event"),
     ],
 )
-def test_limit_up_event_requires_usable_trading_identity(
-    state_changes, expected_code
-):
+def test_limit_up_event_requires_usable_trading_identity(state_changes, expected_code):
     from dragon_radar.domain.models import LimitUpEvent
     from dragon_radar.domain.quality import validate_batch
 

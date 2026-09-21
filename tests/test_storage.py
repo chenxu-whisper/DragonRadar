@@ -120,9 +120,9 @@ def test_storage_only_license_archives_but_cannot_publish_or_read(repository):
         key="storage-only",
     )
 
-    assert json.loads(stored.canonical_json) == batch(
-        grant=storage_only
-    ).model_dump(mode="json")
+    assert json.loads(stored.canonical_json) == batch(grant=storage_only).model_dump(
+        mode="json"
+    )
     assert not stored.quality_report["publishable"]
     with pytest.raises(Forbidden):
         repository.publish(stored.id)

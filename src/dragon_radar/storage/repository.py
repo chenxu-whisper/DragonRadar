@@ -93,9 +93,7 @@ class Repository:
             raise Forbidden("Source is not locally authorized")
         return SourceGrant.model_validate(row["grant"])
 
-    def _authorize_storage(
-        self, current: SourceGrant, batch: MarketBatch
-    ) -> datetime:
+    def _authorize_storage(self, current: SourceGrant, batch: MarketBatch) -> datetime:
         now = self.clock()
         if not all(
             grant_allows_storage(grant, source_id=batch.source_id, now=now)
@@ -387,9 +385,7 @@ class Repository:
             grants = {}
             for source_id in source_ids:
                 current = self._source(connection, source_id)
-                if grant_allows_display(
-                    current, source_id=source_id, now=self.clock()
-                ):
+                if grant_allows_display(current, source_id=source_id, now=self.clock()):
                     grants[source_id] = current
             if not grants:
                 return []

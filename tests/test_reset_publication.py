@@ -141,9 +141,7 @@ def test_domain_failure_keeps_attempt_without_visible_partial_publication(
         assert attempt["publication_id"] is None
 
 
-def test_unified_publication_rejects_quarantined_market_archive(
-    database, repository
-):
+def test_unified_publication_rejects_quarantined_market_archive(database, repository):
     from test_reset_ingestion import licensed_batch
 
     from dragon_radar.ingestion.runner import MarketIngestionRunner

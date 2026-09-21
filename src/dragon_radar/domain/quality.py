@@ -61,23 +61,17 @@ def _grant_is_current(grant: SourceGrant, *, source_id: str, now: datetime) -> b
     )
 
 
-def grant_allows_storage(
-    grant: SourceGrant, *, source_id: str, now: datetime
-) -> bool:
+def grant_allows_storage(grant: SourceGrant, *, source_id: str, now: datetime) -> bool:
     """Check provenance, time bounds, and the explicit local-storage right."""
     return bool(
-        _grant_is_current(grant, source_id=source_id, now=now)
-        and grant.local_storage
+        _grant_is_current(grant, source_id=source_id, now=now) and grant.local_storage
     )
 
 
-def grant_allows_display(
-    grant: SourceGrant, *, source_id: str, now: datetime
-) -> bool:
+def grant_allows_display(grant: SourceGrant, *, source_id: str, now: datetime) -> bool:
     """Check provenance, time bounds, and the explicit local-display right."""
     return bool(
-        _grant_is_current(grant, source_id=source_id, now=now)
-        and grant.local_display
+        _grant_is_current(grant, source_id=source_id, now=now) and grant.local_display
     )
 
 

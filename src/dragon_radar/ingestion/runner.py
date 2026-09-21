@@ -339,9 +339,7 @@ class MarketIngestionRunner:
                 raise Conflict("Market retry does not match the failed attempt")
             old_grant = SourceGrant.model_validate(previous["embedded_grant"])
             if not all(
-                grant_allows_storage(
-                    grant, source_id=envelope.batch.source_id, now=now
-                )
+                grant_allows_storage(grant, source_id=envelope.batch.source_id, now=now)
                 for grant in (current, old_grant)
             ):
                 raise Forbidden("Source is not locally authorized")
@@ -426,17 +424,14 @@ class MarketIngestionRunner:
             return _result(existing)
 
         additional_issues = list(_envelope_quality_issues(envelope))
-        if (
-            grant_allows_display(
-                batch.grant,
-                source_id=batch.source_id,
-                now=now,
-            )
-            and not grant_allows_display(
-                current,
-                source_id=batch.source_id,
-                now=now,
-            )
+        if grant_allows_display(
+            batch.grant,
+            source_id=batch.source_id,
+            now=now,
+        ) and not grant_allows_display(
+            current,
+            source_id=batch.source_id,
+            now=now,
         ):
             additional_issues.append(
                 QualityIssue(
@@ -529,9 +524,7 @@ class MarketIngestionRunner:
         )
         return _result(row)
 
-    def _materialize(
-        self, connection, batch: MarketBatch, archive_id: UUID
-    ) -> None:
+    def _materialize(self, connection, batch: MarketBatch, archive_id: UUID) -> None:
         security_ids = {item.security_id for item in batch.security_states}
         security_ids.update(item.security_id for item in batch.bars)
         security_ids.update(item.security_id for item in batch.limit_up_events)
@@ -732,8 +725,7 @@ class MarketIngestionRunner:
                         limit_up_record.c.security_id == item.security_id,
                         limit_up_record.c.trade_date == item.trade_date,
                         limit_up_record.c.source == item.source_id,
-                        limit_up_record.c.source_version
-                        == item.source_version,
+                        limit_up_record.c.source_version == item.source_version,
                     )
                 )
                 .mappings()
@@ -791,9 +783,7 @@ class MarketIngestionRunner:
                 query = query.where(market_import_attempts.c.status == status)
             rows = (
                 connection.execute(
-                    query.order_by(
-                        market_import_attempts.c.attempt_sequence.desc()
-                    )
+                    query.order_by(market_import_attempts.c.attempt_sequence.desc())
                 )
                 .mappings()
                 .all()

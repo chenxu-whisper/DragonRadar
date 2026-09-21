@@ -282,9 +282,7 @@ def test_runner_materializes_stock_index_and_lineage(database, repository):
         )
 
 
-def test_older_backfill_does_not_replace_newer_current_security(
-    database, repository
-):
+def test_older_backfill_does_not_replace_newer_current_security(database, repository):
     from dragon_radar.ingestion.runner import MarketIngestionRunner
     from dragon_radar.readmodels.tables import security
 
@@ -1047,9 +1045,7 @@ def test_missing_historical_identity_is_archived_and_quarantined(
         **identity,
     )
     result = MarketIngestionRunner(repository).import_batch(
-        licensed_batch(
-            batch(security_states=(state(code="000001"), historical))
-        ),
+        licensed_batch(batch(security_states=(state(code="000001"), historical))),
         key=f"historical-missing-{missing_field}",
     )
 
@@ -1106,9 +1102,7 @@ def test_ingestion_key_binds_complete_envelope(repository):
     changed = envelope.model_copy(
         update={
             "page_manifest": envelope.page_manifest.model_copy(
-                update={
-                    "pages": (changed_page, *envelope.page_manifest.pages[1:])
-                }
+                update={"pages": (changed_page, *envelope.page_manifest.pages[1:])}
             )
         }
     )
@@ -1310,9 +1304,7 @@ def test_security_locks_are_distinct_sorted_and_precede_materialization_writes(
     assert observed[2][0] == "write"
 
 
-def test_attempt_insert_failure_rolls_back_archive_and_workflow(
-    database, repository
-):
+def test_attempt_insert_failure_rolls_back_archive_and_workflow(database, repository):
     from dragon_radar.ingestion.runner import MarketIngestionRunner
 
     def fail_attempt(conn, cursor, statement, parameters, context, executemany):
@@ -1452,9 +1444,7 @@ def test_batch_completeness_failure_records_missing_item(repository):
     assert "batch_complete_pages:false" in attempt.missing_items
 
 
-def test_retry_is_append_only_and_rechecks_original_authorization(
-    database, repository
-):
+def test_retry_is_append_only_and_rechecks_original_authorization(database, repository):
     from dragon_radar.ingestion.runner import MarketIngestionRunner
     from dragon_radar.storage.repository import Forbidden
 
@@ -1641,9 +1631,7 @@ def test_task_and_attempt_reads_recheck_embedded_authorization(repository):
 
     runner = MarketIngestionRunner(repository)
     runner.import_batch(licensed_batch(), key="market-expiring")
-    repository.register_source(
-        grant(expires_at=datetime(2030, 1, 1, tzinfo=UTC))
-    )
+    repository.register_source(grant(expires_at=datetime(2030, 1, 1, tzinfo=UTC)))
     repository.clock = lambda: datetime(2028, 1, 1, tzinfo=UTC)
 
     assert runner.list_tasks() == ()
@@ -1700,10 +1688,10 @@ def test_market_schema_constraints_match_frozen_contract(database):
         history_constraints = {
             row["conname"]
             for row in connection.execute(
-            text(
-                "SELECT conname FROM pg_constraint "
-                "WHERE conrelid = 'security_state_history'::regclass"
-            )
+                text(
+                    "SELECT conname FROM pg_constraint "
+                    "WHERE conrelid = 'security_state_history'::regclass"
+                )
             ).mappings()
         }
     assert "security_state_history_no_overlap" in history_constraints
@@ -1774,9 +1762,7 @@ def test_market_cli_exposes_minimal_task_and_attempt_workflow(
         run_cli(["market-attempts", "--status", "succeeded"], database_url).stdout
     )["attempts"]
     assert len(attempts) == 1
-    shown_attempt = run_cli(
-        ["market-attempt-show", body["attempt_id"]], database_url
-    )
+    shown_attempt = run_cli(["market-attempt-show", body["attempt_id"]], database_url)
     assert shown_attempt.returncode == 0, shown_attempt.stderr
     assert json.loads(shown_attempt.stdout) == attempts[0]
     combined = (

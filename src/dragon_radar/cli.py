@@ -226,9 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                 ]
             }
         elif args.command == "market-attempt-show":
-            result = _market_attempt_result(
-                market_runner.get_attempt(args.attempt_id)
-            )
+            result = _market_attempt_result(market_runner.get_attempt(args.attempt_id))
         elif args.command == "market-retry":
             imported = market_runner.retry_attempt(
                 args.attempt_id,
