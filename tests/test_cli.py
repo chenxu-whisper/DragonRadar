@@ -113,12 +113,17 @@ def test_cli_bad_key_and_missing_file_are_safe(database_url, tmp_path):
 
 def test_serve_host_port_and_no_proxy_trust(monkeypatch, database_url):
     from dragon_radar.cli import main
+    from dragon_radar.publication.repository import PublicationRepository
 
     calls = []
     monkeypatch.setenv("DRAGON_DATABASE_URL", database_url)
-    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        "uvicorn.run", lambda app, **kwargs: calls.append((app, kwargs))
+    )
     assert main(["serve", "--host", "127.0.0.1", "--port", "8123"]) == 0
-    assert calls[0]["host"] == "127.0.0.1"
-    assert calls[0]["port"] == 8123
-    assert calls[0]["proxy_headers"] is False
-    assert calls[0]["access_log"] is False
+    app, options = calls[0]
+    assert isinstance(app.state.repository, PublicationRepository)
+    assert options["host"] == "127.0.0.1"
+    assert options["port"] == 8123
+    assert options["proxy_headers"] is False
+    assert options["access_log"] is False

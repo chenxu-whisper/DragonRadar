@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from dragon_radar.domain.models import MarketBatch
 from dragon_radar.publication.models import (
     Publication,
     PublicationResult,
@@ -15,11 +16,14 @@ from dragon_radar.publication.tables import (
     publication_results,
     publications,
     source_dependencies,
+    withdrawal_dependencies,
     withdrawal_records,
 )
-from dragon_radar.storage.models import snapshots
+from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
+from dragon_radar.topics.models import TopicBatch
 from dragon_radar.topics.repository import TopicRepository
+from dragon_radar.topics.tables import topic_import_batches
 
 
 def _publication(row: Mapping) -> Publication:
@@ -49,14 +53,14 @@ def archive_was_withdrawn(
         connection.scalar(
             select(withdrawal_records.c.id)
             .join(
-                source_dependencies,
-                source_dependencies.c.source_id == withdrawal_records.c.source_id,
+                withdrawal_dependencies,
+                withdrawal_dependencies.c.withdrawal_id == withdrawal_records.c.id,
             )
             .where(
                 withdrawal_records.c.source_id == source_id,
                 withdrawal_records.c.action.in_(("deidentified", "deleted")),
-                source_dependencies.c.archive_type == archive_type,
-                source_dependencies.c.archive_id == archive_id,
+                withdrawal_dependencies.c.archive_type == archive_type,
+                withdrawal_dependencies.c.archive_id == archive_id,
             )
             .limit(1)
         )
@@ -87,50 +91,156 @@ class PublicationRepository:
         self.database = database
         self.clock = clock or (lambda: datetime.now(UTC))
         self.market = market_repository or Repository(database, clock=self.clock)
-        self.topics = TopicRepository(database, clock=self.clock)
 
-    def _publication_was_withdrawn(self, publication_id: UUID) -> bool:
-        with self.database.engine.connect() as connection:
-            source_ids = tuple(
-                connection.execute(
-                    select(source_dependencies.c.source_id)
-                    .where(source_dependencies.c.publication_id == publication_id)
-                    .distinct()
-                ).scalars()
-            )
-            if any(
-                source_has_active_withdrawal(connection, source_id)
-                for source_id in source_ids
-            ):
-                return True
-            return (
-                connection.scalar(
-                    select(withdrawal_records.c.id)
-                    .join(
-                        source_dependencies,
-                        source_dependencies.c.source_id
-                        == withdrawal_records.c.source_id,
-                    )
-                    .where(
-                        source_dependencies.c.publication_id == publication_id,
-                        withdrawal_records.c.action.in_(("deidentified", "deleted")),
-                    )
-                    .limit(1)
-                )
-                is not None
-            )
+    @staticmethod
+    def _result(row: Mapping) -> PublicationResult:
+        return PublicationResult(
+            publication_id=row["publication_id"],
+            domain=row["domain"],
+            input_id=row["input_id"],
+            status=row["status"],
+            payload=row["payload"],
+            coverage=row["coverage"],
+            quality_flags=tuple(row["quality_flags"]),
+        )
 
-    def _authorized_snapshot(self, record: Publication) -> PublishedSnapshot:
-        if self._publication_was_withdrawn(record.id):
+    def _lock_sources(self, connection, source_ids) -> dict:
+        return {
+            source_id: self.market._source(connection, source_id)
+            for source_id in sorted(set(source_ids))
+        }
+
+    def _authorized_snapshot(
+        self,
+        connection,
+        record: Publication,
+        dependencies,
+        grants,
+    ) -> PublishedSnapshot:
+        source_ids = {row["source_id"] for row in dependencies}
+        if any(
+            source_has_active_withdrawal(connection, source_id)
+            for source_id in source_ids
+        ):
             raise Forbidden("Publication inputs were withdrawn")
-        market = self.market.get_snapshot(record.market_snapshot_id)
+        if (
+            connection.scalar(
+                select(withdrawal_records.c.id)
+                .join(
+                    withdrawal_dependencies,
+                    withdrawal_dependencies.c.withdrawal_id == withdrawal_records.c.id,
+                )
+                .where(
+                    withdrawal_dependencies.c.publication_id == record.id,
+                    withdrawal_records.c.action.in_(("deidentified", "deleted")),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise Forbidden("Publication inputs were withdrawn")
+
+        market_row = (
+            connection.execute(
+                select(snapshots).where(snapshots.c.id == record.market_snapshot_id)
+            )
+            .mappings()
+            .one()
+        )
+        market_archive = (
+            connection.execute(
+                select(import_batches).where(
+                    import_batches.c.id == market_row["batch_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        market_batch = MarketBatch.model_validate_json(market_archive["canonical_json"])
+        self.market._authorize(grants[market_row["source_id"]], market_batch)
+        market = self.market._snapshot(market_row, market_archive)
+
         if record.topic_snapshot_id is not None:
-            self.topics.get_snapshot(record.topic_snapshot_id)
-        return PublishedSnapshot(record, market)
+            topic_dependency = next(
+                row
+                for row in dependencies
+                if row["archive_type"] == "topic_import_batch"
+            )
+            topic_archive = (
+                connection.execute(
+                    select(topic_import_batches).where(
+                        topic_import_batches.c.id == topic_dependency["archive_id"]
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            topic_batch = TopicBatch.model_validate_json(
+                topic_archive["canonical_json"]
+            )
+            if not TopicRepository._authorized(
+                grants[topic_batch.source_id],
+                topic_batch.grant,
+                topic_batch.source_id,
+                self.clock(),
+            ):
+                raise Forbidden("Source is not locally authorized")
+
+        result_rows = (
+            connection.execute(
+                select(publication_results)
+                .where(publication_results.c.publication_id == record.id)
+                .order_by(publication_results.c.domain)
+            )
+            .mappings()
+            .all()
+        )
+        return PublishedSnapshot(
+            record,
+            market,
+            tuple(self._result(row) for row in result_rows),
+        )
+
+    def _authorized_records(self, connection, rows):
+        records = [_publication(row) for row in rows]
+        publication_ids = [record.id for record in records]
+        dependencies = (
+            connection.execute(
+                select(source_dependencies)
+                .where(source_dependencies.c.publication_id.in_(publication_ids))
+                .order_by(
+                    source_dependencies.c.source_id,
+                    source_dependencies.c.archive_type,
+                    source_dependencies.c.archive_id,
+                )
+            )
+            .mappings()
+            .all()
+            if publication_ids
+            else []
+        )
+        grants = self._lock_sources(
+            connection, (row["source_id"] for row in dependencies)
+        )
+        by_publication = {
+            publication_id: [
+                row for row in dependencies if row["publication_id"] == publication_id
+            ]
+            for publication_id in publication_ids
+        }
+        return [
+            self._authorized_snapshot(
+                connection,
+                record,
+                by_publication[record.id],
+                grants,
+            )
+            for record in records
+        ]
 
     def get_publication(self, publication_id: UUID | str) -> Publication | None:
         publication_id = _uuid(publication_id)
-        with self.database.engine.connect() as connection:
+        with self.database.engine.begin() as connection:
             row = (
                 connection.execute(
                     select(publications).where(publications.c.id == publication_id)
@@ -138,17 +248,17 @@ class PublicationRepository:
                 .mappings()
                 .first()
             )
-        if row is None:
-            return None
-        record = _publication(row)
-        if record.status != "published":
-            raise Forbidden("Publication is not available")
-        self._authorized_snapshot(record)
-        return record
+            if row is None:
+                return None
+            record = _publication(row)
+            if record.status != "published":
+                raise Forbidden("Publication is not available")
+            self._authorized_records(connection, [row])
+            return record
 
     def get_snapshot(self, snapshot_id: UUID | str):
         snapshot_id = _uuid(snapshot_id)
-        with self.database.engine.connect() as connection:
+        with self.database.engine.begin() as connection:
             row = (
                 connection.execute(
                     select(publications).where(publications.c.id == snapshot_id)
@@ -156,22 +266,21 @@ class PublicationRepository:
                 .mappings()
                 .first()
             )
-        if row is not None:
-            record = _publication(row)
-            if record.status != "published":
-                raise Forbidden("Publication is not available")
-            return self._authorized_snapshot(record)
-        with self.database.engine.connect() as connection:
+            if row is not None:
+                record = _publication(row)
+                if record.status != "published":
+                    raise Forbidden("Publication is not available")
+                return self._authorized_records(connection, [row])[0]
             legacy = (
                 connection.execute(
-                    select(
-                        snapshots.c.source_id,
-                        snapshots.c.batch_id,
-                    ).where(snapshots.c.id == snapshot_id)
+                    select(snapshots).where(snapshots.c.id == snapshot_id)
                 )
                 .mappings()
                 .first()
             )
+            if legacy is None:
+                return None
+            current = self.market._source(connection, legacy["source_id"])
             if legacy is not None and archive_was_withdrawn(
                 connection,
                 legacy["source_id"],
@@ -183,10 +292,18 @@ class PublicationRepository:
                 connection, legacy["source_id"]
             ):
                 raise Forbidden("Snapshot source has an active withdrawal")
-        try:
-            return self.market.get_snapshot(snapshot_id)
-        except NotFound:
-            return None
+            archive = (
+                connection.execute(
+                    select(import_batches).where(
+                        import_batches.c.id == legacy["batch_id"]
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            result = self.market._snapshot(legacy, archive)
+            self.market._authorize(current, result.batch)
+            return result
 
     def list_snapshots(
         self, *, trade_date: date | None = None, limit: int = 50, offset: int = 0
@@ -203,41 +320,56 @@ class PublicationRepository:
             publications.c.version.desc(),
             publications.c.id,
         )
-        with self.database.engine.connect() as connection:
+        with self.database.engine.begin() as connection:
             rows = connection.execute(query).mappings().all()
-        visible = []
-        for row in rows:
-            record = _publication(row)
-            try:
-                visible.append(self._authorized_snapshot(record))
-            except Forbidden:
-                continue
-        return visible[offset : offset + limit]
-
-    def list_results(self, publication_id: UUID | str) -> tuple[PublicationResult, ...]:
-        publication_id = _uuid(publication_id)
-        record = self.get_publication(publication_id)
-        if record is None:
-            raise NotFound("Publication not found")
-        with self.database.engine.connect() as connection:
-            rows = (
+            visible = []
+            records = [_publication(row) for row in rows]
+            publication_ids = [record.id for record in records]
+            dependencies = (
                 connection.execute(
-                    select(publication_results)
-                    .where(publication_results.c.publication_id == publication_id)
-                    .order_by(publication_results.c.domain)
+                    select(source_dependencies)
+                    .where(source_dependencies.c.publication_id.in_(publication_ids))
+                    .order_by(
+                        source_dependencies.c.source_id,
+                        source_dependencies.c.archive_type,
+                        source_dependencies.c.archive_id,
+                    )
                 )
                 .mappings()
                 .all()
             )
-        return tuple(
-            PublicationResult(
-                publication_id=row["publication_id"],
-                domain=row["domain"],
-                input_id=row["input_id"],
-                status=row["status"],
-                payload=row["payload"],
-                coverage=row["coverage"],
-                quality_flags=tuple(row["quality_flags"]),
+            grants = self._lock_sources(
+                connection, (row["source_id"] for row in dependencies)
             )
-            for row in rows
-        )
+            for record in records:
+                try:
+                    visible.append(
+                        self._authorized_snapshot(
+                            connection,
+                            record,
+                            [
+                                row
+                                for row in dependencies
+                                if row["publication_id"] == record.id
+                            ],
+                            grants,
+                        )
+                    )
+                except Forbidden:
+                    continue
+            return visible[offset : offset + limit]
+
+    def list_results(self, publication_id: UUID | str) -> tuple[PublicationResult, ...]:
+        publication_id = _uuid(publication_id)
+        with self.database.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(publications).where(publications.c.id == publication_id)
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFound("Publication not found")
+            snapshot = self._authorized_records(connection, [row])[0]
+            return snapshot.results

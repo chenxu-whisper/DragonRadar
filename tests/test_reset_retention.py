@@ -2,7 +2,8 @@
 
 import pytest
 from factories import DAYS, NOW, batch, grant
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import DBAPIError
 from topic_factories import topic_batch
 
 from dragon_radar.publication.models import PublicationCommand, RetentionPolicy
@@ -241,4 +242,64 @@ def test_restore_requires_retention_action_then_ledger_replay(
         service.publish(
             PublicationCommand.model_validate_json(record.command_json),
             key="must-not-republish-purged-inputs",
+        )
+
+
+def test_destructive_withdrawal_only_applies_to_dependencies_existing_at_withdrawal(
+    published, database, repository
+):
+    service, old_record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-deidentify-v2",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="restored-market",
+        ).id
+    )
+    topic_repository = TopicRepository(database, clock=lambda: NOW)
+    topic = topic_repository.publish(
+        topic_repository.import_batch(
+            topic_batch(),
+            key="restored-topic",
+        ).id
+    )
+    new_record = service.publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            topic_snapshot_id=topic.id,
+            disabled_domains=("news", "regulation", "role"),
+        ),
+        key="restored-publication",
+    )
+
+    assert service.repository.get_snapshot(new_record.id).id == new_record.id
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(old_record.id)
+    with database.engine.connect() as connection:
+        bound = connection.scalar(
+            text(
+                "SELECT count(*) FROM withdrawal_dependencies "
+                "WHERE withdrawal_id = :withdrawal_id"
+            ),
+            {"withdrawal_id": withdrawal.id},
+        )
+    assert bound > 0
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            delete(publication_results).where(
+                publication_results.c.publication_id == new_record.id,
+                publication_results.c.domain == "market",
+            )
         )

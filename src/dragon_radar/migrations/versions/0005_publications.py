@@ -89,7 +89,7 @@ def upgrade():
     op.create_table(
         "publication_attempts",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("idempotency_key", sa.String(200), nullable=False, unique=True),
+        sa.Column("idempotency_key", sa.String(200), nullable=False),
         sa.Column("command_hash", sa.String(64), nullable=False),
         sa.Column(
             "publication_id",
@@ -101,6 +101,13 @@ def upgrade():
         sa.Column("details", JSONB, nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint("status IN ('failed', 'published')"),
+    )
+    op.create_index(
+        "publication_attempts_published_key",
+        "publication_attempts",
+        ["idempotency_key"],
+        unique=True,
+        postgresql_where=sa.text("status = 'published'"),
     )
     op.create_table(
         "source_dependencies",
@@ -162,6 +169,43 @@ def upgrade():
         ["source_id", "sequence"],
     )
     op.create_table(
+        "withdrawal_dependencies",
+        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "withdrawal_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("withdrawal_records.id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+        sa.Column(
+            "source_dependency_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("source_dependencies.id", ondelete="RESTRICT"),
+        ),
+        sa.Column("source_id", sa.Text, nullable=False),
+        sa.Column("archive_type", sa.String(40), nullable=False),
+        sa.Column("archive_id", UUID(as_uuid=True), nullable=False),
+        sa.Column("derived_type", sa.String(40)),
+        sa.Column("derived_id", UUID(as_uuid=True)),
+        sa.Column(
+            "publication_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("publications.id", ondelete="RESTRICT"),
+        ),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("withdrawal_id", "source_dependency_id"),
+    )
+    op.create_index(
+        "withdrawal_dependencies_archive",
+        "withdrawal_dependencies",
+        ["archive_type", "archive_id", "withdrawal_id"],
+    )
+    op.create_index(
+        "withdrawal_dependencies_derived",
+        "withdrawal_dependencies",
+        ["publication_id", "derived_type", "withdrawal_id"],
+    )
+    op.create_table(
         "publication_module_controls",
         sa.Column("source_id", sa.Text, primary_key=True),
         sa.Column("module", sa.String(40), primary_key=True),
@@ -218,9 +262,9 @@ def upgrade():
                AND NEW.quality_flags = '["withdrawn"]'::jsonb
                AND EXISTS (
                    SELECT 1
-                   FROM source_dependencies dependency
+                   FROM withdrawal_dependencies dependency
                    JOIN withdrawal_records withdrawal
-                     ON withdrawal.source_id = dependency.source_id
+                     ON withdrawal.id = dependency.withdrawal_id
                    WHERE dependency.publication_id = OLD.publication_id
                      AND dependency.derived_type = OLD.domain
                      AND withdrawal.action = 'deidentified'
@@ -232,9 +276,9 @@ def upgrade():
             IF TG_OP = 'DELETE'
                AND EXISTS (
                    SELECT 1
-                   FROM source_dependencies dependency
+                   FROM withdrawal_dependencies dependency
                    JOIN withdrawal_records withdrawal
-                     ON withdrawal.source_id = dependency.source_id
+                     ON withdrawal.id = dependency.withdrawal_id
                    WHERE dependency.publication_id = OLD.publication_id
                      AND dependency.derived_type = OLD.domain
                      AND withdrawal.action = 'deleted'
@@ -257,6 +301,7 @@ def upgrade():
         "publication_attempts",
         "source_dependencies",
         "withdrawal_records",
+        "withdrawal_dependencies",
     ):
         _immutable(table)
 

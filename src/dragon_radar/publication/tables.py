@@ -89,7 +89,7 @@ publication_attempts = Table(
     "publication_attempts",
     metadata,
     Column("id", PGUUID(as_uuid=True), primary_key=True),
-    Column("idempotency_key", String(200), nullable=False, unique=True),
+    Column("idempotency_key", String(200), nullable=False),
     Column("command_hash", String(64), nullable=False),
     Column(
         "publication_id",
@@ -101,6 +101,12 @@ publication_attempts = Table(
     Column("details", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("status IN ('failed', 'published')"),
+    Index(
+        "publication_attempts_published_key",
+        "idempotency_key",
+        unique=True,
+        postgresql_where=text("status = 'published'"),
+    ),
 )
 
 source_dependencies = Table(
@@ -156,6 +162,47 @@ withdrawal_records = Table(
         "action IN ('blocked', 'deidentified', 'deleted', 'replayed', 'restored')"
     ),
     Index("withdrawal_records_source", "source_id", "sequence"),
+)
+
+withdrawal_dependencies = Table(
+    "withdrawal_dependencies",
+    metadata,
+    Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column(
+        "withdrawal_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("withdrawal_records.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column(
+        "source_dependency_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("source_dependencies.id", ondelete="RESTRICT"),
+    ),
+    Column("source_id", Text, nullable=False),
+    Column("archive_type", String(40), nullable=False),
+    Column("archive_id", PGUUID(as_uuid=True), nullable=False),
+    Column("derived_type", String(40)),
+    Column("derived_id", PGUUID(as_uuid=True)),
+    Column(
+        "publication_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("publications.id", ondelete="RESTRICT"),
+    ),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("withdrawal_id", "source_dependency_id"),
+    Index(
+        "withdrawal_dependencies_archive",
+        "archive_type",
+        "archive_id",
+        "withdrawal_id",
+    ),
+    Index(
+        "withdrawal_dependencies_derived",
+        "publication_id",
+        "derived_type",
+        "withdrawal_id",
+    ),
 )
 
 publication_module_controls = Table(

@@ -70,6 +70,7 @@ class Database:
                     "publication_attempts",
                     "source_dependencies",
                     "withdrawal_records",
+                    "withdrawal_dependencies",
                     "publication_module_controls",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))

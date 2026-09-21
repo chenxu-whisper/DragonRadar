@@ -17,10 +17,12 @@ from dragon_radar.publication.tables import (
     publication_module_controls,
     publication_results,
     source_dependencies,
+    withdrawal_dependencies,
     withdrawal_records,
 )
-from dragon_radar.storage.models import source_grants
+from dragon_radar.storage.models import import_batches, source_grants
 from dragon_radar.storage.repository import Conflict, Repository, _identifier
+from dragon_radar.topics.tables import topic_import_batches
 
 
 class PublicationCache:
@@ -136,6 +138,59 @@ class RetentionService:
                 )
             )
 
+    def _bind_withdrawal(self, connection, withdrawal) -> None:
+        dependencies = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.source_id == withdrawal["source_id"]
+                )
+            )
+            .mappings()
+            .all()
+        )
+        bound_archives = set()
+        for dependency in dependencies:
+            bound_archives.add((dependency["archive_type"], dependency["archive_id"]))
+            connection.execute(
+                insert(withdrawal_dependencies).values(
+                    id=uuid4(),
+                    withdrawal_id=withdrawal["id"],
+                    source_dependency_id=dependency["id"],
+                    source_id=dependency["source_id"],
+                    archive_type=dependency["archive_type"],
+                    archive_id=dependency["archive_id"],
+                    derived_type=dependency["derived_type"],
+                    derived_id=dependency["derived_id"],
+                    publication_id=dependency["publication_id"],
+                    created_at=self.clock(),
+                )
+            )
+        archive_tables = (
+            ("market_import_batch", import_batches),
+            ("topic_import_batch", topic_import_batches),
+        )
+        for archive_type, table in archive_tables:
+            archive_ids = connection.execute(
+                select(table.c.id).where(table.c.source_id == withdrawal["source_id"])
+            ).scalars()
+            for archive_id in archive_ids:
+                if (archive_type, archive_id) in bound_archives:
+                    continue
+                connection.execute(
+                    insert(withdrawal_dependencies).values(
+                        id=uuid4(),
+                        withdrawal_id=withdrawal["id"],
+                        source_dependency_id=None,
+                        source_id=withdrawal["source_id"],
+                        archive_type=archive_type,
+                        archive_id=archive_id,
+                        derived_type=None,
+                        derived_id=None,
+                        publication_id=None,
+                        created_at=self.clock(),
+                    )
+                )
+
     def _revoke_grant(self, connection, source_id, *, storage):
         current = self.repository._source(connection, source_id)
         grant = current.model_dump(mode="json")
@@ -201,10 +256,19 @@ class RetentionService:
                     policy_reference=policy.reference,
                     details={"derived_content": policy.action},
                 )
-                affected = select(
-                    source_dependencies.c.publication_id,
-                    source_dependencies.c.derived_type,
-                ).where(source_dependencies.c.source_id == source_id)
+                self._bind_withdrawal(connection, row)
+                affected = (
+                    select(
+                        source_dependencies.c.publication_id,
+                        source_dependencies.c.derived_type,
+                    )
+                    .join(
+                        withdrawal_dependencies,
+                        withdrawal_dependencies.c.source_dependency_id
+                        == source_dependencies.c.id,
+                    )
+                    .where(withdrawal_dependencies.c.withdrawal_id == row["id"])
+                )
                 pairs = set(connection.execute(affected).tuples())
                 for publication_id, domain in sorted(
                     pairs, key=lambda pair: (str(pair[0]), pair[1])

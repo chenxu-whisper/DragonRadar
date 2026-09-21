@@ -1,13 +1,16 @@
 """Unified publication manifests and atomic materialization."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from threading import Event
 from uuid import uuid4
 
 import pytest
 from factories import DAYS, NOW, batch, grant
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import insert, inspect, select, text
+from sqlalchemy import event, insert, inspect, select, text
+from sqlalchemy.exc import DBAPIError
 from topic_factories import topic_batch
 
 from dragon_radar.publication.models import (
@@ -81,6 +84,7 @@ def test_migration_creates_publication_schema_and_readiness(database):
         "publications",
         "source_dependencies",
         "withdrawal_records",
+        "withdrawal_dependencies",
         "publication_module_controls",
     } <= tables
     with database.engine.connect() as connection:
@@ -122,6 +126,69 @@ def test_domain_failure_keeps_attempt_without_visible_partial_publication(
         assert attempt["status"] == "failed"
         assert attempt["stage"] == "topic"
         assert attempt["publication_id"] is None
+
+
+def test_concurrent_failure_is_recorded_after_same_key_success(
+    publication, database, repository
+):
+    _service, command = publication
+    failing_service = PublicationService(database, repository, clock=lambda: NOW)
+    successful_service = PublicationService(database, repository, clock=lambda: NOW)
+    failure_ready = Event()
+    success_done = Event()
+    original_lock = failing_service.market._lock
+    key_lock_calls = 0
+
+    def controlled_lock(connection, key):
+        nonlocal key_lock_calls
+        if key == "publication-key:concurrent-attempt":
+            key_lock_calls += 1
+            if key_lock_calls == 2:
+                failure_ready.set()
+                assert success_done.wait(5)
+        return original_lock(connection, key)
+
+    def fail(_connection, _command):
+        raise RuntimeError("controlled materialization failure")
+
+    failing_service.market._lock = controlled_lock
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        failed = pool.submit(
+            failing_service.publish,
+            command,
+            key="concurrent-attempt",
+            materializers={"topic": fail},
+        )
+        assert failure_ready.wait(5)
+        try:
+            published = successful_service.publish(command, key="concurrent-attempt")
+        finally:
+            success_done.set()
+        with pytest.raises(RuntimeError, match="controlled"):
+            failed.result()
+
+    assert (
+        successful_service.publish(command, key="concurrent-attempt").id == published.id
+    )
+    with pytest.raises(Conflict):
+        successful_service.publish(
+            command.model_copy(update={"trade_date": DAYS[0]}),
+            key="concurrent-attempt",
+        )
+    with database.engine.connect() as connection:
+        attempts = (
+            connection.execute(
+                select(publication_attempts)
+                .where(publication_attempts.c.idempotency_key == "concurrent-attempt")
+                .order_by(publication_attempts.c.status)
+            )
+            .mappings()
+            .all()
+        )
+    assert [attempt["status"] for attempt in attempts] == ["failed", "published"]
+    assert all(
+        attempt["command_hash"] == attempts[0]["command_hash"] for attempt in attempts
+    )
 
 
 def test_replay_is_idempotent_conflicting_key_rejected_and_revision_appends(
@@ -230,6 +297,54 @@ async def test_fixed_publication_and_old_snapshot_ids_remain_pinned(
 
 
 @pytest.mark.anyio
+async def test_default_workbench_repository_reads_unified_publications(
+    publication, database_url
+):
+    service, command = publication
+    record = service.publish(command, key="default-workbench")
+    from dragon_radar.http.app import create_workbench_app
+
+    app = create_workbench_app(database_url=database_url)
+    assert isinstance(app.state.repository, PublicationRepository)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client,
+    ):
+        response = await client.get(
+            "/api/market/overview", params={"snapshot_id": str(record.id)}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["snapshot_id"] == str(record.id)
+
+
+@pytest.mark.anyio
+async def test_unified_overview_uses_publish_time_materialization(
+    publication, database, repository, monkeypatch
+):
+    service, command = publication
+    record = service.publish(command, key="materialized-overview")
+    selection = PublicationRepository(database, repository, clock=lambda: NOW)
+
+    def fail_if_recomputed(_batch):
+        raise RuntimeError("overview recomputed during read")
+
+    monkeypatch.setattr("dragon_radar.http.app.market_breadth", fail_if_recomputed)
+    async with workbench(selection) as client:
+        response = await client.get(
+            "/api/market/overview", params={"snapshot_id": str(record.id)}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["snapshot_id"] == str(record.id)
+    assert body["data"]["advancing"] == 0
+    assert body["data"]["unchanged"] == 1
+
+
+@pytest.mark.anyio
 async def test_current_display_permission_is_rechecked_for_list_and_fixed_read(
     publication, database, repository
 ):
@@ -253,6 +368,87 @@ async def test_current_display_permission_is_rechecked_for_list_and_fixed_read(
     assert listing.json()["data"] == {"snapshots": []}
     with pytest.raises(Forbidden):
         selection.get_snapshot(record.id)
+
+
+def test_unified_read_holds_all_source_locks_through_result_assembly(
+    publication, database, repository
+):
+    service, command = publication
+    record = service.publish(command, key="atomic-read")
+    selection = PublicationRepository(database, repository, clock=lambda: NOW)
+    source_lock_order = []
+    assembled_while_locked = []
+
+    def observe_transaction(conn, cursor, statement, parameters, context, executemany):
+        if "pg_advisory_xact_lock" in statement and str(
+            parameters.get("key", "")
+        ).startswith("source:"):
+            source_lock_order.append(parameters["key"])
+        if "FROM publication_results" not in statement:
+            return
+        with pytest.raises(DBAPIError), database.engine.begin() as other:
+            other.execute(
+                text(
+                    "SELECT source_id FROM source_grants "
+                    "WHERE source_id = 'synthetic' FOR UPDATE NOWAIT"
+                )
+            )
+        assembled_while_locked.append(True)
+
+    event.listen(database.engine, "after_cursor_execute", observe_transaction)
+    try:
+        snapshot = selection.get_snapshot(record.id)
+    finally:
+        event.remove(database.engine, "after_cursor_execute", observe_transaction)
+
+    assert snapshot.id == record.id
+    assert assembled_while_locked == [True]
+    assert source_lock_order == sorted(source_lock_order)
+
+
+def test_publication_validation_locks_distinct_sources_in_stable_order(
+    database, repository
+):
+    topic_grant = grant(source_id="aaa-topic")
+    repository.register_source(topic_grant)
+    market = repository.publish(
+        repository.import_batch(batch(), key="stable-market").id
+    )
+    topic_repository = TopicRepository(database, clock=lambda: NOW)
+    topic = topic_repository.publish(
+        topic_repository.import_batch(
+            topic_batch(source_id="aaa-topic", grant=topic_grant),
+            key="stable-topic",
+        ).id
+    )
+    service = PublicationService(database, repository, clock=lambda: NOW)
+    source_lock_order = []
+
+    def observe_lock(conn, cursor, statement, parameters, context, executemany):
+        key = str(parameters.get("key", ""))
+        if "pg_advisory_xact_lock" in statement and key.startswith("source:"):
+            source_lock_order.append(key)
+
+    event.listen(database.engine, "after_cursor_execute", observe_lock)
+    try:
+        service.publish(
+            PublicationCommand(
+                trade_date=DAYS[-1],
+                market_snapshot_id=market.id,
+                topic_snapshot_id=topic.id,
+                disabled_domains=("news", "regulation", "role"),
+            ),
+            key="stable-source-order",
+        )
+    finally:
+        event.remove(database.engine, "after_cursor_execute", observe_lock)
+
+    assert source_lock_order == [
+        "source:aaa-topic",
+        "source:synthetic",
+        "source:aaa-topic",
+        "source:synthetic",
+    ]
 
 
 def test_publication_command_json_is_canonical_and_does_not_invent_inputs(publication):

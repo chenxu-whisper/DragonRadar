@@ -25,6 +25,8 @@ from dragon_radar.http.selection import (
     selectors,
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.publication.models import PublishedSnapshot
+from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.readmodels.securities import security_detail
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import Repository
@@ -51,7 +53,11 @@ def create_workbench_app(
             else os.getenv("DRAGON_DATABASE_URL")
         )
         database = Database(value) if value else None
-        repository = Repository(database) if database is not None else None
+        repository = (
+            PublicationRepository(database, Repository(database))
+            if database is not None
+            else None
+        )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -110,12 +116,24 @@ def create_workbench_app(
         snapshot = select_snapshot(get_repository(request), trade_date, snapshot_id)
         if snapshot is None:
             return DecimalJSONResponse(empty_envelope(trade_date))
-        result = market_breadth(snapshot.batch)
-        coverage = archived_coverage(result.coverage.model_dump())
-        data = result.model_dump(
-            mode="python",
-            include={"advancing", "declining", "unchanged", "returns", "exclusions"},
-        )
+        if isinstance(snapshot, PublishedSnapshot):
+            stored = snapshot.result("market")
+            serialized = stored.model_dump(mode="python")
+            coverage = archived_coverage(serialized["coverage"])
+            data = serialized["payload"]
+        else:
+            result = market_breadth(snapshot.batch)
+            coverage = archived_coverage(result.coverage.model_dump())
+            data = result.model_dump(
+                mode="python",
+                include={
+                    "advancing",
+                    "declining",
+                    "unchanged",
+                    "returns",
+                    "exclusions",
+                },
+            )
         data["coverage"] = coverage
         return DecimalJSONResponse(
             snapshot_envelope(snapshot, data, unit="ratio", coverage=coverage)

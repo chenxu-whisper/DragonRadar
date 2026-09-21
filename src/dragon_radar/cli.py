@@ -201,12 +201,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             import uvicorn
 
-            from dragon_radar.api import create_app
+            from dragon_radar.http.app import create_workbench_app
+            from dragon_radar.publication.repository import PublicationRepository
 
             if not 1 <= args.port <= 65535:
                 raise ValueError("Invalid port")
             uvicorn.run(
-                create_app(repository=repository),
+                create_workbench_app(
+                    repository=PublicationRepository(database, repository)
+                ),
                 host=args.host,
                 port=args.port,
                 proxy_headers=False,

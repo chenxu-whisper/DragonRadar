@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import insert, select, update
 
+from dragon_radar.analytics.metrics import market_breadth
 from dragon_radar.domain.models import MarketBatch
 from dragon_radar.publication.models import (
     DOMAIN_NAMES,
@@ -74,17 +75,6 @@ class PublicationService:
             .one()
         )
         market_batch = MarketBatch.model_validate_json(market_archive["canonical_json"])
-        current = self.market._source(connection, market_row["source_id"])
-        self.market._authorize(current, market_batch)
-        if source_has_active_withdrawal(
-            connection, market_row["source_id"]
-        ) or archive_was_withdrawn(
-            connection,
-            market_row["source_id"],
-            "market_import_batch",
-            market_row["batch_id"],
-        ):
-            raise Forbidden("Market archive was withdrawn")
         if market_row["trade_date"] != command.trade_date:
             raise ValueError("Market snapshot date mismatch")
 
@@ -121,17 +111,6 @@ class PublicationService:
             topic_batch = TopicBatch.model_validate_json(
                 topic_archive["canonical_json"]
             )
-            current = self.topics._source(connection, topic_row["source_id"])
-            self.topics._authorize(current, topic_batch)
-            if source_has_active_withdrawal(
-                connection, topic_row["source_id"]
-            ) or archive_was_withdrawn(
-                connection,
-                topic_row["source_id"],
-                "topic_import_batch",
-                topic_row["batch_id"],
-            ):
-                raise Forbidden("Topic archive was withdrawn")
             if topic_row["trade_date"] != command.trade_date:
                 raise ValueError("Topic snapshot date mismatch")
             topic_context = (topic_row, topic_archive, topic_batch)
@@ -143,18 +122,50 @@ class PublicationService:
                     "topic",
                 )
             )
+        grants = {
+            source_id: self.market._source(connection, source_id)
+            for source_id in sorted({dependency[0] for dependency in dependencies})
+        }
+        self.market._authorize(grants[market_row["source_id"]], market_batch)
+        if source_has_active_withdrawal(
+            connection, market_row["source_id"]
+        ) or archive_was_withdrawn(
+            connection,
+            market_row["source_id"],
+            "market_import_batch",
+            market_row["batch_id"],
+        ):
+            raise Forbidden("Market archive was withdrawn")
+        if topic_context is not None:
+            topic_row, _topic_archive, topic_batch = topic_context
+            self.topics._authorize(grants[topic_row["source_id"]], topic_batch)
+            if source_has_active_withdrawal(
+                connection, topic_row["source_id"]
+            ) or archive_was_withdrawn(
+                connection,
+                topic_row["source_id"],
+                "topic_import_batch",
+                topic_row["batch_id"],
+            ):
+                raise Forbidden("Topic archive was withdrawn")
         return (market_row, market_archive, market_batch), topic_context, dependencies
 
     @staticmethod
     def _market_materialization(context) -> DomainMaterialization:
-        row, archive, batch = context
+        _row, archive, batch = context
+        overview = market_breadth(batch)
         return DomainMaterialization(
-            payload={
-                "snapshot_id": str(row["id"]),
-                "batch_id": str(row["batch_id"]),
-                "source_version": batch.source_version,
-            },
-            coverage=archive["quality_report"]["coverage"],
+            payload=overview.model_dump(
+                mode="json",
+                include={
+                    "advancing",
+                    "declining",
+                    "unchanged",
+                    "returns",
+                    "exclusions",
+                },
+            ),
+            coverage=overview.coverage.model_dump(mode="json"),
             quality_flags=tuple(
                 issue["code"] for issue in archive["quality_report"]["issues"]
             ),
@@ -187,28 +198,31 @@ class PublicationService:
         canonical = command.canonical_json()
         digest = hashlib.sha256(canonical.encode()).hexdigest()
         current_stage = "validate"
-        created_attempt = False
         result_id = None
         try:
             with self.database.engine.begin() as connection:
                 self.market._lock(connection, "publication-key:" + key)
-                existing = (
+                attempts = (
                     connection.execute(
-                        select(publication_attempts).where(
-                            publication_attempts.c.idempotency_key == key
-                        )
+                        select(publication_attempts)
+                        .where(publication_attempts.c.idempotency_key == key)
+                        .order_by(publication_attempts.c.created_at)
                     )
                     .mappings()
-                    .first()
+                    .all()
                 )
-                if existing is not None:
-                    if existing["command_hash"] != digest:
-                        raise Conflict(
-                            "Idempotency key already belongs to another command"
-                        )
-                    if existing["status"] != "published":
-                        raise Conflict("Publication command previously failed")
-                    result_id = existing["publication_id"]
+                if any(attempt["command_hash"] != digest for attempt in attempts):
+                    raise Conflict("Idempotency key already belongs to another command")
+                published_attempt = next(
+                    (
+                        attempt
+                        for attempt in attempts
+                        if attempt["status"] == "published"
+                    ),
+                    None,
+                )
+                if published_attempt is not None:
+                    result_id = published_attempt["publication_id"]
                 else:
                     self.market._lock(
                         connection,
@@ -324,34 +338,24 @@ class PublicationService:
                             created_at=now,
                         )
                     )
-                    created_attempt = True
                     result_id = publication_id
         except Conflict:
             raise
         except Exception as exc:
-            if not created_attempt:
-                with self.database.engine.begin() as connection:
-                    self.market._lock(connection, "publication-key:" + key)
-                    if (
-                        connection.scalar(
-                            select(publication_attempts.c.id).where(
-                                publication_attempts.c.idempotency_key == key
-                            )
-                        )
-                        is None
-                    ):
-                        connection.execute(
-                            insert(publication_attempts).values(
-                                id=uuid4(),
-                                idempotency_key=key,
-                                command_hash=digest,
-                                publication_id=None,
-                                status="failed",
-                                stage=current_stage,
-                                details={"error_type": type(exc).__name__},
-                                created_at=self.clock(),
-                            )
-                        )
+            with self.database.engine.begin() as connection:
+                self.market._lock(connection, "publication-key:" + key)
+                connection.execute(
+                    insert(publication_attempts).values(
+                        id=uuid4(),
+                        idempotency_key=key,
+                        command_hash=digest,
+                        publication_id=None,
+                        status="failed",
+                        stage=current_stage,
+                        details={"error_type": type(exc).__name__},
+                        created_at=self.clock(),
+                    )
+                )
             raise
         assert result_id is not None
         record = self.repository.get_publication(result_id)

@@ -115,9 +115,18 @@ class WithdrawalRecord(FrozenModel):
 class PublishedSnapshot:
     """Legacy market projection selected by a unified publication ID."""
 
-    def __init__(self, publication: Publication, market_snapshot: Snapshot):
+    def __init__(
+        self,
+        publication: Publication,
+        market_snapshot: Snapshot,
+        results: tuple[PublicationResult, ...],
+    ):
         self.publication = publication
         self.market_snapshot = market_snapshot
+        self.results = results
+
+    def result(self, domain: DomainName) -> PublicationResult:
+        return next(result for result in self.results if result.domain == domain)
 
     @property
     def id(self) -> UUID:
