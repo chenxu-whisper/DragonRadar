@@ -360,13 +360,13 @@ export function sameSavedValue(
 
 **文件：** 新建 `readmodels/market.py`、`http/routes/market.py`、`tests/test_reset_market.py`、`web/tests/e2e/reset-market.spec.ts`；修改 `pages/Overview.tsx`、`components/SnapshotHeader.tsx`、`http/app.py`。
 
-- [ ] 写失败用例：up+down+flat等于有效样本；分母0返回不适用；昨≥2板固定集合只按今日可交易成员计算晋级率；不同来源分子分母不能混算。
-- [ ] 运行 `uv run pytest tests/test_reset_market.py -q` 确认失败。
-- [ ] 物化指数横条、涨跌分布、涨跌停/高度/晋级率、昨涨停收益中位数、题材扩散和日期×板数热力图；保留原始观测，Task28在独立研究区附加情绪分与阶段，不混为官方指标。
-- [ ] 补齐FAC-M01高于MA20广度、FAC-M02同池成交相对此前20日均值、FAC-M03指数MA20/60趋势与20日非年化波动。基期不含当日、不同有效样本分母分别披露；用明确的手算样例验证。
-- [ ] 注册接口01～04、18：overview/sector-flow/sentiment/heatmap/search；搜索基础证券，消息/题材接入后扩展分组，q长1～50。
-- [ ] 绑定页面点击数字筛选、题材下钻和日期跳转；无净流入数据使用null+原因，不挪用成交额；无历史成员时禁用历史题材分析。
-- [ ] 跑市场pytest、对应浏览器E2E、构建；提交 `feat: deliver versioned market overview`。
+- [x] 写失败用例：up+down+flat等于有效样本；分母0返回不适用；昨≥2板固定集合只按今日可交易成员计算晋级率；不同来源分子分母不能混算。
+- [x] 运行 `uv run pytest tests/test_reset_market.py -q` 确认失败。
+- [x] 物化指数横条、涨跌分布、涨跌停/高度/晋级率、昨涨停收益中位数、题材扩散和日期×板数热力图；保留原始观测，Task28在独立研究区附加情绪分与阶段，不混为官方指标。
+- [x] 补齐FAC-M01高于MA20广度、FAC-M02同池成交相对此前20日均值、FAC-M03指数MA20/60趋势与20日非年化波动。基期不含当日、不同有效样本分母分别披露；用明确的手算样例验证。
+- [x] 注册接口01～04、18：overview/sector-flow/sentiment/heatmap/search；搜索基础证券，消息/题材接入后扩展分组，q长1～50。
+- [x] 绑定页面点击数字筛选、题材下钻和日期跳转；无净流入数据使用null+原因，不挪用成交额；无历史成员时禁用历史题材分析。
+- [x] 跑市场pytest、对应浏览器E2E、构建；提交 `feat: deliver versioned market overview`。
 
 **完成条件：** 第一批发布可在页面查看来源、时间、单位、分子分母和缺失原因。
 
