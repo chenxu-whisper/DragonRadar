@@ -108,6 +108,7 @@ class WithdrawalRecord(FrozenModel):
     scope: Literal["display", "storage"]
     action: Literal["blocked", "deidentified", "deleted", "replayed", "restored"]
     policy_reference: str | None
+    cutoff_dependency_sequence: Annotated[int, Field(ge=0)] | None
     details: ImmutableJsonObject
     occurred_at: datetime
 

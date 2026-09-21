@@ -199,6 +199,7 @@ class PublicationService:
         digest = hashlib.sha256(canonical.encode()).hexdigest()
         current_stage = "validate"
         result_id = None
+        result_record = None
         try:
             with self.database.engine.begin() as connection:
                 self.market._lock(connection, "publication-key:" + key)
@@ -364,6 +365,23 @@ class PublicationService:
                         )
                     )
                     result_id = publication_id
+                    result_record = Publication(
+                        id=publication_id,
+                        trade_date=command.trade_date,
+                        version=values["version"],
+                        supersedes=values["supersedes"],
+                        status="published",
+                        market_snapshot_id=command.market_snapshot_id,
+                        topic_snapshot_id=command.topic_snapshot_id,
+                        news_input_id=command.news_input_id,
+                        regulation_input_id=command.regulation_input_id,
+                        role_input_id=command.role_input_id,
+                        domains=domains,
+                        coverage=coverage,
+                        quality_flags=tuple(quality_flags),
+                        command_json=canonical,
+                        published_at=now,
+                    )
         except Conflict:
             raise
         except Exception as exc:
@@ -383,6 +401,8 @@ class PublicationService:
                 )
             raise
         assert result_id is not None
+        if result_record is not None:
+            return result_record
         record = self.repository.get_publication(result_id)
         assert record is not None
         return record

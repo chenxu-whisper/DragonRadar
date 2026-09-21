@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from dragon_radar.domain.models import MarketBatch
 from dragon_radar.publication.models import (
@@ -125,69 +125,51 @@ class PublicationRepository:
 
     def _authorized_snapshot(
         self,
-        connection,
         record: Publication,
         dependencies,
         grants,
+        *,
+        market_rows,
+        market_archives,
+        topic_rows,
+        topic_archives,
+        result_rows,
+        active_withdrawal_sources,
+        withdrawn_publications,
     ) -> PublishedSnapshot:
         source_ids = {row["source_id"] for row in dependencies}
-        if any(
-            source_has_active_withdrawal(connection, source_id)
-            for source_id in source_ids
-        ):
+        if source_ids & active_withdrawal_sources:
             raise Forbidden("Publication inputs were withdrawn")
-        if (
-            connection.scalar(
-                select(withdrawal_records.c.id)
-                .join(
-                    withdrawal_dependencies,
-                    withdrawal_dependencies.c.withdrawal_id == withdrawal_records.c.id,
-                )
-                .join(
-                    source_dependencies,
-                    source_dependencies.c.id
-                    == withdrawal_dependencies.c.source_dependency_id,
-                )
-                .where(
-                    source_dependencies.c.publication_id == record.id,
-                    withdrawal_records.c.action.in_(("deidentified", "deleted")),
-                )
-                .limit(1)
-            )
-            is not None
-        ):
+        if record.id in withdrawn_publications:
             raise Forbidden("Publication inputs were withdrawn")
 
-        market_row = (
-            connection.execute(
-                select(snapshots).where(snapshots.c.id == record.market_snapshot_id)
-            )
-            .mappings()
-            .one()
-        )
-        market_archive = (
-            connection.execute(
-                select(import_batches).where(
-                    import_batches.c.id == market_row["batch_id"]
-                )
-            )
-            .mappings()
-            .one()
-        )
+        market_row = market_rows.get(record.market_snapshot_id)
+        market_dependencies = [
+            row
+            for row in dependencies
+            if row["derived_type"] == "market"
+            or row["archive_type"] == "market_import_batch"
+        ]
+        if (
+            market_row is None
+            or len(market_dependencies) != 1
+            or market_dependencies[0]["source_id"] != market_row["source_id"]
+            or market_dependencies[0]["archive_type"] != "market_import_batch"
+            or market_dependencies[0]["archive_id"] != market_row["batch_id"]
+            or market_dependencies[0]["derived_type"] != "market"
+            or market_dependencies[0]["derived_id"] != record.id
+            or market_dependencies[0]["publication_id"] != record.id
+        ):
+            raise Forbidden("Publication market identity is invalid")
+        market_archive = market_archives.get(market_row["batch_id"])
+        if market_archive is None:
+            raise Forbidden("Publication market identity is invalid")
         market_batch = MarketBatch.model_validate_json(market_archive["canonical_json"])
         self.market._authorize(grants[market_row["source_id"]], market_batch)
         market = self.market._snapshot(market_row, market_archive)
 
         if record.topic_snapshot_id is not None:
-            topic_row = (
-                connection.execute(
-                    select(topic_snapshots).where(
-                        topic_snapshots.c.id == record.topic_snapshot_id
-                    )
-                )
-                .mappings()
-                .first()
-            )
+            topic_row = topic_rows.get(record.topic_snapshot_id)
             topic_dependencies = [
                 row
                 for row in dependencies
@@ -205,15 +187,9 @@ class PublicationRepository:
                 or topic_dependencies[0]["publication_id"] != record.id
             ):
                 raise Forbidden("Publication topic identity is invalid")
-            topic_archive = (
-                connection.execute(
-                    select(topic_import_batches).where(
-                        topic_import_batches.c.id == topic_row["batch_id"]
-                    )
-                )
-                .mappings()
-                .one()
-            )
+            topic_archive = topic_archives.get(topic_row["batch_id"])
+            if topic_archive is None:
+                raise Forbidden("Publication topic identity is invalid")
             topic_batch = TopicBatch.model_validate_json(
                 topic_archive["canonical_json"]
             )
@@ -231,22 +207,13 @@ class PublicationRepository:
         ):
             raise Forbidden("Publication topic identity is invalid")
 
-        result_rows = (
-            connection.execute(
-                select(publication_results)
-                .where(publication_results.c.publication_id == record.id)
-                .order_by(publication_results.c.domain)
-            )
-            .mappings()
-            .all()
-        )
         return PublishedSnapshot(
             record,
             market,
-            tuple(self._result(row) for row in result_rows),
+            tuple(self._result(row) for row in result_rows.get(record.id, ())),
         )
 
-    def _authorized_records(self, connection, rows):
+    def _authorized_records(self, connection, rows, *, omit_forbidden=False):
         records = [_publication(row) for row in rows]
         publication_ids = [record.id for record in records]
         dependencies = (
@@ -264,27 +231,123 @@ class PublicationRepository:
             if publication_ids
             else []
         )
+        market_rows = {
+            row["id"]: row
+            for row in connection.execute(
+                select(snapshots).where(
+                    snapshots.c.id.in_(record.market_snapshot_id for record in records)
+                )
+            )
+            .mappings()
+            .all()
+        }
+        market_archives = {
+            row["id"]: row
+            for row in connection.execute(
+                select(import_batches).where(
+                    import_batches.c.id.in_(
+                        row["batch_id"] for row in market_rows.values()
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        }
+        topic_rows = {
+            row["id"]: row
+            for row in connection.execute(
+                select(topic_snapshots).where(
+                    topic_snapshots.c.id.in_(
+                        record.topic_snapshot_id
+                        for record in records
+                        if record.topic_snapshot_id is not None
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        }
+        topic_archives = {
+            row["id"]: row
+            for row in connection.execute(
+                select(topic_import_batches).where(
+                    topic_import_batches.c.id.in_(
+                        row["batch_id"] for row in topic_rows.values()
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        }
+        source_ids = {
+            *(row["source_id"] for row in dependencies),
+            *(row["source_id"] for row in market_rows.values()),
+            *(row["source_id"] for row in topic_rows.values()),
+        }
         grants = self._lock_sources(
             connection,
-            [
-                *(row["source_id"] for row in dependencies),
-                *connection.execute(
-                    select(snapshots.c.source_id).where(
-                        snapshots.c.id.in_(
-                            record.market_snapshot_id for record in records
-                        )
-                    )
-                ).scalars(),
-                *connection.execute(
-                    select(topic_snapshots.c.source_id).where(
-                        topic_snapshots.c.id.in_(
-                            record.topic_snapshot_id
-                            for record in records
-                            if record.topic_snapshot_id is not None
-                        )
-                    )
-                ).scalars(),
-            ],
+            source_ids,
+        )
+        results = (
+            connection.execute(
+                select(publication_results)
+                .where(publication_results.c.publication_id.in_(publication_ids))
+                .order_by(
+                    publication_results.c.publication_id,
+                    publication_results.c.domain,
+                )
+            )
+            .mappings()
+            .all()
+            if publication_ids
+            else []
+        )
+        result_rows = {
+            publication_id: [
+                row for row in results if row["publication_id"] == publication_id
+            ]
+            for publication_id in publication_ids
+        }
+        ranked_withdrawals = (
+            select(
+                withdrawal_records.c.source_id,
+                withdrawal_records.c.action,
+                func.row_number()
+                .over(
+                    partition_by=withdrawal_records.c.source_id,
+                    order_by=withdrawal_records.c.sequence.desc(),
+                )
+                .label("rank"),
+            )
+            .where(withdrawal_records.c.source_id.in_(source_ids))
+            .subquery()
+        )
+        active_withdrawal_sources = set(
+            connection.execute(
+                select(ranked_withdrawals.c.source_id).where(
+                    ranked_withdrawals.c.rank == 1,
+                    ranked_withdrawals.c.action != "restored",
+                )
+            ).scalars()
+        )
+        withdrawn_publications = set(
+            connection.execute(
+                select(source_dependencies.c.publication_id)
+                .join(
+                    withdrawal_dependencies,
+                    withdrawal_dependencies.c.source_dependency_id
+                    == source_dependencies.c.id,
+                )
+                .join(
+                    withdrawal_records,
+                    withdrawal_records.c.id == withdrawal_dependencies.c.withdrawal_id,
+                )
+                .where(
+                    source_dependencies.c.publication_id.in_(publication_ids),
+                    withdrawal_records.c.action.in_(("deidentified", "deleted")),
+                )
+                .distinct()
+            ).scalars()
         )
         by_publication = {
             publication_id: [
@@ -292,15 +355,27 @@ class PublicationRepository:
             ]
             for publication_id in publication_ids
         }
-        return [
-            self._authorized_snapshot(
-                connection,
-                record,
-                by_publication[record.id],
-                grants,
-            )
-            for record in records
-        ]
+        authorized = []
+        for record in records:
+            try:
+                snapshot = self._authorized_snapshot(
+                    record,
+                    by_publication[record.id],
+                    grants,
+                    market_rows=market_rows,
+                    market_archives=market_archives,
+                    topic_rows=topic_rows,
+                    topic_archives=topic_archives,
+                    result_rows=result_rows,
+                    active_withdrawal_sources=active_withdrawal_sources,
+                    withdrawn_publications=withdrawn_publications,
+                )
+            except Forbidden:
+                if omit_forbidden:
+                    continue
+                raise
+            authorized.append(snapshot)
+        return authorized
 
     def get_publication(self, publication_id: UUID | str) -> Publication | None:
         publication_id = _uuid(publication_id)
@@ -384,44 +459,33 @@ class PublicationRepository:
             publications.c.version.desc(),
             publications.c.id,
         )
-        with self.database.engine.begin() as connection:
-            rows = connection.execute(query).mappings().all()
-            visible = []
-            records = [_publication(row) for row in rows]
-            publication_ids = [record.id for record in records]
-            dependencies = (
-                connection.execute(
-                    select(source_dependencies)
-                    .where(source_dependencies.c.publication_id.in_(publication_ids))
-                    .order_by(
-                        source_dependencies.c.source_id,
-                        source_dependencies.c.archive_type,
-                        source_dependencies.c.archive_id,
-                    )
+        batch_size = max(10, min(100, limit + offset))
+        candidate_offset = 0
+        authorized_offset = 0
+        visible = []
+        while len(visible) < limit:
+            with self.database.engine.begin() as connection:
+                rows = (
+                    connection.execute(query.offset(candidate_offset).limit(batch_size))
+                    .mappings()
+                    .all()
                 )
-                .mappings()
-                .all()
-            )
-            grants = self._lock_sources(
-                connection, (row["source_id"] for row in dependencies)
-            )
-            for record in records:
-                try:
-                    visible.append(
-                        self._authorized_snapshot(
-                            connection,
-                            record,
-                            [
-                                row
-                                for row in dependencies
-                                if row["publication_id"] == record.id
-                            ],
-                            grants,
-                        )
-                    )
-                except Forbidden:
-                    continue
-            return visible[offset : offset + limit]
+                authorized = self._authorized_records(
+                    connection,
+                    rows,
+                    omit_forbidden=True,
+                )
+            for snapshot in authorized:
+                if authorized_offset < offset:
+                    authorized_offset += 1
+                else:
+                    visible.append(snapshot)
+                    if len(visible) == limit:
+                        break
+            if len(rows) < batch_size:
+                break
+            candidate_offset += len(rows)
+        return visible
 
     def list_results(self, publication_id: UUID | str) -> tuple[PublicationResult, ...]:
         publication_id = _uuid(publication_id)

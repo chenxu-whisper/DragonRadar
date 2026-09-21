@@ -58,6 +58,11 @@ publications = Table(
     UniqueConstraint("trade_date", "version"),
     CheckConstraint("version > 0"),
     CheckConstraint("status IN ('draft', 'published', 'revoked')"),
+    CheckConstraint(
+        "(status = 'draft' AND published_at IS NULL) "
+        "OR (status IN ('published', 'revoked') AND published_at IS NOT NULL)",
+        name="publications_status_published_at",
+    ),
     Index(
         "publications_listing",
         text("trade_date DESC"),
@@ -118,6 +123,13 @@ source_dependencies = Table(
     metadata,
     Column("id", PGUUID(as_uuid=True), primary_key=True),
     Column(
+        "dependency_sequence",
+        BigInteger,
+        Identity(always=True),
+        nullable=False,
+        unique=True,
+    ),
+    Column(
         "source_id",
         Text,
         ForeignKey("source_grants.source_id", ondelete="RESTRICT"),
@@ -142,6 +154,11 @@ source_dependencies = Table(
         "derived_id",
     ),
     Index("source_dependencies_source", "source_id", "publication_id"),
+    Index(
+        "source_dependencies_source_sequence",
+        "source_id",
+        "dependency_sequence",
+    ),
 )
 
 withdrawal_records = Table(
@@ -159,6 +176,7 @@ withdrawal_records = Table(
     Column("scope", String(20), nullable=False),
     Column("action", String(30), nullable=False),
     Column("policy_reference", Text),
+    Column("cutoff_dependency_sequence", BigInteger),
     Column("details", JSONB, nullable=False),
     Column("occurred_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("scope IN ('display', 'storage')"),
@@ -167,9 +185,10 @@ withdrawal_records = Table(
     ),
     CheckConstraint(
         "(action IN ('deidentified', 'deleted') "
-        "AND scope = 'storage' AND policy_reference IS NOT NULL) "
+        "AND scope = 'storage' AND policy_reference IS NOT NULL "
+        "AND cutoff_dependency_sequence IS NOT NULL) "
         "OR (action IN ('blocked', 'replayed', 'restored') "
-        "AND policy_reference IS NULL)",
+        "AND policy_reference IS NULL AND cutoff_dependency_sequence IS NULL)",
         name="withdrawal_records_scope_action_policy",
     ),
     Index("withdrawal_records_source", "source_id", "sequence"),

@@ -1,6 +1,5 @@
 """Source dependency, withdrawal, retention, and recovery contracts."""
 
-from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -80,6 +79,7 @@ def test_display_withdrawal_blocks_reads_clears_cache_and_preserves_storage(
 
     assert withdrawal.scope == "display"
     assert withdrawal.action == "blocked"
+    assert withdrawal.cutoff_dependency_sequence is None
     assert cache.get(record.id) is None
     with pytest.raises(Forbidden):
         service.repository.get_snapshot(record.id)
@@ -123,6 +123,7 @@ def test_storage_withdrawal_without_policy_disables_modules_without_deleting(
 
     assert withdrawal.action == "blocked"
     assert withdrawal.policy_reference is None
+    assert withdrawal.cutoff_dependency_sequence is None
     with database.engine.connect() as connection:
         current = connection.execute(
             select(source_grants.c.grant).where(
@@ -302,6 +303,45 @@ def test_approved_policy_deidentifies_derived_content_and_keeps_tombstones(
     assert all("protected" not in str(row["details"]) for row in ledger)
 
 
+def test_destructive_withdrawal_captures_dependency_sequence_cutoff(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-sequence-cutoff",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+
+    assert "dependency_sequence" in source_dependencies.c
+    assert "cutoff_dependency_sequence" in withdrawal_records.c
+    assert withdrawal.cutoff_dependency_sequence is not None
+    with database.engine.connect() as connection:
+        ledger = (
+            connection.execute(
+                select(withdrawal_records)
+                .where(withdrawal_records.c.source_id == "synthetic")
+                .order_by(withdrawal_records.c.sequence)
+            )
+            .mappings()
+            .all()
+        )
+        dependency_sequences = connection.execute(
+            select(source_dependencies.c.dependency_sequence).where(
+                source_dependencies.c.source_id == "synthetic"
+            )
+        ).scalars()
+    assert ledger[0]["action"] == "blocked"
+    assert ledger[0]["cutoff_dependency_sequence"] is None
+    assert ledger[1]["action"] == "deidentified"
+    assert ledger[1]["cutoff_dependency_sequence"] == max(dependency_sequences)
+
+
 def test_restore_requires_retention_action_then_ledger_replay(
     published, database, repository
 ):
@@ -347,6 +387,12 @@ def test_restore_requires_retention_action_then_ledger_replay(
         "deidentified",
         "replayed",
         "restored",
+    ]
+    assert [row["cutoff_dependency_sequence"] is None for row in ledger] == [
+        True,
+        False,
+        True,
+        True,
     ]
     assert ledger[2]["details"]["through_sequence"] == ledger[1]["sequence"]
     assert controls
@@ -454,17 +500,16 @@ def test_database_rejects_binding_old_withdrawal_to_future_dependency(
     retention.replay_withdrawals("synthetic")
     retention.restore_source("synthetic", grant())
 
-    future = NOW + timedelta(days=1)
-    future_repository = Repository(database, clock=lambda: future)
+    future_repository = Repository(database, clock=lambda: NOW)
     market = future_repository.publish(
         future_repository.import_batch(batch(), key="future-binding-market").id
     )
-    topics = TopicRepository(database, clock=lambda: future)
+    topics = TopicRepository(database, clock=lambda: NOW)
     topic = topics.publish(
         topics.import_batch(topic_batch(), key="future-binding-topic").id
     )
     future_record = PublicationService(
-        database, future_repository, clock=lambda: future
+        database, future_repository, clock=lambda: NOW
     ).publish(
         PublicationCommand(
             trade_date=DAYS[-1],
@@ -485,6 +530,12 @@ def test_database_rejects_binding_old_withdrawal_to_future_dependency(
             .mappings()
             .one()
         )
+        cutoff = connection.scalar(
+            select(withdrawal_records.c.cutoff_dependency_sequence).where(
+                withdrawal_records.c.id == withdrawal.id
+            )
+        )
+    assert dependency["dependency_sequence"] > cutoff
 
     values = {
         "id": uuid4(),
@@ -527,6 +578,7 @@ def test_database_rejects_mixed_withdrawal_dependency_shape(published, database)
                     scope="storage",
                     action="deleted",
                     policy_reference="shape-test",
+                    cutoff_dependency_sequence=dependency["dependency_sequence"],
                     details={},
                     occurred_at=NOW,
                 )
@@ -549,15 +601,16 @@ def test_database_rejects_mixed_withdrawal_dependency_shape(published, database)
 
 
 @pytest.mark.parametrize(
-    ("scope", "action", "policy_reference"),
+    ("scope", "action", "policy_reference", "cutoff"),
     [
-        ("display", "deidentified", "forged-policy"),
-        ("display", "deleted", "forged-policy"),
-        ("storage", "deidentified", None),
-        ("storage", "deleted", None),
-        ("display", "blocked", "forged-policy"),
-        ("storage", "replayed", "forged-policy"),
-        ("display", "restored", "forged-policy"),
+        ("display", "deidentified", "forged-policy", 1),
+        ("display", "deleted", "forged-policy", 1),
+        ("storage", "deidentified", None, 1),
+        ("storage", "deleted", "forged-policy", None),
+        ("display", "blocked", "forged-policy", None),
+        ("display", "blocked", None, 1),
+        ("storage", "replayed", "forged-policy", None),
+        ("display", "restored", "forged-policy", None),
     ],
 )
 def test_database_rejects_invalid_withdrawal_scope_action_policy(
@@ -566,6 +619,7 @@ def test_database_rejects_invalid_withdrawal_scope_action_policy(
     scope,
     action,
     policy_reference,
+    cutoff,
 ):
     _service, record = published
     with database.engine.connect() as connection:
@@ -587,6 +641,7 @@ def test_database_rejects_invalid_withdrawal_scope_action_policy(
                 scope=scope,
                 action=action,
                 policy_reference=policy_reference,
+                cutoff_dependency_sequence=cutoff,
                 details={},
                 occurred_at=NOW,
             )
@@ -624,6 +679,7 @@ def test_result_retention_trigger_rejects_display_deleted_legacy_record(
                 scope="display",
                 action="deleted",
                 policy_reference="forged-display-policy",
+                cutoff_dependency_sequence=0,
                 details={},
                 occurred_at=NOW,
             )
@@ -639,11 +695,23 @@ def test_result_retention_trigger_rejects_display_deleted_legacy_record(
             .one()
         )
         connection.execute(
+            text(
+                "ALTER TABLE withdrawal_dependencies "
+                "DISABLE TRIGGER withdrawal_dependencies_insert_guard"
+            )
+        )
+        connection.execute(
             insert(withdrawal_dependencies).values(
                 id=uuid4(),
                 withdrawal_id=withdrawal_id,
                 source_dependency_id=dependency["id"],
                 created_at=NOW,
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_dependencies "
+                "ENABLE TRIGGER withdrawal_dependencies_insert_guard"
             )
         )
 

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from threading import RLock
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dragon_radar.publication.models import (
@@ -63,6 +63,7 @@ def _record(row) -> WithdrawalRecord:
         scope=row["scope"],
         action=row["action"],
         policy_reference=row["policy_reference"],
+        cutoff_dependency_sequence=row["cutoff_dependency_sequence"],
         details=row["details"],
         occurred_at=row["occurred_at"],
     )
@@ -90,6 +91,7 @@ class RetentionService:
         scope,
         action,
         policy_reference=None,
+        cutoff_dependency_sequence=None,
         details=None,
     ):
         return (
@@ -101,6 +103,7 @@ class RetentionService:
                     scope=scope,
                     action=action,
                     policy_reference=policy_reference,
+                    cutoff_dependency_sequence=cutoff_dependency_sequence,
                     details=details or {},
                     occurred_at=self.clock(),
                 )
@@ -142,7 +145,9 @@ class RetentionService:
         dependencies = (
             connection.execute(
                 select(source_dependencies).where(
-                    source_dependencies.c.source_id == withdrawal["source_id"]
+                    source_dependencies.c.source_id == withdrawal["source_id"],
+                    source_dependencies.c.dependency_sequence
+                    <= withdrawal["cutoff_dependency_sequence"],
                 )
             )
             .mappings()
@@ -238,12 +243,21 @@ class RetentionService:
                 )
             else:
                 action = "deidentified" if policy.action == "deidentify" else "deleted"
+                cutoff = (
+                    connection.scalar(
+                        select(
+                            func.max(source_dependencies.c.dependency_sequence)
+                        ).where(source_dependencies.c.source_id == source_id)
+                    )
+                    or 0
+                )
                 row = self._append(
                     connection,
                     source_id=source_id,
                     scope="storage",
                     action=action,
                     policy_reference=policy.reference,
+                    cutoff_dependency_sequence=cutoff,
                     details={"derived_content": policy.action},
                 )
                 self._bind_withdrawal(connection, row)

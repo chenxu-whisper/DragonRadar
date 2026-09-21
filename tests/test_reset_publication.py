@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from factories import DAYS, NOW, batch, grant
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event, insert, inspect, select, text
+from sqlalchemy import event, insert, inspect, select, text, update
 from sqlalchemy.exc import DBAPIError
 from topic_factories import topic_batch
 
@@ -293,6 +293,56 @@ def test_replay_is_idempotent_conflicting_key_rejected_and_revision_appends(
         )
 
 
+def test_new_publish_returns_committed_record_without_post_commit_read(
+    publication, database, monkeypatch
+):
+    service, command = publication
+
+    def fail_post_commit_read(_publication_id):
+        raise RuntimeError("post-commit authorization read")
+
+    monkeypatch.setattr(
+        service.repository,
+        "get_publication",
+        fail_post_commit_read,
+    )
+
+    record = service.publish(command, key="return-without-post-commit-read")
+
+    assert record.status == "published"
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(text("count(*)"))
+                .select_from(publications)
+                .where(
+                    publications.c.id == record.id,
+                    publications.c.status == "published",
+                )
+            )
+            == 1
+        )
+        assert (
+            connection.scalar(
+                select(text("count(*)"))
+                .select_from(publication_results)
+                .where(publication_results.c.publication_id == record.id)
+            )
+            == 5
+        )
+
+
+def test_idempotent_replay_still_rechecks_current_authorization(
+    publication, repository
+):
+    service, command = publication
+    service.publish(command, key="replay-rechecks-authorization")
+    repository.register_source(grant(local_display=False))
+
+    with pytest.raises(Forbidden):
+        service.publish(command, key="replay-rechecks-authorization")
+
+
 @pytest.mark.parametrize(
     ("status", "publication_reference", "command_hash"),
     [
@@ -517,6 +567,105 @@ async def test_current_display_permission_is_rechecked_for_list_and_fixed_read(
         selection.get_snapshot(record.id)
 
 
+def test_list_snapshots_batches_candidates_and_prefetches_related_rows(
+    publication, database, repository
+):
+    service, command = publication
+    expected = service.publish(command, key="bounded-list-00")
+    for index in range(1, 20):
+        market = repository.publish(
+            repository.import_batch(
+                batch(source_time=NOW),
+                key=f"bounded-list-market-{index:02}",
+            ).id
+        )
+        expected = service.publish(
+            command.model_copy(update={"market_snapshot_id": market.id}),
+            key=f"bounded-list-{index:02}",
+        )
+
+    statements = []
+    candidate_row_counts = []
+
+    def count_sql(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+        if (
+            "FROM publications" in statement
+            and "publications.status" in statement
+            and "ORDER BY publications.trade_date" in statement
+        ):
+            candidate_row_counts.append(cursor.rowcount)
+
+    event.listen(database.engine, "after_cursor_execute", count_sql)
+    try:
+        listed = service.repository.list_snapshots(limit=1)
+    finally:
+        event.remove(database.engine, "after_cursor_execute", count_sql)
+
+    candidate_queries = [
+        statement
+        for statement in statements
+        if "FROM publications" in statement
+        and "publications.status" in statement
+        and "ORDER BY publications.trade_date" in statement
+    ]
+    assert [item.id for item in listed] == [expected.id]
+    assert candidate_queries
+    assert all("LIMIT" in statement for statement in candidate_queries)
+    assert candidate_row_counts == [10]
+    assert len(statements) <= 12
+
+
+def test_list_snapshots_applies_offset_after_authorization_filter(
+    publication, database, repository
+):
+    service, command = publication
+    first = service.publish(command, key="authorized-offset-first")
+    second_market = repository.publish(
+        repository.import_batch(
+            batch(source_time=NOW),
+            key="authorized-offset-second-market",
+        ).id
+    )
+    second = service.publish(
+        command.model_copy(update={"market_snapshot_id": second_market.id}),
+        key="authorized-offset-second",
+    )
+    denied_grant = grant(source_id="denied-list-source")
+    repository.register_source(denied_grant)
+    denied_batch = batch()
+    denied_batch = denied_batch.model_copy(
+        update={
+            "source_id": denied_grant.source_id,
+            "grant": denied_grant,
+            "security_states": tuple(
+                item.model_copy(update={"source_id": denied_grant.source_id})
+                for item in denied_batch.security_states
+            ),
+            "bars": tuple(
+                item.model_copy(update={"source_id": denied_grant.source_id})
+                for item in denied_batch.bars
+            ),
+        }
+    )
+    denied_market = repository.publish(
+        repository.import_batch(
+            denied_batch,
+            key="denied-list-market",
+        ).id
+    )
+    service.publish(
+        command.model_copy(update={"market_snapshot_id": denied_market.id}),
+        key="denied-list-publication",
+    )
+    repository.register_source(denied_grant.model_copy(update={"local_display": False}))
+
+    listed = service.repository.list_snapshots(limit=1, offset=1)
+
+    assert [item.id for item in listed] == [first.id]
+    assert second.id != first.id
+
+
 def test_unified_read_holds_all_source_locks_through_result_assembly(
     publication, database, repository
 ):
@@ -560,8 +709,17 @@ def _clone_publication_with_dependencies(
     topic_snapshot_id,
     dependency_domains,
     status="published",
+    result_domains=None,
+    result_updates=None,
+    dependency_updates=None,
+    bypass_transition=False,
 ):
     publication_id = uuid4()
+    result_domains = set(
+        result_domains or ("market", "topic", "news", "regulation", "role")
+    )
+    result_updates = result_updates or {}
+    dependency_updates = dependency_updates or {}
     with database.engine.begin() as connection:
         original = (
             connection.execute(
@@ -576,7 +734,8 @@ def _clone_publication_with_dependencies(
             version=record.version + 1,
             supersedes=record.id,
             topic_snapshot_id=topic_snapshot_id,
-            status=status,
+            status="draft",
+            published_at=None,
         )
         connection.execute(insert(publications).values(**values))
         results = (
@@ -589,8 +748,11 @@ def _clone_publication_with_dependencies(
             .all()
         )
         for result in results:
+            if result["domain"] not in result_domains:
+                continue
             values = dict(result)
             values["publication_id"] = publication_id
+            values.update(result_updates.get(result["domain"], {}))
             connection.execute(insert(publication_results).values(**values))
         dependencies = (
             connection.execute(
@@ -604,13 +766,166 @@ def _clone_publication_with_dependencies(
         )
         for dependency in dependencies:
             values = dict(dependency)
+            values.pop("dependency_sequence", None)
             values.update(
                 id=uuid4(),
                 derived_id=publication_id,
                 publication_id=publication_id,
             )
+            values.update(dependency_updates.get(dependency["derived_type"], {}))
             connection.execute(insert(source_dependencies).values(**values))
+        if status in {"published", "revoked"}:
+            if bypass_transition:
+                connection.execute(
+                    text(
+                        "ALTER TABLE publications "
+                        "DISABLE TRIGGER publications_transition"
+                    )
+                )
+            connection.execute(
+                update(publications)
+                .where(publications.c.id == publication_id)
+                .values(status="published", published_at=record.published_at)
+            )
+            if bypass_transition:
+                connection.execute(
+                    text(
+                        "ALTER TABLE publications "
+                        "ENABLE TRIGGER publications_transition"
+                    )
+                )
+        if status == "revoked":
+            connection.execute(
+                update(publications)
+                .where(publications.c.id == publication_id)
+                .values(status="revoked")
+            )
     return publication_id
+
+
+@pytest.mark.parametrize(
+    ("status", "published_at"),
+    [
+        ("published", NOW),
+        ("revoked", NOW),
+        ("draft", NOW),
+        ("published", None),
+    ],
+)
+def test_database_requires_draft_insert_and_consistent_published_at(
+    publication, database, status, published_at
+):
+    service, command = publication
+    record = service.publish(
+        command, key=f"insert-state-{status}-{published_at is None}"
+    )
+    with database.engine.connect() as connection:
+        original = (
+            connection.execute(
+                select(publications).where(publications.c.id == record.id)
+            )
+            .mappings()
+            .one()
+        )
+    values = dict(original)
+    values.update(
+        id=uuid4(),
+        version=record.version + 1,
+        supersedes=record.id,
+        status=status,
+        published_at=published_at,
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(publications).values(**values))
+
+
+@pytest.mark.parametrize(
+    ("result_domains", "result_updates"),
+    [
+        (("market", "topic", "news", "regulation"), {}),
+        (None, {"market": {"input_id": None}}),
+        (None, {"news": {"status": "ready"}}),
+        (None, {"topic": {"status": "missing"}}),
+    ],
+)
+def test_database_transition_requires_complete_result_contract(
+    publication, database, result_domains, result_updates
+):
+    service, command = publication
+    record = service.publish(command, key=f"result-contract-{uuid4()}")
+    draft_id = _clone_publication_with_dependencies(
+        database,
+        record,
+        topic_snapshot_id=record.topic_snapshot_id,
+        dependency_domains=("market", "topic"),
+        status="draft",
+        result_domains=result_domains,
+        result_updates=result_updates,
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            update(publications)
+            .where(publications.c.id == draft_id)
+            .values(status="published", published_at=NOW)
+        )
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing-market",
+        "mismatched-market",
+        "duplicate-market",
+        "missing-topic",
+        "mismatched-topic",
+    ],
+)
+def test_database_transition_requires_exact_input_lineage(
+    publication, database, defect
+):
+    service, command = publication
+    record = service.publish(command, key=f"lineage-contract-{defect}")
+    dependency_domains = ["market", "topic"]
+    dependency_updates = {}
+    if defect == "missing-market":
+        dependency_domains.remove("market")
+    elif defect == "missing-topic":
+        dependency_domains.remove("topic")
+    elif defect == "mismatched-market":
+        dependency_updates["market"] = {"archive_id": uuid4()}
+    elif defect == "mismatched-topic":
+        dependency_updates["topic"] = {"archive_id": uuid4()}
+    draft_id = _clone_publication_with_dependencies(
+        database,
+        record,
+        topic_snapshot_id=record.topic_snapshot_id,
+        dependency_domains=tuple(dependency_domains),
+        status="draft",
+        dependency_updates=dependency_updates,
+    )
+    if defect == "duplicate-market":
+        with database.engine.begin() as connection:
+            connection.execute(
+                insert(source_dependencies).values(
+                    id=uuid4(),
+                    source_id="synthetic",
+                    archive_type="market_import_batch",
+                    archive_id=uuid4(),
+                    derived_type="market",
+                    derived_id=draft_id,
+                    publication_id=draft_id,
+                    created_at=NOW,
+                )
+            )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            update(publications)
+            .where(publications.c.id == draft_id)
+            .values(status="published", published_at=NOW)
+        )
 
 
 @pytest.mark.parametrize("status", ["draft", "revoked"])
@@ -637,6 +952,7 @@ def test_unified_read_rejects_missing_topic_dependency(publication, database):
         record,
         topic_snapshot_id=record.topic_snapshot_id,
         dependency_domains=("market",),
+        bypass_transition=True,
     )
 
     with pytest.raises(Forbidden):
@@ -658,6 +974,7 @@ def test_unified_read_rejects_topic_snapshot_dependency_mismatch(publication, da
         record,
         topic_snapshot_id=other_topic.id,
         dependency_domains=("market", "topic"),
+        bypass_transition=True,
     )
 
     with pytest.raises(Forbidden):
@@ -691,6 +1008,41 @@ def test_unified_read_rejects_duplicate_topic_dependencies(publication, database
 
     with pytest.raises(Forbidden):
         service.repository.get_snapshot(record.id)
+
+
+@pytest.mark.parametrize("defect", ["missing", "mismatched", "duplicate"])
+def test_unified_read_rejects_invalid_market_dependency(publication, database, defect):
+    service, command = publication
+    record = service.publish(command, key=f"read-market-{defect}")
+    dependency_domains = ("topic",) if defect == "missing" else ("market", "topic")
+    dependency_updates = (
+        {"market": {"archive_id": uuid4()}} if defect == "mismatched" else {}
+    )
+    tampered_id = _clone_publication_with_dependencies(
+        database,
+        record,
+        topic_snapshot_id=record.topic_snapshot_id,
+        dependency_domains=dependency_domains,
+        dependency_updates=dependency_updates,
+        bypass_transition=True,
+    )
+    if defect == "duplicate":
+        with database.engine.begin() as connection:
+            connection.execute(
+                insert(source_dependencies).values(
+                    id=uuid4(),
+                    source_id="synthetic",
+                    archive_type="market_import_batch",
+                    archive_id=uuid4(),
+                    derived_type="market",
+                    derived_id=tampered_id,
+                    publication_id=tampered_id,
+                    created_at=NOW,
+                )
+            )
+
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(tampered_id)
 
 
 def test_publication_validation_locks_distinct_sources_in_stable_order(
@@ -731,8 +1083,6 @@ def test_publication_validation_locks_distinct_sources_in_stable_order(
         event.remove(database.engine, "after_cursor_execute", observe_lock)
 
     assert source_lock_order == [
-        "source:aaa-topic",
-        "source:synthetic",
         "source:aaa-topic",
         "source:synthetic",
     ]
