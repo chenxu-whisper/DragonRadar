@@ -5,9 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 
-from dragon_radar.analytics.metrics import market_breadth
+from dragon_radar.analytics.metrics import market_breadth  # noqa: F401
 from dragon_radar.http.contracts import (
-    archived_coverage,
     empty_envelope,
     snapshot_envelope,
     snapshot_summary,
@@ -17,6 +16,7 @@ from dragon_radar.http.errors import (
     error_response,
     register_error_handlers,
 )
+from dragon_radar.http.routes.market import router as market_router
 from dragon_radar.http.selection import (
     query_date,
     query_integer,
@@ -25,7 +25,6 @@ from dragon_radar.http.selection import (
     selectors,
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
-from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.readmodels.securities import security_detail
 from dragon_radar.storage.database import Database
@@ -110,34 +109,7 @@ def create_workbench_app(
         }
         return DecimalJSONResponse(payload)
 
-    @app.get("/api/market/overview")
-    def overview(request: Request):
-        trade_date, snapshot_id = selectors(request)
-        snapshot = select_snapshot(get_repository(request), trade_date, snapshot_id)
-        if snapshot is None:
-            return DecimalJSONResponse(empty_envelope(trade_date))
-        if isinstance(snapshot, PublishedSnapshot):
-            stored = snapshot.result("market")
-            serialized = stored.model_dump(mode="python")
-            coverage = archived_coverage(serialized["coverage"])
-            data = serialized["payload"]
-        else:
-            result = market_breadth(snapshot.batch)
-            coverage = archived_coverage(result.coverage.model_dump())
-            data = result.model_dump(
-                mode="python",
-                include={
-                    "advancing",
-                    "declining",
-                    "unchanged",
-                    "returns",
-                    "exclusions",
-                },
-            )
-        data["coverage"] = coverage
-        return DecimalJSONResponse(
-            snapshot_envelope(snapshot, data, unit="ratio", coverage=coverage)
-        )
+    app.include_router(market_router)
 
     @app.get("/api/stock/{security_id}")
     def stock(security_id: str, request: Request):

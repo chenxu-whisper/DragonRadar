@@ -1,22 +1,28 @@
 import { useMemo, type ComponentType } from 'react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
-import type { Envelope, Overview as Breadth, Securities } from '../types';
+import type { Envelope, Overview as Breadth, ResetHeatmap, ResetOverview, Securities, WorkbenchEnvelope } from '../types';
 import type { ResearchState } from '../state';
 import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
 
 interface Props {
   state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, trigger: HTMLElement) => void;
-  compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>;
+  compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>; reset?: boolean;
 }
-export function Overview({ state, patch, refreshToken, open, compare, ReviewActions }: Props) {
+export function Overview({ state, patch, refreshToken, open, compare, ReviewActions, reset = false }: Props) {
   const base = `/api/v1/snapshots/${state.snapshot}`;
-  const breadth = useResource<Envelope<Breadth>>(`${base}/overview`, state.snapshot, refreshToken);
+  const selector = new URLSearchParams({ snapshot_id: state.snapshot });
+  if (state.date) selector.set('date', state.date);
+  const resetOverview = useResource<WorkbenchEnvelope<ResetOverview>>(reset ? `/api/market/overview?${selector}` : null, state.snapshot, refreshToken);
+  const resetHeatmap = useResource<WorkbenchEnvelope<ResetHeatmap>>(reset ? `/api/market/heatmap?${selector}&days=60` : null, state.snapshot, refreshToken);
+  const resetSectors = useResource<WorkbenchEnvelope<{ sectors: ResetOverview['hot_sectors'] }>>(reset ? `/api/market/sector-flow?${selector}&top_n=10` : null, state.snapshot, refreshToken);
+  const resetSentiment = useResource<WorkbenchEnvelope<{ series: unknown[] }>>(reset ? `/api/market/sentiment?${selector}&days=20` : null, state.snapshot, refreshToken);
+  const breadth = useResource<Envelope<Breadth>>(reset ? null : `${base}/overview`, state.snapshot, refreshToken);
   const params = new URLSearchParams({
     q: state.q, sort: state.sort, order: state.order, page: String(state.page), page_size: String(state.page_size),
   });
-  const rows = useResource<Envelope<Securities>>(`${base}/securities?${params}`, state.snapshot, refreshToken);
+  const rows = useResource<Envelope<Securities>>(reset ? null : `${base}/securities?${params}`, state.snapshot, refreshToken);
   const counts = breadth.data?.result;
   const option = useMemo(() => ({
     grid: { left: 48, right: 16, top: 16, bottom: 32 },
@@ -29,6 +35,65 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
       { value: counts.unchanged, itemStyle: { color: '#64748b' } },
     ] : [] }],
   }), [counts]);
+  if (reset) {
+    const overview = resetOverview.data?.data;
+    const ratio = (value: number | null) => value === null ? '不适用' : `${(value * 100).toFixed(2)}%`;
+    const filterNames = { up: '上涨', down: '下跌', flat: '平盘', limit_up: '涨停', limit_down: '跌停' };
+    return <>
+      <div className="page-heading"><div><p className="eyebrow">发布事实 / 原始市场观测</p><h1>市场总览</h1></div><span className="muted">不含研究评分与阶段判断</span></div>
+      <ResourceStatus resource={resetOverview} name="市场总览" />
+      {overview && <>
+        {overview.indexes.length > 0 && <section aria-label="指数横条" className="index-strip">
+          {overview.indexes.map(item => <div key={item.security_id}><strong>{item.name}</strong><span>{item.last ?? '—'}</span><small>{ratio(item.change_ratio)}</small></div>)}
+        </section>}
+        <section aria-label="涨跌与情绪" className="market-grid">
+          <div>
+            <h2>涨跌分布</h2>
+            <div className="metric-actions">
+              <button aria-pressed={state.market_filter === 'up'} onClick={() => patch({ market_filter: 'up' })}>上涨 {overview.breadth.up}</button>
+              <button aria-pressed={state.market_filter === 'down'} onClick={() => patch({ market_filter: 'down' })}>下跌 {overview.breadth.down}</button>
+              <button aria-pressed={state.market_filter === 'flat'} onClick={() => patch({ market_filter: 'flat' })}>平盘 {overview.breadth.flat}</button>
+            </div>
+            {state.market_filter && <p className="filter-context">当前筛选上下文：{filterNames[state.market_filter]}</p>}
+            <p className="muted">有效 {overview.breadth.coverage.valid} / 应有 {overview.breadth.coverage.expected} · 排除 {overview.breadth.coverage.excluded} · 缺失 {overview.breadth.coverage.missing}</p>
+            <p>封板率 {overview.breadth.seal_rate.numerator}/{overview.breadth.seal_rate.denominator} · {ratio(overview.breadth.seal_rate.value)}</p>
+          </div>
+          <div>
+            <h2>情绪原始观测</h2>
+            <dl className="market-observations">
+              <div><dt>涨停 / 跌停</dt><dd>{overview.sentiment.limit_up_count} / {overview.sentiment.limit_down_count}</dd></div>
+              <div><dt>最高板</dt><dd>{overview.sentiment.max_boards}</dd></div>
+              <div><dt>晋级率</dt><dd>{overview.sentiment.promote_rate.numerator}/{overview.sentiment.promote_rate.denominator} · {ratio(overview.sentiment.promote_rate.value)}</dd></div>
+              <div><dt>昨涨停今收益中位数</dt><dd>{ratio(overview.sentiment.yesterday_limit_up_median_return)}</dd></div>
+            </dl>
+          </div>
+        </section>
+        <section aria-labelledby="sector-title">
+          <div className="section-heading"><h2 id="sector-title">题材扩散</h2><button disabled={!overview.historical_topic_analysis.enabled}>历史题材分析</button></div>
+          {!overview.historical_topic_analysis.enabled && <p className="muted">缺少历史题材成员，历史分析不可用。</p>}
+          <div className="sector-list">{overview.hot_sectors.map(item =>
+            <button key={item.sector_id} onClick={() => patch({ view: 'leaders', sector: item.sector_id })}>
+              <strong>{item.name}</strong><span>成员 {item.member_count} · 涨停 {item.limit_up_count} · 中位收益 {ratio(item.median_return)}</span>
+              <small>净流入：不适用（来源未提供）{item.quality_flags.includes('sample_insufficient') ? ' · 样本不足' : ''}</small>
+            </button>)}</div>
+        </section>
+        <section aria-labelledby="heatmap-title">
+          <h2 id="heatmap-title">涨停情绪热力图</h2>
+          <ResourceStatus resource={resetHeatmap} name="热力图" />
+          <div className="heatmap-cells">{resetHeatmap.data?.data.cells.map(cell =>
+            <button key={`${cell.trade_date}-${cell.boards}`} aria-label={`${cell.trade_date} ${cell.boards}板 ${cell.count}家`}
+              onClick={() => patch({ view: 'leaders', date: cell.trade_date, snapshot: '', sector: '' })}>
+              <span>{cell.trade_date}</span><strong>{cell.boards}板</strong><b>{cell.count}</b>
+            </button>)}</div>
+        </section>
+        <details className="evidence"><summary>来源与方法</summary>
+          <p>来源 {resetOverview.data?.source} / {resetOverview.data?.source_version} · 截至 {resetOverview.data?.as_of} · 比率单位为小数，页面按百分数展示。</p>
+        </details>
+      </>}
+      <ResourceStatus resource={resetSectors} name="题材统计" />
+      <ResourceStatus resource={resetSentiment} name="情绪序列" />
+    </>;
+  }
   return <>
     <div className="page-heading"><div><p className="eyebrow">快照事实 / 只读研究</p><h1>市场总览</h1></div><span className="muted">不提供交易指令</span></div>
     <section aria-label="市场涨跌分布">

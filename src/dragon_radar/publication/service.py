@@ -2,12 +2,12 @@
 
 import hashlib
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import insert, select, update
 
-from dragon_radar.analytics.metrics import market_breadth
 from dragon_radar.domain.models import MarketBatch
 from dragon_radar.domain.quality import validate_batch
 from dragon_radar.publication.models import (
@@ -28,6 +28,7 @@ from dragon_radar.publication.tables import (
     publications,
     source_dependencies,
 )
+from dragon_radar.readmodels.market import materialize_market
 from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import (
     Conflict,
@@ -42,6 +43,19 @@ from dragon_radar.topics.repository import TopicRepository
 from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
 
 Materializer = Callable[[object, PublicationCommand], DomainMaterialization]
+
+
+def _stored_json(value):
+    """Store exact decimals as strings; routes restore numeric tokens."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _stored_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_stored_json(item) for item in value]
+    return value
 
 
 class PublicationService:
@@ -161,21 +175,20 @@ class PublicationService:
         return (market_row, market_archive, market_batch), topic_context, dependencies
 
     @staticmethod
-    def _market_materialization(context) -> DomainMaterialization:
+    def _market_materialization(context, topic_context=None) -> DomainMaterialization:
         _row, archive, batch = context
-        overview = market_breadth(batch)
+        topic_batch = topic_context[2] if topic_context is not None else None
+        payload = materialize_market(batch, topic_batch)
+        wire_coverage = payload["overview"]["breadth"]["coverage"]
+        coverage = {
+            "expected": wire_coverage["expected"],
+            "valid": wire_coverage["valid"],
+            "legal_excluded": wire_coverage["excluded"],
+            "missing": wire_coverage["missing"],
+        }
         return DomainMaterialization(
-            payload=overview.model_dump(
-                mode="json",
-                include={
-                    "advancing",
-                    "declining",
-                    "unchanged",
-                    "returns",
-                    "exclusions",
-                },
-            ),
-            coverage=overview.coverage.model_dump(mode="json"),
+            payload=_stored_json(payload),
+            coverage=coverage,
             quality_flags=tuple(
                 issue["code"] for issue in archive["quality_report"]["issues"]
             ),
@@ -280,7 +293,9 @@ class PublicationService:
                         elif domain in overrides:
                             result = overrides[domain](connection, command)
                         elif domain == "market":
-                            result = self._market_materialization(market_context)
+                            result = self._market_materialization(
+                                market_context, topic_context
+                            )
                         elif domain == "topic":
                             result = self._topic_materialization(topic_context)
                         else:

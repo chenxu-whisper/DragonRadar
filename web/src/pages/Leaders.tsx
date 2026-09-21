@@ -1,8 +1,10 @@
 import { ModuleState } from '../components/ModuleState';
 
 export function Leaders() {
+  const sector = new URLSearchParams(window.location.search).get('sector');
   return <>
     <div className="page-heading"><div><p className="eyebrow">梯队结构 / 角色证据</p><h1>梯队</h1></div></div>
+    {sector && <p className="filter-context">题材上下文：{sector}</p>}
     <ModuleState reason="新版角色计算与梯队发布读接口尚未接入。" missing={[
       '缺少绑定所选快照的板数矩阵、晋级率与候选结果。',
       '缺少已确认的角色规则版本及题材成员证据。',

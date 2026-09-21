@@ -37,3 +37,38 @@ export interface IntervalItem {
   normalized_curve: (string | null)[];
 }
 export interface Interval { sessions: string[]; items: IntervalItem[]; exclusions: Exclusion[] }
+
+export interface WorkbenchCoverage { expected: number; valid: number; excluded: number; missing: number }
+export interface WorkbenchEnvelope<T> {
+  trade_date: string; as_of: string; snapshot_id: string; source: string; source_version: string;
+  coverage: WorkbenchCoverage; quality_flags: string[]; rule_version: string;
+  basis: { unit: string | null; currency: string | null; price_type: string | null; benchmark: string | null };
+  data: T;
+}
+export interface ResetSnapshotData {
+  revision: number; supersedes: string | null; published_at: string; security_count: number;
+}
+export interface ResetRatio {
+  numerator: number; denominator: number; value: number | null; reason: string | null;
+}
+export interface ResetSector {
+  sector_id: string; name: string; member_count: number; valid_returns: number;
+  median_return: number | null; change_ratio: number | null; limit_up_count: number | null;
+  net_inflow: number | null; net_inflow_reason: string | null; quality_flags: string[];
+  coverage: WorkbenchCoverage;
+}
+export interface ResetOverview {
+  indexes: { security_id: string; code: string | null; name: string; last: number | null; change_ratio: number | null; amount: number | null; reason: string | null }[];
+  breadth: { up: number; down: number; flat: number; valid_total: number; coverage: WorkbenchCoverage; seal_rate: ResetRatio };
+  sentiment: {
+    limit_up_count: number; limit_down_count: number; max_boards: number;
+    promote_rate: ResetRatio & { yesterday_ge2: number; excluded: number; missing: number };
+    yesterday_limit_up_median_return: number | null;
+  };
+  hot_sectors: ResetSector[];
+  factors: Record<string, unknown>;
+  historical_topic_analysis: { enabled: boolean; reason: string | null };
+}
+export interface ResetHeatmap {
+  columns: number[]; cells: { trade_date: string; boards: number; count: number }[];
+}

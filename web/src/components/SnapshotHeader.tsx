@@ -3,21 +3,38 @@ import { RefreshCw } from 'lucide-react';
 import { timestamp } from '../format';
 import { useResource, useAccess } from '../hooks/useResource';
 import type { ResearchState } from '../state';
-import type { Snapshot } from '../types';
+import type { ResetSnapshotData, Snapshot, WorkbenchEnvelope } from '../types';
 import { ResourceStatus, type Patch } from './Common';
 
 export function versionName(snapshot: Snapshot): string {
   return `${snapshot.result.revision <= 1 ? '首版' : `修订第 ${snapshot.result.revision} 版`} · ${snapshot.provenance === 'retrospective' ? '回溯' : '当时记录'} · ${timestamp(snapshot.result.published_at)}`;
 }
-export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, refreshToken }: {
-  state: ResearchState; snapshot?: Snapshot; patch: Patch; refresh: () => void; refreshing: boolean; refreshToken: number;
+export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, refreshToken, reset = false }: {
+  state: ResearchState; snapshot?: Snapshot; patch: Patch; refresh: () => void; refreshing: boolean; refreshToken: number; reset?: boolean;
 }) {
   const { denied } = useAccess();
   const [offset, setOffset] = useState(0);
   const date = state.date || snapshot?.trade_date || '';
   useEffect(() => setOffset(0), [date]);
-  const versions = useResource<Snapshot[]>(date && !denied ? `/api/v1/snapshots?trade_date=${date}&limit=100&offset=${offset}` : null, undefined, refreshToken);
-  const options = versions.data || [];
+  const versions = useResource<Snapshot[] | WorkbenchEnvelope<{ snapshots: WorkbenchEnvelope<ResetSnapshotData>[] }>>(
+    date && !denied
+      ? reset ? `/api/snapshots/list?date=${date}&limit=100&offset=${offset}` : `/api/v1/snapshots?trade_date=${date}&limit=100&offset=${offset}`
+      : null,
+    undefined,
+    refreshToken,
+  );
+  const options: Snapshot[] = versions.data
+    ? Array.isArray(versions.data) ? versions.data : versions.data.data.snapshots.map(item => ({
+      snapshot_id: item.snapshot_id, trade_date: item.trade_date, as_of: item.as_of, source_time: null,
+      source: { id: item.source, version: item.source_version },
+      coverage: { ...item.coverage, legal_excluded: item.coverage.excluded },
+      coverage_scope: 'snapshot_current', analysis_coverage: null,
+      units: { currency: item.basis.currency ? [item.basis.currency] : [], price_unit: [], volume_unit: [], amount_unit: [] },
+      quality_flags: item.quality_flags, rule_version: item.rule_version, basis: 'published_market',
+      manifest: { rule_version: item.rule_version }, provenance: 'contemporaneous',
+      result: { ...item.data, calendar_sessions: [], earliest_date: item.trade_date },
+    }))
+    : [];
   const includeCurrent = snapshot && !options.some(item => item.snapshot_id === snapshot.snapshot_id);
   return <header className="snapshot-header" aria-label="快照上下文">
     <div className="snapshot-controls">

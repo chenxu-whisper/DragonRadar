@@ -3,7 +3,7 @@ import { BarChart3, ChartNoAxesCombined, ChevronLeft, Menu, Radar, Newspaper, La
 import { useLocation } from './hooks/useLocation';
 import { AccessProvider, useAccess, useResource } from './hooks/useResource';
 import { parseState, stateSearch, toggleCompare, type ResearchState } from './state';
-import type { Snapshot } from './types';
+import type { ResetSnapshotData, Snapshot, WorkbenchEnvelope } from './types';
 import { ResourceStatus, shouldHandleSpaClick, SnapshotEvidence } from './components/Common';
 import { SnapshotHeader } from './components/SnapshotHeader';
 import { Comparison } from './components/Comparison';
@@ -19,6 +19,21 @@ import { Regulation } from './pages/Regulation';
 import { verifiedSnapshotTradeDate } from './features/local-review/note-command';
 
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
+type ResetSnapshot = WorkbenchEnvelope<ResetSnapshotData>;
+type ResetSnapshotList = WorkbenchEnvelope<{ snapshots: ResetSnapshot[] }>;
+
+function legacySnapshot(value: ResetSnapshot): Snapshot {
+  return {
+    snapshot_id: value.snapshot_id, trade_date: value.trade_date, as_of: value.as_of,
+    source_time: null, source: { id: value.source, version: value.source_version },
+    coverage: { ...value.coverage, legal_excluded: value.coverage.excluded },
+    coverage_scope: 'snapshot_current', analysis_coverage: null,
+    units: { currency: value.basis.currency ? [value.basis.currency] : [], price_unit: [], volume_unit: [], amount_unit: [] },
+    quality_flags: value.quality_flags, rule_version: value.rule_version, basis: 'published_market',
+    manifest: { rule_version: value.rule_version }, provenance: 'contemporaneous',
+    result: { ...value.data, calendar_sessions: [], earliest_date: value.trade_date },
+  };
+}
 const LocalReview = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(() => import('./features/local-review/LocalReview'))
   : null;
@@ -53,11 +68,20 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const [drawer, setDrawer] = useState<{ id: string; trigger: HTMLElement; context: string } | null>(null);
   const context = stateSearch(state, privateEnabled, resetEnabled);
   const PendingPage = resetEnabled ? ({ news: News, leaders: Leaders, regulation: Regulation } as Partial<Record<ResearchState['view'], ComponentType>>)[state.view] : undefined;
-  const list = useResource<Snapshot[]>(!state.snapshot ? `/api/v1/snapshots?${new URLSearchParams({
-    ...(state.date ? { trade_date: state.date } : {}), limit: '100', offset: '0',
-  })}` : null, undefined, refreshToken);
-  const summary = useResource<Snapshot>(state.snapshot ? `/api/v1/snapshots/${state.snapshot}` : null, state.snapshot, refreshToken);
-  const snapshot = summary.data && (!state.date || state.date === summary.data.trade_date) ? summary.data : undefined;
+  const list = useResource<Snapshot[] | ResetSnapshotList>(resetEnabled
+    ? `/api/snapshots/list?${new URLSearchParams({ ...(state.date ? { date: state.date } : {}), limit: '100', offset: '0' })}`
+    : !state.snapshot ? `/api/v1/snapshots?${new URLSearchParams({
+      ...(state.date ? { trade_date: state.date } : {}), limit: '100', offset: '0',
+    })}` : null, undefined, refreshToken);
+  const resetSnapshots = resetEnabled && list.data && !Array.isArray(list.data)
+    ? list.data.data.snapshots.map(legacySnapshot) : [];
+  const legacySnapshots = Array.isArray(list.data) ? list.data : [];
+  const availableSnapshots = resetEnabled ? resetSnapshots : legacySnapshots;
+  const summary = useResource<Snapshot>(!resetEnabled && state.snapshot ? `/api/v1/snapshots/${state.snapshot}` : null, state.snapshot, refreshToken);
+  const selectedSummary = resetEnabled
+    ? availableSnapshots.find(item => item.snapshot_id === state.snapshot)
+    : summary.data;
+  const snapshot = selectedSummary && (!state.date || state.date === selectedSummary.trade_date) ? selectedSummary : undefined;
   useEffect(() => {
     if (!privateEnabled) return;
     const openNote = (event: Event) => { setDrawer(null); patch({ view: 'review', note: (event as CustomEvent<string>).detail }, true); };
@@ -74,17 +98,17 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     return () => window.removeEventListener('local-open-review', openReview);
   }, [patch]);
   useEffect(() => {
-    if (!state.snapshot && list.data?.length && !denied) {
-      const chosen = list.data[0];
+    if (!state.snapshot && availableSnapshots.length && !denied) {
+      const chosen = availableSnapshots[0];
       patch({ snapshot: chosen.snapshot_id, date: chosen.trade_date }, true);
     }
-  }, [list.data, state.snapshot, denied, patch]);
+  }, [availableSnapshots, state.snapshot, denied, patch]);
   useEffect(() => {
-    if (summary.data && state.date !== summary.data.trade_date) {
+    if (selectedSummary && state.date !== selectedSummary.trade_date) {
       if (state.date) setNotice('网址日期与快照不一致，已按指定快照的实际交易日期纠正。');
-      patch({ date: summary.data.trade_date }, true);
+      patch({ date: selectedSummary.trade_date }, true);
     }
-  }, [summary.data, state.date, patch]);
+  }, [selectedSummary, state.date, patch]);
   useEffect(() => { setDrawer(null); }, [context, denied, privateFeatures?.locked]);
   useEffect(() => {
     if (denied) { setNotice(''); patch({ compare: [], ...(resetEnabled && state.view === 'review' ? {} : { security: '' }) }, true); }
@@ -130,7 +154,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     </aside>
     <div className="workspace">
       {PrivateToolbar && <PrivateToolbar />}
-      <SnapshotHeader state={state} snapshot={snapshot} patch={patch} refresh={refresh} refreshing={summary.loading || list.loading} refreshToken={refreshToken} />
+      <SnapshotHeader state={state} snapshot={snapshot} patch={patch} refresh={refresh} refreshing={summary.loading || list.loading} refreshToken={refreshToken} reset={resetEnabled} />
       <main id="main" tabIndex={-1}>
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')}>关闭提示</button></div>}
         {LocalReview && state.view === 'review'
@@ -148,10 +172,10 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
           : denied ? <div className="empty access-denied" role="alert"><h1>来源访问已被拒绝</h1><p>已清除所有受保护内容与内存中的来源数据。恢复授权后可重新请求。</p><button className="primary" onClick={retry}>重新检查访问权限</button></div> : PendingPage ? <PendingPage /> : <>
           <ResourceStatus resource={list} name="快照列表" />
           <ResourceStatus resource={summary} name="快照" />
-          {!state.snapshot && list.data?.length === 0 && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
+          {!state.snapshot && availableSnapshots.length === 0 && !list.loading && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
           {snapshot && <>
             <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />
-            {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} />}
+            {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled} />}
             {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} />}
             {state.view === 'stock' && <SecurityPage state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />}
             {state.view !== 'stock' && <>

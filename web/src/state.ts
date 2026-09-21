@@ -5,6 +5,8 @@ export interface ResearchState {
   order: 'asc' | 'desc'; page: number; page_size: number; n: number;
   start: string; end: string; compare: string[]; security: string;
   return_view: 'overview' | 'analysis'; note: string;
+  market_filter: '' | 'up' | 'down' | 'flat' | 'limit_up' | 'limit_down';
+  sector: string;
 }
 
 export function validDate(value: string): boolean {
@@ -64,12 +66,16 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   if (q.length > 100) invalid();
   let security = pathSecurity ?? (p.get('security') || '');
   if (security.length > 200 || security === '.' || security === '..') { invalid(); security = ''; }
+  let sector = p.get('sector') || '';
+  if (sector.length > 200 || sector === '.' || sector === '..') { invalid(); sector = ''; }
   return { state: {
     view, snapshot, note: note.toLowerCase(), date: date('date'), q: q.slice(0, 100), sort,
     order: choice('order', ['asc', 'desc'], 'asc'), page: integer('page', 1, 100000),
     page_size: [20, 50, 100].includes(page_size) ? page_size : 50,
     n: integer('n', 20, 250), start: date('start'), end: date('end'), compare, security,
     return_view: choice('return_view', ['overview', 'analysis'], 'overview'),
+    market_filter: choice('market_filter', ['', 'up', 'down', 'flat', 'limit_up', 'limit_down'], ''),
+    sector,
   }, notices };
 }
 
@@ -77,7 +83,7 @@ export function stateSearch(state: ResearchState, allowPrivate = false, reset = 
   const allowed = reset || ['overview', 'analysis', 'stock'].includes(state.view) || (allowPrivate && state.view === 'review');
   const normalized = { ...state, view: allowed ? state.view : 'overview', note: allowPrivate ? state.note : '' };
   const p = new URLSearchParams();
-  const keys: (keyof ResearchState)[] = ['view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end', 'compare', 'security', 'return_view', 'note'];
+  const keys: (keyof ResearchState)[] = ['view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end', 'compare', 'security', 'return_view', 'note', 'market_filter', 'sector'];
   for (const key of keys) {
     const value = normalized[key];
     if (key === 'compare') { if (normalized.compare.length) p.set(key, normalized.compare.join(',')); }

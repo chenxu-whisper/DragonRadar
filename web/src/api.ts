@@ -49,7 +49,8 @@ function validateSecurityResponse(data: unknown, id: string): void {
 }
 
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  if (!path.startsWith('/api/v1/') || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
+  const resetPath = /^\/api\/(?:snapshots\/list|market\/(?:overview|sector-flow|sentiment|heatmap)|search)(?:[?#]|$)/.test(path);
+  if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
   let securityId: string | undefined;
