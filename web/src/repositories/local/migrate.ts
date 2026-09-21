@@ -1,5 +1,5 @@
 import type {
-  LocalNote, LocalVerification, LocalWatch, StoredNoteContent,
+  LocalImportPlan, LocalNote, LocalVerification, LocalWatch, StoredNoteContent,
 } from './repository';
 
 export type ImportDecision = 'merge' | 'save-as-new';
@@ -57,12 +57,8 @@ export interface ImportPreview {
   unresolved_conflicts: string[];
   added: { notes: number; revisions: number; verifications: number; watchlist: number };
 }
-export interface ImportPlan extends ImportPreview {
+export interface ImportPlan extends ImportPreview, LocalImportPlan {
   backup_hash: string;
-  notes: LocalNote[];
-  revisions: LocalNote[];
-  verifications: LocalVerification[];
-  watchlist: LocalWatch[];
 }
 
 const keys = (value: Record<string, unknown>) => Object.keys(value).sort().join(',');
@@ -91,6 +87,13 @@ const date = (value: unknown): string | null => {
 const exact = (value: Record<string, unknown>, expected: string[]) => {
   if (keys(value) !== [...expected].sort().join(',')) fail();
 };
+function immutable<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) immutable(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 function normalizeContent(value: unknown): BackupContent {
   const row = object(value);
@@ -200,10 +203,13 @@ export function parseReviewBackup(input: string | unknown): ReviewBackup {
     const revision = revisions.find(row => row.revision_id === verification.revision_id);
     if (revision?.note_id !== verification.note_id) fail();
   }
-  const verificationIds = new Set(verifications.map(row => row.verification_id));
-  if (verificationIds.size !== verifications.length) fail();
+  const verificationById = new Map(verifications.map(row => [row.verification_id, row]));
+  if (verificationById.size !== verifications.length) fail();
   for (const verification of verifications) {
-    if (verification.supersedes !== null && !verificationIds.has(verification.supersedes)) fail();
+    if (verification.supersedes === null) continue;
+    const prior = verificationById.get(verification.supersedes);
+    if (!prior || prior.note_id !== verification.note_id
+      || prior.revision_id !== verification.revision_id) fail();
   }
   return normalized;
 }
@@ -232,16 +238,56 @@ async function noteHash(snapshot: string, content: StoredNoteContent): Promise<s
   ]));
 }
 
+interface RevisionProvenance {
+  backup_id: string;
+  note_id: string;
+  revision: number;
+  revision_id: string;
+}
+
+function localProvenance(row: LocalNote): RevisionProvenance | undefined {
+  if (row.source_backup_id && row.source_note_id && row.source_revision && row.source_revision_id) {
+    return {
+      backup_id: `source:${row.source_backup_id}`,
+      note_id: row.source_note_id,
+      revision: row.source_revision,
+      revision_id: row.source_revision_id,
+    };
+  }
+  if (row.source_backup_hash && row.source_note_id && row.source_revision && row.source_revision_id) {
+    return {
+      backup_id: `file:${row.source_backup_hash}`,
+      note_id: row.source_note_id,
+      revision: row.source_revision,
+      revision_id: row.source_revision_id,
+    };
+  }
+  const legacy = /^backup:([\da-f]{64}):(.+):(\d+)$/.exec(row.idempotency_key);
+  if (!legacy || !row.source_revision_id) return undefined;
+  return {
+    backup_id: `file:${legacy[1]}`,
+    note_id: legacy[2],
+    revision: Number(legacy[3]),
+    revision_id: row.source_revision_id,
+  };
+}
+
+function provenanceIdentity(value: RevisionProvenance): string {
+  return JSON.stringify([value.backup_id, value.note_id, value.revision, value.revision_id]);
+}
+
 export async function planReviewImport(
   source: ReviewBackup,
   state: BackupState,
   decision?: ImportDecision,
 ): Promise<ImportPlan> {
   const backup_hash = await digest(JSON.stringify(source));
+  const source_backup_id = await digest(JSON.stringify(source.profile_mapping));
   const result: ImportPlan = {
     backup_hash, decision, duplicates: 0, appended_revisions: 0,
     remapped_note_ids: {}, remapped_revisions: {}, unresolved_conflicts: [],
     added: { notes: 0, revisions: 0, verifications: 0, watchlist: 0 },
+    expected_state: state,
     notes: [], revisions: [], verifications: [], watchlist: [],
   };
   const existingNotes = new Map(state.notes.map(note => [note.note_id, note]));
@@ -255,14 +301,18 @@ export async function planReviewImport(
     const collides = existingNotes.has(note.note_id);
     let target = note.note_id;
     if (decision === 'save-as-new') {
-      target = `import-${(await digest(`${backup_hash}:${state.profile}:${note.note_id}`)).slice(0, 32)}`;
+      target = `import-${(await digest(`${source_backup_id}:${state.profile}:${note.note_id}`)).slice(0, 32)}`;
       result.remapped_note_ids[note.note_id] = target;
     } else if (collides && decision === undefined) {
       result.unresolved_conflicts.push(note.note_id);
       continue;
     }
     const localRows = existingRevisions.get(target) ?? [];
-    const hashes = new Map(localRows.map(row => [row.content_hash, row.revision]));
+    const identities = new Map<string, LocalNote>();
+    for (const row of localRows) {
+      const provenance = localProvenance(row);
+      if (provenance) identities.set(provenanceIdentity(provenance), row);
+    }
     let nextRevision = Math.max(0, ...localRows.map(row => row.revision));
     const incoming = source.revisions
       .filter(row => row.note_id === note.note_id)
@@ -271,24 +321,38 @@ export async function planReviewImport(
     for (const row of incoming) {
       const content = stored(row.content);
       const content_hash = await noteHash(note.snapshot_id, content);
-      const duplicate = hashes.get(content_hash);
+      const identity = provenanceIdentity({
+        backup_id: `source:${source_backup_id}`,
+        note_id: note.note_id, revision: row.revision, revision_id: row.revision_id,
+      });
+      const legacyIdentity = provenanceIdentity({
+        backup_id: `file:${backup_hash}`,
+        note_id: note.note_id, revision: row.revision, revision_id: row.revision_id,
+      });
+      const duplicate = identities.get(identity) ?? identities.get(legacyIdentity);
       if (duplicate !== undefined) {
+        if (duplicate.content_hash !== content_hash || (duplicate.state ?? 'draft') !== row.state) {
+          result.unresolved_conflicts.push(`revision:${row.revision_id}`);
+          continue;
+        }
         result.duplicates += 1;
-        result.remapped_revisions[`${note.note_id}:${row.revision}`] = duplicate;
-        revisionMap.set(row.revision_id, { note_id: target, revision: duplicate });
+        result.remapped_revisions[`${note.note_id}:${row.revision}`] = duplicate.revision;
+        revisionMap.set(row.revision_id, { note_id: target, revision: duplicate.revision });
         continue;
       }
       nextRevision += 1;
       const imported: LocalNote = {
         note_id: target, local_profile_id: state.profile, snapshot_id: note.snapshot_id,
-        security_id: note.security_id, source_revision_id: row.revision_id, state: row.state,
+        security_id: note.security_id, source_backup_id, source_backup_hash: backup_hash,
+        source_note_id: note.note_id, source_revision: row.revision,
+        source_revision_id: row.revision_id, state: row.state,
         content, revision: nextRevision, content_hash,
         idempotency_key: `backup:${backup_hash}:${note.note_id}:${row.revision}`,
         updated_at: row.saved_at,
       };
       result.revisions.push(imported);
       latest = imported;
-      hashes.set(content_hash, nextRevision);
+      identities.set(identity, imported);
       result.appended_revisions += 1;
       result.remapped_revisions[`${note.note_id}:${row.revision}`] = nextRevision;
       revisionMap.set(row.revision_id, { note_id: target, revision: nextRevision });
@@ -300,12 +364,12 @@ export async function planReviewImport(
   }
   result.added.revisions = result.revisions.length;
   const existingVerifications = new Map(state.verifications.map(
-    row => [`${row.note_id}:${row.revision}:${row.verification_id}`, row],
+    row => [`${row.note_id}:${row.verification_id}`, row],
   ));
   for (const row of source.verifications) {
     const mapped = revisionMap.get(row.revision_id);
     if (!mapped) continue;
-    const key = `${mapped.note_id}:${mapped.revision}:${row.verification_id}`;
+    const key = `${mapped.note_id}:${row.verification_id}`;
     const imported: LocalVerification = {
       local_profile_id: state.profile, note_id: mapped.note_id, revision: mapped.revision,
       verification_id: row.verification_id, snapshot_id: row.snapshot_id,
@@ -326,9 +390,11 @@ export async function planReviewImport(
   for (const row of source.watchlist) {
     const current = existingWatch.get(row.security_id);
     if (current) {
-      if (current.watch_id === row.watch_id && current.snapshot_id === row.snapshot_id
+      if ((current.watch_id ?? `local:${current.security_id}`) === row.watch_id
+        && current.snapshot_id === row.snapshot_id
         && current.active === row.active && current.revision === row.revision
-        && current.added_at === row.added_at && current.updated_at === row.updated_at) result.duplicates += 1;
+        && current.added_at === row.added_at
+        && (current.updated_at ?? current.added_at) === row.updated_at) result.duplicates += 1;
       else result.unresolved_conflicts.push(`watch:${row.security_id}`);
       continue;
     }
@@ -339,5 +405,5 @@ export async function planReviewImport(
     });
   }
   result.added.watchlist = result.watchlist.length;
-  return result;
+  return immutable(result);
 }

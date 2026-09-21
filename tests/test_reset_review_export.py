@@ -38,7 +38,7 @@ def populated_review(repository, database):
             judgment="First judgment",
             evidence="First evidence",
             invalidation="Old invalidation",
-            verification_date=date(2026, 9, 11),
+            verification_date=date(2026, 9, 8),
         ),
     )
     second = review.save_note(
@@ -52,7 +52,7 @@ def populated_review(repository, database):
             judgment="Second judgment",
             evidence="Second evidence",
             invalidation="New invalidation",
-            verification_date=date(2026, 9, 12),
+            verification_date=date(2026, 9, 8),
         ),
     )
     confirmed = review.confirm_note(
@@ -118,7 +118,7 @@ def test_export_maps_legacy_fields_and_preserves_complete_history(repository, da
         "judgment": "First judgment",
         "evidence": "First evidence",
         "invalid_condition": "Old invalidation",
-        "verify_date": "2026-09-11",
+        "verify_date": "2026-09-08",
     }
     assert payload["revisions"][-1]["revision_id"] == confirmed["revision_id"]
     assert payload["verifications"] == [

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { exportLocalBackup, importLocalBackup, previewLocalBackup } from '../../repositories/local/backup';
-import type { ImportDecision, ImportPreview } from '../../repositories/local/migrate';
+import type { ImportDecision, ImportPlan } from '../../repositories/local/migrate';
 import { localRepository as repo, type LocalNote, type LocalWatch, type NoteContent, type StoredNoteContent } from '../../repositories/local/repository';
 import { registerLeaveGuard } from '../review/navigation';
 import './local-review.css';
@@ -29,7 +29,7 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
   const [backupText, setBackupText] = useState('');
   const [backupName, setBackupName] = useState('');
   const [decision, setDecision] = useState<ImportDecision | ''>('');
-  const [preview, setPreview] = useState<ImportPreview>();
+  const [preview, setPreview] = useState<ImportPlan>();
   const mounted = useRef(true), saving = useRef(false);
   const command = useRef<{ signature: string; id: string; key: string } | undefined>(undefined);
   const refresh = useCallback(async () => {
@@ -117,13 +117,19 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
     } catch (failure) { setError(message(failure)); }
   };
   const restore = async () => {
-    if (!decision || !backupText) return;
+    if (!decision || !preview) return;
     setBusy(true); setError(''); setStatus('');
     try {
-      const result = await importLocalBackup(repo, backupText, decision);
+      const result = await importLocalBackup(repo, preview);
       await refresh();
       setStatus(`恢复完成：新增 ${result.added.notes} 条笔记、${result.added.revisions} 个修订、${result.added.verifications} 条验证、${result.added.watchlist} 个自选；跳过 ${result.duplicates} 个重复项。`);
-    } catch (failure) { setError(message(failure)); }
+    } catch (failure) {
+      setError(message(failure));
+      if (failure instanceof Error && failure.message.includes('预览已过期')) {
+        setPreview(undefined);
+        setDecision('');
+      }
+    }
     finally { if (mounted.current) setBusy(false); }
   };
   const downloadBackup = async () => {

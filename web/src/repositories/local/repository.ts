@@ -9,6 +9,10 @@ export interface StoredNoteContent {
 export interface LocalNote {
   note_id: string; local_profile_id: string; snapshot_id: string;
   security_id?: string | null;
+  source_backup_id?: string;
+  source_backup_hash?: string;
+  source_note_id?: string;
+  source_revision?: number;
   source_revision_id?: string;
   state?: 'draft' | 'confirmed';
   content: StoredNoteContent; revision: number; content_hash: string;
@@ -36,6 +40,9 @@ export interface LocalImportWrites {
   revisions: LocalNote[];
   verifications: LocalVerification[];
   watchlist: LocalWatch[];
+}
+export interface LocalImportPlan extends LocalImportWrites {
+  expected_state: LocalBackupState;
 }
 interface SaveNote {
   note_id: string; expected_revision: number; key: string; snapshot_id: string; content: NoteContent;
@@ -78,6 +85,28 @@ async function digest(value: string): Promise<string> {
   return [...new Uint8Array(result)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 const businessStores = ['profiles', 'notes', 'note_revisions', 'watchlist', 'verification_records', 'commands'] as const;
+
+function stateSignature(state: LocalBackupState): string {
+  const notes = [...state.notes].sort((a, b) => a.note_id.localeCompare(b.note_id));
+  const revisions = [...state.revisions].sort(
+    (a, b) => a.note_id.localeCompare(b.note_id) || a.revision - b.revision,
+  );
+  const verifications = [...state.verifications].sort(
+    (a, b) => a.note_id.localeCompare(b.note_id)
+      || a.revision - b.revision || a.verification_id.localeCompare(b.verification_id),
+  );
+  const watchlist = state.watchlist.map(normalizeWatch)
+    .sort((a, b) => a.security_id.localeCompare(b.security_id));
+  return JSON.stringify({ profile: state.profile, notes, revisions, verifications, watchlist });
+}
+
+function normalizeWatch(row: LocalWatch): LocalWatch {
+  return {
+    ...row,
+    watch_id: row.watch_id ?? `local:${row.security_id}`,
+    updated_at: row.updated_at ?? row.added_at,
+  };
+}
 
 function createStores(db: IDBDatabase) {
   db.createObjectStore('profiles');
@@ -301,7 +330,9 @@ export class LocalRepository {
     const profile = await this.profile();
     const db = await this.db();
     const values = await request(db.transaction('watchlist').objectStore('watchlist').getAll()) as LocalWatch[];
-    return values.filter(v => v.local_profile_id === profile && v.active).sort((a, b) => b.added_at.localeCompare(a.added_at));
+    return values.filter(v => v.local_profile_id === profile && v.active)
+      .map(normalizeWatch)
+      .sort((a, b) => b.added_at.localeCompare(a.added_at));
   }
   async listVerifications(note_id?: string): Promise<LocalVerification[]> {
     const profile = await this.profile();
@@ -327,12 +358,10 @@ export class LocalRepository {
       notes: notes.filter(row => row.local_profile_id === profile),
       revisions: revisions.filter(row => row.local_profile_id === profile),
       verifications: verifications.filter(row => row.local_profile_id === profile),
-      watchlist: watchlist.filter(row => row.local_profile_id === profile),
+      watchlist: watchlist.filter(row => row.local_profile_id === profile).map(normalizeWatch),
     };
   }
-  async applyImport(writes: LocalImportWrites): Promise<void> {
-    if (!writes.notes.length && !writes.revisions.length
-      && !writes.verifications.length && !writes.watchlist.length) return;
+  async applyImport(writes: LocalImportPlan): Promise<void> {
     const profile = await this.profile();
     if ([...writes.notes, ...writes.revisions, ...writes.verifications, ...writes.watchlist]
       .some(row => row.local_profile_id !== profile)) throw new Error('导入配置与当前本地资料不匹配');
@@ -340,6 +369,22 @@ export class LocalRepository {
     const tx = db.transaction(['notes', 'note_revisions', 'verification_records', 'watchlist'], 'readwrite');
     const done = completion(tx);
     try {
+      const [notes, revisions, verifications, watchlist] = await Promise.all([
+        request(tx.objectStore('notes').getAll()) as Promise<LocalNote[]>,
+        request(tx.objectStore('note_revisions').getAll()) as Promise<LocalNote[]>,
+        request(tx.objectStore('verification_records').getAll()) as Promise<LocalVerification[]>,
+        request(tx.objectStore('watchlist').getAll()) as Promise<LocalWatch[]>,
+      ]);
+      const actual: LocalBackupState = {
+        profile,
+        notes: notes.filter(row => row.local_profile_id === profile),
+        revisions: revisions.filter(row => row.local_profile_id === profile),
+        verifications: verifications.filter(row => row.local_profile_id === profile),
+        watchlist: watchlist.filter(row => row.local_profile_id === profile),
+      };
+      if (stateSignature(actual) !== stateSignature(writes.expected_state)) {
+        throw new Error('导入预览已过期，请重新预览');
+      }
       for (const note of writes.notes) tx.objectStore('notes').put(note);
       for (const revision of writes.revisions) tx.objectStore('note_revisions').add(revision);
       for (const verification of writes.verifications) tx.objectStore('verification_records').add(verification);
@@ -350,7 +395,10 @@ export class LocalRepository {
       await done.catch(() => {});
       throw error;
     }
-    this.changed('backup', 'import', writes.revisions.length);
+    if (writes.notes.length || writes.revisions.length
+      || writes.verifications.length || writes.watchlist.length) {
+      this.changed('backup', 'import', writes.revisions.length);
+    }
   }
   async putWatchlist(security_id: string, action: 'add' | 'remove', key: string, snapshot_id: string): Promise<LocalWatch> {
     if (!security_id.trim() || security_id.length > 200 || !key || !['add', 'remove'].includes(action)) throw new Error('自选参数无效');
@@ -363,16 +411,17 @@ export class LocalRepository {
       const previous = await request(tx.objectStore('commands').get([profile, commandKey])) as Command | undefined;
       if (previous) {
         if (previous.payload !== payload) throw new Error('幂等键已用于不同自选操作');
-        result = previous.result as LocalWatch;
+        result = normalizeWatch(previous.result as LocalWatch);
       } else {
         const store = tx.objectStore('watchlist');
         const current = await request(store.get([profile, security_id])) as LocalWatch | undefined;
         const active = action === 'add';
-        result = current?.active === active ? current : {
+        const now = new Date().toISOString();
+        result = current?.active === active ? normalizeWatch(current) : normalizeWatch({
           security_id, local_profile_id: profile, snapshot_id: current?.snapshot_id || snapshot_id,
-          active, added_at: current?.added_at ?? new Date().toISOString(),
-          revision: (current?.revision ?? 0) + 1,
-        };
+          active, added_at: current?.added_at ?? now, revision: (current?.revision ?? 0) + 1,
+          watch_id: current?.watch_id ?? `local:${security_id}`, updated_at: now,
+        });
         if (result !== current) store.put(result);
         tx.objectStore('commands').put({ local_profile_id: profile, key: commandKey, payload, result });
       }
@@ -381,7 +430,9 @@ export class LocalRepository {
       try { tx.abort(); } catch { /* already finished */ }
       await done.catch(() => {}); throw error;
     }
-    const actual = await request(db.transaction('watchlist').objectStore('watchlist').get([profile, security_id]));
+    const actual = normalizeWatch(
+      await request(db.transaction('watchlist').objectStore('watchlist').get([profile, security_id])) as LocalWatch,
+    );
     if (JSON.stringify(actual) !== JSON.stringify(result)) throw new Error('自选回读发生变化，请刷新');
     this.changed('watchlist', security_id, result.revision);
     return result;

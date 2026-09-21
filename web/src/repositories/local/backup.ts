@@ -15,10 +15,8 @@ export async function previewLocalBackup(
 
 export async function importLocalBackup(
   repository: LocalRepository,
-  input: string | unknown,
-  decision: ImportDecision,
+  plan: ImportPlan,
 ): Promise<ImportPlan> {
-  const plan = await previewLocalBackup(repository, input, decision);
   if (plan.unresolved_conflicts.length) throw new Error('备份仍有未解决冲突');
   await repository.applyImport(plan);
   return plan;
