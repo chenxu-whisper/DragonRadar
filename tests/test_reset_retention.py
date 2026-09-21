@@ -324,13 +324,13 @@ def test_restore_requires_retention_action_then_ledger_replay(
     assert replay.action == "replayed"
     assert restored.action == "restored"
     with database.engine.connect() as connection:
-        actions = (
+        ledger = (
             connection.execute(
-                select(withdrawal_records.c.action)
+                select(withdrawal_records)
                 .where(withdrawal_records.c.source_id == "synthetic")
                 .order_by(withdrawal_records.c.sequence)
             )
-            .scalars()
+            .mappings()
             .all()
         )
         controls = (
@@ -342,7 +342,13 @@ def test_restore_requires_retention_action_then_ledger_replay(
             .mappings()
             .all()
         )
-    assert actions == ["blocked", "deidentified", "replayed", "restored"]
+    assert [row["action"] for row in ledger] == [
+        "blocked",
+        "deidentified",
+        "replayed",
+        "restored",
+    ]
+    assert ledger[2]["details"]["through_sequence"] == ledger[1]["sequence"]
     assert controls
     assert all(row["enabled"] for row in controls)
     assert all(not row["blocked_by_withdrawal"] for row in controls)

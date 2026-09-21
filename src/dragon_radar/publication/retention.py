@@ -310,12 +310,18 @@ class RetentionService:
             if not pending_blocks:
                 raise Conflict("No withdrawal records to replay")
             latest_block = pending_blocks[-1]
+            through_sequence = max(
+                row["sequence"]
+                for row in rows
+                if row["sequence"] > restored_sequence
+                and row["action"] in ("blocked", "deidentified", "deleted")
+            )
             row = self._append(
                 connection,
                 source_id=source_id,
                 scope=latest_block["scope"],
                 action="replayed",
-                details={"through_sequence": latest_block["sequence"]},
+                details={"through_sequence": through_sequence},
             )
         self.cache.clear_source(source_id)
         return _record(row)
@@ -348,13 +354,18 @@ class RetentionService:
             if not blocked:
                 raise Conflict("Withdrawal ledger must be replayed before restore")
             latest_block = blocked[-1]
+            required_replay_sequence = max(
+                row["sequence"]
+                for row in pending
+                if row["action"] in ("blocked", "deidentified", "deleted")
+            )
             replayed = [
                 row
                 for row in pending
                 if row["action"] == "replayed"
-                and row["sequence"] > latest_block["sequence"]
+                and row["sequence"] > required_replay_sequence
                 and type(row["details"].get("through_sequence")) is int
-                and row["details"]["through_sequence"] >= latest_block["sequence"]
+                and row["details"]["through_sequence"] >= required_replay_sequence
             ]
             if not replayed:
                 raise Conflict("Withdrawal ledger must be replayed before restore")
