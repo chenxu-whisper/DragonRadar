@@ -78,8 +78,9 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const legacySnapshots = Array.isArray(list.data) ? list.data : [];
   const availableSnapshots = resetEnabled ? resetSnapshots : legacySnapshots;
   const summary = useResource<Snapshot>(!resetEnabled && state.snapshot ? `/api/v1/snapshots/${state.snapshot}` : null, state.snapshot, refreshToken);
+  const resetSummary = useResource<ResetSnapshot>(resetEnabled && state.snapshot ? `/api/snapshots/${state.snapshot}` : null, state.snapshot, refreshToken);
   const selectedSummary = resetEnabled
-    ? availableSnapshots.find(item => item.snapshot_id === state.snapshot)
+    ? resetSummary.data ? legacySnapshot(resetSummary.data) : undefined
     : summary.data;
   const snapshot = selectedSummary && (!state.date || state.date === selectedSummary.trade_date) ? selectedSummary : undefined;
   useEffect(() => {
@@ -154,7 +155,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     </aside>
     <div className="workspace">
       {PrivateToolbar && <PrivateToolbar />}
-      <SnapshotHeader state={state} snapshot={snapshot} patch={patch} refresh={refresh} refreshing={summary.loading || list.loading} refreshToken={refreshToken} reset={resetEnabled} />
+      <SnapshotHeader state={state} snapshot={snapshot} patch={patch} refresh={refresh} refreshing={summary.loading || resetSummary.loading || list.loading} refreshToken={refreshToken} reset={resetEnabled} />
       <main id="main" tabIndex={-1}>
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')}>关闭提示</button></div>}
         {LocalReview && state.view === 'review'
@@ -162,7 +163,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载本地复盘…</p>}>
               <LocalReview
                 snapshot={state.snapshot || undefined}
-                tradeDate={verifiedSnapshotTradeDate(state.snapshot, summary.data)}
+                tradeDate={verifiedSnapshotTradeDate(state.snapshot, selectedSummary)}
                 security={state.security || undefined}
               />
             </Suspense></LazyLoadBoundary>
@@ -171,7 +172,9 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
           ? <PrivateWorkspace state={state} snapshot={denied ? undefined : snapshot} patch={patch} />
           : denied ? <div className="empty access-denied" role="alert"><h1>来源访问已被拒绝</h1><p>已清除所有受保护内容与内存中的来源数据。恢复授权后可重新请求。</p><button className="primary" onClick={retry}>重新检查访问权限</button></div> : PendingPage ? <PendingPage /> : <>
           <ResourceStatus resource={list} name="快照列表" />
-          <ResourceStatus resource={summary} name="快照" />
+          {resetEnabled
+            ? <ResourceStatus resource={resetSummary} name="快照" />
+            : <ResourceStatus resource={summary} name="快照" />}
           {!state.snapshot && availableSnapshots.length === 0 && !list.loading && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
           {snapshot && <>
             <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />

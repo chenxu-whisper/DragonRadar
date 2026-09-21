@@ -30,7 +30,7 @@ function summary(snapshotId: string, tradeDate: string) {
   });
 }
 
-async function mockResetMarket(page: Page) {
+async function mockResetMarket(page: Page, listIncludesSelected = true) {
   await page.route('**/api/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const respond = (body: unknown) => route.fulfill({ json: body });
@@ -38,8 +38,15 @@ async function mockResetMarket(page: Page) {
       const day = url.searchParams.get('date');
       const items = day === '2026-09-09'
         ? [summary(PRIOR, '2026-09-09')]
-        : [summary(CURRENT, '2026-09-10')];
+        : listIncludesSelected ? [summary(CURRENT, '2026-09-10')] : [];
+      if (!items.length) return respond(envelope(CURRENT, '2026-09-10', { snapshots: [] }));
       return respond(envelope(items[0].snapshot_id, items[0].trade_date, { snapshots: items }));
+    }
+    if (url.pathname === `/api/snapshots/${CURRENT}`) {
+      return respond(summary(CURRENT, '2026-09-10'));
+    }
+    if (url.pathname === `/api/snapshots/${PRIOR}`) {
+      return respond(summary(PRIOR, '2026-09-09'));
     }
     const selected = url.searchParams.get('snapshot_id') === PRIOR
       ? [PRIOR, '2026-09-09'] : [CURRENT, '2026-09-10'];
@@ -131,6 +138,17 @@ async function mockResetMarket(page: Page) {
     return route.fulfill({ status: 404, json: {} });
   });
 }
+
+test('explicit snapshot deep link does not depend on the first list page', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', request => requests.push(new URL(request.url()).pathname));
+  await mockResetMarket(page, false);
+
+  await page.goto(`/?view=overview&snapshot=${CURRENT}&date=2026-09-10`);
+
+  await expect(page.getByRole('heading', { name: '市场总览' })).toBeVisible();
+  expect(requests).toContain(`/api/snapshots/${CURRENT}`);
+});
 
 test('reset overview uses versioned APIs and persists drill-down context in URL', async ({ page }) => {
   const requests: string[] = [];

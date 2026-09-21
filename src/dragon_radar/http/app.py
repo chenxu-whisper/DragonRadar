@@ -2,6 +2,7 @@
 
 import os
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI, Request
 
@@ -28,7 +29,7 @@ from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.readmodels.securities import security_detail
 from dragon_radar.storage.database import Database
-from dragon_radar.storage.repository import Repository
+from dragon_radar.storage.repository import NotFound, Repository
 
 
 def get_repository(request: Request) -> Repository:
@@ -108,6 +109,13 @@ def create_workbench_app(
             "snapshots": [snapshot_summary(snapshot) for snapshot in snapshots]
         }
         return DecimalJSONResponse(payload)
+
+    @app.get("/api/snapshots/{snapshot_id}")
+    def get_snapshot_summary(snapshot_id: UUID, request: Request):
+        snapshot = get_repository(request).get_snapshot(snapshot_id)
+        if snapshot is None:
+            raise NotFound("Snapshot not found")
+        return DecimalJSONResponse(snapshot_summary(snapshot))
 
     app.include_router(market_router)
 

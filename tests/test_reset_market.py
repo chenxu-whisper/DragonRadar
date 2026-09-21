@@ -7,10 +7,12 @@ from uuid import uuid4
 import pytest
 from factories import bar, batch, state
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import update
 
 from dragon_radar.publication.models import PublicationCommand
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.publication.service import PublicationService
+from dragon_radar.publication.tables import publication_results
 
 pytestmark = pytest.mark.anyio
 
@@ -315,6 +317,36 @@ def test_yesterday_limit_up_feedback_discloses_missing_reason():
     )
 
 
+def test_yesterday_limit_up_feedback_counts_suspension_as_legal_exclusion():
+    from dragon_radar.readmodels.market import materialize_market
+
+    payload = _market_batch()
+    payload = payload.model_copy(
+        update={
+            "security_states": tuple(
+                item.model_copy(update={"suspended": True})
+                if item.security_id == "B"
+                else item
+                for item in payload.security_states
+            )
+        }
+    )
+
+    coverage = materialize_market(payload, None)["overview"]["sentiment"][
+        "yesterday_limit_up_return_coverage"
+    ]
+
+    assert coverage == {
+        "expected": 2,
+        "valid": 1,
+        "excluded": 1,
+        "missing": 0,
+    }
+    assert coverage["expected"] == (
+        coverage["valid"] + coverage["excluded"] + coverage["missing"]
+    )
+
+
 def test_topic_metrics_respect_bound_coverage_and_never_substitute_turnover():
     from topic_factories import topic_batch
 
@@ -341,6 +373,51 @@ def test_topic_metrics_respect_bound_coverage_and_never_substitute_turnover():
     assert sector["median_return"] is None
     assert sector["coverage"]["valid"] == 0
     assert "topic_coverage_unavailable" in sector["quality_flags"]
+
+
+def test_topic_member_coverage_counts_suspension_as_legal_exclusion():
+    from topic_factories import topic_batch, topic_membership
+
+    from dragon_radar.readmodels.market import materialize_market
+
+    market = _market_batch()
+    market = market.model_copy(
+        update={
+            "security_states": tuple(
+                item.model_copy(update={"suspended": True})
+                if item.security_id == "B"
+                else item
+                for item in market.security_states
+            )
+        }
+    )
+    topics = topic_batch(
+        memberships=(topic_membership(), topic_membership(security_id="B"))
+    )
+    topics = topics.model_copy(
+        update={
+            "coverage_cells": tuple(
+                cell.model_copy(
+                    update={"expected_member_count": 2, "received_member_count": 2}
+                )
+                if cell.trade_date == topics.trade_date
+                else cell
+                for cell in topics.coverage_cells
+            )
+        }
+    )
+
+    sector = materialize_market(market, topics)["overview"]["hot_sectors"][0]
+
+    assert sector["coverage"] == {
+        "expected": 2,
+        "valid": 1,
+        "excluded": 1,
+        "missing": 0,
+    }
+    assert sector["coverage"]["expected"] == sum(
+        sector["coverage"][key] for key in ("valid", "excluded", "missing")
+    )
 
 
 def test_topic_limit_up_ratio_uses_same_valid_return_pool_as_denominator():
@@ -401,6 +478,58 @@ def test_topic_coverage_missing_never_becomes_negative():
         "missing": 3,
     }
     assert sector["reason"] == "topic_coverage_unavailable"
+
+
+def test_topic_metrics_use_market_as_of_as_the_knowledge_cutoff():
+    from topic_factories import topic_batch, topic_definition, topic_membership
+
+    from dragon_radar.readmodels.market import materialize_market
+
+    market = _market_batch().model_copy(
+        update={
+            "as_of": datetime(2026, 9, 8, 10, tzinfo=UTC),
+        }
+    )
+    topics = topic_batch(
+        as_of=datetime(2026, 9, 8, 18, tzinfo=UTC),
+        source_time=datetime(2026, 9, 8, 18, tzinfo=UTC),
+        topics=(
+            topic_definition(),
+            topic_definition(
+                "topic-late",
+                name="Late Topic",
+                available_at=datetime(2026, 9, 8, 18, tzinfo=UTC),
+            ),
+        ),
+        memberships=(
+            topic_membership(),
+            topic_membership(
+                security_id="B",
+                available_at=datetime(2026, 9, 8, 18, tzinfo=UTC),
+            ),
+            topic_membership(
+                topic_id="topic-late",
+                available_at=datetime(2026, 9, 8, 18, tzinfo=UTC),
+            ),
+        ),
+    )
+
+    result = materialize_market(market, topics)
+
+    assert [sector["sector_id"] for sector in result["sector_flow"]["sectors"]] == [
+        "topic-a"
+    ]
+    assert result["sector_flow"]["sectors"][0]["member_count"] == 1
+    assert result["sector_flow"]["sectors"][0]["reason"] == (
+        "topic_coverage_unavailable"
+    )
+    assert result["sector_flow"]["topic_basis"] == {
+        "source": topics.source_id,
+        "source_version": topics.source_version,
+        "as_of": topics.as_of,
+        "cutoff": market.as_of,
+    }
+    assert result["overview"]["topic_basis"] == result["sector_flow"]["topic_basis"]
 
 
 def test_historical_topic_analysis_requires_historical_coverage_cell():
@@ -569,6 +698,8 @@ async def test_publication_materializes_all_market_views_and_routes_only_read_th
     stored = publication_repository.list_results(record.id)
     market = next(item for item in stored if item.domain == "market")
     assert set(market.payload) == {
+        "schema",
+        "schema_version",
         "overview",
         "sector_flow",
         "sentiment",
@@ -604,6 +735,191 @@ async def test_publication_materializes_all_market_views_and_routes_only_read_th
             response = await client.get(f"{path}{separator}snapshot_id={record.id}")
             assert response.status_code == 200
             assert response.json()["snapshot_id"] == str(record.id)
+
+
+@pytest.mark.anyio
+async def test_legacy_market_jsonb_projects_overview_and_controls_new_views(
+    market_publication, database
+):
+    from dragon_radar.http.app import create_workbench_app
+
+    record, _publication_repository = market_publication
+    legacy_payload = {
+        "advancing": 1,
+        "declining": 1,
+        "unchanged": 1,
+        "returns": [
+            {
+                "security_id": "A",
+                "value": "0.1000",
+                "basis": "explicit_previous_close",
+                "warnings": [],
+            }
+        ],
+        "exclusions": [],
+    }
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results "
+            "DISABLE TRIGGER publication_results_retention"
+        )
+        connection.execute(
+            update(publication_results)
+            .where(
+                publication_results.c.publication_id == record.id,
+                publication_results.c.domain == "market",
+            )
+            .values(payload=legacy_payload)
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results "
+            "ENABLE TRIGGER publication_results_retention"
+        )
+
+    app = create_workbench_app(
+        repository=PublicationRepository(database, _publication_repository.market)
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        overview = await client.get(
+            "/api/market/overview", params={"snapshot_id": str(record.id)}
+        )
+        unavailable = [
+            await client.get(path, params={"snapshot_id": str(record.id)})
+            for path in (
+                "/api/market/sector-flow",
+                "/api/market/sentiment",
+                "/api/market/heatmap",
+            )
+        ]
+        unavailable.append(
+            await client.get(
+                "/api/search",
+                params={
+                    "q": "A",
+                    "date": str(record.trade_date),
+                    "snapshot_id": str(record.id),
+                },
+            )
+        )
+
+    assert overview.status_code == 200
+    assert overview.json()["data"] == {
+        **legacy_payload,
+        "coverage": overview.json()["coverage"],
+    }
+    for response in unavailable:
+        assert response.status_code == 200
+        assert response.json()["data"] is None
+        assert "materialization_unavailable" in response.json()["quality_flags"]
+
+
+@pytest.mark.anyio
+async def test_legacy_market_payload_route_contract_without_database():
+    from dragon_radar.http.app import create_workbench_app
+    from dragon_radar.publication.models import (
+        Publication,
+        PublicationResult,
+        PublishedSnapshot,
+    )
+    from dragon_radar.storage.models import Snapshot
+
+    publication_id = uuid4()
+    market_snapshot_id = uuid4()
+    payload = _market_batch()
+    market_snapshot = Snapshot(
+        id=market_snapshot_id,
+        batch_id=uuid4(),
+        revision=1,
+        supersedes=None,
+        published_at=payload.as_of,
+        manifest={"rule_version": "legacy-v1"},
+        batch=payload,
+        quality_report={
+            "issues": [],
+            "coverage": {
+                "expected": 3,
+                "valid": 3,
+                "legal_excluded": 0,
+                "missing": 0,
+            },
+        },
+    )
+    legacy_payload = {
+        "advancing": 1,
+        "declining": 1,
+        "unchanged": 1,
+        "returns": [],
+        "exclusions": [],
+    }
+    publication = Publication(
+        id=publication_id,
+        trade_date=payload.trade_date,
+        version=1,
+        supersedes=None,
+        status="published",
+        market_snapshot_id=market_snapshot_id,
+        topic_snapshot_id=None,
+        news_input_id=None,
+        regulation_input_id=None,
+        role_input_id=None,
+        domains={
+            "market": "ready",
+            "topic": "disabled",
+            "news": "disabled",
+            "regulation": "disabled",
+            "role": "disabled",
+        },
+        coverage={},
+        quality_flags=(),
+        command_json="{}",
+        published_at=payload.as_of,
+    )
+    result = PublicationResult(
+        publication_id=publication_id,
+        domain="market",
+        input_id=market_snapshot_id,
+        status="ready",
+        payload=legacy_payload,
+        coverage={
+            "expected": 3,
+            "valid": 3,
+            "legal_excluded": 0,
+            "missing": 0,
+        },
+        quality_flags=(),
+    )
+    selected = PublishedSnapshot(publication, market_snapshot, (result,))
+
+    class LegacyRepository:
+        database = type("Database", (), {"ready": lambda self: True})()
+
+        def get_snapshot(self, snapshot_id):
+            return selected if snapshot_id == publication_id else None
+
+        def list_snapshots(self, **_kwargs):
+            return [selected]
+
+    app = create_workbench_app(repository=LegacyRepository())
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        overview = await client.get(
+            "/api/market/overview", params={"snapshot_id": str(publication_id)}
+        )
+        sector = await client.get(
+            "/api/market/sector-flow", params={"snapshot_id": str(publication_id)}
+        )
+
+    assert overview.status_code == 200
+    assert overview.json()["data"] == {
+        **legacy_payload,
+        "coverage": overview.json()["coverage"],
+    }
+    assert sector.status_code == 200
+    assert sector.json()["data"] is None
+    assert "materialization_unavailable" in sector.json()["quality_flags"]
 
 
 @pytest.mark.anyio

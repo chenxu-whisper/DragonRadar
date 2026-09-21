@@ -11,6 +11,8 @@ from dragon_radar.domain.quality import state_at
 from dragon_radar.topics.models import TopicBatch
 
 RATIO_SCALE = Decimal("0.0001")
+MARKET_READ_MODEL_SCHEMA = "dragon-radar.market-read-model"
+MARKET_READ_MODEL_SCHEMA_VERSION = 1
 
 
 def _ratio(numerator: int, denominator: int, reason: str) -> dict[str, Any]:
@@ -112,6 +114,26 @@ def _daily_returns(batch: MarketBatch, day: date) -> tuple[dict[str, Decimal], d
         excluded,
         missing,
     )
+
+
+def _return_subset_coverage(
+    batch: MarketBatch,
+    security_ids: set[str],
+    returns: dict[str, Decimal],
+    day: date,
+) -> tuple[set[str], int, int]:
+    valid = set()
+    excluded = 0
+    missing = 0
+    for security_id in security_ids:
+        current_state = state_at(batch, security_id, day)
+        if current_state is not None and current_state.suspended:
+            excluded += 1
+        elif security_id in returns:
+            valid.add(security_id)
+        else:
+            missing += 1
+    return valid, excluded, missing
 
 
 def _mean(values: list[Decimal]) -> Decimal:
@@ -374,10 +396,10 @@ def _sentiment(
         day_returns = (
             returns if day == batch.trade_date else _daily_returns(batch, day)[0]
         )
-        feedback_values = [
-            day_returns[item] for item in prior_limit_up if item in day_returns
-        ]
-        feedback_missing = len(prior_limit_up) - len(feedback_values)
+        feedback_ids, feedback_excluded, feedback_missing = _return_subset_coverage(
+            batch, prior_limit_up, day_returns, day
+        )
+        feedback_values = [day_returns[item] for item in sorted(feedback_ids)]
         if not prior_limit_up:
             feedback_reason = "no_yesterday_limit_up_members"
         elif not feedback_values:
@@ -403,7 +425,7 @@ def _sentiment(
             "yesterday_limit_up_return_coverage": {
                 "expected": len(prior_limit_up),
                 "valid": len(feedback_values),
-                "excluded": 0,
+                "excluded": feedback_excluded,
                 "missing": feedback_missing,
             },
             "yesterday_limit_up_return_reason": feedback_reason,
@@ -439,13 +461,29 @@ def _topics(
     topic_batch: TopicBatch | None,
     returns: dict[str, Decimal],
     events: dict[tuple[date, str], LimitUpEvent],
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], dict, dict]:
     if topic_batch is None:
-        return [], {"enabled": False, "reason": "topic_input_not_published"}
+        return (
+            [],
+            {"enabled": False, "reason": "topic_input_not_published"},
+            {
+                "source": None,
+                "source_version": None,
+                "as_of": None,
+                "cutoff": batch.as_of,
+            },
+        )
+    cutoff = min(batch.as_of, topic_batch.as_of)
+    topic_basis = {
+        "source": topic_batch.source_id,
+        "source_version": topic_batch.source_version,
+        "as_of": topic_batch.as_of,
+        "cutoff": cutoff,
+    }
     definitions = {
         item.topic_id: item
         for item in topic_batch.topics
-        if item.available_at <= topic_batch.as_of
+        if item.available_at <= cutoff
         and item.effective_from <= batch.trade_date
         and (item.effective_to is None or batch.trade_date < item.effective_to)
     }
@@ -453,7 +491,7 @@ def _topics(
     for membership in topic_batch.memberships:
         if (
             membership.topic_id in definitions
-            and membership.available_at <= topic_batch.as_of
+            and membership.available_at <= cutoff
             and membership.effective_from <= batch.trade_date
             and (
                 membership.effective_to is None
@@ -464,8 +502,7 @@ def _topics(
     coverage_cells = {
         cell.topic_id: cell
         for cell in topic_batch.coverage_cells
-        if cell.trade_date == batch.trade_date
-        and cell.complete_as_of <= topic_batch.as_of
+        if cell.trade_date == batch.trade_date and cell.complete_as_of <= cutoff
     }
     sectors = []
     for topic_id, definition in sorted(definitions.items()):
@@ -477,10 +514,11 @@ def _topics(
             and cell.received_member_count == cell.expected_member_count
             and len(ids) == cell.received_member_count
         )
-        valid_ids = (
-            {security_id for security_id in ids if security_id in returns}
-            if coverage_ready
-            else set()
+        valid_ids, excluded, _missing = _return_subset_coverage(
+            batch,
+            ids,
+            returns if coverage_ready else {},
+            batch.trade_date,
         )
         values = [returns[security_id] for security_id in sorted(valid_ids)]
         limit_count = (
@@ -532,19 +570,34 @@ def _topics(
                 "net_inflow_reason": "source_field_unavailable",
                 "reason": (None if coverage_ready else "topic_coverage_unavailable"),
                 "quality_flags": flags,
-                "coverage": _coverage(expected, len(values), 0, expected - len(values)),
+                "coverage": _coverage(
+                    expected,
+                    len(values),
+                    excluded,
+                    expected - len(values) - excluded,
+                ),
             }
         )
     historical = any(
         cell.trade_date < batch.trade_date
-        and cell.complete_as_of <= topic_batch.as_of
+        and cell.complete_as_of <= cutoff
         and cell.status == "complete"
         and cell.expected_member_count > 0
         and cell.received_member_count == cell.expected_member_count
+        and any(
+            definition.topic_id == cell.topic_id
+            and definition.available_at <= cutoff
+            and definition.effective_from <= cell.trade_date
+            and (
+                definition.effective_to is None
+                or cell.trade_date < definition.effective_to
+            )
+            for definition in topic_batch.topics
+        )
         and cell.received_member_count
         == sum(
             membership.topic_id == cell.topic_id
-            and membership.available_at <= topic_batch.as_of
+            and membership.available_at <= cutoff
             and membership.effective_from <= cell.trade_date
             and (
                 membership.effective_to is None
@@ -554,10 +607,14 @@ def _topics(
         )
         for cell in topic_batch.coverage_cells
     )
-    return sectors, {
-        "enabled": historical,
-        "reason": None if historical else "historical_topic_coverage_unavailable",
-    }
+    return (
+        sectors,
+        {
+            "enabled": historical,
+            "reason": None if historical else "historical_topic_coverage_unavailable",
+        },
+        topic_basis,
+    )
 
 
 def materialize_market(
@@ -568,7 +625,9 @@ def materialize_market(
     events = _valid_events(batch)
     sentiment, sentiment_series, heatmap = _sentiment(batch, returns, events)
     factors = _market_factors(batch, returns, return_coverage)
-    sectors, historical_topics = _topics(batch, topic_batch, returns, events)
+    sectors, historical_topics, topic_basis = _topics(
+        batch, topic_batch, returns, events
+    )
     common_stock_ids = _expected_common_stock_ids(batch)
     current_events = {
         security_id: events.get((batch.trade_date, security_id))
@@ -678,6 +737,8 @@ def materialize_market(
             }
         )
     return {
+        "schema": MARKET_READ_MODEL_SCHEMA,
+        "schema_version": MARKET_READ_MODEL_SCHEMA_VERSION,
         "overview": {
             # Retain Task02 field names while reset consumers migrate to breadth.
             "advancing": breadth["up"],
@@ -699,8 +760,9 @@ def materialize_market(
             "hot_sectors": sectors,
             "factors": factors,
             "historical_topic_analysis": historical_topics,
+            "topic_basis": topic_basis,
         },
-        "sector_flow": {"sectors": sectors},
+        "sector_flow": {"sectors": sectors, "topic_basis": topic_basis},
         "sentiment": {"series": sentiment_series},
         "heatmap": {
             "columns": sorted({cell["boards"] for cell in heatmap}),

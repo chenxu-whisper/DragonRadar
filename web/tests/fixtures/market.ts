@@ -34,6 +34,25 @@ export const securities: Security[] = Array.from({ length: 65 }, (_, index) => (
 export function envelope<T>(result: T, id = ID): Envelope<T> {
   return { ...(id === OLD ? oldSnapshot : snapshot), result };
 }
+export function resetSummary(value: Snapshot = snapshot) {
+  return {
+    trade_date: value.trade_date,
+    as_of: value.as_of,
+    snapshot_id: value.snapshot_id,
+    source: value.source.id,
+    source_version: value.source.version,
+    coverage: { ...value.coverage, excluded: value.coverage.legal_excluded },
+    quality_flags: value.quality_flags,
+    rule_version: value.rule_version,
+    basis: { unit: 'ratio', currency: 'CNY', price_type: 'raw', benchmark: null },
+    data: {
+      revision: value.result.revision,
+      supersedes: value.result.supersedes,
+      published_at: value.result.published_at,
+      security_count: value.result.security_count,
+    },
+  };
+}
 export function detail(id: string): Detail {
   const security = securities.find(s => s.security_id === id) || securities[0];
   return {
@@ -61,6 +80,21 @@ export function interval(ids?: string[]): Interval {
 }
 export type MockState = { denied?: boolean; offline?: boolean; empty?: boolean; delayOld?: boolean; securityId?: string };
 export async function mockMarket(page: Page, state: MockState = {}) {
+  await page.route('**/api/snapshots/**', async (route: Route) => {
+    const url = new URL(route.request().url());
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (state.denied) return respond({ error: 'Source access denied' }, 403);
+    if (state.offline) return route.abort('failed');
+    if (url.pathname === '/api/snapshots/list') {
+      const date = url.searchParams.get('date');
+      const items = state.empty || (date && !['2026-09-10', '2026-09-09'].includes(date))
+        ? [] : [resetSummary(date === '2026-09-09' ? oldSnapshot : snapshot)];
+      return respond({ ...resetSummary(items[0]?.snapshot_id === OLD ? oldSnapshot : snapshot), data: { snapshots: items } });
+    }
+    if (url.pathname === `/api/snapshots/${ID}`) return respond(resetSummary(snapshot));
+    if (url.pathname === `/api/snapshots/${OLD}`) return respond(resetSummary(oldSnapshot));
+    return respond({}, 404);
+  });
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;

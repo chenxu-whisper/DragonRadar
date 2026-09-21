@@ -21,9 +21,27 @@ from dragon_radar.http.selection import (
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.publication.models import PublishedSnapshot
+from dragon_radar.readmodels.market import (
+    MARKET_READ_MODEL_SCHEMA,
+    MARKET_READ_MODEL_SCHEMA_VERSION,
+)
 
 router = APIRouter()
 
+_LEGACY_OVERVIEW_FIELDS = {
+    "advancing",
+    "declining",
+    "unchanged",
+    "returns",
+    "exclusions",
+}
+_MATERIALIZED_VIEW_FIELDS = {
+    "overview",
+    "sector_flow",
+    "sentiment",
+    "heatmap",
+    "search",
+}
 _DECIMAL_FIELDS = {
     "amount",
     "baseline_mean",
@@ -77,18 +95,49 @@ def _selection(request: Request, extra: set[str] | None = None):
     return query, trade_date, snapshot_id
 
 
-def _published_payload(snapshot: PublishedSnapshot) -> tuple[dict, dict]:
+def _published_payload(snapshot: PublishedSnapshot) -> tuple[dict, dict, bool]:
     stored = snapshot.result("market")
     if stored.status != "ready":
         raise DataUnavailable
     payload = _restore_decimals(dict(stored.payload))
-    return payload, archived_coverage(dict(stored.coverage))
-
-
-def _published_response(snapshot: PublishedSnapshot, data: dict, coverage: dict):
-    return DecimalJSONResponse(
-        snapshot_envelope(snapshot, data, unit="ratio", coverage=coverage)
+    versioned = (
+        payload.get("schema") == MARKET_READ_MODEL_SCHEMA
+        and payload.get("schema_version") == MARKET_READ_MODEL_SCHEMA_VERSION
+        and _MATERIALIZED_VIEW_FIELDS <= payload.keys()
     )
+    unversioned_materialized = (
+        "schema" not in payload
+        and "schema_version" not in payload
+        and _MATERIALIZED_VIEW_FIELDS <= payload.keys()
+    )
+    legacy_overview = (
+        "schema" not in payload
+        and "schema_version" not in payload
+        and _LEGACY_OVERVIEW_FIELDS <= payload.keys()
+        and not _MATERIALIZED_VIEW_FIELDS.intersection(payload)
+    )
+    if not (versioned or unversioned_materialized or legacy_overview):
+        raise DataUnavailable
+    return (
+        payload,
+        archived_coverage(dict(stored.coverage)),
+        versioned,
+    )
+
+
+def _published_response(
+    snapshot: PublishedSnapshot,
+    data: dict | None,
+    coverage: dict,
+    *,
+    materialization_unavailable: bool = False,
+):
+    payload = snapshot_envelope(snapshot, data, unit="ratio", coverage=coverage)
+    if materialization_unavailable:
+        payload["quality_flags"] = sorted(
+            {*payload["quality_flags"], "materialization_unavailable"}
+        )
+    return DecimalJSONResponse(payload)
 
 
 @router.get("/api/market/overview")
@@ -98,8 +147,16 @@ def overview(request: Request):
     if snapshot is None:
         return DecimalJSONResponse(empty_envelope(trade_date))
     if isinstance(snapshot, PublishedSnapshot):
-        payload, coverage = _published_payload(snapshot)
-        return _published_response(snapshot, payload["overview"], coverage)
+        payload, coverage, materialized = _published_payload(snapshot)
+        data = (
+            payload["overview"]
+            if materialized or "overview" in payload
+            else {
+                **{field: payload[field] for field in _LEGACY_OVERVIEW_FIELDS},
+                "coverage": coverage,
+            }
+        )
+        return _published_response(snapshot, data, coverage)
 
     result = market_breadth(snapshot.batch)
     coverage = archived_coverage(result.coverage.model_dump())
@@ -120,7 +177,11 @@ def sector_flow(request: Request):
     snapshot = select_snapshot(_repository(request), trade_date, snapshot_id)
     if snapshot is None or not isinstance(snapshot, PublishedSnapshot):
         return DecimalJSONResponse(empty_envelope(trade_date))
-    payload, coverage = _published_payload(snapshot)
+    payload, coverage, materialized = _published_payload(snapshot)
+    if not materialized:
+        return _published_response(
+            snapshot, None, coverage, materialization_unavailable=True
+        )
     sectors = list(payload["sector_flow"]["sectors"])
     sectors.sort(
         key=lambda item: (
@@ -129,7 +190,14 @@ def sector_flow(request: Request):
             item["sector_id"],
         )
     )
-    return _published_response(snapshot, {"sectors": sectors[:top_n]}, coverage)
+    return _published_response(
+        snapshot,
+        {
+            "sectors": sectors[:top_n],
+            "topic_basis": payload["sector_flow"]["topic_basis"],
+        },
+        coverage,
+    )
 
 
 @router.get("/api/market/sentiment")
@@ -139,7 +207,11 @@ def sentiment(request: Request):
     snapshot = select_snapshot(_repository(request), trade_date, snapshot_id)
     if snapshot is None or not isinstance(snapshot, PublishedSnapshot):
         return DecimalJSONResponse(empty_envelope(trade_date))
-    payload, coverage = _published_payload(snapshot)
+    payload, coverage, materialized = _published_payload(snapshot)
+    if not materialized:
+        return _published_response(
+            snapshot, None, coverage, materialization_unavailable=True
+        )
     series = list(payload["sentiment"]["series"])[-days:]
     return _published_response(snapshot, {"series": series}, coverage)
 
@@ -151,7 +223,11 @@ def heatmap(request: Request):
     snapshot = select_snapshot(_repository(request), trade_date, snapshot_id)
     if snapshot is None or not isinstance(snapshot, PublishedSnapshot):
         return DecimalJSONResponse(empty_envelope(trade_date))
-    payload, coverage = _published_payload(snapshot)
+    payload, coverage, materialized = _published_payload(snapshot)
+    if not materialized:
+        return _published_response(
+            snapshot, None, coverage, materialization_unavailable=True
+        )
     cells = list(payload["heatmap"]["cells"])
     selected_dates = sorted({cell["trade_date"] for cell in cells})[-days:]
     selected = [cell for cell in cells if cell["trade_date"] in selected_dates]
@@ -184,7 +260,11 @@ def search(request: Request):
         trade_date = snapshot.trade_date if snapshot is not None else None
     if snapshot is None or not isinstance(snapshot, PublishedSnapshot):
         return DecimalJSONResponse(empty_envelope(trade_date))
-    payload, coverage = _published_payload(snapshot)
+    payload, coverage, materialized = _published_payload(snapshot)
+    if not materialized:
+        return _published_response(
+            snapshot, None, coverage, materialization_unavailable=True
+        )
     folded = term.casefold()
     results = []
     for item in payload["search"]["securities"]:

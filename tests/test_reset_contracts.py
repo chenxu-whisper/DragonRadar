@@ -136,6 +136,46 @@ async def test_empty_list_is_discovery_with_collection_metadata(empty_client):
     } <= payload.keys()
 
 
+async def test_snapshot_summary_is_read_directly_by_publication_id():
+    selected = Snapshot(
+        id=uuid4(),
+        batch_id=uuid4(),
+        revision=7,
+        supersedes=None,
+        published_at=NOW,
+        manifest={"rule_version": "summary-v1"},
+        batch=batch(),
+        quality_report={
+            "issues": [],
+            "coverage": {
+                "expected": 1,
+                "valid": 1,
+                "legal_excluded": 0,
+                "missing": 0,
+            },
+        },
+    )
+
+    class SummaryRepository(EmptyRepository):
+        def get_snapshot(self, snapshot_id):
+            self.calls.append(snapshot_id)
+            return selected if snapshot_id == selected.id else None
+
+    repository = SummaryRepository()
+    async with workbench(repository) as client:
+        response = await client.get(f"/api/snapshots/{selected.id}")
+
+    assert response.status_code == 200
+    assert response.json()["snapshot_id"] == str(selected.id)
+    assert response.json()["data"] == {
+        "revision": 7,
+        "supersedes": None,
+        "published_at": NOW.isoformat(),
+        "security_count": 1,
+    }
+    assert repository.calls == [selected.id]
+
+
 @pytest.mark.parametrize("path", ["/api/market/overview", "/api/stock/A"])
 @pytest.mark.parametrize(
     "query",

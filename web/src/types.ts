@@ -85,6 +85,7 @@ export interface ResetFactors {
   };
 }
 export interface ResetOverview {
+  topic_basis: { source: string | null; source_version: string | null; as_of: string | null; cutoff: string };
   indexes: { security_id: string; code: string | null; name: string; last: number | null; change_ratio: number | null; amount: number | null; reason: string | null }[];
   breadth: {
     up: number; down: number; flat: number; valid_total: number;
