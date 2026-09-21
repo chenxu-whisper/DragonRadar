@@ -73,6 +73,12 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
         content,
       });
       if (!mounted.current) return;
+      if (result.current_revision && result.current_revision > result.revision) {
+        setError(`该保存命令已提交为 revision ${result.revision}，当前笔记已是 revision ${result.current_revision}；当前输入已保留，请对照或另存。`);
+        setDirty(true);
+        await refresh();
+        return;
+      }
       setSelected(result); setDirty(false); setLatest(undefined);
       command.current = undefined;
       setStatus(`已保存 · revision ${result.revision} · ${new Date(result.updated_at).toLocaleString('zh-CN')} · 回读验证通过`);

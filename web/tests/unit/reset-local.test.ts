@@ -41,6 +41,17 @@ describe('local review transactions', () => {
     expect((await repo.revisions('n1'))).toHaveLength(1);
     repo.close();
   });
+  test('replaying an older committed command reports the current revision without rewriting', async () => {
+    const repo = repository();
+    const first = { note_id: 'n1', expected_revision: 0, key: 'first', snapshot_id: 'snapshot', content };
+    expect((await repo.putNote(first)).revision).toBe(1);
+    expect((await repo.putNote({ ...first, expected_revision: 1, key: 'second', content: { ...content, title: 'new' } })).revision).toBe(2);
+    const replay = await repo.putNote(first);
+    expect(replay).toMatchObject({ revision: 1, current_revision: 2 });
+    expect((await repo.listNotes())[0]).toMatchObject({ revision: 2, content: { title: 'new' } });
+    expect(await repo.revisions('n1')).toHaveLength(2);
+    repo.close();
+  });
   test('two connections updating same revision produce exactly one winner', async () => {
     const name = `test-${crypto.randomUUID()}`;
     const a = new LocalRepository(name), b = new LocalRepository(name);
@@ -91,6 +102,78 @@ describe('local review transactions', () => {
     expect(db.transaction('commands').objectStore('commands').keyPath).toEqual(['local_profile_id', 'key']);
     expect(db.objectStoreNames.contains('verification_records')).toBe(true);
     db.close(); repo.close();
+  });
+  test('upgrades the earlier local schema without replacing its profile or records', async () => {
+    const name = `test-${crypto.randomUUID()}`;
+    await new Promise<void>((resolve, reject) => {
+      const opening = indexedDB.open(name, 1);
+      opening.onupgradeneeded = () => {
+        const db = opening.result;
+        db.createObjectStore('profiles').put('stable-profile', 'active');
+        db.createObjectStore('notes', { keyPath: 'note_id' }).put({
+          note_id: 'legacy-note', local_profile_id: 'stable-profile', snapshot_id: 'snapshot',
+          content, revision: 1, updated_at: '2026-09-20T10:00:00.000Z',
+        });
+        db.createObjectStore('note_revisions', { keyPath: ['note_id', 'revision'] }).put({
+          note_id: 'legacy-note', local_profile_id: 'stable-profile', snapshot_id: 'snapshot',
+          content, revision: 1, updated_at: '2026-09-20T10:00:00.000Z',
+        });
+        db.createObjectStore('watchlist', { keyPath: 'security_id' }).put({
+          security_id: 'SSE.600519', local_profile_id: 'stable-profile', snapshot_id: 'snapshot',
+          active: true, added_at: '2026-09-20T09:00:00.000Z', revision: 1,
+        });
+        db.createObjectStore('commands', { keyPath: 'key' });
+      };
+      opening.onsuccess = () => { opening.result.close(); resolve(); };
+      opening.onerror = () => reject(opening.error);
+    });
+    const repo = new LocalRepository(name);
+    expect(await repo.profile()).toBe('stable-profile');
+    expect((await repo.listNotes())[0]).toMatchObject({
+      note_id: 'legacy-note', revision: 1, content_hash: expect.stringMatching(/^[\da-f]{64}$/),
+    });
+    expect((await repo.listWatchlist())[0].security_id).toBe('SSE.600519');
+    repo.close();
+  });
+  test('migration write failure rejects cleanly without an unhandled transaction rejection', async () => {
+    const name = `test-${crypto.randomUUID()}`;
+    await new Promise<void>((resolve, reject) => {
+      const opening = indexedDB.open(name, 1);
+      opening.onupgradeneeded = () => {
+        const db = opening.result;
+        db.createObjectStore('profiles').put('stable-profile', 'active');
+        db.createObjectStore('notes', { keyPath: 'note_id' }).put({
+          note_id: 'legacy-note', local_profile_id: 'stable-profile', snapshot_id: 'snapshot',
+          content, revision: 1, updated_at: '2026-09-20T10:00:00.000Z',
+        });
+        db.createObjectStore('note_revisions', { keyPath: ['note_id', 'revision'] });
+        db.createObjectStore('watchlist', { keyPath: 'security_id' });
+        db.createObjectStore('commands', { keyPath: 'key' });
+      };
+      opening.onsuccess = () => { opening.result.close(); resolve(); };
+      opening.onerror = () => reject(opening.error);
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+      if (this.name === 'notes') {
+        this.transaction.abort();
+        throw new DOMException('Disk full', 'QuotaExceededError');
+      }
+      return key === undefined ? original.call(this, value) : original.call(this, value, key);
+    };
+    const repo = new LocalRepository(name);
+    try {
+      await expect(repo.profile()).rejects.toThrow();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      IDBObjectStore.prototype.put = original;
+      process.off('unhandledRejection', onUnhandled);
+      repo.close();
+    }
   });
   test('transaction abort rolls back note and command; same key can retry', async () => {
     const repo = repository();

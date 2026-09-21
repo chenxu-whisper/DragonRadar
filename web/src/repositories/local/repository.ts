@@ -9,7 +9,7 @@ export interface StoredNoteContent {
 export interface LocalNote {
   note_id: string; local_profile_id: string; snapshot_id: string;
   content: StoredNoteContent; revision: number; content_hash: string;
-  idempotency_key: string; updated_at: string;
+  idempotency_key: string; updated_at: string; current_revision?: number;
 }
 export interface LocalWatch {
   security_id: string; local_profile_id: string; snapshot_id: string;
@@ -55,6 +55,25 @@ async function digest(value: string): Promise<string> {
   const result = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(result)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
+const businessStores = ['profiles', 'notes', 'note_revisions', 'watchlist', 'verification_records', 'commands'] as const;
+
+function createStores(db: IDBDatabase) {
+  db.createObjectStore('profiles');
+  db.createObjectStore('notes', { keyPath: ['local_profile_id', 'note_id'] });
+  db.createObjectStore('note_revisions', { keyPath: ['local_profile_id', 'note_id', 'revision'] });
+  db.createObjectStore('watchlist', { keyPath: ['local_profile_id', 'security_id'] });
+  db.createObjectStore('verification_records', { keyPath: ['local_profile_id', 'note_id', 'revision', 'verification_id'] });
+  db.createObjectStore('commands', { keyPath: ['local_profile_id', 'key'] });
+}
+
+interface LegacyPayload {
+  profile?: string;
+  notes: LocalNote[];
+  note_revisions: LocalNote[];
+  watchlist: LocalWatch[];
+  verification_records: Record<string, unknown>[];
+  commands: Command[];
+}
 
 /** Local business data never goes through fetch or owner sessions. */
 export class LocalRepository {
@@ -64,27 +83,105 @@ export class LocalRepository {
   constructor(private name = 'dragon-radar-local-v3') {}
   private db(): Promise<IDBDatabase> {
     if (!this.connection) this.connection = new Promise((resolve, reject) => {
-      const opening = indexedDB.open(this.name, 3);
-      opening.onupgradeneeded = () => {
+      const opening = indexedDB.open(this.name, 4);
+      opening.onupgradeneeded = event => {
         const db = opening.result;
-        for (const name of ['profiles', 'notes', 'note_revisions', 'watchlist', 'verification_records', 'commands']) {
-          if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
+        if ((event as IDBVersionChangeEvent).oldVersion === 0) {
+          createStores(db);
+          db.createObjectStore('migration_payload');
+          return;
         }
-        db.createObjectStore('profiles');
-        db.createObjectStore('notes', { keyPath: ['local_profile_id', 'note_id'] });
-        db.createObjectStore('note_revisions', { keyPath: ['local_profile_id', 'note_id', 'revision'] });
-        db.createObjectStore('watchlist', { keyPath: ['local_profile_id', 'security_id'] });
-        db.createObjectStore('verification_records', { keyPath: ['local_profile_id', 'note_id', 'revision', 'verification_id'] });
-        db.createObjectStore('commands', { keyPath: ['local_profile_id', 'key'] });
+        const upgrade = opening.transaction;
+        if (!upgrade) throw new Error('本地存储升级事务不可用');
+        const payload: LegacyPayload = { notes: [], note_revisions: [], watchlist: [], verification_records: [], commands: [] };
+        const reads: IDBRequest[] = [];
+        for (const name of businessStores) {
+          if (!db.objectStoreNames.contains(name)) continue;
+          const store = upgrade.objectStore(name);
+          const query = name === 'profiles' ? store.get('active') : store.getAll();
+          reads.push(query);
+          query.onsuccess = () => {
+            if (name === 'profiles') payload.profile = query.result as string | undefined;
+            else (payload[name] as unknown[]) = query.result as unknown[];
+            if (reads.every(read => read.readyState === 'done')) {
+              for (const oldName of businessStores) if (db.objectStoreNames.contains(oldName)) db.deleteObjectStore(oldName);
+              createStores(db);
+              const migration = db.objectStoreNames.contains('migration_payload')
+                ? upgrade.objectStore('migration_payload') : db.createObjectStore('migration_payload');
+              migration.put(payload, 'pending');
+            }
+          };
+        }
       };
       opening.onerror = () => { this.connection = undefined; reject(opening.error ?? new Error('浏览器本地存储不可用')); };
       opening.onblocked = () => reject(new Error('请关闭旧标签页后重试本地存储升级'));
-      opening.onsuccess = () => {
+      opening.onsuccess = async () => {
         opening.result.onversionchange = () => { opening.result.close(); this.connection = undefined; };
-        resolve(opening.result);
+        try {
+          await this.migrateLegacy(opening.result);
+          resolve(opening.result);
+        } catch (error) {
+          opening.result.close();
+          this.connection = undefined;
+          reject(error);
+        }
       };
     });
     return this.connection;
+  }
+  private async migrateLegacy(db: IDBDatabase): Promise<void> {
+    if (!db.objectStoreNames.contains('migration_payload')) return;
+    const payload = await request(db.transaction('migration_payload').objectStore('migration_payload').get('pending')) as LegacyPayload | undefined;
+    if (!payload) return;
+    const profile = payload.profile
+      ?? payload.notes[0]?.local_profile_id
+      ?? payload.watchlist[0]?.local_profile_id
+      ?? crypto.randomUUID();
+    const migrateNote = async (note: LocalNote): Promise<LocalNote> => {
+      const draft: NoteContent = {
+        title: note.content.title,
+        content: note.content.content,
+        judgment: note.content.judgment ?? '',
+        evidence: note.content.evidence ?? '',
+        invalid_condition: note.content.invalid_condition ?? '',
+        verify_date: note.content.verify_date ?? '',
+      };
+      const normalized = storedContent(draft);
+      const canonical = JSON.stringify([note.snapshot_id, normalized.title, normalized.content,
+        normalized.judgment, normalized.evidence, normalized.invalid_condition, normalized.verify_date]);
+      return {
+        ...note, local_profile_id: profile, content: normalized,
+        content_hash: note.content_hash || await digest(canonical),
+        idempotency_key: note.idempotency_key || `legacy:${note.note_id}:${note.revision}`,
+      };
+    };
+    const notes = await Promise.all(payload.notes.map(migrateNote));
+    const revisions = await Promise.all(payload.note_revisions.map(migrateNote));
+    const noteIndex = new Map(
+      [...notes, ...revisions].map(note => [`${note.note_id}:${note.revision}`, note]),
+    );
+    const commands = payload.commands.map(command => {
+      const result = command.result as LocalNote | LocalWatch;
+      const migratedResult = 'note_id' in result
+        ? noteIndex.get(`${result.note_id}:${result.revision}`) ?? result
+        : { ...result, local_profile_id: profile };
+      return { ...command, local_profile_id: profile, result: migratedResult };
+    });
+    const tx = db.transaction([...businessStores, 'migration_payload'], 'readwrite');
+    const done = completion(tx);
+    try {
+      tx.objectStore('profiles').put(profile, 'active');
+      for (const note of notes) tx.objectStore('notes').put(note);
+      for (const note of revisions) tx.objectStore('note_revisions').put(note);
+      for (const watch of payload.watchlist) tx.objectStore('watchlist').put({ ...watch, local_profile_id: profile });
+      for (const record of payload.verification_records) tx.objectStore('verification_records').put({ ...record, local_profile_id: profile });
+      for (const command of commands) tx.objectStore('commands').put(command);
+      tx.objectStore('migration_payload').delete('pending');
+    } catch (error) {
+      await done.catch(() => undefined);
+      throw error;
+    }
+    await done;
   }
   async profile(): Promise<string> {
     const db = await this.db(), tx = db.transaction('profiles', 'readwrite'), done = completion(tx);
@@ -142,6 +239,7 @@ export class LocalRepository {
     const tx = db.transaction(['notes', 'note_revisions', 'commands'], 'readwrite');
     const done = completion(tx);
     let result: LocalNote;
+    let replayed = false;
     try {
       const commands = tx.objectStore('commands');
       const commandKey = `note:${input.key}`;
@@ -149,6 +247,7 @@ export class LocalRepository {
       if (previous) {
         if (previous.payload !== payload) throw new Error('幂等键已用于不同内容，请重新保存');
         result = previous.result as LocalNote;
+        replayed = true;
       } else {
         const current = await request(tx.objectStore('notes').get([profile, input.note_id])) as LocalNote | undefined;
         if ((current?.revision ?? 0) !== input.expected_revision) throw new Error('版本冲突：另一标签已修改，当前输入已保留，请对照或另存');
@@ -168,8 +267,11 @@ export class LocalRepository {
       throw error;
     }
     const readback = await request(db.transaction('notes').objectStore('notes').get([profile, input.note_id])) as LocalNote | undefined;
+    if (replayed && readback && readback.revision > result.revision) {
+      return { ...result, current_revision: readback.revision };
+    }
     if (JSON.stringify(readback) !== JSON.stringify(result)) throw new Error('回读检测到版本变化，请对照最新版本；当前输入已保留');
-    this.changed('notes', input.note_id, result.revision);
+    if (!replayed) this.changed('notes', input.note_id, result.revision);
     return result;
   }
   async listWatchlist(): Promise<LocalWatch[]> {
