@@ -16,6 +16,10 @@ Recorded: 2026-09-21
   save-as behavior.
 - Stock list and drawer actions can add a security to the local watchlist and
   open a snapshot-bound review.
+- Explicit owner export and browser backup/restore preserve every revision,
+  verification link, watch entry, source identity, and verified trade date.
+  Restore supports deterministic merge or save-as-new, rejects stale previews,
+  and writes accepted records in one IndexedDB transaction.
 
 ## Verification
 
@@ -23,8 +27,8 @@ Recorded: 2026-09-21
 |---|---|
 | API and legacy API focused tests | 121 passed |
 | PRD contract tests | 28 passed |
-| Frontend unit tests | 118 passed |
-| Reset browser tests | 10 passed |
+| Frontend unit tests | 145 passed |
+| Reset browser tests | 16 passed |
 | Python Ruff | passed |
 | Python format check | passed |
 | Python compileall | passed |
@@ -32,7 +36,7 @@ Recorded: 2026-09-21
 | Default bundle isolation | passed; local-review modules absent from default static assets |
 | Reset frontend build | passed |
 | Mobile layout | 375px test passed with no horizontal page overflow |
-| Full backend | 1666 passed, 10 live-TLS checks skipped because `DRAGON_TEST_PRIVATE_CA` was not configured |
+| Full backend | 1670 passed, 10 live-TLS checks skipped because `DRAGON_TEST_PRIVATE_CA` was not configured |
 
 The reset browser was also inspected at `http://127.0.0.1:5184/?view=review`:
 all six destinations were present, the local review page rendered without
@@ -45,7 +49,7 @@ and clean rollback when a migration write fails synchronously.
 
 ## Remaining Scope
 
-Task 06 and Tasks 07-29 remain. The message, ladder, and regulation destinations
+Tasks 07-29 remain. The message, ladder, and regulation destinations
 currently show explicit not-ready states and do not fabricate records. No
 production provider, official regulatory rule, or model release has been
 claimed.

@@ -314,12 +314,12 @@ export function sameSavedValue(
 
 **文件：** 新建 `web/src/repositories/local/{backup,migrate}.ts`、`src/dragon_radar/review/export.py`、`tests/test_reset_review_export.py`、`web/tests/unit/reset-backup.test.ts`、`web/tests/e2e/reset-recovery.spec.ts`；修改 `owner/cli.py`、复盘界面工具栏；新建 `docs/local-review-migration.md`。
 
-- [ ] 写失败用例：旧invalidation/verification_date正确映射；所有修订与验证保留；同备份重复导入不重复；冲突不能静默覆盖；损坏文件不部分写入。
-- [ ] 运行对应pytest/Vitest文件确认失败。
-- [ ] 新增本机显式导出命令；只导出用户原创笔记/自选/引用ID，市场数据正文不随私人备份自动拷贝；输出不包含cookie、密钥和授权token。
-- [ ] 备份包含format_version、导出时间、记录/修订计数；导入先校验全文件，再提供合并或另存预览，使用单一事务写入；记录旧owner_id到local_profile_id的显式映射。
-- [ ] 在新的浏览器上下文完成导出→清空测试库→恢复→逐版本对照。旧服务端表和旧库不删除。
-- [ ] 提交 `feat: migrate and back up local review data`。
+- [x] 写失败用例：旧invalidation/verification_date正确映射；所有修订与验证保留；同备份重复导入不重复；冲突不能静默覆盖；损坏文件不部分写入。
+- [x] 运行对应pytest/Vitest文件确认失败。
+- [x] 新增本机显式导出命令；只导出用户原创笔记/自选/引用ID，市场数据正文不随私人备份自动拷贝；输出不包含cookie、密钥和授权token。
+- [x] 备份包含format_version、导出时间、记录/修订计数；导入先校验全文件，再提供合并或另存预览，使用单一事务写入；记录旧owner_id到local_profile_id的显式映射。
+- [x] 在新的浏览器上下文完成导出→清空测试库→恢复→逐版本对照。旧服务端表和旧库不删除。
+- [x] 提交 `feat: migrate and back up local review data`。
 
 **完成条件：** 有可验证迁移路径后，新版默认应用才停止装配旧notes/watchlist HTTP路由；旧兼容入口仅作显式迁移工具保留。
 
