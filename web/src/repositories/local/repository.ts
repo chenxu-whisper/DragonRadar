@@ -8,12 +8,34 @@ export interface StoredNoteContent {
 }
 export interface LocalNote {
   note_id: string; local_profile_id: string; snapshot_id: string;
+  security_id?: string | null;
+  source_revision_id?: string;
+  state?: 'draft' | 'confirmed';
   content: StoredNoteContent; revision: number; content_hash: string;
   idempotency_key: string; updated_at: string; current_revision?: number;
 }
 export interface LocalWatch {
   security_id: string; local_profile_id: string; snapshot_id: string;
   active: boolean; added_at: string; revision: number;
+  watch_id?: string; updated_at?: string;
+}
+export interface LocalVerification {
+  verification_id: string; local_profile_id: string; note_id: string; revision: number;
+  snapshot_id: string | null; outcome: 'supported' | 'weakened' | 'refuted' | 'not_due';
+  evidence: string; supersedes: string | null; created_at: string;
+}
+export interface LocalBackupState {
+  profile: string;
+  notes: LocalNote[];
+  revisions: LocalNote[];
+  verifications: LocalVerification[];
+  watchlist: LocalWatch[];
+}
+export interface LocalImportWrites {
+  notes: LocalNote[];
+  revisions: LocalNote[];
+  verifications: LocalVerification[];
+  watchlist: LocalWatch[];
 }
 interface SaveNote {
   note_id: string; expected_revision: number; key: string; snapshot_id: string; content: NoteContent;
@@ -253,7 +275,8 @@ export class LocalRepository {
         if ((current?.revision ?? 0) !== input.expected_revision) throw new Error('版本冲突：另一标签已修改，当前输入已保留，请对照或另存');
         result = {
           note_id: input.note_id, local_profile_id: profile, snapshot_id: input.snapshot_id,
-          content: normalized, revision: input.expected_revision + 1, content_hash,
+          security_id: current?.security_id, content: normalized,
+          revision: input.expected_revision + 1, content_hash,
           idempotency_key: input.key, updated_at: new Date().toISOString(),
         };
         tx.objectStore('notes').put(result);
@@ -279,6 +302,55 @@ export class LocalRepository {
     const db = await this.db();
     const values = await request(db.transaction('watchlist').objectStore('watchlist').getAll()) as LocalWatch[];
     return values.filter(v => v.local_profile_id === profile && v.active).sort((a, b) => b.added_at.localeCompare(a.added_at));
+  }
+  async listVerifications(note_id?: string): Promise<LocalVerification[]> {
+    const profile = await this.profile();
+    const db = await this.db();
+    const values = await request(db.transaction('verification_records').objectStore('verification_records').getAll()) as LocalVerification[];
+    return values
+      .filter(row => row.local_profile_id === profile && (!note_id || row.note_id === note_id))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.verification_id.localeCompare(b.verification_id));
+  }
+  async backupState(): Promise<LocalBackupState> {
+    const profile = await this.profile();
+    const db = await this.db();
+    const tx = db.transaction(['notes', 'note_revisions', 'verification_records', 'watchlist']);
+    const [notes, revisions, verifications, watchlist] = await Promise.all([
+      request(tx.objectStore('notes').getAll()) as Promise<LocalNote[]>,
+      request(tx.objectStore('note_revisions').getAll()) as Promise<LocalNote[]>,
+      request(tx.objectStore('verification_records').getAll()) as Promise<LocalVerification[]>,
+      request(tx.objectStore('watchlist').getAll()) as Promise<LocalWatch[]>,
+    ]);
+    await completion(tx);
+    return {
+      profile,
+      notes: notes.filter(row => row.local_profile_id === profile),
+      revisions: revisions.filter(row => row.local_profile_id === profile),
+      verifications: verifications.filter(row => row.local_profile_id === profile),
+      watchlist: watchlist.filter(row => row.local_profile_id === profile),
+    };
+  }
+  async applyImport(writes: LocalImportWrites): Promise<void> {
+    if (!writes.notes.length && !writes.revisions.length
+      && !writes.verifications.length && !writes.watchlist.length) return;
+    const profile = await this.profile();
+    if ([...writes.notes, ...writes.revisions, ...writes.verifications, ...writes.watchlist]
+      .some(row => row.local_profile_id !== profile)) throw new Error('导入配置与当前本地资料不匹配');
+    const db = await this.db();
+    const tx = db.transaction(['notes', 'note_revisions', 'verification_records', 'watchlist'], 'readwrite');
+    const done = completion(tx);
+    try {
+      for (const note of writes.notes) tx.objectStore('notes').put(note);
+      for (const revision of writes.revisions) tx.objectStore('note_revisions').add(revision);
+      for (const verification of writes.verifications) tx.objectStore('verification_records').add(verification);
+      for (const watch of writes.watchlist) tx.objectStore('watchlist').add(watch);
+      await done;
+    } catch (error) {
+      try { tx.abort(); } catch { /* already finished */ }
+      await done.catch(() => {});
+      throw error;
+    }
+    this.changed('backup', 'import', writes.revisions.length);
   }
   async putWatchlist(security_id: string, action: 'add' | 'remove', key: string, snapshot_id: string): Promise<LocalWatch> {
     if (!security_id.trim() || security_id.length > 200 || !key || !['add', 'remove'].includes(action)) throw new Error('自选参数无效');

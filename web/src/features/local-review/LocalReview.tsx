@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { exportLocalBackup, importLocalBackup, previewLocalBackup } from '../../repositories/local/backup';
+import type { ImportDecision, ImportPreview } from '../../repositories/local/migrate';
 import { localRepository as repo, type LocalNote, type LocalWatch, type NoteContent, type StoredNoteContent } from '../../repositories/local/repository';
 import { registerLeaveGuard } from '../review/navigation';
 import './local-review.css';
@@ -24,6 +26,10 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
   const [history, setHistory] = useState<LocalNote[]>([]);
   const [latest, setLatest] = useState<LocalNote>();
   const [removed, setRemoved] = useState<LocalWatch>();
+  const [backupText, setBackupText] = useState('');
+  const [backupName, setBackupName] = useState('');
+  const [decision, setDecision] = useState<ImportDecision | ''>('');
+  const [preview, setPreview] = useState<ImportPreview>();
   const mounted = useRef(true), saving = useRef(false);
   const command = useRef<{ signature: string; id: string; key: string } | undefined>(undefined);
   const refresh = useCallback(async () => {
@@ -91,12 +97,79 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
     try { await repo.putWatchlist(id.trim(), action, crypto.randomUUID(), binding); await refresh(); setSymbol(''); }
     catch (failure) { setError(message(failure)); }
   };
+  const chooseBackup = async (file?: File) => {
+    setError(''); setStatus(''); setPreview(undefined); setDecision(''); setBackupText(''); setBackupName('');
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const next = await previewLocalBackup(repo, text);
+      setBackupText(text); setBackupName(file.name); setPreview(next);
+      setStatus(`已验证 ${file.name}：笔记 ${next.added.notes}，修订 ${next.appended_revisions}，重复 ${next.duplicates}。请选择导入方式。`);
+    } catch (failure) { setError(message(failure)); }
+  };
+  const chooseDecision = async (value: ImportDecision | '') => {
+    setDecision(value); setError('');
+    if (!value || !backupText) return;
+    try {
+      const next = await previewLocalBackup(repo, backupText, value);
+      setPreview(next);
+      setStatus(`预览：新增笔记 ${next.added.notes}，追加修订 ${next.appended_revisions}，重复 ${next.duplicates}，重映射 ${Object.keys(next.remapped_note_ids).length}。`);
+    } catch (failure) { setError(message(failure)); }
+  };
+  const restore = async () => {
+    if (!decision || !backupText) return;
+    setBusy(true); setError(''); setStatus('');
+    try {
+      const result = await importLocalBackup(repo, backupText, decision);
+      await refresh();
+      setStatus(`恢复完成：新增 ${result.added.notes} 条笔记、${result.added.revisions} 个修订、${result.added.verifications} 条验证、${result.added.watchlist} 个自选；跳过 ${result.duplicates} 个重复项。`);
+    } catch (failure) { setError(message(failure)); }
+    finally { if (mounted.current) setBusy(false); }
+  };
+  const downloadBackup = async () => {
+    setError('');
+    try {
+      const backup = await exportLocalBackup(repo);
+      const url = URL.createObjectURL(new Blob(
+        [JSON.stringify(backup, null, 2) + '\n'],
+        { type: 'application/json' },
+      ));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `dragon-radar-review-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus(`已导出 ${backup.counts.notes} 条笔记和 ${backup.counts.revisions} 个修订。`);
+    } catch (failure) { setError(message(failure)); }
+  };
   const canSave = Boolean(selected?.snapshot_id || snapshot);
 
   return <div className="local-review">
     <div className="page-heading"><div><p className="eyebrow">本机资料 · 浏览器保存</p><h1>我的复盘</h1></div>
       <span className="muted">无需登录 · 笔记与自选不上传</span></div>
     <p className="muted">此浏览器保存你的判断。清除网站数据会删除本地记录；服务断开不影响保存。</p>
+    <section className="local-backup" aria-label="备份与恢复">
+      <div className="toolbar">
+        <button type="button" onClick={() => void downloadBackup()} disabled={busy}>导出本机备份</button>
+        <label>选择复盘备份文件
+          <input type="file" accept=".json,application/json" onChange={event => void chooseBackup(event.target.files?.[0])} />
+        </label>
+        <label>导入方式
+          <select value={decision} disabled={!backupText || busy} onChange={event => void chooseDecision(event.target.value as ImportDecision | '')}>
+            <option value="">请选择</option>
+            <option value="merge">合并到同名笔记</option>
+            <option value="save-as-new">全部另存为新笔记</option>
+          </select>
+        </label>
+        <button type="button" onClick={() => void restore()} disabled={!decision || !preview || busy}>执行恢复</button>
+      </div>
+      {preview && <p className="muted">
+        {backupName}：重复 {preview.duplicates}，追加修订 {preview.appended_revisions}，
+        重映射笔记 {Object.keys(preview.remapped_note_ids).length}，
+        重映射修订 {Object.keys(preview.remapped_revisions).length}，
+        未解决冲突 {preview.unresolved_conflicts.length}。不会替换或删除现有修订。
+      </p>}
+    </section>
     {error && <p role="alert" className="notice error">{error}</p>}
     <div className="local-review-grid">
       <aside className="local-review-list">

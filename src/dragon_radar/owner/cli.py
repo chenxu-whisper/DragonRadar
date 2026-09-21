@@ -1,6 +1,7 @@
 """Explicit local-owner commands; pairing plaintext never goes to stdout."""
 
 import argparse
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,7 +14,13 @@ from dragon_radar.owner.repository import (
 from dragon_radar.owner.security import validate_origin
 from dragon_radar.storage.repository import Repository
 
-COMMANDS = {"owner-init", "owner-pair", "owner-revoke", "serve-owner"}
+COMMANDS = {
+    "owner-export",
+    "owner-init",
+    "owner-pair",
+    "owner-revoke",
+    "serve-owner",
+}
 
 
 def add_commands(commands: argparse._SubParsersAction) -> None:
@@ -26,6 +33,11 @@ def add_commands(commands: argparse._SubParsersAction) -> None:
     )
     pair.add_argument("--origin", default=DEFAULT_ORIGIN)
     pair.add_argument("--output", type=Path, required=True)
+    export = commands.add_parser(
+        "owner-export", help="Export old local-owner review data to a new JSON file"
+    )
+    export.add_argument("--local-profile-id", required=True)
+    export.add_argument("--output", type=Path, required=True)
     serve = commands.add_parser(
         "serve-owner", help="Serve the explicitly private owner API"
     )
@@ -77,6 +89,26 @@ def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
     owners = OwnerRepository(repository.database)
     if args.command == "owner-init":
         return {"owner_id": str(owners.initialize())}
+    if args.command == "owner-export":
+        from dragon_radar.review.export import export_local_review
+
+        payload = export_local_review(
+            repository.database, local_profile_id=args.local_profile_id
+        )
+        path = output_path(args.output)
+        with secure_output(path) as stream:
+            stream.write(
+                (
+                    json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+        return {"path": str(path), "counts": payload["counts"]}
     if args.command == "owner-revoke":
         owners.revoke_all()
         return {"status": "revoked"}

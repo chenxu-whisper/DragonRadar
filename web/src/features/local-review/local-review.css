@@ -6,7 +6,12 @@
 .local-review-list form { display: grid; gap: 8px; }
 .local-review label { display: grid; gap: 6px; font-weight: 500; }
 .local-review input, .local-review textarea { width: 100%; min-width: 0; font: inherit; padding: 9px 10px; border: 1px solid #aab6c4; border-radius: 5px; background: white; color: #111827; }
+.local-review select { min-width: 180px; font: inherit; padding: 8px 10px; border: 1px solid #aab6c4; border-radius: 5px; background: white; color: #111827; }
 .local-review textarea { resize: vertical; line-height: 1.7; }
+.local-backup { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--border, #e5eaf0); background: #f8fafc; }
+.local-backup .toolbar { align-items: end; }
+.local-backup label { font-size: 13px; }
+.local-backup input[type="file"] { max-width: 280px; padding: 6px; }
 .local-note-editor fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 16px; min-width: 0; }
 .local-note-link { text-align: left; overflow-wrap: anywhere; }
 .local-note-link[aria-current="true"] { color: #1759ad; border-color: #1759ad; font-weight: 700; }
