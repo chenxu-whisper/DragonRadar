@@ -87,6 +87,7 @@ def test_migration_creates_publication_schema_and_readiness(database):
         "source_dependencies",
         "withdrawal_records",
         "withdrawal_dependencies",
+        "withdrawal_binding_seals",
         "publication_module_controls",
     } <= tables
     with database.engine.connect() as connection:
@@ -664,6 +665,96 @@ def test_list_snapshots_applies_offset_after_authorization_filter(
 
     assert [item.id for item in listed] == [first.id]
     assert second.id != first.id
+
+
+def test_list_snapshots_uses_keyset_between_candidate_transactions(
+    publication, database, repository
+):
+    service, command = publication
+    first = service.publish(command, key="keyset-visible-first")
+    second = service.publish(command, key="keyset-visible-second")
+    denied_grant = grant(source_id="keyset-denied-source")
+    repository.register_source(denied_grant)
+    denied_batch = batch().model_copy(
+        update={
+            "source_id": denied_grant.source_id,
+            "grant": denied_grant,
+            "security_states": tuple(
+                item.model_copy(update={"source_id": denied_grant.source_id})
+                for item in batch().security_states
+            ),
+            "bars": tuple(
+                item.model_copy(update={"source_id": denied_grant.source_id})
+                for item in batch().bars
+            ),
+        }
+    )
+    for index in range(9):
+        market = repository.publish(
+            repository.import_batch(
+                denied_batch,
+                key=f"keyset-denied-market-{index}",
+            ).id
+        )
+        service.publish(
+            command.model_copy(update={"market_snapshot_id": market.id}),
+            key=f"keyset-denied-publication-{index}",
+        )
+    repository.register_source(denied_grant.model_copy(update={"local_display": False}))
+
+    candidate_queries = []
+    inserted = False
+
+    def insert_ahead_after_first_batch(
+        conn, cursor, statement, parameters, context, executemany
+    ):
+        nonlocal inserted
+        if (
+            inserted
+            or "FROM publications" not in statement
+            or "publications.status" not in statement
+            or "ORDER BY publications.trade_date" not in statement
+        ):
+            return
+        inserted = True
+        candidate_queries.append(statement)
+        PublicationService(database, repository, clock=lambda: NOW).publish(
+            command,
+            key="keyset-concurrent-insert",
+        )
+
+    def collect_candidate_queries(
+        conn, cursor, statement, parameters, context, executemany
+    ):
+        if (
+            "FROM publications" in statement
+            and "publications.status" in statement
+            and "ORDER BY publications.trade_date" in statement
+            and statement not in candidate_queries
+        ):
+            candidate_queries.append(statement)
+
+    event.listen(
+        database.engine, "after_cursor_execute", insert_ahead_after_first_batch
+    )
+    event.listen(database.engine, "after_cursor_execute", collect_candidate_queries)
+    try:
+        listed = service.repository.list_snapshots(limit=2)
+    finally:
+        event.remove(
+            database.engine,
+            "after_cursor_execute",
+            insert_ahead_after_first_batch,
+        )
+        event.remove(database.engine, "after_cursor_execute", collect_candidate_queries)
+
+    assert [item.id for item in listed] == [second.id, first.id]
+    assert len({item.id for item in listed}) == 2
+    assert len(candidate_queries) == 2
+    assert "OFFSET" not in candidate_queries[1]
+    assert "publications.trade_date <" in candidate_queries[1]
+    assert "publications.version <" in candidate_queries[1]
+    assert "publications.id >" in candidate_queries[1]
 
 
 def test_unified_read_holds_all_source_locks_through_result_assembly(

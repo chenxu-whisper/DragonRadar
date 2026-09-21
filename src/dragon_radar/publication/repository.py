@@ -460,13 +460,29 @@ class PublicationRepository:
             publications.c.id,
         )
         batch_size = max(10, min(100, limit + offset))
-        candidate_offset = 0
+        last_candidate = None
         authorized_offset = 0
         visible = []
         while len(visible) < limit:
+            candidate_query = query
+            if last_candidate is not None:
+                candidate_query = candidate_query.where(
+                    or_(
+                        publications.c.trade_date < last_candidate["trade_date"],
+                        and_(
+                            publications.c.trade_date == last_candidate["trade_date"],
+                            publications.c.version < last_candidate["version"],
+                        ),
+                        and_(
+                            publications.c.trade_date == last_candidate["trade_date"],
+                            publications.c.version == last_candidate["version"],
+                            publications.c.id > last_candidate["id"],
+                        ),
+                    )
+                )
             with self.database.engine.begin() as connection:
                 rows = (
-                    connection.execute(query.offset(candidate_offset).limit(batch_size))
+                    connection.execute(candidate_query.limit(batch_size))
                     .mappings()
                     .all()
                 )
@@ -484,7 +500,7 @@ class PublicationRepository:
                         break
             if len(rows) < batch_size:
                 break
-            candidate_offset += len(rows)
+            last_candidate = rows[-1]
         return visible
 
     def list_results(self, publication_id: UUID | str) -> tuple[PublicationResult, ...]:

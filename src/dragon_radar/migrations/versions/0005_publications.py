@@ -236,6 +236,16 @@ def upgrade():
         ["source_dependency_id", "withdrawal_id"],
     )
     op.create_table(
+        "withdrawal_binding_seals",
+        sa.Column(
+            "withdrawal_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("withdrawal_records.id", ondelete="RESTRICT"),
+            primary_key=True,
+        ),
+        sa.Column("sealed_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_table(
         "publication_module_controls",
         sa.Column("source_id", sa.Text, primary_key=True),
         sa.Column("module", sa.String(40), primary_key=True),
@@ -265,6 +275,100 @@ def upgrade():
         FOR EACH ROW EXECUTE FUNCTION guard_publication_attempt_authority();
     """)
     op.execute("""
+        CREATE FUNCTION guard_withdrawal_binding_seal_insert() RETURNS trigger AS $$
+        DECLARE
+            withdrawal_source text;
+            withdrawal_action text;
+            withdrawal_scope text;
+            withdrawal_policy text;
+            withdrawal_cutoff bigint;
+        BEGIN
+            SELECT source_id, action, scope, policy_reference,
+                   cutoff_dependency_sequence
+              INTO STRICT withdrawal_source, withdrawal_action, withdrawal_scope,
+                          withdrawal_policy, withdrawal_cutoff
+              FROM withdrawal_records
+             WHERE id = NEW.withdrawal_id
+               FOR UPDATE;
+            IF withdrawal_action NOT IN ('deidentified', 'deleted')
+               OR withdrawal_scope <> 'storage'
+               OR withdrawal_policy IS NULL
+               OR withdrawal_cutoff IS NULL
+            THEN
+                RAISE EXCEPTION 'withdrawal bindings cannot be sealed';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                  FROM source_dependencies dependency
+                 WHERE dependency.source_id = withdrawal_source
+                   AND dependency.dependency_sequence <= withdrawal_cutoff
+                   AND NOT EXISTS (
+                       SELECT 1
+                         FROM withdrawal_dependencies binding
+                        WHERE binding.withdrawal_id = NEW.withdrawal_id
+                          AND binding.source_dependency_id = dependency.id
+                   )
+            )
+            THEN
+                RAISE EXCEPTION 'withdrawal dependency bindings are incomplete';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                  FROM (
+                      SELECT 'market_import_batch'::text AS archive_type, id
+                        FROM import_batches
+                       WHERE source_id = withdrawal_source
+                      UNION ALL
+                      SELECT 'topic_import_batch'::text AS archive_type, id
+                        FROM topic_import_batches
+                       WHERE source_id = withdrawal_source
+                  ) archive
+                 WHERE NOT EXISTS (
+                     SELECT 1
+                       FROM withdrawal_dependencies binding
+                       LEFT JOIN source_dependencies dependency
+                         ON dependency.id = binding.source_dependency_id
+                      WHERE binding.withdrawal_id = NEW.withdrawal_id
+                        AND COALESCE(
+                                binding.archive_type,
+                                dependency.archive_type
+                            ) = archive.archive_type
+                        AND COALESCE(
+                                binding.archive_id,
+                                dependency.archive_id
+                            ) = archive.id
+                 )
+            )
+            THEN
+                RAISE EXCEPTION 'withdrawal archive bindings are incomplete';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER withdrawal_binding_seals_insert_guard
+        BEFORE INSERT ON withdrawal_binding_seals
+        FOR EACH ROW EXECUTE FUNCTION guard_withdrawal_binding_seal_insert();
+
+        CREATE FUNCTION require_withdrawal_binding_seal() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.action IN ('deidentified', 'deleted')
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM withdrawal_binding_seals seal
+                    WHERE seal.withdrawal_id = NEW.id
+               )
+            THEN
+                RAISE EXCEPTION 'destructive withdrawal bindings are not sealed';
+            END IF;
+            RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE CONSTRAINT TRIGGER withdrawal_records_binding_sealed
+        AFTER INSERT ON withdrawal_records
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION require_withdrawal_binding_seal();
+    """)
+    op.execute("""
         CREATE FUNCTION guard_withdrawal_dependency_insert() RETURNS trigger AS $$
         DECLARE
             withdrawal_source text;
@@ -280,13 +384,22 @@ def upgrade():
               INTO STRICT withdrawal_source, withdrawal_action, withdrawal_scope,
                           withdrawal_policy, withdrawal_cutoff
               FROM withdrawal_records
-             WHERE id = NEW.withdrawal_id;
+             WHERE id = NEW.withdrawal_id
+               FOR UPDATE;
             IF withdrawal_action NOT IN ('deidentified', 'deleted')
                OR withdrawal_scope <> 'storage'
                OR withdrawal_policy IS NULL
                OR withdrawal_cutoff IS NULL
             THEN
                 RAISE EXCEPTION 'withdrawal cannot bind dependencies';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                  FROM withdrawal_binding_seals seal
+                 WHERE seal.withdrawal_id = NEW.withdrawal_id
+            )
+            THEN
+                RAISE EXCEPTION 'withdrawal dependencies are sealed';
             END IF;
 
             IF NEW.source_dependency_id IS NOT NULL THEN
@@ -573,6 +686,7 @@ def upgrade():
         "source_dependencies",
         "withdrawal_records",
         "withdrawal_dependencies",
+        "withdrawal_binding_seals",
     ):
         _immutable(table)
 

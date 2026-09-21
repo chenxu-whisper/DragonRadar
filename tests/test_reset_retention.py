@@ -15,6 +15,7 @@ from dragon_radar.publication.tables import (
     publication_module_controls,
     publication_results,
     source_dependencies,
+    withdrawal_binding_seals,
     withdrawal_dependencies,
     withdrawal_records,
 )
@@ -556,9 +557,151 @@ def test_database_rejects_binding_old_withdrawal_to_future_dependency(
         connection.execute(insert(withdrawal_dependencies).values(**values))
 
 
+def test_destructive_withdrawal_seals_bindings_in_its_transaction(
+    published, database, repository
+):
+    _service, _record = published
+    withdrawal = RetentionService(
+        database, repository, clock=lambda: NOW
+    ).withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-sealed-bindings",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+
+    with database.engine.connect() as connection:
+        sealed_at = connection.scalar(
+            select(withdrawal_binding_seals.c.sealed_at).where(
+                withdrawal_binding_seals.c.withdrawal_id == withdrawal.id
+            )
+        )
+
+    assert sealed_at == NOW
+
+
+def test_sealed_withdrawal_rejects_future_archive_only_binding(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-sealed-future-archive",
+            approved=True,
+            action="delete",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+    future_archive = repository.import_batch(
+        batch(),
+        key="future-archive-only-binding",
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                id=uuid4(),
+                withdrawal_id=withdrawal.id,
+                source_dependency_id=None,
+                archive_type="market_import_batch",
+                archive_id=future_archive.id,
+                created_at=NOW,
+            )
+        )
+
+
+def test_database_requires_destructive_withdrawal_binding_seal(database):
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=uuid4(),
+                source_id="synthetic",
+                scope="storage",
+                action="deleted",
+                policy_reference="approved-but-unsealed",
+                cutoff_dependency_sequence=0,
+                details={},
+                occurred_at=NOW,
+            )
+        )
+
+
+def test_database_rejects_incomplete_destructive_withdrawal_seal(published, database):
+    _service, _record = published
+    withdrawal_id = uuid4()
+    with database.engine.connect() as connection:
+        cutoff = connection.scalar(
+            select(text("max(dependency_sequence)")).select_from(source_dependencies)
+        )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="storage",
+                action="deleted",
+                policy_reference="approved-incomplete-seal",
+                cutoff_dependency_sequence=cutoff,
+                details={},
+                occurred_at=NOW,
+            )
+        )
+        connection.execute(
+            insert(withdrawal_binding_seals).values(
+                withdrawal_id=withdrawal_id,
+                sealed_at=NOW,
+            )
+        )
+
+
+def test_database_rejects_seal_for_non_destructive_withdrawal(database, repository):
+    withdrawal = RetentionService(
+        database, repository, clock=lambda: NOW
+    ).withdraw_display("synthetic")
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_binding_seals).values(
+                withdrawal_id=withdrawal.id,
+                sealed_at=NOW,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE withdrawal_binding_seals SET sealed_at = sealed_at",
+        "DELETE FROM withdrawal_binding_seals",
+        "TRUNCATE withdrawal_binding_seals",
+    ],
+)
+def test_withdrawal_binding_seals_are_append_only(
+    published, database, repository, statement
+):
+    _service, _record = published
+    RetentionService(database, repository, clock=lambda: NOW).withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-immutable-seal",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(text(statement))
+
+
 def test_database_rejects_mixed_withdrawal_dependency_shape(published, database):
     _service, record = published
-    with database.engine.begin() as connection:
+    with database.engine.connect() as connection:
         dependency = (
             connection.execute(
                 select(source_dependencies).where(
@@ -569,34 +712,28 @@ def test_database_rejects_mixed_withdrawal_dependency_shape(published, database)
             .mappings()
             .one()
         )
-        withdrawal = (
-            connection.execute(
-                insert(withdrawal_records)
-                .values(
-                    id=uuid4(),
-                    source_id="synthetic",
-                    scope="storage",
-                    action="deleted",
-                    policy_reference="shape-test",
-                    cutoff_dependency_sequence=dependency["dependency_sequence"],
-                    details={},
-                    occurred_at=NOW,
-                )
-                .returning(withdrawal_records)
-            )
-            .mappings()
-            .one()
-        )
-
+    withdrawal_id = uuid4()
     values = _withdrawal_dependency_values(
         id=uuid4(),
-        withdrawal_id=withdrawal["id"],
+        withdrawal_id=withdrawal_id,
         source_dependency_id=dependency["id"],
         archive_type=dependency["archive_type"],
         archive_id=dependency["archive_id"],
         created_at=NOW,
     )
     with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="storage",
+                action="deleted",
+                policy_reference="shape-test",
+                cutoff_dependency_sequence=dependency["dependency_sequence"],
+                details={},
+                occurred_at=NOW,
+            )
+        )
         connection.execute(insert(withdrawal_dependencies).values(**values))
 
 
@@ -673,6 +810,12 @@ def test_result_retention_trigger_rejects_display_deleted_legacy_record(
             )
         )
         connection.execute(
+            text(
+                "ALTER TABLE withdrawal_records "
+                "DISABLE TRIGGER withdrawal_records_binding_sealed"
+            )
+        )
+        connection.execute(
             insert(withdrawal_records).values(
                 id=withdrawal_id,
                 source_id="synthetic",
@@ -682,6 +825,12 @@ def test_result_retention_trigger_rejects_display_deleted_legacy_record(
                 cutoff_dependency_sequence=0,
                 details={},
                 occurred_at=NOW,
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_records "
+                "ENABLE TRIGGER withdrawal_records_binding_sealed"
             )
         )
         dependency = (
@@ -737,19 +886,8 @@ def test_result_retention_trigger_rejects_display_deleted_legacy_record(
         )
 
 
-def test_archive_tombstone_uniqueness_cannot_be_bypassed_by_null(
-    published, database, repository
-):
+def test_archive_tombstone_uniqueness_cannot_be_bypassed_by_null(published, database):
     _service, record = published
-    retention = RetentionService(database, repository, clock=lambda: NOW)
-    withdrawal = retention.withdraw_storage(
-        "synthetic",
-        policy=RetentionPolicy(
-            reference="approved-tombstone-unique",
-            approved=True,
-            action="deidentify",
-        ),
-    )
     with database.engine.connect() as connection:
         dependency = (
             connection.execute(
@@ -761,20 +899,32 @@ def test_archive_tombstone_uniqueness_cannot_be_bypassed_by_null(
             .mappings()
             .one()
         )
+    withdrawal_id = uuid4()
     common = {
-        "withdrawal_id": withdrawal.id,
+        "withdrawal_id": withdrawal_id,
         "source_dependency_id": None,
         "archive_type": dependency["archive_type"],
         "archive_id": dependency["archive_id"],
         "created_at": NOW,
     }
-    with database.engine.begin() as connection:
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="storage",
+                action="deidentified",
+                policy_reference="approved-tombstone-unique",
+                cutoff_dependency_sequence=dependency["dependency_sequence"],
+                details={},
+                occurred_at=NOW,
+            )
+        )
         connection.execute(
             insert(withdrawal_dependencies).values(
                 **_withdrawal_dependency_values(id=uuid4(), **common)
             )
         )
-    with pytest.raises(DBAPIError), database.engine.begin() as connection:
         connection.execute(
             insert(withdrawal_dependencies).values(
                 **_withdrawal_dependency_values(id=uuid4(), **common)

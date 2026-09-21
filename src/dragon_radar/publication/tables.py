@@ -233,6 +233,18 @@ withdrawal_dependencies = Table(
     ),
 )
 
+withdrawal_binding_seals = Table(
+    "withdrawal_binding_seals",
+    metadata,
+    Column(
+        "withdrawal_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("withdrawal_records.id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("sealed_at", DateTime(timezone=True), nullable=False),
+)
+
 publication_module_controls = Table(
     "publication_module_controls",
     metadata,

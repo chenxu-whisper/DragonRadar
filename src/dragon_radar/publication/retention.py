@@ -17,6 +17,7 @@ from dragon_radar.publication.tables import (
     publication_module_controls,
     publication_results,
     source_dependencies,
+    withdrawal_binding_seals,
     withdrawal_dependencies,
     withdrawal_records,
 )
@@ -185,6 +186,12 @@ class RetentionService:
                         created_at=self.clock(),
                     )
                 )
+        connection.execute(
+            insert(withdrawal_binding_seals).values(
+                withdrawal_id=withdrawal["id"],
+                sealed_at=self.clock(),
+            )
+        )
 
     def _revoke_grant(self, connection, source_id, *, storage):
         current = self.repository._source(connection, source_id)

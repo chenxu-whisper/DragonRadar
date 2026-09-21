@@ -71,6 +71,7 @@ class Database:
                     "source_dependencies",
                     "withdrawal_records",
                     "withdrawal_dependencies",
+                    "withdrawal_binding_seals",
                     "publication_module_controls",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
