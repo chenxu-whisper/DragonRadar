@@ -313,6 +313,12 @@ def validate_batch(batch: MarketBatch, *, now: datetime) -> QualityReport:
     for state in batch.security_states:
         sid = state.security_id
         grouped_states[sid].append(state)
+        if state.security_type not in {"common_stock", "index"}:
+            add(
+                "unsupported_security_type",
+                "Security type is not supported for normalized market data",
+                sid,
+            )
         if (
             state.effective_to is not None
             and state.effective_to <= state.effective_from
@@ -367,6 +373,19 @@ def validate_batch(batch: MarketBatch, *, now: datetime) -> QualityReport:
         issues.extend(limit_up_event_issues(event, batch))
         if event.security_id not in known:
             add("unknown_id", "Limit-up event ID has no security state", *key)
+        event_state = state_at(batch, *key)
+        if event_state is None:
+            add(
+                "effective_limit_up_state",
+                "Limit-up event lacks a usable effective state",
+                *key,
+            )
+        elif event_state.suspended:
+            add(
+                "suspended_limit_up_event",
+                "Suspended security cannot supply a limit-up event",
+                *key,
+            )
 
     valid = legal_excluded = missing = 0
     for sid in sorted(expected):

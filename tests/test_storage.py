@@ -58,6 +58,16 @@ def test_import_canonical_idempotent_restart_and_conflict(repository, database_u
         db.close()
 
 
+def test_legacy_repository_can_archive_identity_beyond_normalized_bounds(repository):
+    from factories import state
+
+    payload = batch(security_states=(state(code="X" * 11),))
+
+    stored = repository.import_batch(payload, key="legacy-wide-identity")
+
+    assert json.loads(stored.canonical_json)["security_states"][0]["code"] == "X" * 11
+
+
 @pytest.mark.parametrize("changes", [{"complete_pages": False}, {"bars": ()}])
 def test_quality_failure_archived_exactly_but_never_published(repository, changes):
     from dragon_radar.domain.quality import validate_batch

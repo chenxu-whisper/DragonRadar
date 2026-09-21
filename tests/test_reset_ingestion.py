@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from threading import Barrier
 from uuid import UUID
@@ -282,6 +282,97 @@ def test_runner_materializes_stock_index_and_lineage(database, repository):
         )
 
 
+def test_older_backfill_does_not_replace_newer_current_security(
+    database, repository
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.readmodels.tables import security
+
+    runner = MarketIngestionRunner(repository)
+    newer = batch(
+        trade_date=DAYS[-1],
+        source_version="s2",
+        pool_version="p2",
+        security_states=(
+            state(
+                code="NEW",
+                source_version="s2",
+                pool_version="p2",
+                effective_from=DAYS[2],
+                available_at=NOW - timedelta(days=1),
+            ),
+        ),
+        bars=(
+            bar(
+                trade_date=DAYS[-1],
+                source_version="s2",
+                available_at=NOW - timedelta(hours=1),
+            ),
+        ),
+    )
+    older = batch(
+        trade_date=DAYS[1],
+        security_states=(state(code="OLD", effective_to=DAYS[2]),),
+        bars=(bar(trade_date=DAYS[1]),),
+    )
+
+    current = runner.import_batch(licensed_batch(newer), key="current-newer")
+    runner.import_batch(licensed_batch(older), key="backfill-older")
+
+    with database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                security.c.code,
+                security.c.source_version,
+                security.c.source_archive_id,
+            ).where(security.c.security_id == "A")
+        ).one()
+    assert row == ("NEW", "s2", current.batch_id)
+
+
+def test_same_date_older_revision_does_not_replace_later_available_identity(
+    database, repository
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.readmodels.tables import security
+
+    runner = MarketIngestionRunner(repository)
+
+    def revision(version, code, available_at):
+        return batch(
+            source_version=version,
+            pool_version=version,
+            security_states=(
+                state(
+                    code=code,
+                    source_version=version,
+                    pool_version=version,
+                    available_at=available_at,
+                ),
+            ),
+            bars=(bar(source_version=version),),
+        )
+
+    later = runner.import_batch(
+        licensed_batch(revision("s2", "LATER", NOW - timedelta(hours=2))),
+        key="same-date-later",
+    )
+    runner.import_batch(
+        licensed_batch(revision("s1", "EARLIER", NOW - timedelta(days=1))),
+        key="same-date-earlier",
+    )
+
+    with database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                security.c.code,
+                security.c.available_at,
+                security.c.source_archive_id,
+            ).where(security.c.security_id == "A")
+        ).one()
+    assert row == ("LATER", NOW - timedelta(hours=2), later.batch_id)
+
+
 def test_runner_preserves_nullable_market_fields(database, repository):
     from dragon_radar.ingestion.runner import MarketIngestionRunner
     from dragon_radar.readmodels.tables import daily_kline
@@ -299,6 +390,174 @@ def test_runner_preserves_nullable_market_fields(database, repository):
             )
         ).one()
     assert row == (None, None, None, result.batch_id)
+
+
+def test_limit_up_source_revisions_are_preserved_with_archive_lineage(
+    database, repository
+):
+    from dragon_radar.domain.models import LimitUpEvent
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.readmodels.tables import limit_up_record
+
+    runner = MarketIngestionRunner(repository)
+
+    def revision(version, continuous_boards):
+        available_at = NOW - timedelta(hours=continuous_boards)
+        return batch(
+            source_version=version,
+            pool_version=version,
+            security_states=(
+                state(
+                    code="000001",
+                    source_version=version,
+                    pool_version=version,
+                    available_at=available_at,
+                ),
+            ),
+            bars=(bar(source_version=version),),
+            limit_up_events=(
+                LimitUpEvent(
+                    security_id="A",
+                    trade_date=DAYS[-1],
+                    available_at=available_at,
+                    source_id="synthetic",
+                    source_version=version,
+                    is_limit_up=True,
+                    continuous_boards=continuous_boards,
+                ),
+            ),
+        )
+
+    first = runner.import_batch(
+        licensed_batch(revision("s1", 1)), key="limit-up-v1"
+    )
+    second = runner.import_batch(
+        licensed_batch(revision("s2", 2)), key="limit-up-v2"
+    )
+
+    with database.engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                limit_up_record.c.source_version,
+                limit_up_record.c.continuous_boards,
+                limit_up_record.c.source_archive_id,
+            ).order_by(limit_up_record.c.source_version)
+        ).all()
+    assert rows == [
+        ("s1", 1, first.batch_id),
+        ("s2", 2, second.batch_id),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("record", "field", "maximum"),
+    [
+        ("state", "security_id", 32),
+        ("state", "code", 10),
+        ("state", "name", 50),
+        ("state", "security_type", 30),
+        ("state", "exchange", 10),
+        ("state", "board", 20),
+        ("batch", "source_id", 50),
+        ("batch", "source_version", 100),
+        ("bar", "currency", 10),
+        ("bar", "volume_unit", 20),
+    ],
+)
+def test_overlength_normalized_identity_is_archived_and_quarantined(
+    database,
+    repository,
+    record,
+    field,
+    maximum,
+):
+    from factories import grant
+
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    value = "x" * (maximum + 1)
+    state_changes = {}
+    bar_changes = {}
+    if record == "state":
+        state_changes[field] = value
+    elif record == "bar":
+        bar_changes[field] = value
+
+    security_id = value if field == "security_id" else "A"
+    source_id = value if field == "source_id" else "synthetic"
+    source_version = value if field == "source_version" else "s1"
+    exchange = value if field == "exchange" else "TEST"
+    if source_id != "synthetic":
+        repository.register_source(grant(source_id=source_id))
+    calendar = batch().calendar.model_copy(update={"exchange": exchange})
+    state_values = {
+        "security_id": security_id,
+        "code": "000001",
+        "source_id": source_id,
+        "source_version": source_version,
+        "exchange": exchange,
+        **state_changes,
+    }
+    bar_values = {
+        "security_id": security_id,
+        "source_id": source_id,
+        "source_version": source_version,
+        **bar_changes,
+    }
+    payload = batch(
+        source_id=source_id,
+        source_version=source_version,
+        grant=grant(source_id=source_id),
+        calendar=calendar,
+        expected_security_ids=(security_id,),
+        security_states=(state(**state_values),),
+        bars=(bar(**bar_values),),
+    )
+
+    result = MarketIngestionRunner(repository).import_batch(
+        licensed_batch(payload),
+        key=f"overlength-{record}-{field}",
+    )
+
+    assert result.status == "quarantined"
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM import_batches")) == 1
+        quality_report = connection.execute(
+            text("SELECT quality_report FROM import_batches")
+        ).scalar_one()
+        assert "normalized_bounds" in {
+            issue["code"] for issue in quality_report["issues"]
+        }
+        for table in (
+            "security",
+            "security_state_history",
+            "daily_kline",
+            "index_daily_kline",
+            "limit_up_record",
+        ):
+            assert connection.scalar(text(f"SELECT count(*) FROM {table}")) == 0
+
+
+def test_unsupported_security_type_is_quarantined_without_materialization(
+    database, repository
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    result = MarketIngestionRunner(repository).import_batch(
+        licensed_batch(
+            batch(
+                security_states=(state(code="000001", security_type="fund"),),
+                bars=(bar(),),
+            )
+        ),
+        key="unsupported-security-type",
+    )
+
+    assert result.status == "quarantined"
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM import_batches")) == 1
+        assert connection.scalar(text("SELECT count(*) FROM security")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM daily_kline")) == 0
 
 
 def test_historical_non_current_security_gets_stable_base_row(database, repository):
@@ -756,6 +1015,10 @@ def test_market_schema_constraints_match_frozen_contract(database):
         tuple(item["column_names"])
         for item in inspector.get_unique_constraints("security")
     }
+    limit_up_unique = {
+        tuple(item["column_names"])
+        for item in inspector.get_unique_constraints("limit_up_record")
+    }
 
     assert security_indexes["security_exchange_code"] == ("exchange", "code")
     assert "envelope_hash" in attempt_columns
@@ -764,17 +1027,23 @@ def test_market_schema_constraints_match_frozen_contract(database):
     assert "idempotency_hash" in archive_columns
     assert ("security_id", "state_type", "valid_from") in history_unique
     assert ("security_id", "valid_from") not in security_unique
-    assert "security_state_history_no_overlap" in {
-        row["conname"]
-        for row in database.engine.connect()
-        .execute(
+    assert (
+        "security_id",
+        "trade_date",
+        "source",
+        "source_version",
+    ) in limit_up_unique
+    with database.engine.connect() as connection:
+        history_constraints = {
+            row["conname"]
+            for row in connection.execute(
             text(
                 "SELECT conname FROM pg_constraint "
                 "WHERE conrelid = 'security_state_history'::regclass"
             )
-        )
-        .mappings()
-    }
+            ).mappings()
+        }
+    assert "security_state_history_no_overlap" in history_constraints
 
 
 def test_local_display_does_not_grant_export_ai_or_sharing():

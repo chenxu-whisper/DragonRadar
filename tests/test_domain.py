@@ -291,6 +291,55 @@ def test_explicit_suspension_counts_without_fabricated_bar():
     assert result.batch.bars == ()
 
 
+def test_unsupported_security_type_is_a_quality_issue():
+    from dragon_radar.domain.quality import validate_batch
+
+    report = validate_batch(
+        batch(security_states=(state(security_type="fund"),)),
+        now=NOW,
+    )
+
+    assert "unsupported_security_type" in {issue.code for issue in report.issues}
+    assert not report.publishable
+
+
+@pytest.mark.parametrize(
+    ("state_changes", "expected_code"),
+    [
+        ({"effective_to": DAYS[-1]}, "effective_limit_up_state"),
+        ({"available_at": NOW + timedelta(seconds=1)}, "effective_limit_up_state"),
+        ({"source_version": "s2"}, "effective_limit_up_state"),
+        ({"pool_version": "p2"}, "effective_limit_up_state"),
+        ({"suspended": True}, "suspended_limit_up_event"),
+    ],
+)
+def test_limit_up_event_requires_usable_trading_identity(
+    state_changes, expected_code
+):
+    from dragon_radar.domain.models import LimitUpEvent
+    from dragon_radar.domain.quality import validate_batch
+
+    event = LimitUpEvent(
+        security_id="A",
+        trade_date=DAYS[-1],
+        available_at=NOW - timedelta(hours=1),
+        source_id="synthetic",
+        source_version="s1",
+        is_limit_up=True,
+    )
+    identity = state(**state_changes)
+    payload = batch(
+        security_states=(identity,),
+        bars=() if identity.suspended else (bar(),),
+        limit_up_events=(event,),
+    )
+
+    report = validate_batch(payload, now=NOW)
+
+    assert expected_code in {issue.code for issue in report.issues}
+    assert not report.publishable
+
+
 @pytest.mark.parametrize(
     "changes",
     [

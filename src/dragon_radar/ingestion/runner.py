@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import and_, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
@@ -32,6 +32,7 @@ from dragon_radar.readmodels.tables import (
     security,
     security_state_history,
 )
+from dragon_radar.storage.models import import_batches
 from dragon_radar.storage.repository import (
     Conflict,
     Forbidden,
@@ -79,6 +80,25 @@ def _envelope_quality_issues(
     envelope: LicensedMarketBatch,
 ) -> tuple[QualityIssue, ...]:
     issues = []
+
+    def check_bound(
+        value: str | None,
+        maximum: int,
+        field: str,
+        *,
+        security_id: str | None = None,
+        trade_date=None,
+    ) -> None:
+        if value is not None and len(value) > maximum:
+            issues.append(
+                QualityIssue(
+                    code="normalized_bounds",
+                    message=f"{field} exceeds normalized limit {maximum}",
+                    security_id=security_id,
+                    trade_date=trade_date,
+                )
+            )
+
     if _page_gap(envelope.page_manifest) is not None:
         issues.append(
             QualityIssue(
@@ -97,6 +117,9 @@ def _envelope_quality_issues(
                 trade_date=envelope.batch.trade_date,
             )
         )
+    batch = envelope.batch
+    check_bound(batch.source_id, 50, "source_id")
+    check_bound(batch.source_version, 100, "source_version")
     required_identity = (
         "code",
         "security_type",
@@ -115,6 +138,50 @@ def _envelope_quality_issues(
                     message="Normalized identity requires " + ", ".join(missing),
                     security_id=state.security_id,
                 )
+            )
+        for field, maximum in (
+            ("security_id", 32),
+            ("code", 10),
+            ("name", 50),
+            ("security_type", 30),
+            ("exchange", 10),
+            ("board", 20),
+            ("source_id", 50),
+            ("source_version", 100),
+        ):
+            check_bound(
+                getattr(state, field),
+                maximum,
+                field,
+                security_id=state.security_id,
+            )
+    for bar in batch.bars:
+        for field, maximum in (
+            ("security_id", 32),
+            ("currency", 10),
+            ("volume_unit", 20),
+            ("source_id", 50),
+            ("source_version", 100),
+        ):
+            check_bound(
+                getattr(bar, field),
+                maximum,
+                field,
+                security_id=bar.security_id,
+                trade_date=bar.trade_date,
+            )
+    for event in batch.limit_up_events:
+        for field, maximum in (
+            ("security_id", 32),
+            ("source_id", 50),
+            ("source_version", 100),
+        ):
+            check_bound(
+                getattr(event, field),
+                maximum,
+                field,
+                security_id=event.security_id,
+                trade_date=event.trade_date,
             )
     return tuple(issues)
 
@@ -421,9 +488,19 @@ class MarketIngestionRunner:
                 "available_at": item.available_at,
                 "source_archive_id": archive_id,
             }
+            statement = pg_insert(security).values(**values)
+            existing_archive_is_older = security.c.source_archive_id.in_(
+                select(import_batches.c.id).where(
+                    import_batches.c.trade_date < batch.trade_date
+                )
+            )
+            existing_archive_is_same_date = security.c.source_archive_id.in_(
+                select(import_batches.c.id).where(
+                    import_batches.c.trade_date == batch.trade_date
+                )
+            )
             connection.execute(
-                pg_insert(security)
-                .values(**values)
+                statement
                 .on_conflict_do_update(
                     index_elements=[security.c.security_id],
                     set_={
@@ -431,6 +508,13 @@ class MarketIngestionRunner:
                         for key, value in values.items()
                         if key != "security_id"
                     },
+                    where=or_(
+                        existing_archive_is_older,
+                        and_(
+                            existing_archive_is_same_date,
+                            security.c.available_at < item.available_at,
+                        ),
+                    ),
                 )
             )
 
@@ -473,11 +557,12 @@ class MarketIngestionRunner:
             item_state = state_at(batch, item.security_id, item.trade_date)
             if item_state is None or item_state.suspended:
                 continue
-            target = (
-                index_daily_kline
-                if item_state.security_type == "index"
-                else daily_kline
-            )
+            if item_state.security_type == "index":
+                target = index_daily_kline
+            elif item_state.security_type == "common_stock":
+                target = daily_kline
+            else:
+                continue
             change_ratio = None
             if item.previous_close is not None and item.close is not None:
                 change_ratio = item.close / item.previous_close - Decimal(1)
@@ -517,6 +602,9 @@ class MarketIngestionRunner:
             )
 
         for item in batch.limit_up_events:
+            item_state = state_at(batch, item.security_id, item.trade_date)
+            if item_state is None or item_state.suspended:
+                continue
             connection.execute(
                 pg_insert(limit_up_record)
                 .values(
@@ -538,6 +626,8 @@ class MarketIngestionRunner:
                     index_elements=[
                         limit_up_record.c.security_id,
                         limit_up_record.c.trade_date,
+                        limit_up_record.c.source,
+                        limit_up_record.c.source_version,
                     ]
                 )
             )
