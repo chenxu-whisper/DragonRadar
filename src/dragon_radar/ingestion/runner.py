@@ -7,7 +7,6 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
 from dragon_radar.domain.quality import (
@@ -197,6 +196,13 @@ def _envelope_hash(envelope: LicensedMarketBatch) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _request_hash(envelope_hash: str, retry_from_attempt_id: UUID | None) -> str:
+    if retry_from_attempt_id is None:
+        return envelope_hash
+    command = f"market-retry:{retry_from_attempt_id}:{envelope_hash}"
+    return hashlib.sha256(command.encode("ascii")).hexdigest()
+
+
 def _attempt(row: Mapping[str, object]) -> MarketImportAttempt:
     return MarketImportAttempt(
         id=row["id"],
@@ -242,6 +248,29 @@ def _state_value(value: object) -> str | None:
     return str(value)
 
 
+def _insert_immutable_row(
+    connection,
+    table,
+    values: Mapping[str, object],
+    key_fields: tuple[str, ...],
+    *,
+    description: str,
+) -> None:
+    existing = (
+        connection.execute(
+            select(table).where(
+                *(table.c[field] == values[field] for field in key_fields)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if existing is None:
+        connection.execute(insert(table).values(**values))
+    elif any(existing[field] != value for field, value in values.items()):
+        raise Conflict(f"Conflicting {description} payload or lineage")
+
+
 class MarketIngestionRunner:
     """Coordinates canonical Repository archives with normalized local read rows."""
 
@@ -257,6 +286,13 @@ class MarketIngestionRunner:
         with self.database.engine.begin() as connection:
             return self._record_attempt(connection, envelope, key=key)
 
+    def _lock_request(self, connection, envelope, key):
+        self.repository._lock(connection, "market-ingestion-key:" + key)
+        self.repository._lock(connection, "import-key:" + key)
+        current = self.repository._source(connection, envelope.batch.source_id)
+        now = self.repository._authorize_storage(current, envelope.batch)
+        return current, now
+
     def retry_attempt(
         self,
         attempt_id: UUID | str,
@@ -268,6 +304,7 @@ class MarketIngestionRunner:
         _identifier(key)
         envelope = LicensedMarketBatch.model_validate(envelope.model_dump())
         with self.database.engine.begin() as connection:
+            current, now = self._lock_request(connection, envelope, key)
             self.repository._lock(
                 connection, "market-import-attempt:" + str(attempt_id)
             )
@@ -282,6 +319,9 @@ class MarketIngestionRunner:
             )
             if previous is None:
                 raise NotFound("Market import attempt not found")
+            self.repository._lock(
+                connection, "market-import-task:" + str(previous["task_id"])
+            )
             task = (
                 connection.execute(
                     select(market_import_tasks)
@@ -292,21 +332,12 @@ class MarketIngestionRunner:
                 .one()
             )
             if (
-                previous["status"] != "quarantined"
-                or previous["retry_from"] is None
-                or previous["retry_to"] is None
-                or task["status"] != "quarantined"
-            ):
-                raise ValueError("Market attempt is not retryable")
-            if (
                 envelope.batch.source_id != previous["source_id"]
                 or envelope.page_manifest.request_from != previous["retry_from"]
                 or envelope.page_manifest.request_to != previous["retry_to"]
             ):
                 raise Conflict("Market retry does not match the failed attempt")
-            current = self.repository._source(connection, envelope.batch.source_id)
             old_grant = SourceGrant.model_validate(previous["embedded_grant"])
-            now = self.repository.clock()
             if not all(
                 grant_allows_storage(
                     grant, source_id=envelope.batch.source_id, now=now
@@ -314,11 +345,44 @@ class MarketIngestionRunner:
                 for grant in (current, old_grant)
             ):
                 raise Forbidden("Source is not locally authorized")
+            existing = (
+                connection.execute(
+                    select(market_import_attempts).where(
+                        market_import_attempts.c.idempotency_key == key
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                existing_request_hash = connection.scalar(
+                    select(import_batches.c.idempotency_hash).where(
+                        import_batches.c.id == existing["batch_id"]
+                    )
+                )
+                if (
+                    existing["envelope_hash"] != _envelope_hash(envelope)
+                    or existing["task_id"] != previous["task_id"]
+                    or existing_request_hash
+                    != _request_hash(_envelope_hash(envelope), attempt_id)
+                ):
+                    raise Conflict("Idempotency key already belongs to another payload")
+                return _result(existing)
+            if (
+                previous["status"] != "quarantined"
+                or previous["retry_from"] is None
+                or previous["retry_to"] is None
+                or task["status"] != "quarantined"
+            ):
+                raise ValueError("Market attempt is not retryable")
             return self._record_attempt(
                 connection,
                 envelope,
                 key=key,
                 task_id=previous["task_id"],
+                retry_from_attempt_id=attempt_id,
+                current=current,
+                now=now,
             )
 
     def _record_attempt(
@@ -328,13 +392,15 @@ class MarketIngestionRunner:
         *,
         key: str,
         task_id: UUID | None = None,
+        retry_from_attempt_id: UUID | None = None,
+        current: SourceGrant | None = None,
+        now=None,
     ) -> MarketIngestionResult:
         batch = envelope.batch
         envelope_hash = _envelope_hash(envelope)
-        self.repository._lock(connection, "market-ingestion-key:" + key)
-        self.repository._lock(connection, "import-key:" + key)
-        current = self.repository._source(connection, batch.source_id)
-        now = self.repository._authorize_storage(current, batch)
+        request_hash = _request_hash(envelope_hash, retry_from_attempt_id)
+        if current is None:
+            current, now = self._lock_request(connection, envelope, key)
         existing = (
             connection.execute(
                 select(market_import_attempts).where(
@@ -345,8 +411,14 @@ class MarketIngestionRunner:
             .first()
         )
         if existing is not None:
+            existing_request_hash = connection.scalar(
+                select(import_batches.c.idempotency_hash).where(
+                    import_batches.c.id == existing["batch_id"]
+                )
+            )
             if (
                 existing["envelope_hash"] != envelope_hash
+                or existing_request_hash != request_hash
                 or task_id is not None
                 and existing["task_id"] != task_id
             ):
@@ -377,7 +449,7 @@ class MarketIngestionRunner:
             batch,
             key=key,
             additional_issues=additional_issues,
-            idempotency_hash=envelope_hash,
+            idempotency_hash=request_hash,
             current=current,
             now=now,
         )
@@ -460,6 +532,12 @@ class MarketIngestionRunner:
     def _materialize(
         self, connection, batch: MarketBatch, archive_id: UUID
     ) -> None:
+        security_ids = {item.security_id for item in batch.security_states}
+        security_ids.update(item.security_id for item in batch.bars)
+        security_ids.update(item.security_id for item in batch.limit_up_events)
+        for security_id in sorted(security_ids):
+            self.repository._lock(connection, "market-security:" + security_id)
+
         states_by_security = {}
         for item in batch.security_states:
             states_by_security.setdefault(item.security_id, []).append(item)
@@ -471,9 +549,6 @@ class MarketIngestionRunner:
             ) or max(states, key=lambda item: item.effective_from)
 
         for item in identity_states.values():
-            self.repository._lock(
-                connection, "market-security:" + item.security_id
-            )
             values = {
                 "security_id": item.security_id,
                 "code": item.code,
@@ -568,27 +643,24 @@ class MarketIngestionRunner:
                 value = getattr(item, attribute)
                 if value is None:
                     continue
-                connection.execute(
-                    pg_insert(security_state_history)
-                    .values(
-                        security_id=item.security_id,
-                        state_type=state_type,
-                        old_value=None,
-                        new_value=_state_value(value),
-                        valid_from=item.effective_from,
-                        valid_to=item.effective_to,
-                        source=item.source_id,
-                        source_version=item.source_version,
-                        available_at=item.available_at,
-                        source_archive_id=archive_id,
-                    )
-                    .on_conflict_do_nothing(
-                        index_elements=[
-                            security_state_history.c.security_id,
-                            security_state_history.c.state_type,
-                            security_state_history.c.valid_from,
-                        ]
-                    )
+                values = {
+                    "security_id": item.security_id,
+                    "state_type": state_type,
+                    "old_value": None,
+                    "new_value": _state_value(value),
+                    "valid_from": item.effective_from,
+                    "valid_to": item.effective_to,
+                    "source": item.source_id,
+                    "source_version": item.source_version,
+                    "available_at": item.available_at,
+                    "source_archive_id": archive_id,
+                }
+                _insert_immutable_row(
+                    connection,
+                    security_state_history,
+                    values,
+                    ("security_id", "state_type", "valid_from"),
+                    description="security history",
                 )
 
         for item in batch.bars:
@@ -604,39 +676,35 @@ class MarketIngestionRunner:
             change_ratio = None
             if item.previous_close is not None and item.close is not None:
                 change_ratio = item.close / item.previous_close - Decimal(1)
-            connection.execute(
-                pg_insert(target)
-                .values(
-                    security_id=item.security_id,
-                    trade_date=item.trade_date,
-                    open=item.open,
-                    high=item.high,
-                    low=item.low,
-                    close=item.close,
-                    volume=item.volume,
-                    amount=item.amount,
-                    change_ratio=change_ratio,
-                    adj_factor=item.adjustment_factor,
-                    limit_up_price=item.limit_up,
-                    limit_down_price=item.limit_down,
-                    turnover_rate=item.turnover_rate,
-                    float_mv=item.float_mv,
-                    total_mv=item.total_mv,
-                    currency=item.currency,
-                    volume_unit=item.volume_unit,
-                    source=item.source_id,
-                    source_version=item.source_version,
-                    available_at=item.available_at,
-                    source_archive_id=archive_id,
-                )
-                .on_conflict_do_nothing(
-                    index_elements=[
-                        target.c.security_id,
-                        target.c.trade_date,
-                        target.c.source,
-                        target.c.source_version,
-                    ]
-                )
+            values = {
+                "security_id": item.security_id,
+                "trade_date": item.trade_date,
+                "open": item.open,
+                "high": item.high,
+                "low": item.low,
+                "close": item.close,
+                "volume": item.volume,
+                "amount": item.amount,
+                "change_ratio": change_ratio,
+                "adj_factor": item.adjustment_factor,
+                "limit_up_price": item.limit_up,
+                "limit_down_price": item.limit_down,
+                "turnover_rate": item.turnover_rate,
+                "float_mv": item.float_mv,
+                "total_mv": item.total_mv,
+                "currency": item.currency,
+                "volume_unit": item.volume_unit,
+                "source": item.source_id,
+                "source_version": item.source_version,
+                "available_at": item.available_at,
+                "source_archive_id": archive_id,
+            }
+            _insert_immutable_row(
+                connection,
+                target,
+                values,
+                ("security_id", "trade_date", "source", "source_version"),
+                description="daily kline",
             )
 
         for item in batch.limit_up_events:

@@ -244,5 +244,8 @@ market_import_attempts = Table(
     Column("details", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("status IN ('quarantined', 'succeeded')"),
-    Index("market_import_attempts_listing", "attempt_sequence"),
+)
+Index(
+    "market_import_attempts_listing",
+    market_import_attempts.c.attempt_sequence.desc(),
 )
