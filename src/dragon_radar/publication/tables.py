@@ -179,18 +179,17 @@ withdrawal_dependencies = Table(
         PGUUID(as_uuid=True),
         ForeignKey("source_dependencies.id", ondelete="RESTRICT"),
     ),
-    Column("source_id", Text, nullable=False),
-    Column("archive_type", String(40), nullable=False),
-    Column("archive_id", PGUUID(as_uuid=True), nullable=False),
-    Column("derived_type", String(40)),
-    Column("derived_id", PGUUID(as_uuid=True)),
-    Column(
-        "publication_id",
-        PGUUID(as_uuid=True),
-        ForeignKey("publications.id", ondelete="RESTRICT"),
-    ),
+    Column("archive_type", String(40)),
+    Column("archive_id", PGUUID(as_uuid=True)),
     Column("created_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("withdrawal_id", "source_dependency_id"),
+    UniqueConstraint("withdrawal_id", "archive_type", "archive_id"),
+    CheckConstraint(
+        "(source_dependency_id IS NOT NULL "
+        "AND archive_type IS NULL AND archive_id IS NULL) "
+        "OR (source_dependency_id IS NULL "
+        "AND archive_type IS NOT NULL AND archive_id IS NOT NULL)"
+    ),
     Index(
         "withdrawal_dependencies_archive",
         "archive_type",
@@ -198,9 +197,8 @@ withdrawal_dependencies = Table(
         "withdrawal_id",
     ),
     Index(
-        "withdrawal_dependencies_derived",
-        "publication_id",
-        "derived_type",
+        "withdrawal_dependencies_source_dependency",
+        "source_dependency_id",
         "withdrawal_id",
     ),
 )

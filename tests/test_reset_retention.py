@@ -1,8 +1,11 @@
 """Source dependency, withdrawal, retention, and recovery contracts."""
 
+from datetime import timedelta
+from uuid import uuid4
+
 import pytest
 from factories import DAYS, NOW, batch, grant
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, insert, select, text
 from sqlalchemy.exc import DBAPIError
 from topic_factories import topic_batch
 
@@ -13,10 +16,11 @@ from dragon_radar.publication.tables import (
     publication_module_controls,
     publication_results,
     source_dependencies,
+    withdrawal_dependencies,
     withdrawal_records,
 )
 from dragon_radar.storage.models import source_grants
-from dragon_radar.storage.repository import Conflict, Forbidden
+from dragon_radar.storage.repository import Conflict, Forbidden, Repository
 from dragon_radar.topics.repository import TopicRepository
 
 
@@ -301,5 +305,177 @@ def test_destructive_withdrawal_only_applies_to_dependencies_existing_at_withdra
             delete(publication_results).where(
                 publication_results.c.publication_id == new_record.id,
                 publication_results.c.domain == "market",
+            )
+        )
+
+
+def _withdrawal_dependency_values(**values):
+    legacy_defaults = {
+        "source_id": "synthetic",
+        "derived_type": None,
+        "derived_id": None,
+        "publication_id": None,
+    }
+    return {
+        **{
+            name: value
+            for name, value in legacy_defaults.items()
+            if name in withdrawal_dependencies.c
+        },
+        **values,
+    }
+
+
+def test_database_rejects_binding_old_withdrawal_to_future_dependency(
+    published, database, repository
+):
+    _service, _old_record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-future-binding",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
+    future = NOW + timedelta(days=1)
+    future_repository = Repository(database, clock=lambda: future)
+    market = future_repository.publish(
+        future_repository.import_batch(batch(), key="future-binding-market").id
+    )
+    topics = TopicRepository(database, clock=lambda: future)
+    topic = topics.publish(
+        topics.import_batch(topic_batch(), key="future-binding-topic").id
+    )
+    future_record = PublicationService(
+        database, future_repository, clock=lambda: future
+    ).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            topic_snapshot_id=topic.id,
+            disabled_domains=("news", "regulation", "role"),
+        ),
+        key="future-binding-publication",
+    )
+    with database.engine.connect() as connection:
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == future_record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+    values = {
+        "id": uuid4(),
+        "withdrawal_id": withdrawal.id,
+        "source_dependency_id": dependency["id"],
+        "created_at": NOW,
+    }
+    if "source_id" in withdrawal_dependencies.c:
+        values = _withdrawal_dependency_values(
+            **values,
+            archive_type=dependency["archive_type"],
+            archive_id=dependency["archive_id"],
+            derived_type=dependency["derived_type"],
+            derived_id=dependency["derived_id"],
+            publication_id=dependency["publication_id"],
+        )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(withdrawal_dependencies).values(**values))
+
+
+def test_database_rejects_mixed_withdrawal_dependency_shape(published, database):
+    _service, record = published
+    with database.engine.begin() as connection:
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+        withdrawal = (
+            connection.execute(
+                insert(withdrawal_records)
+                .values(
+                    id=uuid4(),
+                    source_id="synthetic",
+                    scope="storage",
+                    action="deleted",
+                    policy_reference="shape-test",
+                    details={},
+                    occurred_at=NOW,
+                )
+                .returning(withdrawal_records)
+            )
+            .mappings()
+            .one()
+        )
+
+    values = _withdrawal_dependency_values(
+        id=uuid4(),
+        withdrawal_id=withdrawal["id"],
+        source_dependency_id=dependency["id"],
+        archive_type=dependency["archive_type"],
+        archive_id=dependency["archive_id"],
+        created_at=NOW,
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(withdrawal_dependencies).values(**values))
+
+
+def test_archive_tombstone_uniqueness_cannot_be_bypassed_by_null(
+    published, database, repository
+):
+    _service, record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-tombstone-unique",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    with database.engine.connect() as connection:
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+    common = {
+        "withdrawal_id": withdrawal.id,
+        "source_dependency_id": None,
+        "archive_type": dependency["archive_type"],
+        "archive_id": dependency["archive_id"],
+        "created_at": NOW,
+    }
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                **_withdrawal_dependency_values(id=uuid4(), **common)
+            )
+        )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                **_withdrawal_dependency_values(id=uuid4(), **common)
             )
         )

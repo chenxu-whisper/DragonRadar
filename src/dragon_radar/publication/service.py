@@ -211,8 +211,6 @@ class PublicationService:
                     .mappings()
                     .all()
                 )
-                if any(attempt["command_hash"] != digest for attempt in attempts):
-                    raise Conflict("Idempotency key already belongs to another command")
                 published_attempt = next(
                     (
                         attempt
@@ -222,8 +220,16 @@ class PublicationService:
                     None,
                 )
                 if published_attempt is not None:
+                    if published_attempt["command_hash"] != digest:
+                        raise Conflict(
+                            "Idempotency key already belongs to another command"
+                        )
                     result_id = published_attempt["publication_id"]
                 else:
+                    if any(attempt["command_hash"] != digest for attempt in attempts):
+                        raise Conflict(
+                            "Idempotency key already belongs to another command"
+                        )
                     self.market._lock(
                         connection,
                         "publication-date:" + command.trade_date.isoformat(),

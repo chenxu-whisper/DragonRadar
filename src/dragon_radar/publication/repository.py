@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from dragon_radar.domain.models import MarketBatch
 from dragon_radar.publication.models import (
@@ -23,7 +23,7 @@ from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
 from dragon_radar.topics.models import TopicBatch
 from dragon_radar.topics.repository import TopicRepository
-from dragon_radar.topics.tables import topic_import_batches
+from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
 
 
 def _publication(row: Mapping) -> Publication:
@@ -56,11 +56,24 @@ def archive_was_withdrawn(
                 withdrawal_dependencies,
                 withdrawal_dependencies.c.withdrawal_id == withdrawal_records.c.id,
             )
+            .outerjoin(
+                source_dependencies,
+                source_dependencies.c.id
+                == withdrawal_dependencies.c.source_dependency_id,
+            )
             .where(
                 withdrawal_records.c.source_id == source_id,
                 withdrawal_records.c.action.in_(("deidentified", "deleted")),
-                withdrawal_dependencies.c.archive_type == archive_type,
-                withdrawal_dependencies.c.archive_id == archive_id,
+                or_(
+                    and_(
+                        source_dependencies.c.archive_type == archive_type,
+                        source_dependencies.c.archive_id == archive_id,
+                    ),
+                    and_(
+                        withdrawal_dependencies.c.archive_type == archive_type,
+                        withdrawal_dependencies.c.archive_id == archive_id,
+                    ),
+                ),
             )
             .limit(1)
         )
@@ -130,8 +143,13 @@ class PublicationRepository:
                     withdrawal_dependencies,
                     withdrawal_dependencies.c.withdrawal_id == withdrawal_records.c.id,
                 )
+                .join(
+                    source_dependencies,
+                    source_dependencies.c.id
+                    == withdrawal_dependencies.c.source_dependency_id,
+                )
                 .where(
-                    withdrawal_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.publication_id == record.id,
                     withdrawal_records.c.action.in_(("deidentified", "deleted")),
                 )
                 .limit(1)
@@ -161,15 +179,36 @@ class PublicationRepository:
         market = self.market._snapshot(market_row, market_archive)
 
         if record.topic_snapshot_id is not None:
-            topic_dependency = next(
+            topic_row = (
+                connection.execute(
+                    select(topic_snapshots).where(
+                        topic_snapshots.c.id == record.topic_snapshot_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            topic_dependencies = [
                 row
                 for row in dependencies
-                if row["archive_type"] == "topic_import_batch"
-            )
+                if row["derived_type"] == "topic"
+                or row["archive_type"] == "topic_import_batch"
+            ]
+            if (
+                topic_row is None
+                or len(topic_dependencies) != 1
+                or topic_dependencies[0]["source_id"] != topic_row["source_id"]
+                or topic_dependencies[0]["archive_type"] != "topic_import_batch"
+                or topic_dependencies[0]["archive_id"] != topic_row["batch_id"]
+                or topic_dependencies[0]["derived_type"] != "topic"
+                or topic_dependencies[0]["derived_id"] != record.id
+                or topic_dependencies[0]["publication_id"] != record.id
+            ):
+                raise Forbidden("Publication topic identity is invalid")
             topic_archive = (
                 connection.execute(
                     select(topic_import_batches).where(
-                        topic_import_batches.c.id == topic_dependency["archive_id"]
+                        topic_import_batches.c.id == topic_row["batch_id"]
                     )
                 )
                 .mappings()
@@ -179,12 +218,18 @@ class PublicationRepository:
                 topic_archive["canonical_json"]
             )
             if not TopicRepository._authorized(
-                grants[topic_batch.source_id],
+                grants[topic_row["source_id"]],
                 topic_batch.grant,
-                topic_batch.source_id,
+                topic_row["source_id"],
                 self.clock(),
             ):
                 raise Forbidden("Source is not locally authorized")
+        elif any(
+            row["derived_type"] == "topic"
+            or row["archive_type"] == "topic_import_batch"
+            for row in dependencies
+        ):
+            raise Forbidden("Publication topic identity is invalid")
 
         result_rows = (
             connection.execute(
@@ -220,7 +265,26 @@ class PublicationRepository:
             else []
         )
         grants = self._lock_sources(
-            connection, (row["source_id"] for row in dependencies)
+            connection,
+            [
+                *(row["source_id"] for row in dependencies),
+                *connection.execute(
+                    select(snapshots.c.source_id).where(
+                        snapshots.c.id.in_(
+                            record.market_snapshot_id for record in records
+                        )
+                    )
+                ).scalars(),
+                *connection.execute(
+                    select(topic_snapshots.c.source_id).where(
+                        topic_snapshots.c.id.in_(
+                            record.topic_snapshot_id
+                            for record in records
+                            if record.topic_snapshot_id is not None
+                        )
+                    )
+                ).scalars(),
+            ],
         )
         by_publication = {
             publication_id: [
@@ -371,5 +435,7 @@ class PublicationRepository:
             )
             if row is None:
                 raise NotFound("Publication not found")
+            if row["status"] != "published":
+                raise Forbidden("Publication is not available")
             snapshot = self._authorized_records(connection, [row])[0]
             return snapshot.results

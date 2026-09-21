@@ -23,6 +23,7 @@ from dragon_radar.publication.tables import (
     publication_attempts,
     publication_results,
     publications,
+    source_dependencies,
 )
 from dragon_radar.storage.models import source_grants
 from dragon_radar.storage.repository import Conflict, Forbidden
@@ -189,6 +190,68 @@ def test_concurrent_failure_is_recorded_after_same_key_success(
     assert all(
         attempt["command_hash"] == attempts[0]["command_hash"] for attempt in attempts
     )
+
+
+def test_published_attempt_is_authoritative_after_different_command_fails(
+    publication, database, repository
+):
+    _service, failed_command = publication
+    published_command = failed_command.model_copy(
+        update={
+            "topic_snapshot_id": None,
+            "disabled_domains": ("topic", "news", "regulation", "role"),
+        }
+    )
+    failing_service = PublicationService(database, repository, clock=lambda: NOW)
+    successful_service = PublicationService(database, repository, clock=lambda: NOW)
+    failure_ready = Event()
+    success_done = Event()
+    original_lock = failing_service.market._lock
+    key_lock_calls = 0
+
+    def controlled_lock(connection, key):
+        nonlocal key_lock_calls
+        if key == "publication-key:different-concurrent-attempt":
+            key_lock_calls += 1
+            if key_lock_calls == 2:
+                failure_ready.set()
+                assert success_done.wait(5)
+        return original_lock(connection, key)
+
+    def fail(_connection, _command):
+        raise RuntimeError("controlled materialization failure")
+
+    failing_service.market._lock = controlled_lock
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        failed = pool.submit(
+            failing_service.publish,
+            failed_command,
+            key="different-concurrent-attempt",
+            materializers={"topic": fail},
+        )
+        assert failure_ready.wait(5)
+        try:
+            published = successful_service.publish(
+                published_command,
+                key="different-concurrent-attempt",
+            )
+        finally:
+            success_done.set()
+        with pytest.raises(RuntimeError, match="controlled"):
+            failed.result()
+
+    assert (
+        successful_service.publish(
+            published_command,
+            key="different-concurrent-attempt",
+        ).id
+        == published.id
+    )
+    with pytest.raises(Conflict):
+        successful_service.publish(
+            failed_command,
+            key="different-concurrent-attempt",
+        )
 
 
 def test_replay_is_idempotent_conflicting_key_rejected_and_revision_appends(
@@ -404,6 +467,146 @@ def test_unified_read_holds_all_source_locks_through_result_assembly(
     assert snapshot.id == record.id
     assert assembled_while_locked == [True]
     assert source_lock_order == sorted(source_lock_order)
+
+
+def _clone_publication_with_dependencies(
+    database,
+    record,
+    *,
+    topic_snapshot_id,
+    dependency_domains,
+    status="published",
+):
+    publication_id = uuid4()
+    with database.engine.begin() as connection:
+        original = (
+            connection.execute(
+                select(publications).where(publications.c.id == record.id)
+            )
+            .mappings()
+            .one()
+        )
+        values = dict(original)
+        values.update(
+            id=publication_id,
+            version=record.version + 1,
+            supersedes=record.id,
+            topic_snapshot_id=topic_snapshot_id,
+            status=status,
+        )
+        connection.execute(insert(publications).values(**values))
+        results = (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == record.id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for result in results:
+            values = dict(result)
+            values["publication_id"] = publication_id
+            connection.execute(insert(publication_results).values(**values))
+        dependencies = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.derived_type.in_(dependency_domains),
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for dependency in dependencies:
+            values = dict(dependency)
+            values.update(
+                id=uuid4(),
+                derived_id=publication_id,
+                publication_id=publication_id,
+            )
+            connection.execute(insert(source_dependencies).values(**values))
+    return publication_id
+
+
+@pytest.mark.parametrize("status", ["draft", "revoked"])
+def test_list_results_rejects_nonpublished_publications(publication, database, status):
+    service, command = publication
+    record = service.publish(command, key=f"results-{status}")
+    hidden_id = _clone_publication_with_dependencies(
+        database,
+        record,
+        topic_snapshot_id=record.topic_snapshot_id,
+        dependency_domains=("market", "topic"),
+        status=status,
+    )
+
+    with pytest.raises(Forbidden):
+        service.repository.list_results(hidden_id)
+
+
+def test_unified_read_rejects_missing_topic_dependency(publication, database):
+    service, command = publication
+    record = service.publish(command, key="missing-topic-dependency")
+    tampered_id = _clone_publication_with_dependencies(
+        database,
+        record,
+        topic_snapshot_id=record.topic_snapshot_id,
+        dependency_domains=("market",),
+    )
+
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(tampered_id)
+
+
+def test_unified_read_rejects_topic_snapshot_dependency_mismatch(publication, database):
+    service, command = publication
+    record = service.publish(command, key="mismatched-topic-dependency")
+    topics = TopicRepository(database, clock=lambda: NOW)
+    other_topic = topics.publish(
+        topics.import_batch(
+            topic_batch(source_time=NOW),
+            key="mismatched-topic-snapshot",
+        ).id
+    )
+    tampered_id = _clone_publication_with_dependencies(
+        database,
+        record,
+        topic_snapshot_id=other_topic.id,
+        dependency_domains=("market", "topic"),
+    )
+
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(tampered_id)
+
+
+def test_unified_read_rejects_duplicate_topic_dependencies(publication, database):
+    service, command = publication
+    record = service.publish(command, key="duplicate-topic-dependency")
+    topics = TopicRepository(database, clock=lambda: NOW)
+    other_topic = topics.publish(
+        topics.import_batch(
+            topic_batch(source_time=NOW),
+            key="duplicate-topic-snapshot",
+        ).id
+    )
+    with database.engine.begin() as connection:
+        other_snapshot = topics.get_snapshot(other_topic.id)
+        connection.execute(
+            insert(source_dependencies).values(
+                id=uuid4(),
+                source_id=other_snapshot.batch.source_id,
+                archive_type="topic_import_batch",
+                archive_id=other_snapshot.batch_id,
+                derived_type="topic",
+                derived_id=record.id,
+                publication_id=record.id,
+                created_at=NOW,
+            )
+        )
+
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(record.id)
 
 
 def test_publication_validation_locks_distinct_sources_in_stable_order(

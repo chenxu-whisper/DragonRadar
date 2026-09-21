@@ -156,12 +156,6 @@ class RetentionService:
                     id=uuid4(),
                     withdrawal_id=withdrawal["id"],
                     source_dependency_id=dependency["id"],
-                    source_id=dependency["source_id"],
-                    archive_type=dependency["archive_type"],
-                    archive_id=dependency["archive_id"],
-                    derived_type=dependency["derived_type"],
-                    derived_id=dependency["derived_id"],
-                    publication_id=dependency["publication_id"],
                     created_at=self.clock(),
                 )
             )
@@ -181,12 +175,8 @@ class RetentionService:
                         id=uuid4(),
                         withdrawal_id=withdrawal["id"],
                         source_dependency_id=None,
-                        source_id=withdrawal["source_id"],
                         archive_type=archive_type,
                         archive_id=archive_id,
-                        derived_type=None,
-                        derived_id=None,
-                        publication_id=None,
                         created_at=self.clock(),
                     )
                 )

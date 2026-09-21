@@ -182,18 +182,17 @@ def upgrade():
             UUID(as_uuid=True),
             sa.ForeignKey("source_dependencies.id", ondelete="RESTRICT"),
         ),
-        sa.Column("source_id", sa.Text, nullable=False),
-        sa.Column("archive_type", sa.String(40), nullable=False),
-        sa.Column("archive_id", UUID(as_uuid=True), nullable=False),
-        sa.Column("derived_type", sa.String(40)),
-        sa.Column("derived_id", UUID(as_uuid=True)),
-        sa.Column(
-            "publication_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("publications.id", ondelete="RESTRICT"),
-        ),
+        sa.Column("archive_type", sa.String(40)),
+        sa.Column("archive_id", UUID(as_uuid=True)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("withdrawal_id", "source_dependency_id"),
+        sa.UniqueConstraint("withdrawal_id", "archive_type", "archive_id"),
+        sa.CheckConstraint(
+            "(source_dependency_id IS NOT NULL "
+            "AND archive_type IS NULL AND archive_id IS NULL) "
+            "OR (source_dependency_id IS NULL "
+            "AND archive_type IS NOT NULL AND archive_id IS NOT NULL)"
+        ),
     )
     op.create_index(
         "withdrawal_dependencies_archive",
@@ -201,9 +200,9 @@ def upgrade():
         ["archive_type", "archive_id", "withdrawal_id"],
     )
     op.create_index(
-        "withdrawal_dependencies_derived",
+        "withdrawal_dependencies_source_dependency",
         "withdrawal_dependencies",
-        ["publication_id", "derived_type", "withdrawal_id"],
+        ["source_dependency_id", "withdrawal_id"],
     )
     op.create_table(
         "publication_module_controls",
@@ -213,6 +212,99 @@ def upgrade():
         sa.Column("blocked_by_withdrawal", sa.Boolean, nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
+    op.execute("""
+        CREATE FUNCTION guard_withdrawal_dependency_insert() RETURNS trigger AS $$
+        DECLARE
+            withdrawal_source text;
+            withdrawal_time timestamptz;
+            dependency source_dependencies%ROWTYPE;
+            archive_source text;
+            archive_time timestamptz;
+        BEGIN
+            SELECT source_id, occurred_at
+              INTO STRICT withdrawal_source, withdrawal_time
+              FROM withdrawal_records
+             WHERE id = NEW.withdrawal_id;
+
+            IF NEW.source_dependency_id IS NOT NULL THEN
+                SELECT *
+                  INTO STRICT dependency
+                  FROM source_dependencies
+                 WHERE id = NEW.source_dependency_id;
+                IF dependency.source_id <> withdrawal_source
+                   OR dependency.created_at > withdrawal_time
+                   OR dependency.derived_id <> dependency.publication_id
+                THEN
+                    RAISE EXCEPTION 'invalid withdrawal dependency identity';
+                END IF;
+
+                IF dependency.archive_type = 'market_import_batch' THEN
+                    SELECT source_id, imported_at
+                      INTO STRICT archive_source, archive_time
+                      FROM import_batches
+                     WHERE id = dependency.archive_id;
+                    IF dependency.derived_type <> 'market'
+                       OR NOT EXISTS (
+                           SELECT 1
+                             FROM publications publication
+                             JOIN snapshots snapshot
+                               ON snapshot.id = publication.market_snapshot_id
+                            WHERE publication.id = dependency.publication_id
+                              AND publication.created_at <= withdrawal_time
+                              AND snapshot.batch_id = dependency.archive_id
+                              AND snapshot.source_id = dependency.source_id
+                       )
+                    THEN
+                        RAISE EXCEPTION 'invalid market withdrawal dependency';
+                    END IF;
+                ELSIF dependency.archive_type = 'topic_import_batch' THEN
+                    SELECT source_id, imported_at
+                      INTO STRICT archive_source, archive_time
+                      FROM topic_import_batches
+                     WHERE id = dependency.archive_id;
+                    IF dependency.derived_type <> 'topic'
+                       OR NOT EXISTS (
+                           SELECT 1
+                             FROM publications publication
+                             JOIN topic_snapshots snapshot
+                               ON snapshot.id = publication.topic_snapshot_id
+                            WHERE publication.id = dependency.publication_id
+                              AND publication.created_at <= withdrawal_time
+                              AND snapshot.batch_id = dependency.archive_id
+                              AND snapshot.source_id = dependency.source_id
+                       )
+                    THEN
+                        RAISE EXCEPTION 'invalid topic withdrawal dependency';
+                    END IF;
+                ELSE
+                    RAISE EXCEPTION 'unsupported withdrawal dependency archive';
+                END IF;
+            ELSIF NEW.archive_type = 'market_import_batch' THEN
+                SELECT source_id, imported_at
+                  INTO STRICT archive_source, archive_time
+                  FROM import_batches
+                 WHERE id = NEW.archive_id;
+            ELSIF NEW.archive_type = 'topic_import_batch' THEN
+                SELECT source_id, imported_at
+                  INTO STRICT archive_source, archive_time
+                  FROM topic_import_batches
+                 WHERE id = NEW.archive_id;
+            ELSE
+                RAISE EXCEPTION 'unsupported withdrawal archive';
+            END IF;
+
+            IF archive_source <> withdrawal_source
+               OR archive_time > withdrawal_time
+            THEN
+                RAISE EXCEPTION 'withdrawal archive did not exist for source';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER withdrawal_dependencies_insert_guard
+        BEFORE INSERT ON withdrawal_dependencies
+        FOR EACH ROW EXECUTE FUNCTION guard_withdrawal_dependency_insert();
+    """)
     op.execute("""
         CREATE FUNCTION guard_publication_transition() RETURNS trigger AS $$
         BEGIN
@@ -263,10 +355,12 @@ def upgrade():
                AND EXISTS (
                    SELECT 1
                    FROM withdrawal_dependencies dependency
+                   JOIN source_dependencies source_dependency
+                     ON source_dependency.id = dependency.source_dependency_id
                    JOIN withdrawal_records withdrawal
                      ON withdrawal.id = dependency.withdrawal_id
-                   WHERE dependency.publication_id = OLD.publication_id
-                     AND dependency.derived_type = OLD.domain
+                   WHERE source_dependency.publication_id = OLD.publication_id
+                     AND source_dependency.derived_type = OLD.domain
                      AND withdrawal.action = 'deidentified'
                      AND withdrawal.policy_reference IS NOT NULL
                )
@@ -277,10 +371,12 @@ def upgrade():
                AND EXISTS (
                    SELECT 1
                    FROM withdrawal_dependencies dependency
+                   JOIN source_dependencies source_dependency
+                     ON source_dependency.id = dependency.source_dependency_id
                    JOIN withdrawal_records withdrawal
                      ON withdrawal.id = dependency.withdrawal_id
-                   WHERE dependency.publication_id = OLD.publication_id
-                     AND dependency.derived_type = OLD.domain
+                   WHERE source_dependency.publication_id = OLD.publication_id
+                     AND source_dependency.derived_type = OLD.domain
                      AND withdrawal.action = 'deleted'
                      AND withdrawal.policy_reference IS NOT NULL
                )
