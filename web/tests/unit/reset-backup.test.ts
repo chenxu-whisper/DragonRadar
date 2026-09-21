@@ -1,7 +1,9 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, test } from 'vitest';
 import { exportLocalBackup, importLocalBackup, previewLocalBackup } from '../../src/repositories/local/backup';
-import type { ReviewBackup } from '../../src/repositories/local/migrate';
+import {
+  BACKUP_LIMITS, parseReviewBackup, type ReviewBackup,
+} from '../../src/repositories/local/migrate';
 import { LocalRepository } from '../../src/repositories/local/repository';
 
 const localContent = {
@@ -20,7 +22,7 @@ function backup(profile = 'old-profile'): ReviewBackup {
     profile_mapping: { owner_id: 'old-owner', local_profile_id: profile },
     counts: { notes: 1, revisions: 2, verifications: 1, watchlist: 1 },
     notes: [{
-      note_id: 'n1', snapshot_id: 'snapshot', security_id: 'A',
+      note_id: 'n1', snapshot_id: 'snapshot', trade_date: '2026-09-10', security_id: 'A',
       current_revision: 2, created_at: '2026-09-20T08:00:00.000Z', updated_at: '2026-09-20T09:00:00.000Z',
     }],
     revisions: [
@@ -70,6 +72,7 @@ describe('local review backup and restore', () => {
     expect(result.added).toEqual({ notes: 1, revisions: 2, verifications: 1, watchlist: 1 });
     expect((await repo.listNotes())[0]).toMatchObject({
       note_id: 'n1',
+      trade_date: '2026-09-10',
       revision: 2,
       content: { title: '旧版二', content: '', invalid_condition: '第二条件', verify_date: '2026-09-12' },
     });
@@ -256,6 +259,7 @@ describe('local review backup and restore', () => {
     });
     expect(exported.profile_mapping.local_profile_id).toBe(await repo.profile());
     expect(exported.profile_mapping.owner_id).toBe('local-browser');
+    expect(exported.notes[0].trade_date).toBe('2026-09-10');
     expect(exported.revisions.map(row => row.content)).toEqual([
       {
         title: '旧版一', content: '', judgment: '判断一', evidence: '依据一',
@@ -302,6 +306,96 @@ describe('local review backup and restore', () => {
     repo.close();
   });
 
+  test.each([
+    ['missing note trade date', (source: ReviewBackup) => { source.notes[0].trade_date = null; }],
+    ['blank judgment', (source: ReviewBackup) => { source.revisions[1].content.judgment = ' '; }],
+    ['blank evidence', (source: ReviewBackup) => { source.revisions[1].content.evidence = ''; }],
+    ['blank invalid condition', (source: ReviewBackup) => { source.revisions[1].content.invalid_condition = null; }],
+    ['missing verify date', (source: ReviewBackup) => { source.revisions[1].content.verify_date = null; }],
+    ['verify date before trade date', (source: ReviewBackup) => { source.revisions[1].content.verify_date = '2026-09-09'; }],
+  ])('rejects a confirmed revision with %s', async (_name, damage) => {
+    const source = backup();
+    damage(source);
+    expect(() => parseReviewBackup(source)).toThrow('备份');
+  });
+
+  test.each([
+    ['draft revision', (source: ReviewBackup) => { source.verifications[0].revision_id = 'old-r1'; }],
+    ['blank evidence', (source: ReviewBackup) => { source.verifications[0].evidence = ' '; }],
+    ['missing snapshot', (source: ReviewBackup) => { source.verifications[0].snapshot_id = null; }],
+    ['not-due snapshot', (source: ReviewBackup) => {
+      source.verifications[0].outcome = 'not_due';
+    }],
+  ])('rejects a verification with %s', async (_name, damage) => {
+    const source = backup();
+    damage(source);
+    expect(() => parseReviewBackup(source)).toThrow('备份');
+  });
+
+  test('accepts historical not-due verification without comparing it to today', () => {
+    const source = backup();
+    source.verifications[0].outcome = 'not_due';
+    source.verifications[0].snapshot_id = null;
+    source.verifications[0].evidence = '';
+    source.revisions[1].content.verify_date = '2026-09-10';
+
+    expect(parseReviewBackup(source).verifications[0]).toMatchObject({
+      outcome: 'not_due',
+      snapshot_id: null,
+    });
+  });
+
+  test('enforces byte, array, total-record, identifier, timestamp and text limits', () => {
+    expect(() => parseReviewBackup(' '.repeat(BACKUP_LIMITS.backup_bytes + 1))).toThrow('备份');
+
+    const tooMany = backup() as unknown as Record<string, unknown>;
+    tooMany.notes = new Array(BACKUP_LIMITS.array_records + 1);
+    expect(() => parseReviewBackup(tooMany)).toThrow('备份');
+
+    const tooManyTotal = backup() as unknown as Record<string, unknown>;
+    for (const key of ['notes', 'revisions', 'verifications', 'watchlist']) {
+      tooManyTotal[key] = new Array(BACKUP_LIMITS.total_records / 4 + 1);
+    }
+    expect(() => parseReviewBackup(tooManyTotal)).toThrow('备份');
+
+    const longId = backup();
+    longId.notes[0].note_id = 'i'.repeat(BACKUP_LIMITS.identifier + 1);
+    expect(() => parseReviewBackup(longId)).toThrow('备份');
+
+    const longTimestamp = backup();
+    longTimestamp.exported_at = `${'2'.repeat(BACKUP_LIMITS.timestamp)}Z`;
+    expect(() => parseReviewBackup(longTimestamp)).toThrow('备份');
+
+    const longEvidence = backup();
+    longEvidence.verifications[0].evidence = 'e'.repeat(BACKUP_LIMITS.text + 1);
+    expect(() => parseReviewBackup(longEvidence)).toThrow('备份');
+  });
+
+  test('rejects mismatched note and revision references', () => {
+    const source = backup();
+    source.notes.push({
+      note_id: 'n2',
+      snapshot_id: 'snapshot',
+      trade_date: '2026-09-10',
+      security_id: 'B',
+      current_revision: 1,
+      created_at: '2026-09-20T08:00:00.000Z',
+      updated_at: '2026-09-20T08:00:00.000Z',
+    });
+    source.revisions.push({
+      revision_id: 'n2-r1',
+      note_id: 'n2',
+      revision: 1,
+      state: 'draft',
+      content: { ...oldContent, title: 'Second note' },
+      saved_at: '2026-09-20T08:00:00.000Z',
+    });
+    source.verifications[0].note_id = 'n2';
+    source.counts = { notes: 2, revisions: 3, verifications: 1, watchlist: 1 };
+
+    expect(() => parseReviewBackup(source)).toThrow('备份');
+  });
+
   test('rejects supersedes links across source notes or source revisions', async () => {
     const repo = repository();
     const crossRevision = backup();
@@ -323,6 +417,7 @@ describe('local review backup and restore', () => {
     crossNote.notes.push({
       note_id: 'n2',
       snapshot_id: 'snapshot',
+      trade_date: '2026-09-10',
       security_id: 'B',
       current_revision: 1,
       created_at: '2026-09-20T08:00:00.000Z',

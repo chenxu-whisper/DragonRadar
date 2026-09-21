@@ -35,61 +35,68 @@ def export_local_review(
     if not isinstance(local_profile_id, str) or not local_profile_id.strip():
         raise ValueError("Local profile ID is required")
     when = exported_at or datetime.now(UTC)
-    with database.engine.connect() as connection:
-        owner_id = connection.scalar(
-            select(owner_principals.c.id).where(owner_principals.c.local_key == "local")
-        )
-        if owner_id is None:
-            raise ValueError("Local owner is not initialized")
-        notes = (
-            connection.execute(
-                select(review_notes)
-                .where(review_notes.c.owner_id == owner_id)
-                .order_by(review_notes.c.created_at, review_notes.c.id)
-            )
-            .mappings()
-            .all()
-        )
-        revisions = (
-            connection.execute(
-                select(review_note_revisions)
-                .where(review_note_revisions.c.owner_id == owner_id)
-                .order_by(
-                    review_note_revisions.c.note_id,
-                    review_note_revisions.c.version,
-                    review_note_revisions.c.id,
+    with database.engine.connect().execution_options(
+        isolation_level="REPEATABLE READ",
+        postgresql_readonly=True,
+    ) as connection:
+        with connection.begin():
+            owner_id = connection.scalar(
+                select(owner_principals.c.id).where(
+                    owner_principals.c.local_key == "local"
                 )
             )
-            .mappings()
-            .all()
-        )
-        verifications = (
-            connection.execute(
-                select(review_verifications)
-                .where(review_verifications.c.owner_id == owner_id)
-                .order_by(
-                    review_verifications.c.note_id,
-                    review_verifications.c.created_at,
-                    review_verifications.c.id,
+            if owner_id is None:
+                raise ValueError("Local owner is not initialized")
+            notes = (
+                connection.execute(
+                    select(review_notes)
+                    .where(review_notes.c.owner_id == owner_id)
+                    .order_by(review_notes.c.created_at, review_notes.c.id)
                 )
+                .mappings()
+                .all()
             )
-            .mappings()
-            .all()
-        )
-        watchlist = (
-            connection.execute(
-                select(watch_entries)
-                .where(watch_entries.c.owner_id == owner_id)
-                .order_by(watch_entries.c.added_at, watch_entries.c.id)
+            revisions = (
+                connection.execute(
+                    select(review_note_revisions)
+                    .where(review_note_revisions.c.owner_id == owner_id)
+                    .order_by(
+                        review_note_revisions.c.note_id,
+                        review_note_revisions.c.version,
+                        review_note_revisions.c.id,
+                    )
+                )
+                .mappings()
+                .all()
             )
-            .mappings()
-            .all()
-        )
+            verifications = (
+                connection.execute(
+                    select(review_verifications)
+                    .where(review_verifications.c.owner_id == owner_id)
+                    .order_by(
+                        review_verifications.c.note_id,
+                        review_verifications.c.created_at,
+                        review_verifications.c.id,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            watchlist = (
+                connection.execute(
+                    select(watch_entries)
+                    .where(watch_entries.c.owner_id == owner_id)
+                    .order_by(watch_entries.c.added_at, watch_entries.c.id)
+                )
+                .mappings()
+                .all()
+            )
 
     note_rows = [
         {
             "note_id": str(row["id"]),
             "snapshot_id": str(row["snapshot_id"]),
+            "trade_date": row["trade_date"].isoformat(),
             "security_id": row["security_id"],
             "current_revision": row["version"],
             "created_at": _timestamp(row["created_at"]),

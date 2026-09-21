@@ -23,10 +23,27 @@ dragon-radar owner-export \
 - 自选记录；
 - 上述记录引用的笔记、修订、快照和证券标识。
 
+导出器在一个 PostgreSQL `READ ONLY, REPEATABLE READ` 事务中读取owner、笔记、
+修订、验证和自选，保证各数组来自同一数据库快照。
+
 导出不包含行情事实、行情数据、文章正文、Cookie、会话、密钥、配对码、CSRF、
 令牌、凭据、命令日志或审计日志。旧字段 `invalidation` 和
 `verification_date` 分别转换为 `invalid_condition` 和 `verify_date`；旧笔记没有
 正文时，`content` 为 `""`。
+
+## 格式版本 1
+
+格式尚未对外发布，因此仍使用 `format_version: 1`。本版本的笔记元数据精确字段为
+`note_id`、`snapshot_id`、`trade_date`、`security_id`、`current_revision`、
+`created_at`、`updated_at`；其中旧服务导出的 `trade_date` 是
+`review_notes.trade_date` 的 ISO 日期。浏览器中新建但没有日期上下文的草稿可导出
+`trade_date: null`，已确认修订不允许缺少该日期。除明确加入 `trade_date` 外，各层
+对象仍执行精确键校验。
+
+导入上限为：文件 UTF-8 字节数 8 MiB；任一记录数组 5,000 条；四类记录合计
+10,000 条；标识符 200 个字符；时间戳 64 个字符；标题 100 个字符；正文、判断、
+依据、失效条件及验证依据各 20,000 个字符。浏览器先依据 `File.size` 拒绝超限文件，
+不会调用 `file.text()`；解析器在规范化和规划前再次检查字节数及记录数。
 
 ## 在浏览器恢复
 
@@ -40,6 +57,11 @@ dragon-radar owner-export \
 IndexedDB 写事务。执行恢复使用用户刚确认的不可变预览计划；如果本地数据在预览后
 发生变化，恢复会要求重新预览。文件损坏、引用不完整、计数不符、存储失败、预览
 过期或未解决冲突都会使整次导入失败，不会留下部分写入。
+
+已确认修订必须有非空判断、依据和失效条件，必须有不早于笔记 `trade_date` 的
+`verify_date`。验证只能引用同一笔记的已确认修订。`supported`、`weakened` 和
+`refuted` 必须有非空依据和非空 `snapshot_id`；`not_due` 必须使用
+`snapshot_id: null`。历史 `not_due` 记录不与导入当天日期比较。
 
 ## 合并规则
 

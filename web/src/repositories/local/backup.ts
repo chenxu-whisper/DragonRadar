@@ -27,14 +27,23 @@ export async function exportLocalBackup(
   now = new Date(),
 ): Promise<ReviewBackup> {
   const state = await repository.backupState();
+  const revisionsByNote = new Map<string, typeof state.revisions>();
+  for (const revision of state.revisions) {
+    const rows = revisionsByNote.get(revision.note_id) ?? [];
+    rows.push(revision);
+    revisionsByNote.set(revision.note_id, rows);
+  }
+  for (const rows of revisionsByNote.values()) {
+    rows.sort((a, b) => a.revision - b.revision);
+  }
   const notes = [...state.notes]
     .sort((a, b) => a.note_id.localeCompare(b.note_id))
     .map(note => {
-      const history = state.revisions.filter(row => row.note_id === note.note_id);
-      const created = history.sort((a, b) => a.revision - b.revision)[0]?.updated_at ?? note.updated_at;
+      const created = revisionsByNote.get(note.note_id)?.[0]?.updated_at ?? note.updated_at;
       return {
         note_id: note.note_id,
         snapshot_id: note.snapshot_id,
+        trade_date: note.trade_date ?? null,
         security_id: note.security_id ?? null,
         current_revision: note.revision,
         created_at: created,

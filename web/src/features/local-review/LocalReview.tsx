@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { exportLocalBackup, importLocalBackup, previewLocalBackup } from '../../repositories/local/backup';
-import type { ImportDecision, ImportPlan } from '../../repositories/local/migrate';
+import {
+  BACKUP_LIMITS, type ImportDecision, type ImportPlan,
+} from '../../repositories/local/migrate';
 import { localRepository as repo, type LocalNote, type LocalWatch, type NoteContent, type StoredNoteContent } from '../../repositories/local/repository';
 import { registerLeaveGuard } from '../review/navigation';
 import './local-review.css';
@@ -13,7 +15,9 @@ const editable = (content: StoredNoteContent): NoteContent => ({
 });
 const message = (error: unknown) => error instanceof Error ? error.message : '本地保存失败，当前输入已保留';
 
-export default function LocalReview({ snapshot = '', security = '' }: { snapshot?: string; security?: string }) {
+export default function LocalReview({
+  snapshot = '', tradeDate = '', security = '',
+}: { snapshot?: string; tradeDate?: string; security?: string }) {
   const [notes, setNotes] = useState<LocalNote[]>([]);
   const [watchlist, setWatchlist] = useState<LocalWatch[]>([]);
   const [selected, setSelected] = useState<LocalNote>();
@@ -31,6 +35,7 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
   const [decision, setDecision] = useState<ImportDecision | ''>('');
   const [preview, setPreview] = useState<ImportPlan>();
   const mounted = useRef(true), saving = useRef(false);
+  const previewGeneration = useRef(0);
   const command = useRef<{ signature: string; id: string; key: string } | undefined>(undefined);
   const refresh = useCallback(async () => {
     try {
@@ -76,6 +81,7 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
         note_id: command.current.id, key: command.current.key,
         expected_revision: copy ? 0 : selected?.revision ?? 0,
         snapshot_id: copy ? snapshot || selected?.snapshot_id || '' : selected?.snapshot_id ?? snapshot,
+        trade_date: copy ? tradeDate || selected?.trade_date : selected?.trade_date ?? tradeDate,
         content,
       });
       if (!mounted.current) return;
@@ -98,26 +104,36 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
     catch (failure) { setError(message(failure)); }
   };
   const chooseBackup = async (file?: File) => {
+    const generation = ++previewGeneration.current;
     setError(''); setStatus(''); setPreview(undefined); setDecision(''); setBackupText(''); setBackupName('');
     if (!file) return;
     try {
+      if (file.size > BACKUP_LIMITS.backup_bytes) throw new Error('备份文件超过大小限制');
       const text = await file.text();
+      if (!mounted.current || generation !== previewGeneration.current) return;
       const next = await previewLocalBackup(repo, text);
+      if (!mounted.current || generation !== previewGeneration.current) return;
       setBackupText(text); setBackupName(file.name); setPreview(next);
       setStatus(`已验证 ${file.name}：笔记 ${next.added.notes}，修订 ${next.appended_revisions}，重复 ${next.duplicates}。请选择导入方式。`);
-    } catch (failure) { setError(message(failure)); }
+    } catch (failure) {
+      if (mounted.current && generation === previewGeneration.current) setError(message(failure));
+    }
   };
   const chooseDecision = async (value: ImportDecision | '') => {
-    setDecision(value); setError('');
+    const generation = ++previewGeneration.current;
+    setDecision(value); setError(''); setStatus(''); setPreview(undefined);
     if (!value || !backupText) return;
     try {
       const next = await previewLocalBackup(repo, backupText, value);
+      if (!mounted.current || generation !== previewGeneration.current) return;
       setPreview(next);
       setStatus(`预览：新增笔记 ${next.added.notes}，追加修订 ${next.appended_revisions}，重复 ${next.duplicates}，重映射 ${Object.keys(next.remapped_note_ids).length}。`);
-    } catch (failure) { setError(message(failure)); }
+    } catch (failure) {
+      if (mounted.current && generation === previewGeneration.current) setError(message(failure));
+    }
   };
   const restore = async () => {
-    if (!decision || !preview) return;
+    if (!decision || !preview || preview.decision !== decision) return;
     setBusy(true); setError(''); setStatus('');
     try {
       const result = await importLocalBackup(repo, preview);
@@ -158,7 +174,7 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
       <div className="toolbar">
         <button type="button" onClick={() => void downloadBackup()} disabled={busy}>导出本机备份</button>
         <label>选择复盘备份文件
-          <input type="file" accept=".json,application/json" onChange={event => void chooseBackup(event.target.files?.[0])} />
+          <input type="file" accept=".json,application/json" disabled={busy} onChange={event => void chooseBackup(event.target.files?.[0])} />
         </label>
         <label>导入方式
           <select value={decision} disabled={!backupText || busy} onChange={event => void chooseDecision(event.target.value as ImportDecision | '')}>
@@ -167,7 +183,7 @@ export default function LocalReview({ snapshot = '', security = '' }: { snapshot
             <option value="save-as-new">全部另存为新笔记</option>
           </select>
         </label>
-        <button type="button" onClick={() => void restore()} disabled={!decision || !preview || busy}>执行恢复</button>
+        <button type="button" onClick={() => void restore()} disabled={!decision || preview?.decision !== decision || busy}>执行恢复</button>
       </div>
       {preview && <p className="muted">
         {backupName}：重复 {preview.duplicates}，追加修订 {preview.appended_revisions}，

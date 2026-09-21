@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Page } from '@playwright/test';
 import { expect, test } from '@playwright/test';
-import type { ReviewBackup } from '../../src/repositories/local/migrate';
+import { BACKUP_LIMITS, type ReviewBackup } from '../../src/repositories/local/migrate';
 import { mockMarket } from '../fixtures/market';
 
 const backup: ReviewBackup = {
@@ -10,7 +10,8 @@ const backup: ReviewBackup = {
   profile_mapping: { owner_id: 'old-owner', local_profile_id: 'old-profile' },
   counts: { notes: 1, revisions: 2, verifications: 1, watchlist: 1 },
   notes: [{
-    note_id: 'restored-note', snapshot_id: 'snapshot', security_id: 'TEST001',
+    note_id: 'restored-note', snapshot_id: 'snapshot', trade_date: '2026-09-10',
+    security_id: 'TEST001',
     current_revision: 2, created_at: '2026-09-20T08:00:00.000Z', updated_at: '2026-09-20T09:00:00.000Z',
   }],
   revisions: [
@@ -187,4 +188,126 @@ test('damaged backup leaves an existing database unchanged', async ({ page }) =>
   await expect(page.getByRole('button', { name: '恢复笔记二' })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('button', { name: '恢复笔记二' })).toBeVisible();
+});
+
+test('out-of-order file reads cannot replace the newest backup preview', async ({ page }) => {
+  await page.addInitScript(() => {
+    const originalText = File.prototype.text;
+    let releaseFirst: (() => void) | undefined;
+    Object.defineProperty(File.prototype, 'text', {
+      configurable: true,
+      value(this: File) {
+        if (this.name !== 'first.json') return originalText.call(this);
+        return new Promise<string>(resolve => {
+          releaseFirst = () => void originalText.call(this).then(resolve);
+        });
+      },
+    });
+    Object.assign(window, {
+      releaseFirstRead: () => releaseFirst?.(),
+    });
+  });
+  await mockMarket(page, { empty: true });
+  await page.goto('/?view=review');
+  await page.getByLabel('选择复盘备份文件').setInputFiles({
+    name: 'first.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await page.getByLabel('选择复盘备份文件').setInputFiles({
+    name: 'second.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await expect(page.getByRole('status')).toContainText('second.json');
+
+  await page.evaluate(() => {
+    (window as unknown as { releaseFirstRead: () => void }).releaseFirstRead();
+  });
+  await page.evaluate(() => new Promise<void>(resolve => {
+    let remaining = 10;
+    const frame = () => {
+      remaining -= 1;
+      if (remaining === 0) resolve();
+      else requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }));
+
+  await expect(page.getByRole('status')).toContainText('second.json');
+  await expect(page.locator('.local-backup > p.muted')).toContainText('second.json');
+});
+
+test('decision change clears the decision-less preview until recomputation finishes', async ({ page }) => {
+  await page.addInitScript(() => {
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    let release: (() => void) | undefined;
+    let stall = false;
+    Object.defineProperty(crypto.subtle, 'digest', {
+      configurable: true,
+      value: async (...args: Parameters<SubtleCrypto['digest']>) => {
+        if (stall) {
+          stall = false;
+          await new Promise<void>(resolve => { release = resolve; });
+        }
+        return originalDigest(...args);
+      },
+    });
+    Object.assign(window, {
+      stallNextDigest: () => { stall = true; },
+      releaseDigest: () => release?.(),
+      digestBlocked: () => release !== undefined,
+    });
+  });
+  await mockMarket(page, { empty: true });
+  await page.goto('/?view=review');
+  await page.getByLabel('选择复盘备份文件').setInputFiles({
+    name: 'review.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await expect(page.getByRole('status')).toContainText('已验证');
+  await page.evaluate(() => {
+    (window as unknown as { stallNextDigest: () => void }).stallNextDigest();
+  });
+
+  await page.getByLabel('导入方式').selectOption('merge');
+  await page.waitForFunction(
+    () => (window as unknown as { digestBlocked: () => boolean }).digestBlocked(),
+  );
+
+  await expect(page.getByRole('button', { name: '执行恢复' })).toBeDisabled();
+  await expect(page.locator('.local-backup > p.muted')).toHaveCount(0);
+  await page.evaluate(() => {
+    (window as unknown as { releaseDigest: () => void }).releaseDigest();
+  });
+  await expect(page.getByRole('button', { name: '执行恢复' })).toBeEnabled();
+});
+
+test('oversized backup is rejected before reading the file body', async ({ page }) => {
+  await page.addInitScript(() => {
+    const originalText = File.prototype.text;
+    let reads = 0;
+    Object.defineProperty(File.prototype, 'text', {
+      configurable: true,
+      value(this: File) {
+        reads += 1;
+        return originalText.call(this);
+      },
+    });
+    Object.assign(window, { backupFileReads: () => reads });
+  });
+  await mockMarket(page, { empty: true });
+  await page.goto('/?view=review');
+
+  await page.getByLabel('选择复盘备份文件').setInputFiles({
+    name: 'oversized.json',
+    mimeType: 'application/json',
+    buffer: Buffer.alloc(BACKUP_LIMITS.backup_bytes + 1, 32),
+  });
+
+  await expect(page.getByRole('alert')).toContainText('备份文件');
+  expect(await page.evaluate(
+    () => (window as unknown as { backupFileReads: () => number }).backupFileReads(),
+  )).toBe(0);
 });

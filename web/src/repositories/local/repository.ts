@@ -8,6 +8,7 @@ export interface StoredNoteContent {
 }
 export interface LocalNote {
   note_id: string; local_profile_id: string; snapshot_id: string;
+  trade_date?: string | null;
   security_id?: string | null;
   source_backup_id?: string;
   source_backup_hash?: string;
@@ -45,7 +46,8 @@ export interface LocalImportPlan extends LocalImportWrites {
   expected_state: LocalBackupState;
 }
 interface SaveNote {
-  note_id: string; expected_revision: number; key: string; snapshot_id: string; content: NoteContent;
+  note_id: string; expected_revision: number; key: string; snapshot_id: string;
+  trade_date?: string | null; content: NoteContent;
 }
 interface Command { key: string; payload: string; result: LocalNote | LocalWatch }
 
@@ -280,6 +282,10 @@ export class LocalRepository {
   async putNote(input: SaveNote): Promise<LocalNote> {
     validContent(input.content);
     if (!input.snapshot_id.trim()) throw new Error('笔记必须绑定已选择的快照');
+    if (input.trade_date && (!/^\d{4}-\d{2}-\d{2}$/.test(input.trade_date)
+      || new Date(`${input.trade_date}T00:00:00Z`).toISOString().slice(0, 10) !== input.trade_date)) {
+      throw new Error('交易日期无效');
+    }
     if (!input.note_id || !input.key || !Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0) throw new Error('保存参数无效');
     const normalized = storedContent(input.content);
     const canonical = JSON.stringify([input.snapshot_id, normalized.title, normalized.content, normalized.judgment,
@@ -304,6 +310,7 @@ export class LocalRepository {
         if ((current?.revision ?? 0) !== input.expected_revision) throw new Error('版本冲突：另一标签已修改，当前输入已保留，请对照或另存');
         result = {
           note_id: input.note_id, local_profile_id: profile, snapshot_id: input.snapshot_id,
+          trade_date: input.trade_date ?? current?.trade_date ?? null,
           security_id: current?.security_id, content: normalized,
           revision: input.expected_revision + 1, content_hash,
           idempotency_key: input.key, updated_at: new Date().toISOString(),

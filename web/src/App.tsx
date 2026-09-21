@@ -135,7 +135,11 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         {LocalReview && state.view === 'review'
           ? <section aria-label="本地复盘">
             <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载本地复盘…</p>}>
-              <LocalReview snapshot={state.snapshot || undefined} security={state.security || undefined} />
+              <LocalReview
+                snapshot={state.snapshot || undefined}
+                tradeDate={state.date || undefined}
+                security={state.security || undefined}
+              />
             </Suspense></LazyLoadBoundary>
           </section>
           : PrivateWorkspace && state.view === 'review'

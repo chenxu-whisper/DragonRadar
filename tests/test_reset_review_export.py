@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from uuid import uuid4
 
 from factories import batch
-from sqlalchemy import insert, select
+from sqlalchemy import event, insert, select
 from test_cli import run_cli
 
 from dragon_radar.owner import OwnerRepository
@@ -105,6 +105,7 @@ def test_export_maps_legacy_fields_and_preserves_complete_history(repository, da
         {
             "note_id": str(first["id"]),
             "snapshot_id": first["snapshot_id"],
+            "trade_date": "2026-09-08",
             "security_id": "A",
             "current_revision": 3,
             "created_at": NOW.isoformat(),
@@ -144,6 +145,30 @@ def test_export_maps_legacy_fields_and_preserves_complete_history(repository, da
             "updated_at": NOW.isoformat(),
         }
     ]
+
+
+def test_export_uses_one_read_only_repeatable_read_transaction(repository, database):
+    populated_review(repository, database)
+    transaction_settings = []
+
+    def inspect_transaction(connection, _cursor, statement, *_):
+        if transaction_settings or "FROM owner_principals" not in statement:
+            return
+        raw = connection.connection.driver_connection
+        with raw.cursor() as cursor:
+            cursor.execute(
+                "SELECT current_setting('transaction_isolation'), "
+                "current_setting('transaction_read_only')"
+            )
+            transaction_settings.append(cursor.fetchone())
+
+    event.listen(database.engine, "before_cursor_execute", inspect_transaction)
+    try:
+        export_local_review(database, local_profile_id=PROFILE, exported_at=NOW)
+    finally:
+        event.remove(database.engine, "before_cursor_execute", inspect_transaction)
+
+    assert transaction_settings == [("repeatable read", "on")]
 
 
 def test_export_is_local_owner_scoped_and_contains_no_server_secrets_or_market_facts(

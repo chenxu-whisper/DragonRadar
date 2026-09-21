@@ -18,9 +18,13 @@ describe('local review transactions', () => {
     const name = `test-${crypto.randomUUID()}`;
     const repo = new LocalRepository(name);
     const profile = await repo.profile();
-    const saved = await repo.putNote({ note_id: 'n1', expected_revision: 0, key: 'save1', snapshot_id: 'snapshot', content });
+    const saved = await repo.putNote({
+      note_id: 'n1', expected_revision: 0, key: 'save1', snapshot_id: 'snapshot',
+      trade_date: '2026-09-10', content,
+    });
     expect(saved.revision).toBe(1);
     expect(saved.content_hash).toMatch(/^[\da-f]{64}$/);
+    expect(saved.trade_date).toBe('2026-09-10');
     expect(saved.idempotency_key).toBe('save1');
     expect((await repo.listNotes())[0].content).toEqual({
       ...content, judgment: '观察', evidence: null, invalid_condition: null, verify_date: null,
