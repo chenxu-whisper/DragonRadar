@@ -329,12 +329,12 @@ export function sameSavedValue(
 
 **文件：** 新建 `ingestion/{contracts,local_json,runner}.py`、`readmodels/tables.py`、迁移 `0006_market_readmodels.py`（依赖08的0005）、`tests/test_reset_ingestion.py`；修改 `domain/models.py`、`domain/quality.py`、`cli.py`、`storage/database.py`；新建 `docs/source-contracts.md`。
 
-- [ ] 写失败用例：稳定证券ID与展示代码分离；行情/指数区分；流通规模/换手/首末封字段缺失保持None；负数、错单位、缺页进入隔离。
-- [ ] 运行 `uv run pytest tests/test_reset_ingestion.py -q` 确认失败。
-- [ ] 建证券当前映射、状态历史、日线/指数/涨停事件读表；保留available_at、源版本、有效区间；所有衍生行保留来源归档ID。
-- [ ] 导入端接收已获许可的JSON批次，复用现有Repository；增加任务状态、分页清单、原请求范围和幂等重试。不得宣称本地导入等于供应商自动采集。
-- [ ] 对已选定且有授权材料的供应商实现独立adapter，并验证一批真实历史数据；若材料未具备，记录该生产启用阻塞，不选用未知许可接口替代。
-- [ ] 验证新数据测试、`test_domain.py/test_storage.py/test_topic_cli.py`；提交 `feat: extend market source contracts and ingestion`。
+- [x] 写失败用例：稳定证券ID与展示代码分离；行情/指数区分；流通规模/换手/首末封字段缺失保持None；负数、错单位、缺页进入隔离。
+- [x] 运行 `uv run pytest tests/test_reset_ingestion.py -q` 确认失败。
+- [x] 建证券当前映射、状态历史、日线/指数/涨停事件读表；保留available_at、源版本、有效区间；所有衍生行保留来源归档ID。
+- [x] 导入端接收已获许可的JSON批次，复用现有Repository；增加任务状态、分页清单、原请求范围和幂等重试。不得宣称本地导入等于供应商自动采集。
+- [x] 对已选定且有授权材料的供应商实现独立adapter，并验证一批真实历史数据；若材料未具备，记录该生产启用阻塞，不选用未知许可接口替代。
+- [x] 验证新数据测试、`test_domain.py/test_storage.py/test_topic_cli.py`；提交 `feat: extend market source contracts and ingestion`。
 
 **完成条件：** 合成数据链路可重复；真实数据入口状态单独标识，公开/AI许可不从local_display推导。
 
