@@ -25,6 +25,13 @@ def upgrade():
     op.create_table(
         "publications",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "publication_sequence",
+            sa.BigInteger,
+            sa.Identity(always=True),
+            nullable=False,
+            unique=True,
+        ),
         sa.Column("trade_date", sa.Date, nullable=False),
         sa.Column("version", sa.Integer, nullable=False),
         sa.Column(

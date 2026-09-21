@@ -21,6 +21,7 @@ from dragon_radar.publication.repository import (
     source_has_active_withdrawal,
 )
 from dragon_radar.publication.tables import (
+    PUBLICATION_SEQUENCE_LOCK,
     publication_attempts,
     publication_results,
     publications,
@@ -250,6 +251,7 @@ class PublicationService:
                         raise Conflict(
                             "Idempotency key already belongs to another command"
                         )
+                    self.market._lock(connection, PUBLICATION_SEQUENCE_LOCK)
                     self.market._lock(
                         connection,
                         "publication-date:" + command.trade_date.isoformat(),

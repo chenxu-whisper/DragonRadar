@@ -8,7 +8,7 @@ from threading import Event
 from uuid import uuid4
 
 import pytest
-from factories import DAYS, NOW, batch, grant
+from factories import DAYS, NOW, bar, batch, grant
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, insert, inspect, select, text, update
 from sqlalchemy.exc import DBAPIError
@@ -79,7 +79,8 @@ async def workbench(repository):
 
 def test_migration_creates_publication_schema_and_readiness(database):
     assert database.ready()
-    tables = set(inspect(database.engine).get_table_names())
+    inspector = inspect(database.engine)
+    tables = set(inspector.get_table_names())
     assert {
         "publication_attempts",
         "publication_results",
@@ -90,6 +91,14 @@ def test_migration_creates_publication_schema_and_readiness(database):
         "withdrawal_binding_seals",
         "publication_module_controls",
     } <= tables
+    publication_columns = {
+        column["name"]: column for column in inspector.get_columns("publications")
+    }
+    assert publication_columns["publication_sequence"]["identity"]["always"] is True
+    assert ("publication_sequence",) in {
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints("publications")
+    }
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
@@ -614,7 +623,7 @@ def test_list_snapshots_batches_candidates_and_prefetches_related_rows(
     assert candidate_queries
     assert all("LIMIT" in statement for statement in candidate_queries)
     assert candidate_row_counts == [10]
-    assert len(statements) <= 12
+    assert len(statements) <= 14
 
 
 def test_list_snapshots_applies_offset_after_authorization_filter(
@@ -703,29 +712,44 @@ def test_list_snapshots_uses_keyset_between_candidate_transactions(
     repository.register_source(denied_grant.model_copy(update={"local_display": False}))
 
     candidate_queries = []
-    inserted = False
+    watermark_queries = []
+    concurrent_future = None
 
     def insert_ahead_after_first_batch(
         conn, cursor, statement, parameters, context, executemany
     ):
-        nonlocal inserted
+        nonlocal concurrent_future
         if (
-            inserted
+            concurrent_future is not None
             or "FROM publications" not in statement
             or "publications.status" not in statement
             or "ORDER BY publications.trade_date" not in statement
         ):
             return
-        inserted = True
         candidate_queries.append(statement)
-        PublicationService(database, repository, clock=lambda: NOW).publish(
+        concurrent_future = pool.submit(
+            PublicationService(database, repository, clock=lambda: NOW).publish,
             command,
             key="keyset-concurrent-insert",
         )
 
+    def await_concurrent_insert(
+        conn, cursor, statement, parameters, context, executemany
+    ):
+        if (
+            len(candidate_queries) == 1
+            and concurrent_future is not None
+            and "FROM publications" in statement
+            and "publications.status" in statement
+            and "ORDER BY publications.trade_date" in statement
+        ):
+            concurrent_future.result(timeout=5)
+
     def collect_candidate_queries(
         conn, cursor, statement, parameters, context, executemany
     ):
+        if "max(publications.publication_sequence)" in statement:
+            watermark_queries.append(statement)
         if (
             "FROM publications" in statement
             and "publications.status" in statement
@@ -734,27 +758,178 @@ def test_list_snapshots_uses_keyset_between_candidate_transactions(
         ):
             candidate_queries.append(statement)
 
-    event.listen(
-        database.engine, "after_cursor_execute", insert_ahead_after_first_batch
-    )
-    event.listen(database.engine, "after_cursor_execute", collect_candidate_queries)
-    try:
-        listed = service.repository.list_snapshots(limit=2)
-    finally:
-        event.remove(
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        event.listen(
             database.engine,
             "after_cursor_execute",
             insert_ahead_after_first_batch,
         )
-        event.remove(database.engine, "after_cursor_execute", collect_candidate_queries)
+        event.listen(
+            database.engine,
+            "before_cursor_execute",
+            await_concurrent_insert,
+        )
+        event.listen(database.engine, "after_cursor_execute", collect_candidate_queries)
+        try:
+            listed = service.repository.list_snapshots(limit=2)
+        finally:
+            event.remove(
+                database.engine,
+                "after_cursor_execute",
+                insert_ahead_after_first_batch,
+            )
+            event.remove(
+                database.engine,
+                "before_cursor_execute",
+                await_concurrent_insert,
+            )
+            event.remove(
+                database.engine,
+                "after_cursor_execute",
+                collect_candidate_queries,
+            )
 
     assert [item.id for item in listed] == [second.id, first.id]
+    assert concurrent_future is not None
+    concurrent_future.result()
     assert len({item.id for item in listed}) == 2
     assert len(candidate_queries) == 2
     assert "OFFSET" not in candidate_queries[1]
     assert "publications.trade_date <" in candidate_queries[1]
     assert "publications.version <" in candidate_queries[1]
     assert "publications.id >" in candidate_queries[1]
+    assert len(watermark_queries) == 1
+    assert all(
+        "publications.publication_sequence <=" in statement
+        for statement in candidate_queries
+    )
+
+
+def test_list_snapshots_freezes_publication_watermark_across_candidate_batches(
+    publication, database, repository
+):
+    service, command = publication
+
+    def market_for(day, key):
+        payload = batch(
+            trade_date=day,
+            bars=tuple(bar(trade_date=item) for item in DAYS if item <= day),
+        )
+        return repository.publish(repository.import_batch(payload, key=key).id)
+
+    older = service.publish(
+        command.model_copy(
+            update={
+                "trade_date": DAYS[0],
+                "market_snapshot_id": market_for(DAYS[0], "watermark-oldest-market").id,
+                "topic_snapshot_id": None,
+                "disabled_domains": ("topic", "news", "regulation", "role"),
+            }
+        ),
+        key="watermark-oldest",
+    )
+    newer = service.publish(
+        command.model_copy(
+            update={
+                "trade_date": DAYS[2],
+                "market_snapshot_id": market_for(DAYS[2], "watermark-newer-market").id,
+                "topic_snapshot_id": None,
+                "disabled_domains": ("topic", "news", "regulation", "role"),
+            }
+        ),
+        key="watermark-newer",
+    )
+    concurrent_command = command.model_copy(
+        update={
+            "trade_date": DAYS[1],
+            "market_snapshot_id": market_for(DAYS[1], "watermark-concurrent-market").id,
+            "topic_snapshot_id": None,
+            "disabled_domains": ("topic", "news", "regulation", "role"),
+        }
+    )
+
+    denied_grant = grant(source_id="watermark-denied-source")
+    repository.register_source(denied_grant)
+    denied_payload = batch().model_copy(
+        update={
+            "source_id": denied_grant.source_id,
+            "grant": denied_grant,
+            "security_states": tuple(
+                item.model_copy(update={"source_id": denied_grant.source_id})
+                for item in batch().security_states
+            ),
+            "bars": tuple(
+                item.model_copy(update={"source_id": denied_grant.source_id})
+                for item in batch().bars
+            ),
+        }
+    )
+    for index in range(10):
+        denied_market = repository.publish(
+            repository.import_batch(
+                denied_payload,
+                key=f"watermark-denied-market-{index}",
+            ).id
+        )
+        service.publish(
+            command.model_copy(update={"market_snapshot_id": denied_market.id}),
+            key=f"watermark-denied-publication-{index}",
+        )
+    repository.register_source(denied_grant.model_copy(update={"local_display": False}))
+
+    candidate_count = 0
+    concurrent_future = None
+
+    def publish_after_first_batch(
+        conn, cursor, statement, parameters, context, executemany
+    ):
+        nonlocal candidate_count, concurrent_future
+        if (
+            "FROM publications" not in statement
+            or "publications.status" not in statement
+            or "ORDER BY publications.trade_date" not in statement
+        ):
+            return
+        candidate_count += 1
+        if candidate_count == 1:
+            concurrent_future = pool.submit(
+                service.publish,
+                concurrent_command,
+                key="watermark-concurrent",
+            )
+
+    def await_concurrent_publish(
+        conn, cursor, statement, parameters, context, executemany
+    ):
+        if (
+            candidate_count == 1
+            and concurrent_future is not None
+            and "FROM publications" in statement
+            and "publications.status" in statement
+            and "ORDER BY publications.trade_date" in statement
+        ):
+            concurrent_future.result(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        event.listen(database.engine, "after_cursor_execute", publish_after_first_batch)
+        event.listen(database.engine, "before_cursor_execute", await_concurrent_publish)
+        try:
+            listed = service.repository.list_snapshots(limit=2)
+        finally:
+            event.remove(
+                database.engine,
+                "after_cursor_execute",
+                publish_after_first_batch,
+            )
+            event.remove(
+                database.engine,
+                "before_cursor_execute",
+                await_concurrent_publish,
+            )
+
+    assert [item.id for item in listed] == [newer.id, older.id]
+    assert concurrent_future is not None
+    assert concurrent_future.result().id not in {item.id for item in listed}
 
 
 def test_unified_read_holds_all_source_locks_through_result_assembly(
@@ -820,6 +995,7 @@ def _clone_publication_with_dependencies(
             .one()
         )
         values = dict(original)
+        values.pop("publication_sequence")
         values.update(
             id=publication_id,
             version=record.version + 1,
@@ -919,6 +1095,7 @@ def test_database_requires_draft_insert_and_consistent_published_at(
             .one()
         )
     values = dict(original)
+    values.pop("publication_sequence")
     values.update(
         id=uuid4(),
         version=record.version + 1,
@@ -1152,12 +1329,12 @@ def test_publication_validation_locks_distinct_sources_in_stable_order(
         ).id
     )
     service = PublicationService(database, repository, clock=lambda: NOW)
-    source_lock_order = []
+    lock_order = []
 
     def observe_lock(conn, cursor, statement, parameters, context, executemany):
         key = str(parameters.get("key", ""))
-        if "pg_advisory_xact_lock" in statement and key.startswith("source:"):
-            source_lock_order.append(key)
+        if "pg_advisory_xact_lock" in statement:
+            lock_order.append(key)
 
     event.listen(database.engine, "after_cursor_execute", observe_lock)
     try:
@@ -1173,7 +1350,10 @@ def test_publication_validation_locks_distinct_sources_in_stable_order(
     finally:
         event.remove(database.engine, "after_cursor_execute", observe_lock)
 
-    assert source_lock_order == [
+    assert lock_order == [
+        "publication-key:stable-source-order",
+        "publication-sequence",
+        f"publication-date:{DAYS[-1].isoformat()}",
         "source:aaa-topic",
         "source:synthetic",
     ]

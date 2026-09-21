@@ -22,10 +22,19 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 from dragon_radar.storage.models import metadata
 
+PUBLICATION_SEQUENCE_LOCK = "publication-sequence"
+
 publications = Table(
     "publications",
     metadata,
     Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column(
+        "publication_sequence",
+        BigInteger,
+        Identity(always=True),
+        nullable=False,
+        unique=True,
+    ),
     Column("trade_date", Date, nullable=False),
     Column("version", Integer, nullable=False),
     Column(

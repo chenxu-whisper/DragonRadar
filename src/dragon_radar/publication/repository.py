@@ -13,6 +13,7 @@ from dragon_radar.publication.models import (
     PublishedSnapshot,
 )
 from dragon_radar.publication.tables import (
+    PUBLICATION_SEQUENCE_LOCK,
     publication_results,
     publications,
     source_dependencies,
@@ -461,26 +462,38 @@ class PublicationRepository:
         )
         batch_size = max(10, min(100, limit + offset))
         last_candidate = None
+        watermark = None
         authorized_offset = 0
         visible = []
         while len(visible) < limit:
-            candidate_query = query
-            if last_candidate is not None:
-                candidate_query = candidate_query.where(
-                    or_(
-                        publications.c.trade_date < last_candidate["trade_date"],
-                        and_(
-                            publications.c.trade_date == last_candidate["trade_date"],
-                            publications.c.version < last_candidate["version"],
-                        ),
-                        and_(
-                            publications.c.trade_date == last_candidate["trade_date"],
-                            publications.c.version == last_candidate["version"],
-                            publications.c.id > last_candidate["id"],
-                        ),
-                    )
-                )
             with self.database.engine.begin() as connection:
+                if watermark is None:
+                    self.market._lock(connection, PUBLICATION_SEQUENCE_LOCK)
+                    watermark = connection.scalar(
+                        select(func.max(publications.c.publication_sequence))
+                    )
+                    if watermark is None:
+                        return []
+                candidate_query = query.where(
+                    publications.c.publication_sequence <= watermark
+                )
+                if last_candidate is not None:
+                    candidate_query = candidate_query.where(
+                        or_(
+                            publications.c.trade_date < last_candidate["trade_date"],
+                            and_(
+                                publications.c.trade_date
+                                == last_candidate["trade_date"],
+                                publications.c.version < last_candidate["version"],
+                            ),
+                            and_(
+                                publications.c.trade_date
+                                == last_candidate["trade_date"],
+                                publications.c.version == last_candidate["version"],
+                                publications.c.id > last_candidate["id"],
+                            ),
+                        )
+                    )
                 rows = (
                     connection.execute(candidate_query.limit(batch_size))
                     .mappings()
