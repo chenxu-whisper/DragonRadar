@@ -16,7 +16,7 @@ def _upgrade(database, revision):
 
 
 def test_topic_attempt_ranges_are_added_after_0004(database_url):
-    from dragon_radar.storage.database import Database
+    from dragon_radar.storage.database import SCHEMA_REVISION, Database
     from dragon_radar.storage.repository import Repository
     from dragon_radar.topics.repository import TopicRepository
 
@@ -34,7 +34,7 @@ def test_topic_attempt_ranges_are_added_after_0004(database_url):
         with database.engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0004a_topic_attempt_ranges"
+                == SCHEMA_REVISION
             )
         new_columns = {
             column["name"]

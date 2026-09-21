@@ -12,6 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from dragon_radar.domain.models import MarketBatch, SourceGrant
 from dragon_radar.owner.cli import COMMANDS, add_commands, execute
 from dragon_radar.owner.security import OWNER_ERRORS
+from dragon_radar.publication.models import PublicationCommand
+from dragon_radar.publication.service import PublicationService
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
     Conflict,
@@ -88,6 +90,11 @@ def _parser() -> argparse.ArgumentParser:
     topic_retry.add_argument("attempt_id")
     topic_retry.add_argument("--path", required=True, type=Path)
     topic_retry.add_argument("--key", required=True)
+    publication_publish = commands.add_parser(
+        "publication-publish", help="Atomically publish a workbench manifest"
+    )
+    publication_publish.add_argument("path", type=Path)
+    publication_publish.add_argument("--key", required=True)
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
@@ -174,6 +181,23 @@ def main(argv: list[str] | None = None) -> int:
                 key=args.key,
             )
             result = {"batch_id": str(record.id), "status": "imported"}
+        elif args.command == "publication-publish":
+            command = PublicationCommand.model_validate_json(
+                args.path.read_text(encoding="utf-8")
+            )
+            publication = PublicationService(database, repository).publish(
+                command, key=args.key
+            )
+            result = {
+                "snapshot_id": str(publication.id),
+                "trade_date": publication.trade_date.isoformat(),
+                "version": publication.version,
+                "status": publication.status,
+                "supersedes": (
+                    str(publication.supersedes) if publication.supersedes else None
+                ),
+                "published_at": publication.published_at.isoformat(),
+            }
         else:
             import uvicorn
 

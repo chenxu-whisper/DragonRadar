@@ -48,6 +48,8 @@ def select_snapshot(
 ) -> Snapshot | None:
     if snapshot_id is not None:
         snapshot = repository.get_snapshot(snapshot_id)
+        if snapshot is None:
+            return None
         if trade_date is not None and snapshot.trade_date != trade_date:
             raise ValueError("Snapshot date mismatch")
         return snapshot

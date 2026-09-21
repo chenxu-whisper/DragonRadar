@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0004a_topic_attempt_ranges"
+SCHEMA_REVISION = "0005_publications"
 
 
 class Database:
@@ -65,6 +65,12 @@ class Database:
                     "topic_import_attempts",
                     "topic_import_batches",
                     "topic_snapshots",
+                    "publications",
+                    "publication_results",
+                    "publication_attempts",
+                    "source_dependencies",
+                    "withdrawal_records",
+                    "publication_module_controls",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True
