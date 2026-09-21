@@ -90,13 +90,47 @@ def test_embedded_grant_cannot_register_or_override(database):
 
 @pytest.mark.parametrize(
     "embedded",
-    [grant(approved=False), grant(source_id="other"), grant(local_display=False)],
+    [grant(approved=False), grant(source_id="other"), grant(local_storage=False)],
 )
 def test_embedded_rights_and_source_identity_also_required(repository, embedded):
     from dragon_radar.storage.repository import Forbidden
 
     with pytest.raises(Forbidden):
         repository.import_batch(batch(grant=embedded), key="denied")
+
+
+def test_storage_only_license_archives_but_cannot_publish_or_read(repository):
+    from dragon_radar.storage.repository import Forbidden
+
+    storage_only = grant(local_display=False)
+    repository.register_source(storage_only)
+
+    stored = repository.import_batch(
+        batch(grant=storage_only),
+        key="storage-only",
+    )
+
+    assert json.loads(stored.canonical_json) == batch(
+        grant=storage_only
+    ).model_dump(mode="json")
+    assert not stored.quality_report["publishable"]
+    with pytest.raises(Forbidden):
+        repository.publish(stored.id)
+    assert repository.list_snapshots() == []
+
+
+def test_display_only_current_grant_can_publish_and_read_existing_archive(repository):
+    from dragon_radar.storage.repository import Forbidden
+
+    stored = repository.import_batch(batch(), key="display-only-existing")
+    repository.register_source(grant(local_storage=False))
+
+    with pytest.raises(Forbidden):
+        repository.import_batch(batch(), key="display-only-existing")
+    snapshot = repository.publish(stored.id)
+
+    assert repository.get_snapshot(snapshot.id) == snapshot
+    assert repository.list_snapshots() == [snapshot]
 
 
 def test_revisions_preserve_original_and_same_batch_publish_is_idempotent(repository):

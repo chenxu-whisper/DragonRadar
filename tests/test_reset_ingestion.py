@@ -5,12 +5,15 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, time
 from decimal import Decimal
+from threading import Barrier
 from uuid import UUID
 
-from factories import NOW, bar, batch, state
-from sqlalchemy import inspect, select, text
+import pytest
+from factories import DAYS, NOW, bar, batch, state
+from sqlalchemy import event, inspect, select, text
 
 
 def issue_codes(payload):
@@ -298,8 +301,91 @@ def test_runner_preserves_nullable_market_fields(database, repository):
     assert row == (None, None, None, result.batch_id)
 
 
+def test_historical_non_current_security_gets_stable_base_row(database, repository):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.readmodels.tables import security, security_state_history
+
+    historical = state(
+        security_id="historical-only",
+        code="000002",
+        name="Historical Only",
+        effective_to=DAYS[1],
+    )
+    payload = batch(
+        security_states=(state(code="000001"), historical),
+    )
+
+    result = MarketIngestionRunner(repository).import_batch(
+        licensed_batch(payload),
+        key="historical-security",
+    )
+
+    assert result.status == "succeeded"
+    with database.engine.connect() as connection:
+        base = connection.execute(
+            select(
+                security.c.code,
+                security.c.name,
+                security.c.security_type,
+                security.c.list_date,
+            ).where(security.c.security_id == "historical-only")
+        ).one()
+        history_count = connection.scalar(
+            select(text("count(*)"))
+            .select_from(security_state_history)
+            .where(security_state_history.c.security_id == "historical-only")
+        )
+    assert base == (
+        historical.code,
+        historical.name,
+        historical.security_type,
+        historical.listing_date,
+    )
+    assert history_count > 0
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["code", "security_type", "listing_date", "suspended", "is_st"],
+)
+def test_missing_historical_identity_is_archived_and_quarantined(
+    database,
+    repository,
+    missing_field,
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.storage.repository import QualityRejected
+
+    identity = {
+        "code": "000002",
+        missing_field: None,
+    }
+    historical = state(
+        security_id="historical-incomplete",
+        effective_to=DAYS[1],
+        **identity,
+    )
+    result = MarketIngestionRunner(repository).import_batch(
+        licensed_batch(
+            batch(security_states=(state(code="000001"), historical))
+        ),
+        key=f"historical-missing-{missing_field}",
+    )
+
+    assert result.status == "quarantined"
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM import_batches")) == 1
+        assert connection.scalar(text("SELECT count(*) FROM security")) == 0
+        assert (
+            connection.scalar(text("SELECT count(*) FROM security_state_history")) == 0
+        )
+    with pytest.raises(QualityRejected):
+        repository.publish(result.batch_id)
+
+
 def test_page_gap_is_archived_quarantined_and_idempotent(database, repository):
     from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.storage.repository import QualityRejected
 
     runner = MarketIngestionRunner(repository)
     first = runner.import_batch(licensed_batch(contiguous=False), key="market-gap")
@@ -320,6 +406,223 @@ def test_page_gap_is_archived_quarantined_and_idempotent(database, repository):
             connection.scalar(text("SELECT count(*) FROM market_import_attempts")) == 1
         )
         assert connection.scalar(text("SELECT count(*) FROM daily_kline")) == 0
+    with pytest.raises(QualityRejected):
+        repository.publish(first.batch_id)
+
+
+def test_ingestion_key_binds_complete_envelope(repository):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.storage.repository import Conflict
+
+    runner = MarketIngestionRunner(repository)
+    envelope = licensed_batch()
+    first = runner.import_batch(envelope, key="market-envelope")
+    assert runner.import_batch(envelope, key="market-envelope") == first
+
+    changed_page = envelope.page_manifest.pages[0].model_copy(
+        update={"page_hash": hashlib.sha256(b"changed-page").hexdigest()}
+    )
+    changed = envelope.model_copy(
+        update={
+            "page_manifest": envelope.page_manifest.model_copy(
+                update={
+                    "pages": (changed_page, *envelope.page_manifest.pages[1:])
+                }
+            )
+        }
+    )
+    with pytest.raises(Conflict):
+        runner.import_batch(changed, key="market-envelope")
+
+
+def test_ingestion_replay_rechecks_current_storage_authorization(repository):
+    from factories import grant
+
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.storage.repository import Forbidden
+
+    runner = MarketIngestionRunner(repository)
+    envelope = licensed_batch()
+    runner.import_batch(envelope, key="market-replay-authorization")
+    repository.register_source(grant(local_storage=False))
+
+    with pytest.raises(Forbidden):
+        runner.import_batch(envelope, key="market-replay-authorization")
+
+
+def test_concurrent_same_envelope_import_has_one_workflow(database, repository):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    barrier = Barrier(2)
+
+    def run(_index):
+        barrier.wait(timeout=10)
+        return MarketIngestionRunner(repository).import_batch(
+            licensed_batch(),
+            key="market-envelope-race",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(run, range(2)))
+
+    assert results == [results[0], results[0]]
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM import_batches")) == 1
+        assert connection.scalar(text("SELECT count(*) FROM market_import_tasks")) == 1
+        assert (
+            connection.scalar(text("SELECT count(*) FROM market_import_attempts")) == 1
+        )
+
+
+def test_runner_uses_repository_import_lock_order(database, repository):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    locks = []
+
+    def record_lock(conn, cursor, statement, parameters, context, executemany):
+        if "pg_advisory_xact_lock" in statement:
+            locks.append(parameters["key"])
+
+    event.listen(database.engine, "after_cursor_execute", record_lock)
+    try:
+        MarketIngestionRunner(repository).import_batch(
+            licensed_batch(),
+            key="market-lock-order",
+        )
+    finally:
+        event.remove(database.engine, "after_cursor_execute", record_lock)
+
+    assert locks[:3] == [
+        "market-ingestion-key:market-lock-order",
+        "import-key:market-lock-order",
+        "source:synthetic",
+    ]
+
+
+def test_attempt_insert_failure_rolls_back_archive_and_workflow(
+    database, repository
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    def fail_attempt(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("INSERT INTO market_import_attempts"):
+            raise RuntimeError("injected attempt failure")
+
+    event.listen(database.engine, "before_cursor_execute", fail_attempt)
+    try:
+        with pytest.raises(RuntimeError, match="injected attempt failure"):
+            MarketIngestionRunner(repository).import_batch(
+                licensed_batch(),
+                key="market-attempt-failure",
+            )
+    finally:
+        event.remove(database.engine, "before_cursor_execute", fail_attempt)
+
+    with database.engine.connect() as connection:
+        for table in (
+            "import_batches",
+            "market_import_tasks",
+            "market_import_attempts",
+            "security",
+            "security_state_history",
+            "daily_kline",
+        ):
+            assert connection.scalar(text(f"SELECT count(*) FROM {table}")) == 0
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM audit_events WHERE action = 'import'")
+            )
+            == 0
+        )
+
+
+def test_materialization_failure_rolls_back_archive_and_workflow(
+    database, repository, monkeypatch
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    runner = MarketIngestionRunner(repository)
+
+    def fail_materialization(*_args):
+        raise RuntimeError("injected materialization failure")
+
+    monkeypatch.setattr(runner, "_materialize", fail_materialization)
+    with pytest.raises(RuntimeError, match="injected materialization failure"):
+        runner.import_batch(
+            licensed_batch(),
+            key="market-materialization-failure",
+        )
+
+    with database.engine.connect() as connection:
+        for table in (
+            "import_batches",
+            "market_import_tasks",
+            "market_import_attempts",
+            "security",
+            "security_state_history",
+            "daily_kline",
+        ):
+            assert connection.scalar(text(f"SELECT count(*) FROM {table}")) == 0
+
+
+def test_retry_materialization_failure_keeps_only_original_quarantine(
+    database, repository, monkeypatch
+):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    runner = MarketIngestionRunner(repository)
+    original = runner.import_batch(
+        licensed_batch(contiguous=False),
+        key="market-retry-original",
+    )
+
+    def fail_materialization(*_args):
+        raise RuntimeError("injected retry materialization failure")
+
+    monkeypatch.setattr(runner, "_materialize", fail_materialization)
+    with pytest.raises(RuntimeError, match="injected retry materialization failure"):
+        runner.retry_attempt(
+            original.attempt_id,
+            licensed_batch(),
+            key="market-retry-failure",
+        )
+
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM import_batches")) == 1
+        assert connection.scalar(text("SELECT count(*) FROM market_import_tasks")) == 1
+        assert (
+            connection.scalar(text("SELECT count(*) FROM market_import_attempts")) == 1
+        )
+        assert connection.scalar(text("SELECT count(*) FROM security")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM daily_kline")) == 0
+
+
+def test_storage_only_license_archives_without_materializing(database, repository):
+    from factories import grant
+
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    storage_only = grant(local_display=False)
+    repository.register_source(storage_only)
+    payload = batch(
+        grant=storage_only,
+        security_states=(state(code="000001"),),
+        bars=(bar(previous_close="9"),),
+    )
+
+    result = MarketIngestionRunner(repository).import_batch(
+        licensed_batch(payload),
+        key="market-storage-only",
+    )
+
+    assert result.status == "quarantined"
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM import_batches")) == 1
+        assert connection.scalar(text("SELECT count(*) FROM market_import_tasks")) == 1
+        assert (
+            connection.scalar(text("SELECT count(*) FROM market_import_attempts")) == 1
+        )
+        assert connection.scalar(text("SELECT count(*) FROM security")) == 0
 
 
 def test_batch_completeness_failure_records_missing_item(repository):
@@ -358,17 +661,63 @@ def test_retry_is_append_only_and_rechecks_original_authorization(
         "quarantined",
     ]
 
-    repository.revoke_source("synthetic")
-    try:
+    with pytest.raises(ValueError, match="not retryable"):
         runner.retry_attempt(
             failed.attempt_id,
             licensed_batch(),
+            key="market-retry-after-success",
+        )
+
+    authorization_failure = runner.import_batch(
+        licensed_batch(contiguous=False),
+        key="market-failed-before-revocation",
+    )
+    repository.revoke_source("synthetic")
+    with pytest.raises(Forbidden):
+        runner.retry_attempt(
+            authorization_failure.attempt_id,
+            licensed_batch(),
             key="market-retry-denied",
         )
-    except Forbidden:
-        pass
-    else:
-        raise AssertionError("retry must recheck authorization")
+
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM market_import_attempts "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": failed.task_id},
+            )
+            == 2
+        )
+
+
+def test_retry_key_cannot_replay_result_from_another_task(repository):
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+    from dragon_radar.storage.repository import Conflict
+
+    runner = MarketIngestionRunner(repository)
+    first = runner.import_batch(
+        licensed_batch(contiguous=False),
+        key="market-first-task",
+    )
+    second = runner.import_batch(
+        licensed_batch(contiguous=False),
+        key="market-second-task",
+    )
+    runner.retry_attempt(
+        first.attempt_id,
+        licensed_batch(),
+        key="market-shared-retry-key",
+    )
+
+    with pytest.raises(Conflict):
+        runner.retry_attempt(
+            second.attempt_id,
+            licensed_batch(),
+            key="market-shared-retry-key",
+        )
 
 
 def test_task_and_attempt_reads_recheck_embedded_authorization(repository):
@@ -389,6 +738,12 @@ def test_task_and_attempt_reads_recheck_embedded_authorization(repository):
 
 def test_market_schema_constraints_match_frozen_contract(database):
     inspector = inspect(database.engine)
+    attempt_columns = {
+        column["name"] for column in inspector.get_columns("market_import_attempts")
+    }
+    archive_columns = {
+        column["name"] for column in inspector.get_columns("import_batches")
+    }
     security_indexes = {
         item["name"]: tuple(item["column_names"])
         for item in inspector.get_indexes("security")
@@ -403,6 +758,10 @@ def test_market_schema_constraints_match_frozen_contract(database):
     }
 
     assert security_indexes["security_exchange_code"] == ("exchange", "code")
+    assert "envelope_hash" in attempt_columns
+    assert "payload_hash" not in attempt_columns
+    assert "payload_hash" in archive_columns
+    assert "idempotency_hash" in archive_columns
     assert ("security_id", "state_type", "valid_from") in history_unique
     assert ("security_id", "valid_from") not in security_unique
     assert "security_state_history_no_overlap" in {

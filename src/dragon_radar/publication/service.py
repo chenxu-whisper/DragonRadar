@@ -9,6 +9,7 @@ from sqlalchemy import insert, select, update
 
 from dragon_radar.analytics.metrics import market_breadth
 from dragon_radar.domain.models import MarketBatch
+from dragon_radar.domain.quality import validate_batch
 from dragon_radar.publication.models import (
     DOMAIN_NAMES,
     DomainMaterialization,
@@ -32,6 +33,7 @@ from dragon_radar.storage.repository import (
     Conflict,
     Forbidden,
     NotFound,
+    QualityRejected,
     Repository,
     _identifier,
 )
@@ -127,7 +129,14 @@ class PublicationService:
             source_id: self.market._source(connection, source_id)
             for source_id in sorted({dependency[0] for dependency in dependencies})
         }
-        self.market._authorize(grants[market_row["source_id"]], market_batch)
+        market_now = self.market._authorize(
+            grants[market_row["source_id"]], market_batch
+        )
+        if (
+            not market_archive["quality_report"]["publishable"]
+            or not validate_batch(market_batch, now=market_now).publishable
+        ):
+            raise QualityRejected("Market batch failed the quality gate")
         if source_has_active_withdrawal(
             connection, market_row["source_id"]
         ) or archive_was_withdrawn(

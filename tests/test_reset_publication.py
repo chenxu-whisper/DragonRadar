@@ -27,8 +27,8 @@ from dragon_radar.publication.tables import (
     source_dependencies,
 )
 from dragon_radar.storage.database import SCHEMA_REVISION
-from dragon_radar.storage.models import source_grants
-from dragon_radar.storage.repository import Conflict, Forbidden
+from dragon_radar.storage.models import import_batches, snapshots, source_grants
+from dragon_radar.storage.repository import Conflict, Forbidden, QualityRejected
 from dragon_radar.topics.repository import TopicRepository
 
 pytestmark = pytest.mark.anyio
@@ -139,6 +139,44 @@ def test_domain_failure_keeps_attempt_without_visible_partial_publication(
         assert attempt["status"] == "failed"
         assert attempt["stage"] == "topic"
         assert attempt["publication_id"] is None
+
+
+def test_unified_publication_rejects_quarantined_market_archive(
+    database, repository
+):
+    from test_reset_ingestion import licensed_batch
+
+    from dragon_radar.ingestion.runner import MarketIngestionRunner
+
+    quarantined = MarketIngestionRunner(repository).import_batch(
+        licensed_batch(contiguous=False),
+        key="quarantined-unified-input",
+    )
+    snapshot_id = uuid4()
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(snapshots).values(
+                id=snapshot_id,
+                batch_id=quarantined.batch_id,
+                source_id="synthetic",
+                trade_date=DAYS[-1],
+                revision=1,
+                supersedes=None,
+                manifest={},
+                published_at=NOW,
+            )
+        )
+
+    service = PublicationService(database, repository, clock=lambda: NOW)
+    with pytest.raises(QualityRejected):
+        service.publish(
+            PublicationCommand(
+                trade_date=DAYS[-1],
+                market_snapshot_id=snapshot_id,
+                disabled_domains=("topic", "news", "regulation", "role"),
+            ),
+            key="reject-quarantined-unified-input",
+        )
 
 
 def test_concurrent_failure_is_recorded_after_same_key_success(
@@ -1418,6 +1456,16 @@ def test_migration_upgrades_0004a_without_rewriting_history(database_url):
     database = Database(database_url)
     config = Config()
     config.set_main_option("script_location", "dragon_radar:migrations")
+    historical_batch = batch()
+    canonical = json.dumps(
+        historical_batch.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    archive_id = uuid4()
     try:
         with database.engine.begin() as connection:
             config.attributes["connection"] = connection
@@ -1427,6 +1475,18 @@ def test_migration_upgrades_0004a_without_rewriting_history(database_url):
                     source_id="migration-sentinel",
                     grant={},
                     updated_at=NOW,
+                )
+            )
+            connection.execute(
+                insert(import_batches).values(
+                    id=archive_id,
+                    idempotency_key="migration-history",
+                    source_id="migration-sentinel",
+                    trade_date=historical_batch.trade_date,
+                    canonical_json=canonical,
+                    payload_hash=digest,
+                    quality_report={"issues": [], "publishable": True},
+                    imported_at=NOW,
                 )
             )
         database.migrate()
@@ -1440,6 +1500,14 @@ def test_migration_upgrades_0004a_without_rewriting_history(database_url):
                 )
                 == 1
             )
+            migrated = connection.execute(
+                select(
+                    import_batches.c.canonical_json,
+                    import_batches.c.payload_hash,
+                    import_batches.c.idempotency_hash,
+                ).where(import_batches.c.id == archive_id)
+            ).one()
+            assert migrated == (canonical, digest, digest)
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
                 == SCHEMA_REVISION

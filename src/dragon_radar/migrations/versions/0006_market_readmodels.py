@@ -75,6 +75,14 @@ def _create_daily_table(name):
 
 def upgrade():
     op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist")
+    op.add_column(
+        "import_batches",
+        sa.Column("idempotency_hash", sa.String(64), nullable=True),
+    )
+    op.execute("ALTER TABLE import_batches DISABLE TRIGGER immutable_rows")
+    op.execute("UPDATE import_batches SET idempotency_hash = payload_hash")
+    op.execute("ALTER TABLE import_batches ENABLE TRIGGER immutable_rows")
+    op.alter_column("import_batches", "idempotency_hash", nullable=False)
     op.create_table(
         "security",
         sa.Column("security_id", sa.String(32), primary_key=True),
@@ -197,7 +205,7 @@ def upgrade():
             nullable=False,
         ),
         sa.Column("idempotency_key", sa.String(200), nullable=False, unique=True),
-        sa.Column("payload_hash", sa.String(64), nullable=False),
+        sa.Column("envelope_hash", sa.String(64), nullable=False),
         sa.Column(
             "source_id",
             sa.Text,

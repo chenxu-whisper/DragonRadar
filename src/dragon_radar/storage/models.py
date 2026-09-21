@@ -40,6 +40,7 @@ import_batches = Table(
     Column("trade_date", Date, nullable=False),
     Column("canonical_json", Text, nullable=False),
     Column("payload_hash", String(64), nullable=False),
+    Column("idempotency_hash", String(64), nullable=False),
     Column("quality_report", JSONB, nullable=False),
     Column("imported_at", DateTime(timezone=True), nullable=False),
 )

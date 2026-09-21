@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
@@ -11,7 +11,12 @@ from sqlalchemy import insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
-from dragon_radar.domain.quality import grant_allows_local, validate_batch
+from dragon_radar.domain.quality import (
+    QualityIssue,
+    grant_allows_display,
+    grant_allows_storage,
+    validate_batch,
+)
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.models import (
     ImportRecord,
@@ -88,13 +93,24 @@ class Repository:
             raise Forbidden("Source is not locally authorized")
         return SourceGrant.model_validate(row["grant"])
 
+    def _authorize_storage(
+        self, current: SourceGrant, batch: MarketBatch
+    ) -> datetime:
+        now = self.clock()
+        if not all(
+            grant_allows_storage(grant, source_id=batch.source_id, now=now)
+            for grant in (current, batch.grant)
+        ):
+            raise Forbidden("Source is not authorized for local storage")
+        return now
+
     def _authorize(self, current: SourceGrant, batch: MarketBatch) -> datetime:
         now = self.clock()
         if not all(
-            grant_allows_local(grant, source_id=batch.source_id, now=now)
+            grant_allows_display(grant, source_id=batch.source_id, now=now)
             for grant in (current, batch.grant)
         ):
-            raise Forbidden("Source is not locally authorized")
+            raise Forbidden("Source is not authorized for local display")
         return now
 
     def register_source(self, grant: SourceGrant) -> None:
@@ -145,9 +161,29 @@ class Repository:
             )
         )
 
-    def import_batch(self, batch: MarketBatch, *, key: str) -> ImportRecord:
+    def import_batch(
+        self,
+        batch: MarketBatch,
+        *,
+        key: str,
+    ) -> ImportRecord:
         _identifier(key)
         batch = MarketBatch.model_validate(batch.model_dump())
+        with self.database.engine.begin() as connection:
+            self._lock(connection, "import-key:" + key)
+            return self._import_batch(connection, batch, key=key)
+
+    def _import_batch(
+        self,
+        connection,
+        batch: MarketBatch,
+        *,
+        key: str,
+        additional_issues: Sequence[QualityIssue] = (),
+        idempotency_hash: str | None = None,
+        current: SourceGrant | None = None,
+        now: datetime | None = None,
+    ) -> ImportRecord:
         _identifier(batch.source_id)
         canonical = json.dumps(
             batch.model_dump(mode="json"),
@@ -157,56 +193,57 @@ class Repository:
             allow_nan=False,
         )
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        with self.database.engine.begin() as connection:
-            self._lock(connection, "import-key:" + key)
+        key_digest = idempotency_hash or digest
+        if current is None:
             current = self._source(connection, batch.source_id)
-            now = self._authorize(current, batch)
-            existing = (
-                connection.execute(
-                    select(import_batches).where(
-                        import_batches.c.idempotency_key == key
-                    )
+        if now is None:
+            now = self._authorize_storage(current, batch)
+        existing = (
+            connection.execute(
+                select(import_batches).where(import_batches.c.idempotency_key == key)
+            )
+            .mappings()
+            .first()
+        )
+        if existing:
+            if existing["idempotency_hash"] != key_digest:
+                raise Conflict("Idempotency key already belongs to another payload")
+            return _record(existing)
+        report = validate_batch(batch, now=now)
+        issues = (*report.issues, *additional_issues)
+        quality = {
+            "issues": [issue.model_dump(mode="json") for issue in issues],
+            "coverage": report.coverage.model_dump(mode="json"),
+            "publishable": not issues,
+        }
+        row = (
+            connection.execute(
+                insert(import_batches)
+                .values(
+                    id=uuid4(),
+                    idempotency_key=key,
+                    source_id=batch.source_id,
+                    trade_date=batch.trade_date,
+                    canonical_json=canonical,
+                    payload_hash=digest,
+                    idempotency_hash=key_digest,
+                    quality_report=quality,
+                    imported_at=now,
                 )
-                .mappings()
-                .first()
+                .returning(import_batches)
             )
-            if existing:
-                if existing["payload_hash"] != digest:
-                    raise Conflict("Idempotency key already belongs to another payload")
-                return _record(existing)
-            report = validate_batch(batch, now=now)
-            quality = {
-                "issues": [issue.model_dump(mode="json") for issue in report.issues],
-                "coverage": report.coverage.model_dump(mode="json"),
-                "publishable": report.publishable,
-            }
-            row = (
-                connection.execute(
-                    insert(import_batches)
-                    .values(
-                        id=uuid4(),
-                        idempotency_key=key,
-                        source_id=batch.source_id,
-                        trade_date=batch.trade_date,
-                        canonical_json=canonical,
-                        payload_hash=digest,
-                        quality_report=quality,
-                        imported_at=now,
-                    )
-                    .returning(import_batches)
-                )
-                .mappings()
-                .one()
-            )
-            self._audit(
-                connection,
-                "import",
-                batch.source_id,
-                row["id"],
-                now,
-                {"payload_hash": digest, "publishable": report.publishable},
-            )
-            return _record(row)
+            .mappings()
+            .one()
+        )
+        self._audit(
+            connection,
+            "import",
+            batch.source_id,
+            row["id"],
+            now,
+            {"payload_hash": digest, "publishable": not issues},
+        )
+        return _record(row)
 
     @staticmethod
     def _snapshot(row, archive) -> Snapshot:
@@ -350,7 +387,9 @@ class Repository:
             grants = {}
             for source_id in source_ids:
                 current = self._source(connection, source_id)
-                if grant_allows_local(current, source_id=source_id, now=self.clock()):
+                if grant_allows_display(
+                    current, source_id=source_id, now=self.clock()
+                ):
                     grants[source_id] = current
             if not grants:
                 return []

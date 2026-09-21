@@ -1,5 +1,7 @@
 """Durable licensed-local ingestion, quarantine, retry, and materialization."""
 
+import hashlib
+import json
 from collections.abc import Mapping
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -8,7 +10,12 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
-from dragon_radar.domain.quality import grant_allows_local, state_at
+from dragon_radar.domain.quality import (
+    QualityIssue,
+    grant_allows_display,
+    grant_allows_storage,
+    state_at,
+)
 from dragon_radar.ingestion.contracts import (
     LicensedMarketBatch,
     MarketImportAttempt,
@@ -68,6 +75,61 @@ def _page_gap(manifest: MarketPageManifest) -> tuple[str, str | None] | None:
     return None
 
 
+def _envelope_quality_issues(
+    envelope: LicensedMarketBatch,
+) -> tuple[QualityIssue, ...]:
+    issues = []
+    if _page_gap(envelope.page_manifest) is not None:
+        issues.append(
+            QualityIssue(
+                code="page_manifest",
+                message="Page manifest is not contiguous and self-consistent",
+            )
+        )
+    if (
+        envelope.page_manifest.request_from > envelope.batch.trade_date
+        or envelope.page_manifest.request_to < envelope.batch.trade_date
+    ):
+        issues.append(
+            QualityIssue(
+                code="request_range",
+                message="Trade date is outside the requested range",
+                trade_date=envelope.batch.trade_date,
+            )
+        )
+    required_identity = (
+        "code",
+        "security_type",
+        "listing_date",
+        "suspended",
+        "is_st",
+    )
+    for state in envelope.batch.security_states:
+        missing = [
+            field for field in required_identity if getattr(state, field) is None
+        ]
+        if missing:
+            issues.append(
+                QualityIssue(
+                    code="security_identity",
+                    message="Normalized identity requires " + ", ".join(missing),
+                    security_id=state.security_id,
+                )
+            )
+    return tuple(issues)
+
+
+def _envelope_hash(envelope: LicensedMarketBatch) -> str:
+    canonical = json.dumps(
+        envelope.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _attempt(row: Mapping[str, object]) -> MarketImportAttempt:
     return MarketImportAttempt(
         id=row["id"],
@@ -125,8 +187,8 @@ class MarketIngestionRunner:
     ) -> MarketIngestionResult:
         _identifier(key)
         envelope = LicensedMarketBatch.model_validate(envelope.model_dump())
-        record = self.repository.import_batch(envelope.batch, key=key)
-        return self._record_attempt(envelope, record.id, record.payload_hash, key=key)
+        with self.database.engine.begin() as connection:
+            return self._record_attempt(connection, envelope, key=key)
 
     def retry_attempt(
         self,
@@ -153,10 +215,20 @@ class MarketIngestionRunner:
             )
             if previous is None:
                 raise NotFound("Market import attempt not found")
+            task = (
+                connection.execute(
+                    select(market_import_tasks)
+                    .where(market_import_tasks.c.id == previous["task_id"])
+                    .with_for_update()
+                )
+                .mappings()
+                .one()
+            )
             if (
                 previous["status"] != "quarantined"
                 or previous["retry_from"] is None
                 or previous["retry_to"] is None
+                or task["status"] != "quarantined"
             ):
                 raise ValueError("Market attempt is not retryable")
             if (
@@ -169,173 +241,180 @@ class MarketIngestionRunner:
             old_grant = SourceGrant.model_validate(previous["embedded_grant"])
             now = self.repository.clock()
             if not all(
-                grant_allows_local(
+                grant_allows_storage(
                     grant, source_id=envelope.batch.source_id, now=now
                 )
                 for grant in (current, old_grant)
             ):
                 raise Forbidden("Source is not locally authorized")
-            task_id = previous["task_id"]
-
-        record = self.repository.import_batch(envelope.batch, key=key)
-        return self._record_attempt(
-            envelope,
-            record.id,
-            record.payload_hash,
-            key=key,
-            task_id=task_id,
-        )
+            return self._record_attempt(
+                connection,
+                envelope,
+                key=key,
+                task_id=previous["task_id"],
+            )
 
     def _record_attempt(
         self,
+        connection,
         envelope: LicensedMarketBatch,
-        batch_id: UUID,
-        payload_hash: str,
         *,
         key: str,
         task_id: UUID | None = None,
     ) -> MarketIngestionResult:
         batch = envelope.batch
-        with self.database.engine.begin() as connection:
-            self.repository._lock(connection, "market-ingestion-key:" + key)
-            existing = (
-                connection.execute(
-                    select(market_import_attempts).where(
-                        market_import_attempts.c.idempotency_key == key
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if existing is not None:
-                if (
-                    existing["payload_hash"] != payload_hash
-                    or existing["batch_id"] != batch_id
-                ):
-                    raise Conflict("Idempotency key already belongs to another payload")
-                return _result(existing)
-
-            current = self.repository._source(connection, batch.source_id)
-            now = self.repository._authorize(current, batch)
-            if task_id is None:
-                task_id = uuid4()
-                connection.execute(
-                    insert(market_import_tasks).values(
-                        id=task_id,
-                        idempotency_key=key,
-                        source_id=batch.source_id,
-                        embedded_grant=batch.grant.model_dump(mode="json"),
-                        status="quarantined",
-                        request_from=envelope.page_manifest.request_from,
-                        request_to=envelope.page_manifest.request_to,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-
-            archive_issues = self._archive_quality(connection, batch_id)["issues"]
-            issues = [
-                f"{item['code']}: {item['message']}"
-                for item in archive_issues
-            ]
-            missing_items: list[str] = []
-            failed_cursor = None
-            if any(item["code"] == "incomplete_pages" for item in archive_issues):
-                missing_items.append("batch_complete_pages:false")
-            gap = _page_gap(envelope.page_manifest)
-            if gap is not None:
-                missing_items.append(gap[0])
-                failed_cursor = gap[1]
-                issues.append("page_manifest: pagination is incomplete")
-            if (
-                envelope.page_manifest.request_from > batch.trade_date
-                or envelope.page_manifest.request_to < batch.trade_date
-            ):
-                missing_items.append(f"trade_date:{batch.trade_date.isoformat()}")
-                issues.append("request_range: trade date is outside the request")
-            missing_codes = sorted(
-                state.security_id
-                for state in batch.security_states
-                if state.code is None
-            )
-            if missing_codes:
-                missing_items.extend(
-                    f"code:{security_id}" for security_id in missing_codes
-                )
-                issues.append("security_code: current display code is required")
-
-            status = "quarantined" if issues else "succeeded"
-            attempt_id = uuid4()
-            row = (
-                connection.execute(
-                    insert(market_import_attempts)
-                    .values(
-                        id=attempt_id,
-                        task_id=task_id,
-                        batch_id=batch_id,
-                        idempotency_key=key,
-                        payload_hash=payload_hash,
-                        source_id=batch.source_id,
-                        embedded_grant=batch.grant.model_dump(mode="json"),
-                        status=status,
-                        stage="quality" if issues else "materialized",
-                        page_manifest=envelope.page_manifest.model_dump(mode="json"),
-                        missing_items=missing_items,
-                        failed_cursor=failed_cursor,
-                        request_from=envelope.page_manifest.request_from,
-                        request_to=envelope.page_manifest.request_to,
-                        retry_from=(
-                            envelope.page_manifest.request_from if issues else None
-                        ),
-                        retry_to=envelope.page_manifest.request_to if issues else None,
-                        details=issues,
-                        created_at=now,
-                    )
-                    .returning(market_import_attempts)
-                )
-                .mappings()
-                .one()
-            )
-            if status == "succeeded":
-                self._materialize(connection, batch, batch_id)
+        envelope_hash = _envelope_hash(envelope)
+        self.repository._lock(connection, "market-ingestion-key:" + key)
+        self.repository._lock(connection, "import-key:" + key)
+        current = self.repository._source(connection, batch.source_id)
+        now = self.repository._authorize_storage(current, batch)
+        existing = (
             connection.execute(
-                update(market_import_tasks)
-                .where(market_import_tasks.c.id == task_id)
-                .values(status=status, updated_at=now)
+                select(market_import_attempts).where(
+                    market_import_attempts.c.idempotency_key == key
+                )
             )
-            return _result(row)
+            .mappings()
+            .first()
+        )
+        if existing is not None:
+            if (
+                existing["envelope_hash"] != envelope_hash
+                or task_id is not None
+                and existing["task_id"] != task_id
+            ):
+                raise Conflict("Idempotency key already belongs to another payload")
+            return _result(existing)
 
-    @staticmethod
-    def _archive_quality(connection, batch_id: UUID) -> Mapping[str, object]:
-        from dragon_radar.storage.models import import_batches
-
-        return connection.execute(
-            select(import_batches.c.quality_report).where(
-                import_batches.c.id == batch_id
+        additional_issues = list(_envelope_quality_issues(envelope))
+        if (
+            grant_allows_display(
+                batch.grant,
+                source_id=batch.source_id,
+                now=now,
             )
-        ).scalar_one()
+            and not grant_allows_display(
+                current,
+                source_id=batch.source_id,
+                now=now,
+            )
+        ):
+            additional_issues.append(
+                QualityIssue(
+                    code="grant_denied",
+                    message="Current grant does not authorize local display",
+                )
+            )
+        record = self.repository._import_batch(
+            connection,
+            batch,
+            key=key,
+            additional_issues=additional_issues,
+            idempotency_hash=envelope_hash,
+            current=current,
+            now=now,
+        )
+        if task_id is None:
+            task_id = uuid4()
+            connection.execute(
+                insert(market_import_tasks).values(
+                    id=task_id,
+                    idempotency_key=key,
+                    source_id=batch.source_id,
+                    embedded_grant=batch.grant.model_dump(mode="json"),
+                    status="quarantined",
+                    request_from=envelope.page_manifest.request_from,
+                    request_to=envelope.page_manifest.request_to,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        archive_issues = record.quality_report["issues"]
+        issues = [f"{item['code']}: {item['message']}" for item in archive_issues]
+        missing_items: list[str] = []
+        failed_cursor = None
+        if any(item["code"] == "incomplete_pages" for item in archive_issues):
+            missing_items.append("batch_complete_pages:false")
+        gap = _page_gap(envelope.page_manifest)
+        if gap is not None:
+            missing_items.append(gap[0])
+            failed_cursor = gap[1]
+        if (
+            envelope.page_manifest.request_from > batch.trade_date
+            or envelope.page_manifest.request_to < batch.trade_date
+        ):
+            missing_items.append(f"trade_date:{batch.trade_date.isoformat()}")
+        for issue in archive_issues:
+            if issue["code"] == "security_identity":
+                missing_items.append(f"identity:{issue['security_id']}")
+
+        status = "quarantined" if issues else "succeeded"
+        attempt_id = uuid4()
+        row = (
+            connection.execute(
+                insert(market_import_attempts)
+                .values(
+                    id=attempt_id,
+                    task_id=task_id,
+                    batch_id=record.id,
+                    idempotency_key=key,
+                    envelope_hash=envelope_hash,
+                    source_id=batch.source_id,
+                    embedded_grant=batch.grant.model_dump(mode="json"),
+                    status=status,
+                    stage="quality" if issues else "materialized",
+                    page_manifest=envelope.page_manifest.model_dump(mode="json"),
+                    missing_items=missing_items,
+                    failed_cursor=failed_cursor,
+                    request_from=envelope.page_manifest.request_from,
+                    request_to=envelope.page_manifest.request_to,
+                    retry_from=(
+                        envelope.page_manifest.request_from if issues else None
+                    ),
+                    retry_to=envelope.page_manifest.request_to if issues else None,
+                    details=issues,
+                    created_at=now,
+                )
+                .returning(market_import_attempts)
+            )
+            .mappings()
+            .one()
+        )
+        if status == "succeeded":
+            self._materialize(connection, batch, record.id)
+        connection.execute(
+            update(market_import_tasks)
+            .where(market_import_tasks.c.id == task_id)
+            .values(status=status, updated_at=now)
+        )
+        return _result(row)
 
     @staticmethod
     def _materialize(connection, batch: MarketBatch, archive_id: UUID) -> None:
-        current_states = {}
-        for security_id in batch.expected_security_ids:
-            current = state_at(batch, security_id, batch.trade_date)
-            if current is not None:
-                current_states[security_id] = current
+        states_by_security = {}
+        for item in batch.security_states:
+            states_by_security.setdefault(item.security_id, []).append(item)
 
-        for item in current_states.values():
+        identity_states = {}
+        for security_id, states in states_by_security.items():
+            identity_states[security_id] = state_at(
+                batch, security_id, batch.trade_date
+            ) or max(states, key=lambda item: item.effective_from)
+
+        for item in identity_states.values():
             values = {
                 "security_id": item.security_id,
                 "code": item.code,
                 "name": item.name,
-                "security_type": item.security_type or "unknown",
+                "security_type": item.security_type,
                 "exchange": item.exchange,
                 "board": item.board,
                 "list_date": item.listing_date,
                 "delist_date": (
                     item.effective_to if item.is_delisting is True else None
                 ),
-                "is_st": item.is_st if item.is_st is not None else False,
+                "is_st": item.is_st,
                 "is_suspended": item.suspended,
                 "source": item.source_id,
                 "source_version": item.source_version,
@@ -545,6 +624,6 @@ class MarketIngestionRunner:
         embedded = SourceGrant.model_validate(row["embedded_grant"])
         now = self.repository.clock()
         return all(
-            grant_allows_local(grant, source_id=row["source_id"], now=now)
+            grant_allows_display(grant, source_id=row["source_id"], now=now)
             for grant in (current, embedded)
         )

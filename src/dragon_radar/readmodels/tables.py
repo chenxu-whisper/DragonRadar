@@ -223,7 +223,7 @@ market_import_attempts = Table(
         nullable=False,
     ),
     Column("idempotency_key", String(200), nullable=False, unique=True),
-    Column("payload_hash", String(64), nullable=False),
+    Column("envelope_hash", String(64), nullable=False),
     Column(
         "source_id",
         Text,

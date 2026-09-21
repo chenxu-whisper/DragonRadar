@@ -96,7 +96,11 @@ def test_timestamp_contract_accepts_explicit_timezones(factory, field, value):
 
 def test_grant_defaults_fail_closed():
     from dragon_radar.domain.models import SourceGrant
-    from dragon_radar.domain.quality import validate_batch
+    from dragon_radar.domain.quality import (
+        grant_allows_display,
+        grant_allows_storage,
+        validate_batch,
+    )
 
     rights = SourceGrant(source_id="synthetic")
     assert not any(
@@ -109,9 +113,26 @@ def test_grant_defaults_fail_closed():
             rights.sharing,
         )
     )
+    assert not grant_allows_storage(rights, source_id="synthetic", now=NOW)
+    assert not grant_allows_display(rights, source_id="synthetic", now=NOW)
     report = validate_batch(batch(grant=rights), now=NOW)
     assert not report.publishable
     assert "grant_denied" in {i.code for i in report.issues}
+
+
+def test_storage_and_display_rights_are_independent():
+    from dragon_radar.domain.quality import (
+        grant_allows_display,
+        grant_allows_storage,
+    )
+
+    storage_only = grant(local_display=False)
+    display_only = grant(local_storage=False)
+
+    assert grant_allows_storage(storage_only, source_id="synthetic", now=NOW)
+    assert not grant_allows_display(storage_only, source_id="synthetic", now=NOW)
+    assert not grant_allows_storage(display_only, source_id="synthetic", now=NOW)
+    assert grant_allows_display(display_only, source_id="synthetic", now=NOW)
 
 
 @pytest.mark.parametrize(
@@ -119,7 +140,6 @@ def test_grant_defaults_fail_closed():
     [
         {"approved": False},
         {"reference": None},
-        {"local_storage": False},
         {"local_display": False},
         {"starts_at": NOW + timedelta(seconds=1)},
         {"expires_at": NOW},

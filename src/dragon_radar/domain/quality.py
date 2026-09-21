@@ -48,19 +48,44 @@ class QualityReport(FrozenModel):
         return not self.issues
 
 
-def grant_allows_local(grant: SourceGrant, *, source_id: str, now: datetime) -> bool:
-    """Check approval, source, reference, BOTH local rights, and [start, expiry)."""
+def _grant_is_current(grant: SourceGrant, *, source_id: str, now: datetime) -> bool:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("operation time requires a timezone")
     return bool(
         grant.source_id == source_id
         and grant.approved
         and grant.reference
-        and grant.local_storage
-        and grant.local_display
         and grant.starts_at is not None
         and grant.expires_at is not None
         and grant.starts_at <= now < grant.expires_at
+    )
+
+
+def grant_allows_storage(
+    grant: SourceGrant, *, source_id: str, now: datetime
+) -> bool:
+    """Check provenance, time bounds, and the explicit local-storage right."""
+    return bool(
+        _grant_is_current(grant, source_id=source_id, now=now)
+        and grant.local_storage
+    )
+
+
+def grant_allows_display(
+    grant: SourceGrant, *, source_id: str, now: datetime
+) -> bool:
+    """Check provenance, time bounds, and the explicit local-display right."""
+    return bool(
+        _grant_is_current(grant, source_id=source_id, now=now)
+        and grant.local_display
+    )
+
+
+def grant_allows_local(grant: SourceGrant, *, source_id: str, now: datetime) -> bool:
+    """Compatibility predicate for operations that require both local rights."""
+    return bool(
+        grant_allows_storage(grant, source_id=source_id, now=now)
+        and grant_allows_display(grant, source_id=source_id, now=now)
     )
 
 
@@ -257,8 +282,8 @@ def validate_batch(batch: MarketBatch, *, now: datetime) -> QualityReport:
             QualityIssue(code=code, message=message, security_id=sid, trade_date=day)
         )
 
-    if not grant_allows_local(batch.grant, source_id=batch.source_id, now=now):
-        add("grant_denied", "Current grant does not authorize local storage/display")
+    if not grant_allows_display(batch.grant, source_id=batch.source_id, now=now):
+        add("grant_denied", "Embedded grant does not authorize local display")
     if (
         batch.as_of > now
         or batch.trade_date > batch.as_of.astimezone(ZoneInfo("Asia/Shanghai")).date()
