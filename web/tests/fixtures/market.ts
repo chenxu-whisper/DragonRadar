@@ -80,6 +80,55 @@ export function interval(ids?: string[]): Interval {
 }
 export type MockState = { denied?: boolean; offline?: boolean; empty?: boolean; delayOld?: boolean; securityId?: string };
 export async function mockMarket(page: Page, state: MockState = {}) {
+  const resetCoverage = { expected: 65, valid: 63, excluded: 1, missing: 1 };
+  const resetEnvelope = (data: unknown) => ({
+    ...resetSummary(snapshot),
+    coverage: resetCoverage,
+    data,
+  });
+  await page.route('**/api/market/**', async (route: Route) => {
+    const url = new URL(route.request().url());
+    const respond = (data: unknown) => route.fulfill({ json: resetEnvelope(data) });
+    if (state.denied) return route.fulfill({ status: 403, json: { error: 'Source access denied' } });
+    if (state.offline) return route.abort('failed');
+    if (url.pathname === '/api/market/overview') {
+      const members = {
+        up: securities.slice(0, 63).filter(item => Number(item.change) > 0).map(item => ({ security_id: item.security_id, code: item.security_id, name: item.name! })),
+        down: securities.slice(0, 63).filter(item => Number(item.change) < 0).map(item => ({ security_id: item.security_id, code: item.security_id, name: item.name! })),
+        flat: [],
+      };
+      return respond({
+        topic_basis: { source: null, source_version: null, as_of: null, cutoff: snapshot.as_of },
+        indexes: [],
+        breadth: {
+          up: 32, down: 31, flat: 0, valid_total: 63, coverage: resetCoverage, members,
+          seal_rate: { numerator: 0, denominator: 63, value: 0, reason: null, coverage: resetCoverage },
+        },
+        sentiment: {
+          limit_up_count: 0, limit_down_count: 0, max_boards: 0,
+          promote_rate: { yesterday_ge2: 0, numerator: 0, denominator: 0, value: null, excluded: 0, missing: 0, reason: 'no_yesterday_ge2_members' },
+          yesterday_limit_up_median_return: null,
+          yesterday_limit_up_return_coverage: { expected: 0, valid: 0, excluded: 0, missing: 0 },
+          yesterday_limit_up_return_reason: 'no_yesterday_limit_up_members',
+        },
+        hot_sectors: [],
+        factors: {
+          'FAC-M01': {
+            advancing: { numerator: 32, denominator: 63, value: 32 / 63, reason: null, coverage: resetCoverage },
+            above_ma20: { numerator: 0, denominator: 0, value: null, reason: 'not_available', coverage: resetCoverage },
+            method: 'synthetic',
+          },
+          'FAC-M02': { value: null, today_total: null, baseline_mean: null, baseline_days: 20, baseline_excludes_current: true, coverage: resetCoverage, reason: 'not_available', method: 'synthetic' },
+          'FAC-M03': { indexes: [], method: 'synthetic' },
+        },
+        historical_topic_analysis: { enabled: false, reason: 'historical_topic_coverage_unavailable' },
+      });
+    }
+    if (url.pathname === '/api/market/heatmap') return respond({ columns: [], cells: [] });
+    if (url.pathname === '/api/market/sector-flow') return respond({ sectors: [] });
+    if (url.pathname === '/api/market/sentiment') return respond({ series: [] });
+    return route.fulfill({ status: 404, json: {} });
+  });
   await page.route('**/api/snapshots/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });

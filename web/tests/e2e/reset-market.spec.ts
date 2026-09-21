@@ -58,9 +58,10 @@ async function mockResetMarket(page: Page, listIncludesSelected = true) {
           coverage,
           members: {
             up: [
+              { security_id: 'E', code: '000005', name: '合成戊' },
               { security_id: 'A', code: '000001', name: '合成甲' },
               { security_id: 'C', code: '000003', name: '合成丙' },
-              { security_id: 'E', code: '000005', name: '合成戊' },
+              { security_id: 'A', code: '000001', name: '合成甲' },
             ],
             down: [{ security_id: 'B', code: '000002', name: '合成乙' }],
             flat: [{ security_id: 'D', code: '000004', name: '合成丁' }],
@@ -160,19 +161,39 @@ test('reset overview uses versioned APIs and persists drill-down context in URL'
 
   await expect(page.getByRole('heading', { name: '市场总览' })).toBeVisible();
   await expect(page.getByText('来源 synthetic-market / market-v1', { exact: true })).toBeVisible();
+  const members = page.getByRole('region', { name: '证券筛选结果' });
+  await expect(members.getByText('全部证券 · 共 5 家', { exact: true })).toBeVisible();
+  await expect(members.getByRole('button')).toHaveText(['合成甲', '合成乙', '合成丙', '合成丁', '合成戊']);
+  await members.getByRole('button', { name: '合成甲', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: '关闭详情' }).click();
+
+  await page.getByPlaceholder('输入证券代码或名称').fill('000002');
+  await page.getByRole('button', { name: '搜索', exact: true }).click();
+  await expect(page).toHaveURL(/q=000002/);
+  await expect(members.getByText('全部证券 · 搜索“000002” · 共 1 家', { exact: true })).toBeVisible();
+  await expect(members.getByRole('button')).toHaveText(['合成乙']);
+  await members.getByRole('button', { name: '合成乙', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: '关闭详情' }).click();
+
+  await page.getByRole('button', { name: '清除搜索', exact: true }).click();
   await page.getByRole('button', { name: '上涨 3' }).click();
   await expect(page).toHaveURL(/market_filter=up/);
-  const upMembers = page.getByRole('region', { name: '上涨成员清单' });
+  const upMembers = page.getByRole('region', { name: '证券筛选结果' });
   await expect(upMembers.getByText('共 3 家')).toBeVisible();
-  await expect(upMembers.getByText('合成甲')).toBeVisible();
+  await expect(upMembers.getByRole('button')).toHaveText(['合成甲', '合成丙', '合成戊']);
   await expect(upMembers.getByText('000003')).toBeVisible();
+  await upMembers.getByRole('button', { name: '合成丙', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: '关闭详情' }).click();
 
   await page.getByRole('button', { name: '下跌 1' }).click();
   await expect(page).toHaveURL(/market_filter=down/);
-  const downMembers = page.getByRole('region', { name: '下跌成员清单' });
+  const downMembers = page.getByRole('region', { name: '证券筛选结果' });
   await expect(downMembers.getByText('共 1 家')).toBeVisible();
-  await expect(downMembers.getByText('合成乙')).toBeVisible();
-  await expect(downMembers.getByText('合成甲')).toHaveCount(0);
+  await expect(downMembers.getByRole('button', { name: '合成乙', exact: true })).toBeVisible();
+  await expect(downMembers.getByRole('button', { name: '合成甲', exact: true })).toHaveCount(0);
 
   await expect(page.getByText(/FAC-M01/)).toBeVisible();
   await expect(page.getByText('requires_complete_current_and_prior_20_sessions')).toBeVisible();
@@ -186,7 +207,7 @@ test('reset overview uses versioned APIs and persists drill-down context in URL'
   await expect(page).toHaveURL(/view=leaders/);
   await expect(page).toHaveURL(/sector=SEC001/);
   await expect(page.getByText('题材上下文：SEC001')).toBeVisible();
-  expect(requests.some(path => path.startsWith('/api/v1/'))).toBe(false);
+  expect(requests.some(path => path.startsWith('/api/v1/') && (path.endsWith('/overview') || path.endsWith('/securities')))).toBe(false);
 });
 
 test('heatmap date clears stale snapshot and historical topic control is disabled', async ({ page }) => {

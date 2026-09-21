@@ -1,7 +1,7 @@
 import { useMemo, type ComponentType } from 'react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
-import type { Envelope, Overview as Breadth, ResetHeatmap, ResetOverview, Securities, WorkbenchEnvelope } from '../types';
+import type { Envelope, Overview as Breadth, ResetHeatmap, ResetOverview, ResetSecurityIdentity, Securities, WorkbenchEnvelope } from '../types';
 import type { ResearchState } from '../state';
 import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
@@ -9,6 +9,14 @@ import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, Table
 interface Props {
   state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, trigger: HTMLElement) => void;
   compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>; reset?: boolean;
+}
+const memberDirections = ['up', 'down', 'flat'] as const;
+function compareMember(left: ResetSecurityIdentity, right: ResetSecurityIdentity) {
+  for (const [a, b] of [[left.security_id, right.security_id], [left.code ?? '', right.code ?? ''], [left.name, right.name]]) {
+    if (a < b) return -1;
+    if (a > b) return 1;
+  }
+  return 0;
 }
 export function Overview({ state, patch, refreshToken, open, compare, ReviewActions, reset = false }: Props) {
   const base = `/api/v1/snapshots/${state.snapshot}`;
@@ -38,13 +46,25 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
   if (reset) {
     const overview = resetOverview.data?.data;
     const ratio = (value: number | null) => value === null ? '不适用' : `${(value * 100).toFixed(2)}%`;
-    const filterNames = { up: '上涨', down: '下跌', flat: '平盘', limit_up: '涨停', limit_down: '跌停' };
+    const filterNames = { up: '上涨', down: '下跌', flat: '平盘' };
     const coverage = (value: { expected: number; valid: number; excluded: number; missing: number }) =>
       `覆盖 ${value.valid}/${value.expected} · 排除 ${value.excluded} · 缺失 ${value.missing}`;
-    const direction = ['up', 'down', 'flat'].includes(state.market_filter)
+    const direction = memberDirections.includes(state.market_filter as typeof memberDirections[number])
       ? state.market_filter as 'up' | 'down' | 'flat'
       : null;
-    const selectedMembers = overview && direction ? overview.breadth.members[direction] : null;
+    const sourceMembers = overview
+      ? direction
+        ? overview.breadth.members[direction]
+        : memberDirections.flatMap(group => overview.breadth.members[group])
+      : [];
+    const uniqueMembers = [...sourceMembers].sort(compareMember).filter(
+      (item, index, items) => index === 0 || item.security_id !== items[index - 1].security_id,
+    );
+    const query = state.q.trim().toLocaleLowerCase();
+    const selectedMembers = query
+      ? uniqueMembers.filter(item => [item.security_id, item.code ?? '', item.name].some(value => value.toLocaleLowerCase().includes(query)))
+      : uniqueMembers;
+    const memberContext = `${direction ? `${filterNames[direction]}成员` : '全部证券'}${state.q ? ` · 搜索“${state.q}”` : ''} · 共 ${selectedMembers.length} 家`;
     return <>
       <div className="page-heading"><div><p className="eyebrow">发布事实 / 原始市场观测</p><h1>市场总览</h1></div><span className="muted">不含研究评分与阶段判断</span></div>
       <ResourceStatus resource={resetOverview} name="市场总览" />
@@ -60,12 +80,17 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
               <button aria-pressed={state.market_filter === 'down'} onClick={() => patch({ market_filter: 'down' })}>下跌 {overview.breadth.down}</button>
               <button aria-pressed={state.market_filter === 'flat'} onClick={() => patch({ market_filter: 'flat' })}>平盘 {overview.breadth.flat}</button>
             </div>
-            {direction && selectedMembers && <div className="filter-context" role="region" aria-label={`${filterNames[direction]}成员清单`}>
-              <strong>{filterNames[direction]}成员 · 共 {selectedMembers.length} 家</strong>
+            <SearchForm value={state.q} onSearch={q => patch({ q, page: 1 })} />
+            <div className="filter-context" role="region" aria-label="证券筛选结果">
+              <strong>{memberContext}</strong>
               <ul className="filter-members">{selectedMembers.map(item =>
-                <li key={item.security_id}><span>{item.name}</span><small>{item.code ?? '代码未知'} · {item.security_id}</small></li>)}
+                <li key={item.security_id}>
+                  <button className="security-button" onClick={event => open(item.security_id, event.currentTarget)}>{item.name}</button>
+                  <small>{item.code ?? '代码未知'} · {item.security_id}</small>
+                </li>)}
               </ul>
-            </div>}
+              {selectedMembers.length === 0 && <p className="empty">没有匹配证券，请清除或修改搜索条件。</p>}
+            </div>
             <p className="muted">有效 {overview.breadth.coverage.valid} / 应有 {overview.breadth.coverage.expected} · 排除 {overview.breadth.coverage.excluded} · 缺失 {overview.breadth.coverage.missing}</p>
             <p>封板率 {overview.breadth.seal_rate.numerator}/{overview.breadth.seal_rate.denominator} · {ratio(overview.breadth.seal_rate.value)}</p>
             <small>{coverage(overview.breadth.seal_rate.coverage)}{overview.breadth.seal_rate.reason && ` · ${overview.breadth.seal_rate.reason}`}</small>
