@@ -698,7 +698,12 @@ def test_market_projection_caches_security_scoped_batches_and_observations():
     assert first_observation is second_observation
 
 
-def _published_analysis_snapshot(*, role_ready: bool = False, source=None):
+def _published_analysis_snapshot(
+    *,
+    role_ready: bool = False,
+    role_status: str | None = None,
+    source=None,
+):
     from dragon_radar.publication.models import (
         Publication,
         PublicationResult,
@@ -756,6 +761,7 @@ def _published_analysis_snapshot(*, role_ready: bool = False, source=None):
             }
         ],
     }
+    effective_role_status = role_status or ("ready" if role_ready else "disabled")
     publication = Publication(
         id=publication_id,
         trade_date=source.trade_date,
@@ -766,13 +772,13 @@ def _published_analysis_snapshot(*, role_ready: bool = False, source=None):
         topic_snapshot_id=None,
         news_input_id=None,
         regulation_input_id=None,
-        role_input_id=uuid4() if role_ready else None,
+        role_input_id=uuid4() if effective_role_status == "ready" else None,
         domains={
             "market": "ready",
             "topic": "disabled",
             "news": "disabled",
             "regulation": "disabled",
-            "role": "ready" if role_ready else "disabled",
+            "role": effective_role_status,
         },
         coverage={},
         quality_flags=(),
@@ -809,8 +815,8 @@ def _published_analysis_snapshot(*, role_ready: bool = False, source=None):
             publication_id=publication_id,
             domain="role",
             input_id=publication.role_input_id,
-            status="ready" if role_ready else "disabled",
-            payload=role_payload if role_ready else {},
+            status=effective_role_status,
+            payload=role_payload if effective_role_status == "ready" else {},
             coverage={},
             quality_flags=(),
         ),
@@ -978,18 +984,19 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
     }
     assert stock["security_id"] == "A"
     assert stock["name"] == "Synthetic A"
-    assert stock["roles"]["items"] == [
+    assert stock["roles"] == [
         {
             "role_type": "trend_leader",
             "evidence_status": "candidate",
             "sector_id": "topic-a",
         }
     ]
-    assert set(stock["roles"]["items"][0]) == {
+    assert set(stock["roles"][0]) == {
         "role_type",
         "evidence_status",
         "sector_id",
     }
+    assert "role_reason" not in stock
     assert stock["seal"] == {
         "is_limit_up": None,
         "touched_limit": None,
@@ -1144,13 +1151,39 @@ async def test_stock_roles_fail_closed_without_leaking_internal_fields():
         )
 
     assert response.status_code == 200
-    assert response.json()["data"]["roles"]["items"] == [
+    assert response.json()["data"]["roles"] == [
         {
             "role_type": "trend_leader",
             "evidence_status": "insufficient",
             "sector_id": "topic-a",
         }
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("role_status", ("disabled", "missing"))
+async def test_stock_roles_are_always_an_array_when_domain_is_unavailable(role_status):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot(role_status=role_status)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/stock/A",
+            params={"snapshot_id": str(snapshot.id)},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["roles"] == []
+    assert data["role_reason"] == f"role_{role_status}"
+    assert data["regulation"] == {
+        "active_events": None,
+        "reason": "regulation_disabled",
+    }
 
 
 @pytest.mark.anyio
@@ -1391,10 +1424,8 @@ async def test_analysis_routes_validate_before_storage_and_bind_snapshot_date():
         missing_roles = await client.get(
             "/api/stock/A", params={"snapshot_id": str(snapshot.id)}
         )
-        assert missing_roles.json()["data"]["roles"] == {
-            "items": None,
-            "reason": "role_disabled",
-        }
+        assert missing_roles.json()["data"]["roles"] == []
+        assert missing_roles.json()["data"]["role_reason"] == "role_disabled"
         assert missing_roles.json()["data"]["seal"] == {
             "is_limit_up": None,
             "touched_limit": None,
