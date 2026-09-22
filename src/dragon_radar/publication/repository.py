@@ -20,6 +20,7 @@ from dragon_radar.publication.tables import (
     withdrawal_dependencies,
     withdrawal_records,
 )
+from dragon_radar.roles.tables import role_runs
 from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
 from dragon_radar.topics.models import TopicBatch
@@ -134,6 +135,7 @@ class PublicationRepository:
         market_archives,
         topic_rows,
         topic_archives,
+        expected_role_dependencies,
         result_rows,
         active_withdrawal_sources,
         withdrawn_publications,
@@ -146,10 +148,7 @@ class PublicationRepository:
 
         market_row = market_rows.get(record.market_snapshot_id)
         market_dependencies = [
-            row
-            for row in dependencies
-            if row["derived_type"] == "market"
-            or row["archive_type"] == "market_import_batch"
+            row for row in dependencies if row["derived_type"] == "market"
         ]
         if (
             market_row is None
@@ -172,10 +171,7 @@ class PublicationRepository:
         if record.topic_snapshot_id is not None:
             topic_row = topic_rows.get(record.topic_snapshot_id)
             topic_dependencies = [
-                row
-                for row in dependencies
-                if row["derived_type"] == "topic"
-                or row["archive_type"] == "topic_import_batch"
+                row for row in dependencies if row["derived_type"] == "topic"
             ]
             if (
                 topic_row is None
@@ -201,12 +197,49 @@ class PublicationRepository:
                 self.clock(),
             ):
                 raise Forbidden("Source is not locally authorized")
-        elif any(
-            row["derived_type"] == "topic"
-            or row["archive_type"] == "topic_import_batch"
+        elif any(row["derived_type"] == "topic" for row in dependencies):
+            raise Forbidden("Publication topic identity is invalid")
+
+        role_dependencies = [
+            row for row in dependencies if row["derived_type"] == "role"
+        ]
+        actual_role_dependencies = {
+            (row["source_id"], row["archive_type"], row["archive_id"])
+            for row in role_dependencies
+        }
+        if actual_role_dependencies != expected_role_dependencies:
+            raise Forbidden("Publication role lineage is invalid")
+        for dependency in role_dependencies:
+            if (
+                dependency["derived_id"] != record.id
+                or dependency["publication_id"] != record.id
+            ):
+                raise Forbidden("Publication role lineage is invalid")
+            if dependency["archive_type"] == "market_import_batch":
+                archive = market_archives.get(dependency["archive_id"])
+                if archive is None or archive["source_id"] != dependency["source_id"]:
+                    raise Forbidden("Publication role lineage is invalid")
+                batch = MarketBatch.model_validate_json(archive["canonical_json"])
+                self.market._authorize(grants[dependency["source_id"]], batch)
+            elif dependency["archive_type"] == "topic_import_batch":
+                archive = topic_archives.get(dependency["archive_id"])
+                if archive is None or archive["source_id"] != dependency["source_id"]:
+                    raise Forbidden("Publication role lineage is invalid")
+                batch = TopicBatch.model_validate_json(archive["canonical_json"])
+                if not TopicRepository._authorized(
+                    grants[dependency["source_id"]],
+                    batch.grant,
+                    dependency["source_id"],
+                    self.clock(),
+                ):
+                    raise Forbidden("Source is not locally authorized")
+            else:
+                raise Forbidden("Publication role lineage is invalid")
+        if any(
+            row["derived_type"] not in {"market", "topic", "role"}
             for row in dependencies
         ):
-            raise Forbidden("Publication topic identity is invalid")
+            raise Forbidden("Publication dependency type is invalid")
 
         return PublishedSnapshot(
             record,
@@ -247,7 +280,14 @@ class PublicationRepository:
             for row in connection.execute(
                 select(import_batches).where(
                     import_batches.c.id.in_(
-                        row["batch_id"] for row in market_rows.values()
+                        {
+                            *(row["batch_id"] for row in market_rows.values()),
+                            *(
+                                row["archive_id"]
+                                for row in dependencies
+                                if row["archive_type"] == "market_import_batch"
+                            ),
+                        }
                     )
                 )
             )
@@ -273,7 +313,14 @@ class PublicationRepository:
             for row in connection.execute(
                 select(topic_import_batches).where(
                     topic_import_batches.c.id.in_(
-                        row["batch_id"] for row in topic_rows.values()
+                        {
+                            *(row["batch_id"] for row in topic_rows.values()),
+                            *(
+                                row["archive_id"]
+                                for row in dependencies
+                                if row["archive_type"] == "topic_import_batch"
+                            ),
+                        }
                     )
                 )
             )
@@ -309,6 +356,79 @@ class PublicationRepository:
             ]
             for publication_id in publication_ids
         }
+        role_input_ids_by_publication = {}
+        all_role_input_ids = set()
+        for publication_id, rows_for_publication in result_rows.items():
+            role_result = next(
+                (
+                    row
+                    for row in rows_for_publication
+                    if row["domain"] == "role" and row["status"] == "ready"
+                ),
+                None,
+            )
+            input_ids = set()
+            if role_result is not None:
+                try:
+                    for topic in role_result["payload"]["topics"]:
+                        for item in topic["role_validation_inputs"]:
+                            input_ids.add(UUID(item["input_role_run_id"]))
+                except (KeyError, TypeError, ValueError):
+                    raise Forbidden("Publication role payload is invalid") from None
+            role_input_ids_by_publication[publication_id] = input_ids
+            all_role_input_ids.update(input_ids)
+        validation_input_runs = {
+            row["id"]: row
+            for row in connection.execute(
+                select(role_runs).where(role_runs.c.id.in_(all_role_input_ids))
+            )
+            .mappings()
+            .all()
+        }
+        if set(validation_input_runs) != all_role_input_ids or any(
+            row["status"] != "materialized" for row in validation_input_runs.values()
+        ):
+            raise Forbidden("Publication role lineage is invalid")
+        expected_role_dependencies = {}
+        for publication_id, input_ids in role_input_ids_by_publication.items():
+            expected = set()
+            for run_id in input_ids:
+                run = validation_input_runs[run_id]
+                market_row = (
+                    connection.execute(
+                        select(snapshots).where(
+                            snapshots.c.id == run["market_snapshot_id"]
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                topic_row = (
+                    connection.execute(
+                        select(topic_snapshots).where(
+                            topic_snapshots.c.id == run["topic_snapshot_id"]
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if market_row is None or topic_row is None:
+                    raise Forbidden("Publication role lineage is invalid")
+                expected.add(
+                    (
+                        market_row["source_id"],
+                        "market_import_batch",
+                        market_row["batch_id"],
+                    )
+                )
+                expected.add(
+                    (
+                        topic_row["source_id"],
+                        "topic_import_batch",
+                        topic_row["batch_id"],
+                    )
+                )
+            expected_role_dependencies[publication_id] = expected
         ranked_withdrawals = (
             select(
                 withdrawal_records.c.source_id,
@@ -367,6 +487,7 @@ class PublicationRepository:
                     market_archives=market_archives,
                     topic_rows=topic_rows,
                     topic_archives=topic_archives,
+                    expected_role_dependencies=expected_role_dependencies[record.id],
                     result_rows=result_rows,
                     active_withdrawal_sources=active_withdrawal_sources,
                     withdrawn_publications=withdrawn_publications,

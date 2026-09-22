@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, update
 
@@ -216,8 +216,10 @@ class PublicationService:
         self,
         connection,
         command: PublicationCommand,
-    ) -> DomainMaterialization:
-        row = self.roles.authorized_row(connection, command.role_input_id)
+    ) -> tuple[DomainMaterialization, tuple[tuple[str, str, UUID, str], ...]]:
+        row = self.roles._role_rows(connection, (command.role_input_id,))[
+            command.role_input_id
+        ]
         if (
             row["market_snapshot_id"] != command.market_snapshot_id
             or row["topic_snapshot_id"] != command.topic_snapshot_id
@@ -227,7 +229,9 @@ class PublicationService:
         validate_rule_definition(row["rule_version"], row["rule_json"])
         if hashlib.sha256(row["rule_json"].encode()).hexdigest() != row["rule_hash"]:
             raise Forbidden("Role run rule identity is invalid")
-        payload = self.roles.payload(row["id"], connection=connection)
+        payload, role_dependencies = self.roles.payload_with_dependencies(
+            row["id"], connection=connection
+        )
         statuses = [
             status for topic in payload["topics"] for status in topic["statuses"]
         ]
@@ -237,7 +241,9 @@ class PublicationService:
             "legal_excluded": sum(status["legal_excluded"] for status in statuses),
             "missing": sum(status["missing"] for status in statuses),
         }
-        return DomainMaterialization(payload=payload, coverage=coverage)
+        return DomainMaterialization(payload=payload, coverage=coverage), tuple(
+            (*dependency, "role") for dependency in role_dependencies
+        )
 
     def publish(
         self,
@@ -314,6 +320,7 @@ class PublicationService:
                     overrides = dict(materializers or {})
                     references = command.input_references()
                     results = {}
+                    role_dependencies = ()
                     for domain in DOMAIN_NAMES:
                         current_stage = domain
                         if domain in command.disabled_domains:
@@ -329,10 +336,13 @@ class PublicationService:
                         elif domain == "topic":
                             result = self._topic_materialization(topic_context)
                         elif domain == "role":
-                            result = self._role_materialization(connection, command)
+                            result, role_dependencies = self._role_materialization(
+                                connection, command
+                            )
                         else:
                             raise ValueError(f"No materializer registered for {domain}")
                         results[domain] = result
+                    dependencies.extend(role_dependencies)
 
                     previous = (
                         connection.execute(

@@ -1,5 +1,6 @@
 """Persistent role runs and publication-bound evidence."""
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -9,7 +10,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from factories import DAYS, NOW, batch, grant
-from sqlalchemy import insert, inspect, select, text, update
+from sqlalchemy import event, insert, inspect, select, text, update
 from sqlalchemy.exc import DBAPIError
 from test_role_history import _validation_fixture
 from topic_factories import (
@@ -24,7 +25,7 @@ from topic_factories import (
 from dragon_radar.publication.models import PublicationCommand, RetentionPolicy
 from dragon_radar.publication.retention import RetentionService
 from dragon_radar.publication.service import PublicationService
-from dragon_radar.publication.tables import publications
+from dragon_radar.publication.tables import publications, source_dependencies
 from dragon_radar.roles.materialize import RoleMaterializer
 from dragon_radar.roles.models import RoleContext
 from dragon_radar.roles.repository import RoleRepository
@@ -228,6 +229,99 @@ def _materialized_clone(connection, source_run, *, key, trade_date, **changes):
         .values(status="materialized", materialized_at=NOW)
     )
     return run_id
+
+
+def _market_batch_with_source(source_id):
+    source_grant = grant(source_id=source_id)
+    source_batch = batch()
+    return source_grant, source_batch.model_copy(
+        update={
+            "source_id": source_id,
+            "grant": source_grant,
+            "security_states": tuple(
+                item.model_copy(update={"source_id": source_id})
+                for item in source_batch.security_states
+            ),
+            "bars": tuple(
+                item.model_copy(update={"source_id": source_id})
+                for item in source_batch.bars
+            ),
+            "limit_up_events": tuple(
+                item.model_copy(update={"source_id": source_id})
+                for item in source_batch.limit_up_events
+            ),
+        }
+    )
+
+
+def _persist_validation_input_graph(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+    *,
+    key,
+):
+    root = _materialize(materializer, role_inputs, key=f"{key}-root")
+    market_grant, market_batch = _market_batch_with_source(f"{key}-market")
+    repository.register_source(market_grant)
+    input_market = repository.publish(
+        repository.import_batch(market_batch, key=f"{key}-market-import").id
+    )
+    topic_grant = grant(source_id=f"{key}-topic")
+    repository.register_source(topic_grant)
+    topics = TopicRepository(database, clock=lambda: NOW)
+    input_topic = topics.publish(
+        topics.import_batch(
+            topic_batch(source_id=topic_grant.source_id, grant=topic_grant),
+            key=f"{key}-topic-import",
+        ).id
+    )
+
+    with database.engine.begin() as connection:
+        input_run_ids = tuple(
+            _materialized_clone(
+                connection,
+                root,
+                key=f"{key}-input-{position}",
+                trade_date=DAYS[-1],
+                market_snapshot_id=input_market.id,
+                topic_snapshot_id=input_topic.id,
+            )
+            for position in range(5)
+        )
+        connection.execute(text("ALTER TABLE role_results DISABLE TRIGGER USER"))
+        connection.execute(
+            text("ALTER TABLE role_pending_validations DISABLE TRIGGER USER")
+        )
+        result_id = _result_row(connection, root.id)
+        pending_id = _pending_row(connection, root.id, result_id)
+        connection.execute(text("ALTER TABLE role_results ENABLE TRIGGER USER"))
+        connection.execute(
+            text("ALTER TABLE role_pending_validations ENABLE TRIGGER USER")
+        )
+        validation = _validation_values(pending_id, revision=1, supersedes=None)
+        connection.execute(insert(role_validations).values(**validation))
+        connection.execute(
+            insert(role_validation_inputs),
+            [
+                {
+                    "validation_id": validation["id"],
+                    "position": position,
+                    "input_role_run_id": run_id,
+                }
+                for position, run_id in enumerate(input_run_ids)
+            ],
+        )
+    return {
+        "root": root,
+        "input_market": input_market,
+        "input_topic": input_topic,
+        "market_grant": market_grant,
+        "topic_grant": topic_grant,
+        "validation_id": validation["id"],
+        "input_run_ids": input_run_ids,
+    }
 
 
 def test_previous_published_uses_latest_authorized_publication_version(
@@ -873,6 +967,223 @@ def test_current_grant_revocation_blocks_role_materialization_and_read(
         RoleRepository(database, repository, clock=lambda: NOW).get(run.id)
 
 
+def test_role_payload_reauthorizes_all_exposed_validation_inputs(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="payload-validation-auth",
+    )
+    roles = RoleRepository(database, repository, clock=lambda: NOW)
+
+    payload = roles.payload(graph["root"].id)
+    assert payload["topics"][0]["role_validations"][0]["id"] == str(
+        graph["validation_id"]
+    )
+
+    repository.revoke_source(graph["topic_grant"].source_id)
+    with pytest.raises(Forbidden):
+        roles.payload(graph["root"].id)
+
+
+def test_validate_pending_locks_cross_source_commands_in_one_stable_order(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="lock-order",
+    )
+    commands = (
+        ("lock-order-root-target", graph["root"].market_snapshot_id),
+        ("lock-order-input-target", graph["input_market"].id),
+    )
+    with database.engine.begin() as connection:
+        for key, target_id in commands:
+            canonical = json.dumps(
+                {"through_market_snapshot_id": str(target_id)},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            connection.execute(
+                insert(role_validation_commands).values(
+                    id=uuid4(),
+                    idempotency_key=key,
+                    payload_hash=hashlib.sha256(canonical.encode()).hexdigest(),
+                    through_market_snapshot_id=target_id,
+                    validation_ids=[str(graph["validation_id"])],
+                    mature_count=1,
+                    immature_count=0,
+                    created_at=NOW,
+                )
+            )
+
+    roles = RoleRepository(database, repository, clock=lambda: NOW)
+    observed_orders = []
+    for key, target_id in commands:
+        source_locks = []
+        all_locks = []
+
+        def observe_lock(
+            conn,
+            cursor,
+            statement,
+            parameters,
+            context,
+            executemany,
+            source_locks=source_locks,
+            all_locks=all_locks,
+        ):
+            lock_key = str(parameters.get("key", ""))
+            if "pg_advisory_xact_lock" not in statement:
+                return
+            all_locks.append(lock_key)
+            if lock_key.startswith("source:"):
+                source_locks.append(lock_key)
+
+        event.listen(database.engine, "after_cursor_execute", observe_lock)
+        try:
+            roles.validate_pending(target_id, key=key)
+        finally:
+            event.remove(database.engine, "after_cursor_execute", observe_lock)
+        observed_orders.append(source_locks)
+        assert all_locks.index(f"role-validation-key:{key}") > max(
+            all_locks.index(source_lock) for source_lock in source_locks
+        )
+
+    expected = sorted(
+        {
+            "source:synthetic",
+            f"source:{graph['market_grant'].source_id}",
+            f"source:{graph['topic_grant'].source_id}",
+        }
+    )
+    assert observed_orders == [expected, expected]
+
+
+def _validation_publication(service, role_inputs, role_run_id, *, key):
+    return service.publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=role_inputs[0].id,
+            topic_snapshot_id=role_inputs[1].id,
+            role_input_id=role_run_id,
+            disabled_domains=("news", "regulation"),
+        ),
+        key=key,
+    )
+
+
+def test_role_publication_rejects_revoked_validation_input_before_write(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="publish-validation-revoked",
+    )
+    repository.revoke_source(graph["market_grant"].source_id)
+    service = PublicationService(database, repository, clock=lambda: NOW)
+
+    with pytest.raises(Forbidden):
+        _validation_publication(
+            service,
+            role_inputs,
+            graph["root"].id,
+            key="publish-revoked-validation",
+        )
+
+
+def test_role_publication_records_validation_input_archive_dependencies(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="publish-validation-dependencies",
+    )
+    service = PublicationService(database, repository, clock=lambda: NOW)
+    publication = _validation_publication(
+        service,
+        role_inputs,
+        graph["root"].id,
+        key="publish-validation-dependencies",
+    )
+
+    with database.engine.connect() as connection:
+        role_dependencies = {
+            (row["source_id"], row["archive_type"], row["archive_id"])
+            for row in connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == publication.id,
+                    source_dependencies.c.derived_type == "role",
+                )
+            )
+            .mappings()
+            .all()
+        }
+    assert role_dependencies == {
+        (
+            graph["market_grant"].source_id,
+            "market_import_batch",
+            graph["input_market"].batch_id,
+        ),
+        (
+            graph["topic_grant"].source_id,
+            "topic_import_batch",
+            graph["input_topic"].batch_id,
+        ),
+    }
+
+
+def test_role_publication_read_reauthorizes_validation_input_dependencies(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="read-validation-dependencies",
+    )
+    service = PublicationService(database, repository, clock=lambda: NOW)
+    publication = _validation_publication(
+        service,
+        role_inputs,
+        graph["root"].id,
+        key="read-validation-dependencies",
+    )
+    assert service.repository.list_results(publication.id)
+
+    repository.revoke_source(graph["topic_grant"].source_id)
+    with pytest.raises(Forbidden):
+        service.repository.list_results(publication.id)
+
+
 def test_cli_contract_does_not_expose_context_grants_or_rule_json():
     from dragon_radar.cli import _parser
 
@@ -1326,11 +1637,78 @@ def test_validate_pending_reauthorizes_replay_inputs_atomically(
     ]
     assert len(first.validation_ids) == 2
     assert {row["input_role_run_id"] for row in inputs_before} == set(future_ids)
+    source_locks = []
+
+    def observe_source_locks(
+        conn,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        lock_key = str(parameters.get("key", ""))
+        if "pg_advisory_xact_lock" in statement and lock_key.startswith("source:"):
+            source_locks.append(lock_key)
+
+    event.listen(database.engine, "after_cursor_execute", observe_source_locks)
+    try:
+        ordered_replay = role_repository.validate_pending(
+            target.id,
+            key="stable-new-validation-command",
+        )
+    finally:
+        event.remove(database.engine, "after_cursor_execute", observe_source_locks)
+    assert ordered_replay.validation_ids == first.validation_ids
+    assert source_locks == sorted(set(source_locks))
 
     def fail_relay(*_args, **_kwargs):
         raise AssertionError("idempotent replay must not recompute validation")
 
     monkeypatch.setattr("dragon_radar.roles.repository.validate_relay", fail_relay)
+    topic_repository.revoke_source(topic_source_id)
+    with pytest.raises(Forbidden):
+        role_repository.validate_pending(
+            target.id,
+            key="withdrawn-input-new-command",
+        )
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(text("count(*)"))
+                .select_from(role_validation_commands)
+                .where(
+                    role_validation_commands.c.idempotency_key
+                    == "withdrawn-input-new-command"
+                )
+            )
+            == 0
+        )
+        assert (
+            tuple(
+                connection.execute(
+                    select(role_validations).order_by(role_validations.c.id)
+                )
+                .mappings()
+                .all()
+            )
+            == validations_before
+        )
+        assert (
+            tuple(
+                connection.execute(
+                    select(role_validation_inputs).order_by(
+                        role_validation_inputs.c.validation_id,
+                        role_validation_inputs.c.position,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            == inputs_before
+        )
+    topic_repository.register_source(topic_grant)
+
     future_repository.revoke_source(target_source_id)
     with pytest.raises(Forbidden):
         role_repository.validate_pending(
@@ -1340,6 +1718,34 @@ def test_validate_pending_reauthorizes_replay_inputs_atomically(
     future_repository.register_source(target_grant)
 
     retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        topic_source_id,
+        policy=RetentionPolicy(
+            reference="withdraw-validation-input",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals(topic_source_id)
+    retention.restore_source(topic_source_id, topic_grant)
+    with pytest.raises(Forbidden, match="withdrawn"):
+        role_repository.validate_pending(
+            target.id,
+            key="withdrawn-input-archive-command",
+        )
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(text("count(*)"))
+                .select_from(role_validation_commands)
+                .where(
+                    role_validation_commands.c.idempotency_key
+                    == "withdrawn-input-archive-command"
+                )
+            )
+            == 0
+        )
+
     retention.withdraw_storage(
         "synthetic",
         policy=RetentionPolicy(

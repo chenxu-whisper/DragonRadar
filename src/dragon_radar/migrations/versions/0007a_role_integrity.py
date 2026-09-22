@@ -122,6 +122,339 @@ def _replace_role_run_guard(*, require_visible_topics: bool) -> None:
     """)
 
 
+def _replace_publication_dependency_guards(*, allow_role_dependencies: bool) -> None:
+    market_scope = (
+        "dependency.derived_type = 'market'"
+        if allow_role_dependencies
+        else "dependency.derived_type = 'market' "
+        "OR dependency.archive_type = 'market_import_batch'"
+    )
+    topic_scope = (
+        "dependency.derived_type = 'topic'"
+        if allow_role_dependencies
+        else "dependency.derived_type = 'topic' "
+        "OR dependency.archive_type = 'topic_import_batch'"
+    )
+    role_declaration = (
+        "invalid_role_dependency_count integer;" if allow_role_dependencies else ""
+    )
+    role_validation = (
+        """
+                SELECT count(*) FILTER (
+                           WHERE dependency.derived_type = 'role'
+                             AND (
+                                 NEW.role_input_id IS NULL
+                                 OR dependency.derived_id <> NEW.id
+                                 OR dependency.publication_id <> NEW.id
+                                 OR (
+                                     dependency.archive_type = 'market_import_batch'
+                                     AND NOT EXISTS (
+                                         SELECT 1
+                                           FROM import_batches archive
+                                          WHERE archive.id = dependency.archive_id
+                                            AND archive.source_id
+                                                = dependency.source_id
+                                     )
+                                 )
+                                 OR (
+                                     dependency.archive_type = 'topic_import_batch'
+                                     AND NOT EXISTS (
+                                         SELECT 1
+                                           FROM topic_import_batches archive
+                                          WHERE archive.id = dependency.archive_id
+                                            AND archive.source_id
+                                                = dependency.source_id
+                                     )
+                                 )
+                                 OR dependency.archive_type NOT IN (
+                                     'market_import_batch',
+                                     'topic_import_batch'
+                                 )
+                             )
+                       )
+                  INTO invalid_role_dependency_count
+                  FROM source_dependencies dependency
+                 WHERE dependency.publication_id = NEW.id;
+                IF invalid_role_dependency_count <> 0 THEN
+                    RAISE EXCEPTION 'invalid publication role lineage';
+                END IF;"""
+        if allow_role_dependencies
+        else ""
+    )
+    op.execute(f"""
+        CREATE OR REPLACE FUNCTION guard_publication_transition()
+        RETURNS trigger AS $$
+        DECLARE
+            result_count integer;
+            invalid_result_count integer;
+            market_dependency_count integer;
+            valid_market_dependency_count integer;
+            topic_dependency_count integer;
+            valid_topic_dependency_count integer;
+            {role_declaration}
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.status = 'draft' AND NEW.published_at IS NULL THEN
+                    RETURN NEW;
+                END IF;
+                RAISE EXCEPTION 'publications must be inserted as drafts';
+            END IF;
+            IF TG_OP = 'UPDATE'
+               AND OLD.status = 'draft'
+               AND NEW.status = 'published'
+               AND NEW.id IS NOT DISTINCT FROM OLD.id
+               AND NEW.trade_date IS NOT DISTINCT FROM OLD.trade_date
+               AND NEW.version IS NOT DISTINCT FROM OLD.version
+               AND NEW.supersedes IS NOT DISTINCT FROM OLD.supersedes
+               AND NEW.market_snapshot_id IS NOT DISTINCT FROM OLD.market_snapshot_id
+               AND NEW.topic_snapshot_id IS NOT DISTINCT FROM OLD.topic_snapshot_id
+               AND NEW.news_input_id IS NOT DISTINCT FROM OLD.news_input_id
+               AND NEW.regulation_input_id IS NOT DISTINCT FROM OLD.regulation_input_id
+               AND NEW.role_input_id IS NOT DISTINCT FROM OLD.role_input_id
+               AND NEW.domains IS NOT DISTINCT FROM OLD.domains
+               AND NEW.coverage IS NOT DISTINCT FROM OLD.coverage
+               AND NEW.quality_flags IS NOT DISTINCT FROM OLD.quality_flags
+               AND NEW.command_json IS NOT DISTINCT FROM OLD.command_json
+               AND NEW.command_hash IS NOT DISTINCT FROM OLD.command_hash
+               AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+               AND OLD.published_at IS NULL
+               AND NEW.published_at IS NOT NULL
+            THEN
+                SELECT count(*),
+                       count(*) FILTER (
+                           WHERE result.input_id IS DISTINCT FROM
+                               CASE result.domain
+                                   WHEN 'market' THEN NEW.market_snapshot_id
+                                   WHEN 'topic' THEN NEW.topic_snapshot_id
+                                   WHEN 'news' THEN NEW.news_input_id
+                                   WHEN 'regulation' THEN NEW.regulation_input_id
+                                   WHEN 'role' THEN NEW.role_input_id
+                               END
+                              OR result.status IS DISTINCT FROM
+                                 NEW.domains ->> result.domain
+                              OR (result.status = 'ready')
+                                 IS DISTINCT FROM (result.input_id IS NOT NULL)
+                       )
+                  INTO result_count, invalid_result_count
+                  FROM publication_results result
+                 WHERE result.publication_id = NEW.id;
+                IF result_count <> 5
+                   OR invalid_result_count <> 0
+                   OR (
+                       SELECT count(*) FROM jsonb_object_keys(NEW.domains)
+                   ) <> 5
+                THEN
+                    RAISE EXCEPTION 'invalid publication result contract';
+                END IF;
+
+                SELECT count(*) FILTER (WHERE {market_scope}),
+                       count(*) FILTER (
+                           WHERE dependency.derived_type = 'market'
+                             AND dependency.archive_type = 'market_import_batch'
+                             AND dependency.derived_id = NEW.id
+                             AND dependency.publication_id = NEW.id
+                             AND dependency.source_id = snapshot.source_id
+                             AND dependency.archive_id = snapshot.batch_id
+                       )
+                  INTO market_dependency_count, valid_market_dependency_count
+                  FROM source_dependencies dependency
+                  LEFT JOIN snapshots snapshot
+                    ON snapshot.id = NEW.market_snapshot_id
+                 WHERE dependency.publication_id = NEW.id;
+                IF market_dependency_count <> 1
+                   OR valid_market_dependency_count <> 1
+                THEN
+                    RAISE EXCEPTION 'invalid publication market lineage';
+                END IF;
+
+                SELECT count(*) FILTER (WHERE {topic_scope}),
+                       count(*) FILTER (
+                           WHERE dependency.derived_type = 'topic'
+                             AND dependency.archive_type = 'topic_import_batch'
+                             AND dependency.derived_id = NEW.id
+                             AND dependency.publication_id = NEW.id
+                             AND dependency.source_id = snapshot.source_id
+                             AND dependency.archive_id = snapshot.batch_id
+                       )
+                  INTO topic_dependency_count, valid_topic_dependency_count
+                  FROM source_dependencies dependency
+                  LEFT JOIN topic_snapshots snapshot
+                    ON snapshot.id = NEW.topic_snapshot_id
+                 WHERE dependency.publication_id = NEW.id;
+                IF (NEW.topic_snapshot_id IS NULL AND topic_dependency_count <> 0)
+                   OR (
+                       NEW.topic_snapshot_id IS NOT NULL
+                       AND (
+                           topic_dependency_count <> 1
+                           OR valid_topic_dependency_count <> 1
+                       )
+                   )
+                THEN
+                    RAISE EXCEPTION 'invalid publication topic lineage';
+                END IF;
+                {role_validation}
+                RETURN NEW;
+            END IF;
+            IF TG_OP = 'UPDATE'
+               AND OLD.status = 'published'
+               AND NEW.status = 'revoked'
+               AND NEW.id IS NOT DISTINCT FROM OLD.id
+               AND NEW.trade_date IS NOT DISTINCT FROM OLD.trade_date
+               AND NEW.version IS NOT DISTINCT FROM OLD.version
+               AND NEW.supersedes IS NOT DISTINCT FROM OLD.supersedes
+               AND NEW.market_snapshot_id IS NOT DISTINCT FROM OLD.market_snapshot_id
+               AND NEW.topic_snapshot_id IS NOT DISTINCT FROM OLD.topic_snapshot_id
+               AND NEW.news_input_id IS NOT DISTINCT FROM OLD.news_input_id
+               AND NEW.regulation_input_id IS NOT DISTINCT FROM OLD.regulation_input_id
+               AND NEW.role_input_id IS NOT DISTINCT FROM OLD.role_input_id
+               AND NEW.domains IS NOT DISTINCT FROM OLD.domains
+               AND NEW.coverage IS NOT DISTINCT FROM OLD.coverage
+               AND NEW.quality_flags IS NOT DISTINCT FROM OLD.quality_flags
+               AND NEW.command_json IS NOT DISTINCT FROM OLD.command_json
+               AND NEW.command_hash IS NOT DISTINCT FROM OLD.command_hash
+               AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+               AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
+            THEN
+                RETURN NEW;
+            END IF;
+            RAISE EXCEPTION 'immutable records cannot be changed';
+        END;
+        $$ LANGUAGE plpgsql;
+    """)
+    role_market = (
+        """
+                       OR (
+                           dependency.derived_type = 'role'
+                           AND EXISTS (
+                               SELECT 1
+                                 FROM publications publication
+                                WHERE publication.id = dependency.publication_id
+                                  AND publication.role_input_id IS NOT NULL
+                           )
+                       )"""
+        if allow_role_dependencies
+        else ""
+    )
+    role_topic = role_market
+    op.execute(f"""
+        CREATE OR REPLACE FUNCTION guard_withdrawal_dependency_insert()
+        RETURNS trigger AS $$
+        DECLARE
+            withdrawal_source text;
+            withdrawal_action text;
+            withdrawal_scope text;
+            withdrawal_policy text;
+            withdrawal_cutoff bigint;
+            dependency source_dependencies%ROWTYPE;
+            archive_source text;
+        BEGIN
+            SELECT source_id, action, scope, policy_reference,
+                   cutoff_dependency_sequence
+              INTO STRICT withdrawal_source, withdrawal_action, withdrawal_scope,
+                          withdrawal_policy, withdrawal_cutoff
+              FROM withdrawal_records
+             WHERE id = NEW.withdrawal_id
+               FOR UPDATE;
+            IF withdrawal_action NOT IN ('deidentified', 'deleted')
+               OR withdrawal_scope <> 'storage'
+               OR withdrawal_policy IS NULL
+               OR withdrawal_cutoff IS NULL
+            THEN
+                RAISE EXCEPTION 'withdrawal cannot bind dependencies';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                  FROM withdrawal_binding_seals seal
+                 WHERE seal.withdrawal_id = NEW.withdrawal_id
+            )
+            THEN
+                RAISE EXCEPTION 'withdrawal dependencies are sealed';
+            END IF;
+            IF NEW.source_dependency_id IS NOT NULL THEN
+                SELECT *
+                  INTO STRICT dependency
+                  FROM source_dependencies
+                 WHERE id = NEW.source_dependency_id;
+                IF dependency.source_id <> withdrawal_source
+                   OR dependency.dependency_sequence > withdrawal_cutoff
+                   OR dependency.derived_id <> dependency.publication_id
+                THEN
+                    RAISE EXCEPTION 'invalid withdrawal dependency identity';
+                END IF;
+                IF dependency.archive_type = 'market_import_batch' THEN
+                    SELECT source_id
+                      INTO STRICT archive_source
+                      FROM import_batches
+                     WHERE id = dependency.archive_id;
+                    IF NOT (
+                        (
+                            dependency.derived_type = 'market'
+                            AND EXISTS (
+                                SELECT 1
+                                  FROM publications publication
+                                  JOIN snapshots snapshot
+                                    ON snapshot.id
+                                       = publication.market_snapshot_id
+                                 WHERE publication.id
+                                       = dependency.publication_id
+                                   AND snapshot.batch_id = dependency.archive_id
+                                   AND snapshot.source_id = dependency.source_id
+                            )
+                        )
+                        {role_market}
+                    )
+                    THEN
+                        RAISE EXCEPTION 'invalid market withdrawal dependency';
+                    END IF;
+                ELSIF dependency.archive_type = 'topic_import_batch' THEN
+                    SELECT source_id
+                      INTO STRICT archive_source
+                      FROM topic_import_batches
+                     WHERE id = dependency.archive_id;
+                    IF NOT (
+                        (
+                            dependency.derived_type = 'topic'
+                            AND EXISTS (
+                                SELECT 1
+                                  FROM publications publication
+                                  JOIN topic_snapshots snapshot
+                                    ON snapshot.id = publication.topic_snapshot_id
+                                 WHERE publication.id
+                                       = dependency.publication_id
+                                   AND snapshot.batch_id = dependency.archive_id
+                                   AND snapshot.source_id = dependency.source_id
+                            )
+                        )
+                        {role_topic}
+                    )
+                    THEN
+                        RAISE EXCEPTION 'invalid topic withdrawal dependency';
+                    END IF;
+                ELSE
+                    RAISE EXCEPTION 'unsupported withdrawal dependency archive';
+                END IF;
+            ELSIF NEW.archive_type = 'market_import_batch' THEN
+                SELECT source_id
+                  INTO STRICT archive_source
+                  FROM import_batches
+                 WHERE id = NEW.archive_id;
+            ELSIF NEW.archive_type = 'topic_import_batch' THEN
+                SELECT source_id
+                  INTO STRICT archive_source
+                  FROM topic_import_batches
+                 WHERE id = NEW.archive_id;
+            ELSE
+                RAISE EXCEPTION 'unsupported withdrawal archive';
+            END IF;
+            IF archive_source <> withdrawal_source THEN
+                RAISE EXCEPTION 'withdrawal archive did not exist for source';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """)
+
+
 def upgrade():
     op.create_foreign_key(
         "role_topic_statuses_role_run_id_topic_id_fkey",
@@ -255,9 +588,11 @@ def upgrade():
         FOR EACH ROW EXECUTE FUNCTION guard_role_validation_chain();
     """)
     _replace_role_run_guard(require_visible_topics=True)
+    _replace_publication_dependency_guards(allow_role_dependencies=True)
 
 
 def downgrade():
+    _replace_publication_dependency_guards(allow_role_dependencies=False)
     _replace_role_run_guard(require_visible_topics=False)
     op.execute("DROP TRIGGER role_validations_chain ON role_validations")
     op.execute("DROP FUNCTION guard_role_validation_chain()")

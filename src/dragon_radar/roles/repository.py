@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -106,7 +107,7 @@ class RoleRepository:
     def _lock(self, connection, key: str) -> None:
         self.market._lock(connection, key)
 
-    def _context(self, connection, row):
+    def _context_inputs(self, connection, row):
         market_row = (
             connection.execute(
                 select(snapshots).where(snapshots.c.id == row["market_snapshot_id"])
@@ -147,10 +148,16 @@ class RoleRepository:
             raise Forbidden("Role run snapshot identity is invalid")
         market_batch = self.market._snapshot(market_row, market_archive).batch
         topic_batch = TopicBatch.model_validate_json(topic_archive["canonical_json"])
-        grants = {
+        return market_row, market_batch, topic_row, topic_batch
+
+    def _lock_sources(self, connection, source_ids) -> dict:
+        return {
             source_id: self.market._source(connection, source_id)
-            for source_id in sorted({market_row["source_id"], topic_row["source_id"]})
+            for source_id in sorted(set(source_ids))
         }
+
+    def _authorize_context(self, connection, context, grants) -> None:
+        market_row, market_batch, topic_row, topic_batch = context
         self.market._authorize(grants[market_row["source_id"]], market_batch)
         self.topics._authorize(grants[topic_row["source_id"]], topic_batch)
         if (
@@ -172,23 +179,61 @@ class RoleRepository:
             )
         ):
             raise Forbidden("Role run inputs were withdrawn")
-        return market_row, market_batch, topic_row, topic_batch
+
+    def _context(self, connection, row):
+        context = self._context_inputs(connection, row)
+        grants = self._lock_sources(
+            connection,
+            (context[0]["source_id"], context[2]["source_id"]),
+        )
+        self._authorize_context(connection, context, grants)
+        return context
+
+    def _role_rows(self, connection, role_run_ids):
+        run_ids = {_uuid(run_id) for run_id in role_run_ids}
+        if not run_ids:
+            return {}
+        rows = {
+            row["id"]: row
+            for row in connection.execute(
+                select(role_runs).where(role_runs.c.id.in_(run_ids))
+            )
+            .mappings()
+            .all()
+        }
+        if set(rows) != run_ids:
+            raise NotFound("Role run not found")
+        if any(row["status"] != "materialized" for row in rows.values()):
+            raise Forbidden("Role run is not materialized")
+        return rows
+
+    def _prepare_role_authorization(self, connection, role_run_ids):
+        rows = self._role_rows(connection, role_run_ids)
+        contexts = {
+            run_id: self._context_inputs(connection, row)
+            for run_id, row in rows.items()
+        }
+        source_ids = {
+            source_id
+            for context in contexts.values()
+            for source_id in (context[0]["source_id"], context[2]["source_id"])
+        }
+        return rows, contexts, source_ids
+
+    def _authorize_prepared_roles(self, connection, contexts, grants) -> None:
+        for run_id in sorted(contexts, key=str):
+            self._authorize_context(connection, contexts[run_id], grants)
 
     def authorized_row(self, connection, role_run_id: UUID | str):
         role_run_id = _uuid(role_run_id)
-        row = (
-            connection.execute(select(role_runs).where(role_runs.c.id == role_run_id))
-            .mappings()
-            .first()
+        rows, contexts, source_ids = self._prepare_role_authorization(
+            connection, (role_run_id,)
         )
-        if row is None:
-            raise NotFound("Role run not found")
-        if row["status"] != "materialized":
-            raise Forbidden("Role run is not materialized")
-        self._context(connection, row)
-        return row
+        grants = self._lock_sources(connection, source_ids)
+        self._authorize_prepared_roles(connection, contexts, grants)
+        return rows[role_run_id]
 
-    def _authorized_market_snapshot_input(self, connection, snapshot_id: UUID):
+    def _market_snapshot_input(self, connection, snapshot_id: UUID):
         snapshot_row = (
             connection.execute(select(snapshots).where(snapshots.c.id == snapshot_id))
             .mappings()
@@ -208,8 +253,11 @@ class RoleRepository:
         if archive is None:
             raise Forbidden("Market snapshot identity is invalid")
         target = self.market._snapshot(snapshot_row, archive).batch
-        current_grant = self.market._source(connection, snapshot_row["source_id"])
-        self.market._authorize(current_grant, target)
+        return snapshot_row, archive, target
+
+    def _authorize_market_snapshot_input(self, connection, context, grants) -> None:
+        snapshot_row, _archive, target = context
+        self.market._authorize(grants[snapshot_row["source_id"]], target)
         if source_has_active_withdrawal(
             connection, snapshot_row["source_id"]
         ) or archive_was_withdrawn(
@@ -219,15 +267,20 @@ class RoleRepository:
             snapshot_row["batch_id"],
         ):
             raise Forbidden("Market snapshot input was withdrawn")
-        return target
 
-    def _authorize_validation_replay(
+    def _authorized_market_snapshot_input(self, connection, snapshot_id: UUID):
+        context = self._market_snapshot_input(connection, snapshot_id)
+        grants = self._lock_sources(connection, (context[0]["source_id"],))
+        self._authorize_market_snapshot_input(connection, context, grants)
+        return context[2]
+
+    def _validation_run_ids(
         self,
         connection,
         validation_ids: tuple[UUID, ...],
-    ) -> None:
+    ) -> tuple[set[UUID], set[UUID]]:
         if not validation_ids:
-            return
+            return set(), set()
         validation_rows = (
             connection.execute(
                 select(
@@ -246,17 +299,44 @@ class RoleRepository:
         )
         if {row["id"] for row in validation_rows} != set(validation_ids):
             raise Forbidden("Role validation identity is invalid")
-        input_run_ids = connection.execute(
-            select(role_validation_inputs.c.input_role_run_id).where(
-                role_validation_inputs.c.validation_id.in_(validation_ids)
+        input_run_ids = set(
+            connection.execute(
+                select(role_validation_inputs.c.input_role_run_id).where(
+                    role_validation_inputs.c.validation_id.in_(validation_ids)
+                )
+            ).scalars()
+        )
+        observation_run_ids = {row["observation_run_id"] for row in validation_rows}
+        return observation_run_ids, input_run_ids
+
+    def _authorize_validation_replay(
+        self,
+        connection,
+        validation_ids: tuple[UUID, ...],
+        *,
+        prepared=None,
+        grants=None,
+    ) -> None:
+        if not validation_ids:
+            return
+        observation_run_ids, input_run_ids = self._validation_run_ids(
+            connection, validation_ids
+        )
+        if prepared is None:
+            _rows, contexts, source_ids = self._prepare_role_authorization(
+                connection, observation_run_ids | input_run_ids
             )
-        ).scalars()
-        run_ids = {
-            *(row["observation_run_id"] for row in validation_rows),
-            *input_run_ids,
-        }
-        for run_id in sorted(run_ids, key=str):
-            self.authorized_row(connection, run_id)
+            grants = self._lock_sources(connection, source_ids)
+        else:
+            contexts = prepared
+        self._authorize_prepared_roles(
+            connection,
+            {
+                run_id: contexts[run_id]
+                for run_id in observation_run_ids | input_run_ids
+            },
+            grants,
+        )
 
     def get(self, role_run_id: UUID | str) -> RoleRunRecord:
         with self.database.engine.begin() as connection:
@@ -427,10 +507,22 @@ class RoleRepository:
         )
 
     def payload(self, role_run_id: UUID | str, *, connection=None) -> dict:
+        payload, _dependencies = self.payload_with_dependencies(
+            role_run_id, connection=connection
+        )
+        return payload
+
+    def payload_with_dependencies(
+        self,
+        role_run_id: UUID | str,
+        *,
+        connection=None,
+    ) -> tuple[dict, tuple[tuple[str, str, UUID], ...]]:
         if connection is None:
             with self.database.engine.begin() as owned:
-                return self.payload(role_run_id, connection=owned)
-        row = self.authorized_row(connection, role_run_id)
+                return self.payload_with_dependencies(role_run_id, connection=owned)
+        role_run_id = _uuid(role_run_id)
+        row = self._role_rows(connection, (role_run_id,))[role_run_id]
         run_id = row["id"]
         topics = (
             connection.execute(
@@ -560,6 +652,15 @@ class RoleRepository:
             if validation_ids
             else []
         )
+        observation_run_ids, input_run_ids = self._validation_run_ids(
+            connection, validation_ids
+        )
+        _rows, contexts, source_ids = self._prepare_role_authorization(
+            connection,
+            {run_id, *observation_run_ids, *input_run_ids},
+        )
+        grants = self._lock_sources(connection, source_ids)
+        self._authorize_prepared_roles(connection, contexts, grants)
         pending_topics = {
             pending["id"]: pending["topic_id"] for pending in pending_rows
         }
@@ -567,6 +668,34 @@ class RoleRepository:
             validation["id"]: pending_topics[validation["pending_validation_id"]]
             for validation in validation_rows
         }
+        validation_inputs_by_id = defaultdict(list)
+        validation_inputs_by_topic = defaultdict(list)
+        for item in validation_input_rows:
+            validation_inputs_by_id[item["validation_id"]].append(item)
+            validation_inputs_by_topic[validation_topics[item["validation_id"]]].append(
+                item
+            )
+        validations_by_topic = defaultdict(list)
+        for validation in validation_rows:
+            validations_by_topic[validation_topics[validation["id"]]].append(validation)
+        dependencies = {
+            (
+                context[0]["source_id"],
+                "market_import_batch",
+                context[0]["batch_id"],
+            )
+            for run_id, context in contexts.items()
+            if run_id in input_run_ids
+        }
+        dependencies.update(
+            (
+                context[2]["source_id"],
+                "topic_import_batch",
+                context[2]["batch_id"],
+            )
+            for run_id, context in contexts.items()
+            if run_id in input_run_ids
+        )
 
         def public(item, excluded):
             return {
@@ -583,7 +712,7 @@ class RoleRepository:
                 if key not in excluded
             }
 
-        return {
+        payload = {
             "role_run_id": str(run_id),
             "trade_date": row["trade_date"].isoformat(),
             "rule_version": row["rule_version"],
@@ -639,22 +768,22 @@ class RoleRepository:
                             **public(validation, set()),
                             "validation_inputs": [
                                 public(item, {"validation_id"})
-                                for item in validation_input_rows
-                                if item["validation_id"] == validation["id"]
+                                for item in validation_inputs_by_id[validation["id"]]
                             ],
                         }
-                        for validation in validation_rows
-                        if validation_topics[validation["id"]] == topic["topic_id"]
+                        for validation in validations_by_topic[topic["topic_id"]]
                     ],
                     "role_validation_inputs": [
                         public(item, set())
-                        for item in validation_input_rows
-                        if validation_topics[item["validation_id"]] == topic["topic_id"]
+                        for item in validation_inputs_by_topic[topic["topic_id"]]
                     ],
                 }
                 for topic in topics
             ],
         }
+        return payload, tuple(
+            sorted(dependencies, key=lambda item: tuple(map(str, item)))
+        )
 
     @staticmethod
     def insert_tree(connection, tree: Mapping) -> None:
@@ -708,10 +837,6 @@ class RoleRepository:
         elif len(input_run_ids) != 5 or any(value is None for value in returns):
             raise ValueError("Available validation requires five complete inputs")
         with self.database.engine.begin() as connection:
-            self._lock(
-                connection,
-                f"role-validation:{pending_validation_id}",
-            )
             pending = (
                 connection.execute(
                     select(role_pending_validations).where(
@@ -723,9 +848,16 @@ class RoleRepository:
             )
             if pending is None:
                 raise NotFound("Pending role validation not found")
-            self.authorized_row(connection, pending["observation_run_id"])
-            for input_run_id in input_run_ids:
-                self.authorized_row(connection, input_run_id)
+            _rows, contexts, source_ids = self._prepare_role_authorization(
+                connection,
+                {pending["observation_run_id"], *input_run_ids},
+            )
+            grants = self._lock_sources(connection, source_ids)
+            self._lock(
+                connection,
+                f"role-validation:{pending_validation_id}",
+            )
+            self._authorize_prepared_roles(connection, contexts, grants)
             baseline = PendingRelayValidation.model_validate_json(
                 json.dumps(pending["baseline_evidence"]),
                 strict=False,
@@ -839,7 +971,6 @@ class RoleRepository:
             ).encode()
         ).hexdigest()
         with self.database.engine.begin() as connection:
-            self._lock(connection, f"role-validation-key:{key}")
             existing = (
                 connection.execute(
                     select(role_validation_commands).where(
@@ -852,25 +983,40 @@ class RoleRepository:
             if existing is not None:
                 if existing["payload_hash"] != payload_hash:
                     raise Conflict("Idempotency key already belongs to another payload")
-                self._authorized_market_snapshot_input(
-                    connection,
-                    existing["through_market_snapshot_id"],
-                )
                 validation_ids = tuple(
                     UUID(value) for value in existing["validation_ids"]
                 )
-                self._authorize_validation_replay(connection, validation_ids)
+                target_context = self._market_snapshot_input(
+                    connection, existing["through_market_snapshot_id"]
+                )
+                observation_ids, input_ids = self._validation_run_ids(
+                    connection, validation_ids
+                )
+                _rows, contexts, source_ids = self._prepare_role_authorization(
+                    connection, observation_ids | input_ids
+                )
+                source_ids.add(target_context[0]["source_id"])
+                grants = self._lock_sources(connection, source_ids)
+                self._lock(connection, f"role-validation-key:{key}")
+                self._authorize_market_snapshot_input(
+                    connection, target_context, grants
+                )
+                self._authorize_validation_replay(
+                    connection,
+                    validation_ids,
+                    prepared=contexts,
+                    grants=grants,
+                )
                 return RoleValidationBatch(
                     through_market_snapshot_id=existing["through_market_snapshot_id"],
                     validation_ids=validation_ids,
                     mature_count=existing["mature_count"],
                     immature_count=existing["immature_count"],
                 )
-            target = self._authorized_market_snapshot_input(
-                connection,
-                through_market_snapshot_id,
+            target_context = self._market_snapshot_input(
+                connection, through_market_snapshot_id
             )
-
+            target = target_context[2]
             pending_rows = (
                 connection.execute(
                     select(role_pending_validations).order_by(
@@ -902,29 +1048,111 @@ class RoleRepository:
                 .mappings()
                 .all()
             )
-            validation_ids: list[UUID] = []
-            mature_count = 0
-            immature_count = 0
+            pending_entries = []
+            role_run_ids = set()
+            latest_by_pending = {}
             for pending_row in pending_rows:
-                self.authorized_row(
-                    connection,
-                    pending_row["observation_run_id"],
-                )
                 baseline = PendingRelayValidation.model_validate_json(
                     json.dumps(pending_row["baseline_evidence"]),
                     strict=False,
                 )
-                if (
+                mature = not (
                     target.calendar.exchange != baseline.exchange
                     or target.calendar_version != baseline.calendar_version
                     or baseline.validation_sessions[-1] not in target.calendar.sessions
                     or target.trade_date not in target.calendar.sessions
                     or target.calendar.sessions.index(target.trade_date)
                     < target.calendar.sessions.index(baseline.validation_sessions[-1])
-                ):
+                )
+                pending_entries.append((pending_row, baseline, mature))
+                if not mature:
+                    continue
+                role_run_ids.add(pending_row["observation_run_id"])
+                latest = (
+                    connection.execute(
+                        select(role_validations)
+                        .where(
+                            role_validations.c.pending_validation_id
+                            == pending_row["id"]
+                        )
+                        .order_by(role_validations.c.revision.desc())
+                        .limit(1)
+                    )
+                    .mappings()
+                    .first()
+                )
+                latest_by_pending[pending_row["id"]] = latest
+                if latest is not None:
+                    observations, inputs = self._validation_run_ids(
+                        connection, (latest["id"],)
+                    )
+                    role_run_ids.update(observations | inputs)
+                    continue
+                role_run_ids.update(
+                    binding["role_input_id"]
+                    for binding in bindings
+                    if binding["trade_date"] > baseline.observation_date
+                )
+            prepared_rows, contexts, source_ids = self._prepare_role_authorization(
+                connection, role_run_ids
+            )
+            source_ids.add(target_context[0]["source_id"])
+            source_ids.update(
+                source_id
+                for _pending_row, baseline, mature in pending_entries
+                if mature
+                for source_id in (
+                    baseline.observation_run.context.market.source_id,
+                    baseline.observation_run.context.topic.source_id,
+                )
+            )
+            grants = self._lock_sources(connection, source_ids)
+            self._lock(connection, f"role-validation-key:{key}")
+            existing = (
+                connection.execute(
+                    select(role_validation_commands).where(
+                        role_validation_commands.c.idempotency_key == key
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                if existing["payload_hash"] != payload_hash:
+                    raise Conflict("Idempotency key already belongs to another payload")
+                validation_ids = tuple(
+                    UUID(value) for value in existing["validation_ids"]
+                )
+                self._authorize_market_snapshot_input(
+                    connection, target_context, grants
+                )
+                self._authorize_validation_replay(
+                    connection,
+                    validation_ids,
+                    prepared=contexts,
+                    grants=grants,
+                )
+                return RoleValidationBatch(
+                    through_market_snapshot_id=existing["through_market_snapshot_id"],
+                    validation_ids=validation_ids,
+                    mature_count=existing["mature_count"],
+                    immature_count=existing["immature_count"],
+                )
+            self._authorize_market_snapshot_input(connection, target_context, grants)
+
+            validation_ids: list[UUID] = []
+            mature_count = 0
+            immature_count = 0
+            for pending_row, baseline, mature in pending_entries:
+                if not mature:
                     immature_count += 1
                     continue
                 mature_count += 1
+                self._authorize_context(
+                    connection,
+                    contexts[pending_row["observation_run_id"]],
+                    grants,
+                )
                 self._lock(
                     connection,
                     f"role-validation:{pending_row['id']}",
@@ -943,6 +1171,17 @@ class RoleRepository:
                     .first()
                 )
                 if latest is not None:
+                    prepared_latest = latest_by_pending[pending_row["id"]]
+                    if prepared_latest is None or prepared_latest["id"] != latest["id"]:
+                        raise Conflict(
+                            "Role validation changed while acquiring source locks"
+                        )
+                    self._authorize_validation_replay(
+                        connection,
+                        (latest["id"],),
+                        prepared=contexts,
+                        grants=grants,
+                    )
                     validation_ids.append(latest["id"])
                     continue
 
@@ -956,8 +1195,11 @@ class RoleRepository:
                     ):
                         continue
                     try:
-                        run_row = self.authorized_row(
-                            connection, binding["role_input_id"]
+                        run_row = prepared_rows[binding["role_input_id"]]
+                        self._authorize_context(
+                            connection,
+                            contexts[binding["role_input_id"]],
+                            grants,
                         )
                         evidence = self.evidence(
                             connection,
@@ -980,7 +1222,7 @@ class RoleRepository:
                 }
                 current_grants = []
                 for source_id in sorted(source_ids):
-                    current = self.market._source(connection, source_id)
+                    current = grants[source_id]
                     if source_has_active_withdrawal(connection, source_id):
                         current = current.model_copy(update={"approved": False})
                     current_grants.append(current)
