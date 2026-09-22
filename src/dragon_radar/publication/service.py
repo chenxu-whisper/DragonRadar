@@ -29,6 +29,8 @@ from dragon_radar.publication.tables import (
     source_dependencies,
 )
 from dragon_radar.readmodels.market import materialize_market
+from dragon_radar.roles.repository import RoleRepository
+from dragon_radar.roles.rules import validate_rule_definition
 from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import (
     Conflict,
@@ -70,6 +72,7 @@ class PublicationService:
         self.clock = clock or (lambda: datetime.now(UTC))
         self.market = market_repository or Repository(database, clock=self.clock)
         self.topics = TopicRepository(database, clock=self.clock)
+        self.roles = RoleRepository(database, self.market, clock=self.clock)
         self.repository = PublicationRepository(database, self.market, clock=self.clock)
 
     def _validate_inputs(self, connection, command):
@@ -209,6 +212,33 @@ class PublicationService:
             ),
         )
 
+    def _role_materialization(
+        self,
+        connection,
+        command: PublicationCommand,
+    ) -> DomainMaterialization:
+        row = self.roles.authorized_row(connection, command.role_input_id)
+        if (
+            row["market_snapshot_id"] != command.market_snapshot_id
+            or row["topic_snapshot_id"] != command.topic_snapshot_id
+            or row["trade_date"] != command.trade_date
+        ):
+            raise Forbidden("Role run does not match publication inputs")
+        validate_rule_definition(row["rule_version"], row["rule_json"])
+        if hashlib.sha256(row["rule_json"].encode()).hexdigest() != row["rule_hash"]:
+            raise Forbidden("Role run rule identity is invalid")
+        payload = self.roles.payload(row["id"], connection=connection)
+        statuses = [
+            status for topic in payload["topics"] for status in topic["statuses"]
+        ]
+        coverage = {
+            "expected": sum(status["expected"] for status in statuses),
+            "valid": sum(status["valid"] for status in statuses),
+            "legal_excluded": sum(status["legal_excluded"] for status in statuses),
+            "missing": sum(status["missing"] for status in statuses),
+        }
+        return DomainMaterialization(payload=payload, coverage=coverage)
+
     def publish(
         self,
         command: PublicationCommand,
@@ -298,6 +328,8 @@ class PublicationService:
                             )
                         elif domain == "topic":
                             result = self._topic_materialization(topic_context)
+                        elif domain == "role":
+                            result = self._role_materialization(connection, command)
                         else:
                             raise ValueError(f"No materializer registered for {domain}")
                         results[domain] = result

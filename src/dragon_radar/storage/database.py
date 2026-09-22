@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0006_market_readmodels"
+SCHEMA_REVISION = "0007_role_readmodels"
 
 
 class Database:
@@ -80,6 +80,18 @@ class Database:
                     "daily_kline",
                     "index_daily_kline",
                     "limit_up_record",
+                    "role_runs",
+                    "role_run_topics",
+                    "role_topic_statuses",
+                    "role_results",
+                    "role_factor_observations",
+                    "role_limit_rows",
+                    "role_change_summaries",
+                    "role_changes",
+                    "role_pending_validations",
+                    "role_validations",
+                    "role_validation_inputs",
+                    "role_materialization_attempts",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True

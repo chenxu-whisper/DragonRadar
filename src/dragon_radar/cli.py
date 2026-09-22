@@ -17,6 +17,7 @@ from dragon_radar.owner.cli import COMMANDS, add_commands, execute
 from dragon_radar.owner.security import OWNER_ERRORS
 from dragon_radar.publication.models import PublicationCommand
 from dragon_radar.publication.service import PublicationService
+from dragon_radar.roles.materialize import RoleMaterializer
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
     Conflict,
@@ -152,6 +153,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     publication_publish.add_argument("path", type=Path)
     publication_publish.add_argument("--key", required=True)
+    role_materialize = commands.add_parser(
+        "role-materialize", help="Materialize immutable role evidence"
+    )
+    role_materialize.add_argument("--market-snapshot", required=True)
+    role_materialize.add_argument("--topic-snapshot", required=True)
+    role_materialize.add_argument("--rule-version", required=True)
+    role_materialize.add_argument("--benchmark-id", required=True)
+    role_materialize.add_argument("--key", required=True)
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
@@ -302,6 +311,19 @@ def main(argv: list[str] | None = None) -> int:
                     str(publication.supersedes) if publication.supersedes else None
                 ),
                 "published_at": publication.published_at.isoformat(),
+            }
+        elif args.command == "role-materialize":
+            role_run = RoleMaterializer(database, repository).materialize(
+                market_snapshot_id=args.market_snapshot,
+                topic_snapshot_id=args.topic_snapshot,
+                rule_version=args.rule_version,
+                benchmark_id=args.benchmark_id,
+                key=args.key,
+            )
+            result = {
+                "role_run_id": str(role_run.id),
+                "status": role_run.status,
+                "trade_date": role_run.trade_date.isoformat(),
             }
         else:
             import uvicorn

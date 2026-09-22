@@ -786,6 +786,26 @@ def validate_relay(
             RoleRunEvidence.model_validate(referenced_runs[run_id].model_dump())
             for run_id in input_run_ids
         )
+        if (
+            pending.current_validation.outcome == "unavailable"
+            and len(input_run_ids) < 5
+        ):
+            if not _authorization_available(pending, current_window_runs):
+                return _unavailable_validation(
+                    pending,
+                    sessions=pending.validation_sessions,
+                    input_run_ids=input_run_ids,
+                    reasons=("authorization_unavailable",),
+                )
+            observation_reasons = _observation_proof_reasons(pending)
+            if observation_reasons:
+                return _unavailable_validation(
+                    pending,
+                    sessions=pending.validation_sessions,
+                    input_run_ids=input_run_ids,
+                    reasons=observation_reasons,
+                )
+            return (pending.current_validation,)
         if any(
             run.verification_status != "passed"
             or run.activation_event_id is None
@@ -891,9 +911,7 @@ def validate_relay(
         runs[0] for day in validation_sessions if (runs := by_day.get(day, []))
     )
     if any(len(by_day.get(day, ())) > 1 for day in validation_sessions):
-        if len(selected) != 5:
-            return ()
-        if len({run.role_run_id for run in selected}) != 5:
+        if len({run.role_run_id for run in selected}) != len(selected):
             raise ValueError("duplicate_input_run_id")
         return _unavailable_validation(
             pending,
@@ -904,6 +922,7 @@ def validate_relay(
     if len(selected) != 5:
         bound_runs: list[RoleRunEvidence] = []
         identity_reasons: list[str] = []
+        missing = False
         for day in validation_sessions:
             matching = by_day.get(day, ())
             drift = drift_by_day.get(day, ())
@@ -914,15 +933,19 @@ def validate_relay(
                 bound_runs.append(run)
                 identity_reasons.extend(reasons)
             else:
-                return ()
+                missing = True
         selected = tuple(bound_runs)
-        if len({run.role_run_id for run in selected}) != 5:
+        if len({run.role_run_id for run in selected}) != len(selected):
             raise ValueError("duplicate_input_run_id")
         return _unavailable_validation(
             pending,
             sessions=validation_sessions,
             runs=selected,
-            reasons=("topic_incomparable", *identity_reasons),
+            reasons=(
+                ("validation_runs_missing", *identity_reasons)
+                if missing
+                else ("topic_incomparable", *identity_reasons)
+            ),
         )
 
     if len({run.role_run_id for run in selected}) != len(selected):

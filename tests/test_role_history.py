@@ -2296,16 +2296,7 @@ def test_pending_relay_rejects_duplicate_validation_input_run_ids():
         RoleValidation.model_validate(values)
 
 
-@pytest.mark.parametrize(
-    "input_run_ids",
-    (
-        tuple(f"run-t{i}" for i in range(1, 5)),
-        tuple(f"run-t{i}" for i in range(1, 7)),
-    ),
-)
-def test_role_validation_unavailable_requires_exactly_five_input_runs(
-    input_run_ids,
-):
+def test_role_validation_unavailable_rejects_more_than_five_input_runs():
     pending, runs = _validation_fixture(
         new_end="130",
         old_end="110",
@@ -2317,11 +2308,11 @@ def test_role_validation_unavailable_requires_exactly_five_input_runs(
         old_return_raw=None,
         new_return_raw=None,
         topic_median_raw=None,
-        input_run_ids=input_run_ids,
+        input_run_ids=tuple(f"run-t{i}" for i in range(1, 7)),
         reasons=("proof_unavailable",),
     )
 
-    with pytest.raises(ValidationError, match="five input run IDs"):
+    with pytest.raises(ValidationError, match="at most five input run IDs"):
         RoleValidation.model_validate(values)
 
 
@@ -3080,27 +3071,8 @@ def test_validate_relay_returns_no_record_before_t_plus_5():
     assert validate_relay(pending, runs[:-1]) == ()
 
 
-def test_validate_relay_does_not_materialize_observation_mismatch_before_maturity():
-    pending, runs = _validation_fixture(
-        new_end="130",
-        old_end="110",
-        member_ends={"A": "120", "B": "125"},
-    )
-    values = pending.model_dump()
-    values["baseline_prices"] = tuple(
-        (
-            price.model_copy(update={"adjusted_price_raw": Decimal("110")})
-            if price.security_id == "NEW"
-            else price
-        )
-        for price in pending.baseline_prices
-    )
-    mismatched = PendingRelayValidation.model_validate(values)
-
-    assert validate_relay(mismatched, runs[:-1]) == ()
-
-
-def test_validate_relay_other_topic_does_not_complete_validation_chain():
+@pytest.mark.parametrize("available_count", range(5))
+def test_validate_relay_mature_missing_runs_binds_only_real_ids(available_count):
     pending, runs = _validation_fixture(
         new_end="130",
         old_end="110",
@@ -3123,7 +3095,74 @@ def test_validate_relay_other_topic_does_not_complete_validation_chain():
         member_ids=maturity_run.member_ids,
     )
 
-    assert validate_relay(pending, (*runs[:-1], other_topic)) == ()
+    validation = validate_relay(
+        pending,
+        (*runs[:available_count], other_topic),
+    )[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.input_run_ids == tuple(
+        run.role_run_id for run in runs[:available_count]
+    )
+    assert validation.reasons == ("validation_runs_missing",)
+    values = pending.model_dump()
+    values["current_validation"] = validation
+    persisted = PendingRelayValidation.model_validate(values)
+
+    assert validate_relay(
+        persisted,
+        (*runs[:available_count], other_topic),
+    ) == (validation,)
+
+
+def test_validate_relay_does_not_materialize_observation_mismatch_before_maturity():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    values = pending.model_dump()
+    values["baseline_prices"] = tuple(
+        (
+            price.model_copy(update={"adjusted_price_raw": Decimal("110")})
+            if price.security_id == "NEW"
+            else price
+        )
+        for price in pending.baseline_prices
+    )
+    mismatched = PendingRelayValidation.model_validate(values)
+
+    assert validate_relay(mismatched, runs[:-1]) == ()
+
+
+def test_validate_relay_other_topic_marks_mature_missing_run_unavailable():
+    pending, runs = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    maturity_run = runs[-1]
+    other_context = _context(
+        trade_date=maturity_run.trade_date,
+        sessions=FUTURE_SESSIONS,
+        topic_id="topic-b",
+        member_ids=maturity_run.member_ids,
+        bars=maturity_run.context.market.bars,
+        states=maturity_run.context.market.security_states,
+        expected_security_ids=maturity_run.context.market.expected_security_ids,
+    )
+    other_topic = _run(
+        "other-topic-t5",
+        other_context,
+        topic_id="topic-b",
+        member_ids=maturity_run.member_ids,
+    )
+
+    validation = validate_relay(pending, (*runs[:-1], other_topic))[0]
+
+    assert validation.outcome == "unavailable"
+    assert validation.input_run_ids == tuple(run.role_run_id for run in runs[:-1])
+    assert validation.reasons == ("validation_runs_missing",)
 
 
 def test_validate_relay_foreign_exchange_does_not_advance_maturity_clock():

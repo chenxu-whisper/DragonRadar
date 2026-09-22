@@ -344,8 +344,13 @@ class RoleValidation(_StrictFrozenRoleModel):
                 )
         elif any(value is None for value in values):
             raise ValueError("available validation outcomes require all raw returns")
-        if len(self.input_run_ids) != 5:
-            raise ValueError("relay validation requires five input run IDs")
+        if self.outcome == "unavailable":
+            if len(self.input_run_ids) > 5:
+                raise ValueError(
+                    "unavailable relay validation accepts at most five input run IDs"
+                )
+        elif len(self.input_run_ids) != 5:
+            raise ValueError("available relay validation requires five input run IDs")
         if self.outcome != "unavailable":
             outcome_reasons = tuple(
                 reason for reason in self.reasons if reason.startswith("outcome:")
@@ -850,12 +855,14 @@ class PendingRelayValidation(_StrictFrozenRoleModel):
                 self.current_validation.model_dump()
             )
             if (
-                len(validation.input_run_ids) != 5
+                (
+                    validation.outcome != "unavailable"
+                    and len(validation.input_run_ids) != 5
+                )
+                or len(validation.input_run_ids) > 5
                 or self.observation_run_id in validation.input_run_ids
             ):
-                raise ValueError(
-                    "current_validation must contain exactly five future run IDs"
-                )
+                raise ValueError("current_validation must contain valid future run IDs")
             expected = (
                 (
                     validation.pending_result_id,
