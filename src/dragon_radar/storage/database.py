@@ -91,6 +91,7 @@ class Database:
                     "role_pending_validations",
                     "role_validations",
                     "role_validation_inputs",
+                    "role_validation_commands",
                     "role_materialization_attempts",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))

@@ -18,6 +18,7 @@ from dragon_radar.owner.security import OWNER_ERRORS
 from dragon_radar.publication.models import PublicationCommand
 from dragon_radar.publication.service import PublicationService
 from dragon_radar.roles.materialize import RoleMaterializer
+from dragon_radar.roles.repository import RoleRepository
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
     Conflict,
@@ -161,6 +162,15 @@ def _parser() -> argparse.ArgumentParser:
     role_materialize.add_argument("--rule-version", required=True)
     role_materialize.add_argument("--benchmark-id", required=True)
     role_materialize.add_argument("--key", required=True)
+    role_validate_pending = commands.add_parser(
+        "role-validate-pending",
+        help="Validate mature pending relay evidence",
+    )
+    role_validate_pending.add_argument(
+        "--through-market-snapshot",
+        required=True,
+    )
+    role_validate_pending.add_argument("--key", required=True)
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
@@ -324,6 +334,19 @@ def main(argv: list[str] | None = None) -> int:
                 "role_run_id": str(role_run.id),
                 "status": role_run.status,
                 "trade_date": role_run.trade_date.isoformat(),
+            }
+        elif args.command == "role-validate-pending":
+            validated = RoleRepository(database, repository).validate_pending(
+                args.through_market_snapshot,
+                key=args.key,
+            )
+            result = {
+                "through_market_snapshot_id": str(validated.through_market_snapshot_id),
+                "validation_ids": [
+                    str(validation_id) for validation_id in validated.validation_ids
+                ],
+                "mature_count": validated.mature_count,
+                "immature_count": validated.immature_count,
             }
         else:
             import uvicorn

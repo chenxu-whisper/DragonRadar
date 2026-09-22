@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     Numeric,
     String,
@@ -102,7 +103,16 @@ role_topic_statuses = Table(
     Column("legal_excluded", Integer, nullable=False),
     Column("missing", Integer, nullable=False),
     Column("reasons", JSONB, nullable=False),
+    ForeignKeyConstraint(
+        ["role_run_id", "topic_id"],
+        ["role_run_topics.role_run_id", "role_run_topics.topic_id"],
+        ondelete="RESTRICT",
+    ),
     CheckConstraint("expected = valid + legal_excluded + missing"),
+    CheckConstraint(
+        "role IN ('trend', 'core', 'emotion', 'catchup', 'follower', 'relay')",
+        name="role_topic_statuses_role",
+    ),
 )
 
 role_results = Table(
@@ -133,6 +143,22 @@ role_results = Table(
         "rule_version",
         name="role_results_complete_business_key",
     ),
+    UniqueConstraint(
+        "id",
+        "role_run_id",
+        "topic_id",
+        "role",
+        name="role_results_pending_identity",
+    ),
+    ForeignKeyConstraint(
+        ["role_run_id", "topic_id"],
+        ["role_run_topics.role_run_id", "role_run_topics.topic_id"],
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "role IN ('trend', 'core', 'emotion', 'catchup', 'follower', 'relay')",
+        name="role_results_role",
+    ),
 )
 
 role_factor_observations = Table(
@@ -154,6 +180,11 @@ role_factor_observations = Table(
     Column("coverage", JSONB, nullable=False),
     Column("reasons", JSONB, nullable=False),
     Column("metadata", JSONB, nullable=False),
+    ForeignKeyConstraint(
+        ["role_run_id", "topic_id"],
+        ["role_run_topics.role_run_id", "role_run_topics.topic_id"],
+        ondelete="RESTRICT",
+    ),
 )
 
 role_limit_rows = Table(
@@ -173,6 +204,11 @@ role_limit_rows = Table(
     Column("broken_board", Boolean),
     Column("touched_not_sealed", Boolean),
     Column("reasons", JSONB, nullable=False),
+    ForeignKeyConstraint(
+        ["role_run_id", "topic_id"],
+        ["role_run_topics.role_run_id", "role_run_topics.topic_id"],
+        ondelete="RESTRICT",
+    ),
 )
 
 role_change_summaries = Table(
@@ -194,6 +230,15 @@ role_change_summaries = Table(
     Column("comparison_status", String(30), nullable=False),
     Column("membership_changed", Boolean, nullable=False),
     Column("reasons", JSONB, nullable=False),
+    ForeignKeyConstraint(
+        ["role_run_id", "topic_id"],
+        ["role_run_topics.role_run_id", "role_run_topics.topic_id"],
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "role IN ('trend', 'core', 'emotion', 'catchup', 'follower', 'relay')",
+        name="role_change_summaries_role",
+    ),
 )
 
 role_changes = Table(
@@ -214,6 +259,15 @@ role_changes = Table(
     Column("membership_changed", Boolean, nullable=False),
     Column("reasons", JSONB, nullable=False),
     UniqueConstraint("role_run_id", "topic_id", "security_id", "role"),
+    ForeignKeyConstraint(
+        ["role_run_id", "topic_id"],
+        ["role_run_topics.role_run_id", "role_run_topics.topic_id"],
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "role IN ('trend', 'core', 'emotion', 'catchup', 'follower', 'relay')",
+        name="role_changes_role",
+    ),
 )
 
 role_pending_validations = Table(
@@ -234,10 +288,35 @@ role_pending_validations = Table(
         nullable=False,
     ),
     Column("topic_id", String(100), nullable=False),
+    Column("pending_result_role", String(30), nullable=False, server_default="relay"),
     Column("observation_date", Date, nullable=False),
     Column("validation_sessions", JSONB, nullable=False),
     Column("baseline_evidence", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(
+        ["observation_run_id", "topic_id"],
+        ["role_run_topics.role_run_id", "role_run_topics.topic_id"],
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        [
+            "pending_result_id",
+            "observation_run_id",
+            "topic_id",
+            "pending_result_role",
+        ],
+        [
+            "role_results.id",
+            "role_results.role_run_id",
+            "role_results.topic_id",
+            "role_results.role",
+        ],
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "pending_result_role = 'relay'",
+        name="role_pending_validations_relay",
+    ),
 )
 
 role_validations = Table(
@@ -288,6 +367,25 @@ role_validation_inputs = Table(
     UniqueConstraint("validation_id", "input_role_run_id"),
 )
 
+role_validation_commands = Table(
+    "role_validation_commands",
+    metadata,
+    Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column("idempotency_key", String(200), nullable=False, unique=True),
+    Column("payload_hash", String(64), nullable=False),
+    Column(
+        "through_market_snapshot_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("validation_ids", JSONB, nullable=False),
+    Column("mature_count", Integer, nullable=False),
+    Column("immature_count", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("mature_count >= 0 AND immature_count >= 0"),
+)
+
 role_materialization_attempts = Table(
     "role_materialization_attempts",
     metadata,
@@ -322,5 +420,6 @@ __all__ = [
     "role_runs",
     "role_topic_statuses",
     "role_validation_inputs",
+    "role_validation_commands",
     "role_validations",
 ]
