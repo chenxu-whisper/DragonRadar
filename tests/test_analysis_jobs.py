@@ -289,6 +289,8 @@ def test_cache_identity_binds_authorized_snapshot_adjustment_version(job_setup):
     assert rows[0]["cache_key"] != rows[1]["cache_key"]
     assert first.command == first_command
     assert second.command == second_command
+    assert first.adjustment_version == "a1"
+    assert second.adjustment_version == "a2"
 
 
 def test_global_cache_reuses_result_across_owners_but_jobs_remain_isolated(job_setup):
@@ -1001,11 +1003,22 @@ async def test_owner_analysis_http_submit_get_idempotency_and_isolation(job_setu
                 "benchmark": "B000300",
                 "adj": "raw",
                 "symbols": [],
+                "algorithm_version": ALGORITHM_VERSION,
+                "adjustment_version": "a1",
             },
         }
         assert all(
             secret not in fetched.text
-            for secret in (str(session.owner_id), session.token, session.csrf, "lease")
+            for secret in (
+                str(session.owner_id),
+                session.token,
+                session.csrf,
+                "lease",
+                "cache_key",
+                "input_manifest",
+                "request_hash",
+                "attempt_count",
+            )
         )
 
         completed = AnalysisJobWorker(jobs, worker_id="http-worker").run_once()

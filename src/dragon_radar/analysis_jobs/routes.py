@@ -126,6 +126,8 @@ def _safe_record(record: AnalysisJobRecord) -> dict:
             "benchmark": command.benchmark,
             "adj": command.adjustment,
             "symbols": list(command.symbols),
+            "algorithm_version": command.algorithm_version,
+            "adjustment_version": record.adjustment_version,
         },
     }
 

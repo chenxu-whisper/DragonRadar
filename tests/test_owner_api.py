@@ -4,6 +4,7 @@ import importlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from http.cookies import SimpleCookie
+from uuid import uuid4
 
 import pytest
 from factories import batch
@@ -603,3 +604,68 @@ async def test_raw_asgi_missing_or_duplicate_content_headers(owners):
         )
         assert messages[0]["status"] == status
         assert (b"cache-control", b"no-store") in messages[0]["headers"]
+
+
+async def test_analysis_job_gate_uses_workbench_error_contract(owners):
+    repo, _ = owners
+    job_path = f"/api/analysis/jobs/{uuid4()}"
+    async with client_for(owner_app(owner_repository=repo)) as client:
+        for method, path, kwargs in (
+            ("GET", job_path, {}),
+            ("POST", "/api/analysis/jobs", {"json": {}, "headers": {"Origin": ORIGIN}}),
+        ):
+            response = await client.request(method, path, **kwargs)
+            assert_private(response, 403)
+            assert response.json() == {
+                "code": "FORBIDDEN",
+                "message": "Access denied",
+            }
+
+        old_owner_path = await client.get("/api/analysis/jobs-extra")
+        assert_private(old_owner_path, 401)
+        assert old_owner_path.json()["code"] == "session_unauthorized"
+
+        await pair(client, repo)
+        missing_csrf = await client.post(
+            "/api/analysis/jobs",
+            json={},
+            headers={"Origin": ORIGIN},
+        )
+        assert_private(missing_csrf, 403)
+        assert missing_csrf.json() == {
+            "code": "FORBIDDEN",
+            "message": "Access denied",
+        }
+
+        invalid = await client.get(job_path, headers={"Content-Length": "invalid"})
+        assert_private(invalid, 400)
+        assert invalid.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+
+        too_large = await client.get(job_path, headers={"Content-Length": "131073"})
+        assert_private(too_large, 413)
+        assert too_large.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+
+
+async def test_analysis_job_gate_maps_auth_database_failure(owners, monkeypatch):
+    repo, _ = owners
+    app = owner_app(owner_repository=repo)
+    async with client_for(app) as client:
+        await pair(client, repo)
+
+        def fail(*args):
+            raise OperationalError("secret-marker SQL", {}, Exception("secret-marker"))
+
+        monkeypatch.setattr(repo, "authorize_connection", fail)
+        response = await client.get(f"/api/analysis/jobs/{uuid4()}")
+
+    assert_private(response, 503)
+    assert response.json() == {
+        "code": "STORAGE_UNAVAILABLE",
+        "message": "Storage unavailable",
+    }

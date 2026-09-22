@@ -47,6 +47,7 @@ def _record(row) -> AnalysisJobRecord:
         command=AnalysisJobCommand.model_validate_json(
             json.dumps(command, ensure_ascii=True)
         ),
+        adjustment_version=manifest["adjustment_version"],
         status=row["status"],
         attempt_count=row["attempt_count"],
         result=row["result"],

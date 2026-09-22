@@ -21,7 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-from dragon_radar.domain.models import FrozenModel
+from dragon_radar.domain.models import FrozenModel, Identifier
 from dragon_radar.owner.models import owner_principals  # noqa: F401
 from dragon_radar.publication.tables import publications  # noqa: F401
 from dragon_radar.storage.models import metadata
@@ -89,6 +89,7 @@ class AnalysisJobRecord(_StrictFrozenModel):
     id: UUID
     owner_id: UUID
     command: AnalysisJobCommand
+    adjustment_version: Identifier
     status: JobStatus
     attempt_count: Annotated[int, Field(ge=0)]
     result: ImmutableJsonObject | None = None

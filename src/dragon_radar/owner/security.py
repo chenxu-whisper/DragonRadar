@@ -24,6 +24,7 @@ from dragon_radar.owner.repository import OwnerRepository
 SESSION_COOKIE = "__Host-dragon-private-session"
 CSRF_COOKIE = "__Host-dragon-private-csrf"
 MAX_BODY_BYTES = 131072
+ANALYSIS_JOBS_PATH = "/api/analysis/jobs"
 PAIR_PATH = "/api/owner/v1/pair"
 SESSION_PATH = "/api/owner/v1/session"
 OWNER_ERRORS = (CsrfForbidden, InvalidPairing, PairingRateLimited, SessionUnauthorized)
@@ -48,6 +49,23 @@ def invalid_request() -> BoundaryError:
 
 def storage_unavailable() -> BoundaryError:
     return BoundaryError(503, "storage_unavailable", "Storage unavailable")
+
+
+def _analysis_path(path: str) -> bool:
+    return path == ANALYSIS_JOBS_PATH or path.startswith(ANALYSIS_JOBS_PATH + "/")
+
+
+def _analysis_error(exc: Exception) -> BoundaryError:
+    if isinstance(exc, (SessionUnauthorized, CsrfForbidden)):
+        return BoundaryError(403, "FORBIDDEN", "Access denied")
+    if isinstance(exc, BoundaryError):
+        if exc.status_code == 403:
+            return BoundaryError(403, "FORBIDDEN", "Access denied")
+        if exc.status_code == 503:
+            return BoundaryError(503, "STORAGE_UNAVAILABLE", "Storage unavailable")
+        status = 413 if exc.status_code == 413 else 400
+        return BoundaryError(status, "INVALID_PARAM", "Invalid request")
+    return BoundaryError(503, "STORAGE_UNAVAILABLE", "Storage unavailable")
 
 
 def validate_origin(origin: str) -> str:
@@ -218,20 +236,19 @@ class OwnerGate:
         except (*OWNER_ERRORS, BoundaryError) as exc:
             if started:
                 raise
-            if (
-                scope["path"] == "/api/analysis/jobs"
-                and scope["method"] == "POST"
-                and isinstance(exc, BoundaryError)
-                and exc.code == "invalid_request"
-            ):
-                exc = BoundaryError(400, "INVALID_PARAM", "Invalid request")
+            if _analysis_path(scope["path"]):
+                exc = _analysis_error(exc)
             await JSONResponse(
                 {"code": exc.code, "message": exc.message}, status_code=exc.status_code
             )(scope, receive, no_store)
-        except Exception:
+        except Exception as exc:
             if started:
                 raise
-            exc = storage_unavailable()
+            exc = (
+                _analysis_error(exc)
+                if _analysis_path(scope["path"])
+                else storage_unavailable()
+            )
             await JSONResponse(
                 {"code": exc.code, "message": exc.message}, status_code=exc.status_code
             )(scope, receive, no_store)
