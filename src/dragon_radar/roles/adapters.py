@@ -1,6 +1,6 @@
 """Reset-facing role names and conservative evidence approval gates."""
 
-from collections.abc import Collection
+from collections.abc import Set
 from typing import Literal
 
 from pydantic import ConfigDict
@@ -44,9 +44,13 @@ def adapt_role_evaluation(
     evaluation: RoleEvaluation,
     *,
     rule_version: str,
-    approved_rule_versions: Collection[str] = RESET_APPROVED_RULE_VERSIONS,
+    approved_rule_versions: Set[str] = RESET_APPROVED_RULE_VERSIONS,
 ) -> tuple[ResetRoleEvidence, ...]:
     """Project every historical result row through the reset approval boundary."""
+    if not isinstance(approved_rule_versions, Set) or any(
+        not isinstance(version, str) for version in approved_rule_versions
+    ):
+        raise TypeError("approved_rule_versions must be a set of strings")
     topic_status = evaluation.topic_status
     rows = evaluation.candidates or (None,)
     result = []

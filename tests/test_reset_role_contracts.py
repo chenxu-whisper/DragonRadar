@@ -20,6 +20,7 @@ from dragon_radar.roles.models import (
 )
 from dragon_radar.roles.research_factors import (
     FactorCoverage,
+    FactorObservation,
     research_role_factors,
 )
 
@@ -238,6 +239,23 @@ def test_unapproved_or_nonready_rules_never_become_formal_candidates(
         assert approved[0].rank is None
 
 
+@pytest.mark.parametrize(
+    "approved_rule_versions",
+    ("role-v1", b"role-v1", ["role-v1"]),
+)
+def test_role_adapter_rejects_non_set_approved_rule_versions(
+    approved_rule_versions,
+):
+    evaluation = _evaluation("trend", "ready", "ready", "candidate")
+
+    with pytest.raises((TypeError, ValueError)):
+        adapt_role_evaluation(
+            evaluation,
+            rule_version="ole",
+            approved_rule_versions=approved_rule_versions,
+        )
+
+
 def test_approved_relay_without_pending_row_remains_insufficient():
     evaluation = RoleEvaluation(
         topic_status=RoleTopicStatus(
@@ -355,6 +373,41 @@ def test_all_factors_require_visible_effective_security_identity():
     assert all(observation.value is None for observation in observations)
     assert all(
         "security_identity_unavailable" in observation.reasons
+        for observation in observations
+    )
+
+
+@pytest.mark.parametrize(
+    "grant_change",
+    (
+        {"approved": False},
+        {"expires_at": CUTOFF},
+        {"source_id": "other"},
+        {"local_storage": False},
+        {"local_display": False},
+    ),
+)
+def test_all_factors_require_materializable_market_source_grant(grant_change):
+    market = _market()
+    market = market.model_copy(
+        update={"grant": market.grant.model_copy(update=grant_change)}
+    )
+
+    observations = research_role_factors(market, "STOCK", "CSI300")
+
+    assert all(observation.value is None for observation in observations)
+    assert all(
+        observation.reasons == ("market_source_not_materializable",)
+        for observation in observations
+    )
+    assert all(
+        observation.coverage
+        == FactorCoverage(
+            expected=observation.coverage.expected,
+            valid=0,
+            excluded=0,
+            missing=observation.coverage.expected,
+        )
         for observation in observations
     )
 
@@ -591,6 +644,49 @@ def test_directional_amount_coverage_counts_each_adjacent_return_observation():
         )
 
 
+def test_directional_amount_overflow_only_marks_affected_observation_unavailable():
+    market = _market()
+    down_day = SESSIONS[-10]
+    overflowing_up_day = SESSIONS[-5]
+    market = market.model_copy(
+        update={
+            "bars": tuple(
+                item.model_copy(
+                    update={
+                        "close": (
+                            Decimal("1") if item.trade_date == down_day else item.close
+                        ),
+                        "amount": (
+                            Decimal("1e1000000")
+                            if item.trade_date == overflowing_up_day
+                            else item.amount
+                        ),
+                    }
+                )
+                if item.security_id == "STOCK"
+                else item
+                for item in market.bars
+            )
+        }
+    )
+
+    metrics = _by_metric(research_role_factors(market, "STOCK", "CSI300"))
+
+    assert metrics["up_day_average_amount"].value is None
+    assert metrics["up_day_average_amount"].reasons == (
+        "factor_arithmetic_unavailable",
+    )
+    assert metrics["down_day_average_amount"].value == Decimal("12100")
+    assert metrics["down_day_average_amount"].reasons == ()
+    for metric in ("up_day_average_amount", "down_day_average_amount"):
+        assert metrics[metric].coverage == FactorCoverage(
+            expected=20,
+            valid=20,
+            excluded=0,
+            missing=0,
+        )
+
+
 def test_topic_share_currency_mismatch_is_missing_coverage():
     market, topic = _topic(_market())
     market = market.model_copy(
@@ -629,3 +725,23 @@ def test_factor_coverage_is_a_strict_nonnegative_partition():
         FactorCoverage(expected=2, valid=1, excluded=0, missing=0)
     with pytest.raises(ValidationError):
         FactorCoverage(expected=1, valid=-1, excluded=1, missing=1)
+
+
+def test_factor_observation_metadata_json_dump_and_strict_round_trip():
+    observation = _by_metric(research_role_factors(_market(), "STOCK", "CSI300"))[
+        "new_high_120"
+    ]
+
+    dumped = observation.model_dump(mode="json")
+    dumped_json = observation.model_dump_json()
+    restored = FactorObservation.model_validate_json(
+        dumped_json,
+        strict=True,
+    )
+
+    assert dumped["metadata"] == dict(observation.metadata)
+    assert isinstance(dumped["metadata"], dict)
+    assert restored == observation
+    assert restored.metadata == observation.metadata
+    with pytest.raises(TypeError):
+        restored.metadata["baseline"] = "changed"

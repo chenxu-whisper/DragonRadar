@@ -6,7 +6,13 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Literal, Self
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from dragon_radar.domain.models import (
     DailyBar,
@@ -77,6 +83,10 @@ class FactorObservation(FrozenModel):
     @classmethod
     def freeze_metadata(cls, value: Mapping[str, str]) -> Mapping[str, str]:
         return MappingProxyType(dict(value))
+
+    @field_serializer("metadata")
+    def serialize_metadata(self, value: Mapping[str, str]) -> dict[str, str]:
+        return dict(value)
 
     @model_validator(mode="after")
     def validate_value_reason(self) -> Self:
@@ -229,6 +239,56 @@ def _observation(
         coverage=coverage,
         reasons=reasons,
         metadata=metadata,
+    )
+
+
+def _market_source_unavailable(
+    metadata: Mapping[str, str],
+) -> tuple[FactorObservation, ...]:
+    specifications = (
+        ("FAC-R01", "relative_strength_20", "ratio", "T-20..T", 21),
+        ("FAC-R01", "relative_strength_60", "ratio", "T-60..T", 61),
+        ("FAC-R01", "relative_strength_120", "ratio", "T-120..T", 121),
+        ("FAC-R02", "close_vs_ma20", "ratio", "T-19..T", 20),
+        ("FAC-R02", "ma20_slope_5", "ratio", "MA20(T)/MA20(T-5)-1", 25),
+        ("FAC-R02", "close_vs_ma60", "ratio", "T-59..T", 60),
+        ("FAC-R02", "ma60_slope_5", "ratio", "MA60(T)/MA60(T-5)-1", 65),
+        ("FAC-R03", "new_high_60", "boolean", "T vs T-60..T-1", 61),
+        ("FAC-R03", "new_high_120", "boolean", "T vs T-120..T-1", 121),
+        ("FAC-R03", "maximum_drawdown_20", "ratio", "T-19..T", 20),
+        ("FAC-R03", "maximum_drawdown_60", "ratio", "T-59..T", 60),
+        ("FAC-C01", "average_amount_20", "currency", "T-19..T", 20),
+        ("FAC-C01", "topic_amount_share", "ratio", "T", 1),
+        ("FAC-C01", "turnover_stability_20", "ratio", "T-19..T", 20),
+        ("FAC-C01", "float_mv", "currency", "T", 1),
+        ("FAC-C02", "amount_change_1_vs_prior5", "ratio", "T vs T-5..T-1", 6),
+        (
+            "FAC-C02",
+            "up_day_average_amount",
+            "currency",
+            "20 return sessions through T",
+            20,
+        ),
+        (
+            "FAC-C02",
+            "down_day_average_amount",
+            "currency",
+            "20 return sessions through T",
+            20,
+        ),
+    )
+    return tuple(
+        _observation(
+            factor_id,
+            metric,
+            None,
+            unit,
+            window,
+            _coverage(expected, 0),
+            reasons=("market_source_not_materializable",),
+            metadata=metadata,
+        )
+        for factor_id, metric, unit, window, expected in specifications
     )
 
 
@@ -750,8 +810,12 @@ def _directional_amounts(
             value = None
             reasons = ("not_applicable",)
         else:
-            value = decimal_mean(sample)
-            reasons = ()
+            try:
+                value = decimal_mean(sample)
+                reasons = ()
+            except AnalysisUnavailable:
+                value = None
+                reasons = ("factor_arithmetic_unavailable",)
         observations.append(
             _observation(
                 "FAC-C02",
@@ -784,6 +848,12 @@ def research_role_factors(
         cutoff=cutoff,
         topic=topic,
     )
+    if not grant_allows_local(
+        market.grant,
+        source_id=market.source_id,
+        now=cutoff,
+    ):
+        return _market_source_unavailable(metadata)
     result: list[FactorObservation] = []
     result.extend(
         _relative_strength(inputs, security_id, benchmark_id, window, metadata)
