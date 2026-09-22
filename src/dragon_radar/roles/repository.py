@@ -862,6 +862,10 @@ class RoleRepository:
             mature_count = 0
             immature_count = 0
             for pending_row in pending_rows:
+                self.authorized_row(
+                    connection,
+                    pending_row["observation_run_id"],
+                )
                 baseline = PendingRelayValidation.model_validate_json(
                     json.dumps(pending_row["baseline_evidence"]),
                     strict=False,

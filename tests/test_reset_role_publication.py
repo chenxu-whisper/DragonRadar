@@ -21,7 +21,8 @@ from topic_factories import (
     topic_membership,
 )
 
-from dragon_radar.publication.models import PublicationCommand
+from dragon_radar.publication.models import PublicationCommand, RetentionPolicy
+from dragon_radar.publication.retention import RetentionService
 from dragon_radar.publication.service import PublicationService
 from dragon_radar.publication.tables import publications
 from dragon_radar.roles.materialize import RoleMaterializer
@@ -99,7 +100,7 @@ def _published_binding(connection, run, *, trade_date, version):
     return publication_id
 
 
-def _draft_run(connection, source_run, *, key, trade_date=None):
+def _draft_run(connection, source_run, *, key, trade_date=None, **changes):
     source = (
         connection.execute(select(role_runs).where(role_runs.c.id == source_run.id))
         .mappings()
@@ -116,6 +117,7 @@ def _draft_run(connection, source_run, *, key, trade_date=None):
     )
     if trade_date is not None:
         values["trade_date"] = trade_date
+    values.update(changes)
     connection.execute(insert(role_runs).values(**values))
     return run_id
 
@@ -187,12 +189,13 @@ def _validation_values(pending_id, *, revision, supersedes):
     }
 
 
-def _materialized_clone(connection, source_run, *, key, trade_date):
+def _materialized_clone(connection, source_run, *, key, trade_date, **changes):
     run_id = _draft_run(
         connection,
         source_run,
         key=key,
         trade_date=trade_date,
+        **changes,
     )
     topic = (
         connection.execute(
@@ -319,6 +322,67 @@ def test_migration_upgrades_existing_0006_schema(database_url):
         database.close()
 
 
+def test_migration_upgrades_database_already_at_original_0007(database_url):
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0007_role_readmodels")
+        assert (
+            "role_validation_commands" not in inspect(database.engine).get_table_names()
+        )
+
+        database.migrate()
+
+        assert database.ready()
+        assert "role_validation_commands" in inspect(database.engine).get_table_names()
+        with database.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_trigger "
+                        "WHERE tgname = 'role_validations_chain' "
+                        "AND NOT tgisinternal"
+                    )
+                )
+                == 1
+            )
+    finally:
+        database.close()
+
+
+def test_role_integrity_migration_roundtrips_from_clean_0006(database_url):
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0006_market_readmodels")
+            command.upgrade(config, "head")
+        assert database.ready()
+
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0007_role_readmodels")
+        assert (
+            "role_validation_commands" not in inspect(database.engine).get_table_names()
+        )
+
+        database.migrate()
+
+        assert database.ready()
+        assert "role_validation_commands" in inspect(database.engine).get_table_names()
+    finally:
+        database.close()
+
+
 def test_migration_creates_role_schema_and_readiness(database):
     assert database.ready()
     tables = set(inspect(database.engine).get_table_names())
@@ -340,7 +404,7 @@ def test_migration_creates_role_schema_and_readiness(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0007_role_readmodels"
+            == "0007a_role_integrity"
         )
 
 
@@ -1072,6 +1136,162 @@ def test_validate_pending_calls_relay_validator_atomically_and_is_idempotent(
     assert [
         item["input_role_run_id"] for item in topic_payload["role_validation_inputs"]
     ] == [str(run_id) for run_id in future_ids]
+
+
+def test_validate_pending_rejects_withdrawn_observation_run_atomically(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+    monkeypatch,
+):
+    pending, future_evidence = _validation_fixture(
+        new_end="130",
+        old_end="110",
+        member_ends={"A": "120", "B": "125"},
+    )
+    source = _materialize(materializer, role_inputs, key="withdrawn-observation")
+    with database.engine.begin() as connection:
+        connection.execute(text("ALTER TABLE role_results DISABLE TRIGGER USER"))
+        connection.execute(
+            text("ALTER TABLE role_pending_validations DISABLE TRIGGER USER")
+        )
+        pending_result_id = _result_row(connection, source.id)
+        pending_id = uuid4()
+        observation_run = pending.observation_run.model_copy(
+            update={"role_run_id": str(source.id)}
+        )
+        stored_pending = pending.model_copy(
+            update={
+                "pending_result_id": str(pending_result_id),
+                "observation_run_id": str(source.id),
+                "observation_run": observation_run,
+            }
+        )
+        connection.execute(
+            insert(role_pending_validations).values(
+                id=pending_id,
+                pending_result_id=pending_result_id,
+                observation_run_id=source.id,
+                topic_id=stored_pending.topic_id,
+                observation_date=stored_pending.observation_date,
+                validation_sessions=[
+                    day.isoformat() for day in stored_pending.validation_sessions
+                ],
+                baseline_evidence=stored_pending.model_dump(mode="json"),
+                created_at=NOW,
+            )
+        )
+        connection.execute(text("ALTER TABLE role_results ENABLE TRIGGER USER"))
+        connection.execute(
+            text("ALTER TABLE role_pending_validations ENABLE TRIGGER USER")
+        )
+
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="withdraw-observation-run",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
+    future_repository = type(repository)(
+        database,
+        clock=lambda: pending.operation_at,
+    )
+    target = future_repository.publish(
+        future_repository.import_batch(
+            future_evidence[-1].context.market,
+            key="withdrawn-observation-target",
+        ).id
+    )
+    topic_repository = TopicRepository(
+        database,
+        clock=lambda: pending.operation_at,
+    )
+    future_topic_batch = role_inputs[1].batch.model_copy(
+        update={"source_version": "s2"}
+    )
+    future_topic = topic_repository.publish(
+        topic_repository.import_batch(
+            future_topic_batch,
+            key="withdrawn-observation-topic",
+        ).id
+    )
+
+    future_ids = []
+    publication_ids = {}
+    with database.engine.begin() as connection:
+        for position, evidence in enumerate(future_evidence, start=1):
+            run_id = _materialized_clone(
+                connection,
+                source,
+                key=f"withdrawn-observation-future-{position}",
+                trade_date=evidence.trade_date,
+                market_snapshot_id=target.id,
+                topic_snapshot_id=future_topic.id,
+            )
+            future_ids.append(run_id)
+            publication_ids[run_id] = _published_binding(
+                connection,
+                source.model_copy(
+                    update={
+                        "id": run_id,
+                        "trade_date": evidence.trade_date,
+                        "market_snapshot_id": target.id,
+                        "topic_snapshot_id": future_topic.id,
+                    }
+                ),
+                trade_date=evidence.trade_date,
+                version=1,
+            )
+
+    role_repository = RoleRepository(
+        database,
+        future_repository,
+        clock=lambda: pending.operation_at,
+    )
+    by_id = {
+        run_id: evidence.model_copy(
+            update={
+                "role_run_id": str(run_id),
+                "activation_event_id": str(publication_ids[run_id]),
+            }
+        )
+        for run_id, evidence in zip(future_ids, future_evidence, strict=True)
+    }
+    monkeypatch.setattr(
+        role_repository,
+        "evidence",
+        lambda _connection, row, _topic_id, **_kwargs: by_id[row["id"]],
+    )
+
+    with pytest.raises(Forbidden, match="withdrawn"):
+        role_repository.validate_pending(
+            target.id,
+            key="withdrawn-observation-command",
+        )
+
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(select(text("count(*)")).select_from(role_validations))
+            == 0
+        )
+        assert (
+            connection.scalar(
+                select(text("count(*)"))
+                .select_from(role_validation_commands)
+                .where(
+                    role_validation_commands.c.idempotency_key
+                    == "withdrawn-observation-command"
+                )
+            )
+            == 0
+        )
 
 
 def test_role_materialize_cli_outputs_only_root_identity(

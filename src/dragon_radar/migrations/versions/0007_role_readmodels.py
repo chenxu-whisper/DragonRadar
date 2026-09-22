@@ -13,7 +13,6 @@ from dragon_radar.roles.tables import (
     role_run_topics,
     role_runs,
     role_topic_statuses,
-    role_validation_commands,
     role_validation_inputs,
     role_validations,
 )
@@ -50,10 +49,45 @@ def upgrade():
         role_pending_validations,
         role_validations,
         role_validation_inputs,
-        role_validation_commands,
         role_materialization_attempts,
     ):
         table.create(bind)
+
+    # Keep this released revision at its original b71d63d schema even though
+    # runtime table metadata contains constraints added by later revisions.
+    for table_name, constraint_name in (
+        (
+            "role_pending_validations",
+            "role_pending_validations_pending_result_id_observation_run_fkey",
+        ),
+        (
+            "role_pending_validations",
+            "role_pending_validations_observation_run_id_topic_id_fkey",
+        ),
+        ("role_pending_validations", "role_pending_validations_relay"),
+        ("role_changes", "role_changes_role_run_id_topic_id_fkey"),
+        ("role_changes", "role_changes_role"),
+        (
+            "role_change_summaries",
+            "role_change_summaries_role_run_id_topic_id_fkey",
+        ),
+        ("role_change_summaries", "role_change_summaries_role"),
+        ("role_limit_rows", "role_limit_rows_role_run_id_topic_id_fkey"),
+        (
+            "role_factor_observations",
+            "role_factor_observations_role_run_id_topic_id_fkey",
+        ),
+        ("role_results", "role_results_role_run_id_topic_id_fkey"),
+        ("role_results", "role_results_pending_identity"),
+        ("role_results", "role_results_role"),
+        (
+            "role_topic_statuses",
+            "role_topic_statuses_role_run_id_topic_id_fkey",
+        ),
+        ("role_topic_statuses", "role_topic_statuses_role"),
+    ):
+        op.drop_constraint(constraint_name, table_name)
+    op.drop_column("role_pending_validations", "pending_result_role")
 
     op.create_foreign_key(
         "publications_role_input_id_fkey",
@@ -67,7 +101,6 @@ def upgrade():
         CREATE FUNCTION guard_role_run_transition() RETURNS trigger AS $$
         DECLARE
             topic_count integer;
-            visible_topic_count integer;
             status_count integer;
             invalid_topic_count integer;
         BEGIN
@@ -88,22 +121,6 @@ def upgrade():
                 SELECT count(*) INTO topic_count
                   FROM role_run_topics topic
                  WHERE topic.role_run_id = NEW.id;
-                SELECT count(*) INTO visible_topic_count
-                  FROM topic_snapshots snapshot
-                  JOIN topic_import_batches batch
-                    ON batch.id = snapshot.batch_id
-                 CROSS JOIN LATERAL jsonb_array_elements(
-                     batch.canonical_json::jsonb -> 'topics'
-                 ) definition
-                 WHERE snapshot.id = NEW.topic_snapshot_id
-                   AND (definition ->> 'available_at')::timestamptz
-                       <= NEW.knowledge_cutoff
-                   AND (definition ->> 'effective_from')::date <= NEW.trade_date
-                   AND (
-                       (definition ->> 'effective_to') IS NULL
-                       OR NEW.trade_date
-                          < (definition ->> 'effective_to')::date
-                   );
                 SELECT count(*) INTO status_count
                   FROM role_topic_statuses status
                  WHERE status.role_run_id = NEW.id;
@@ -117,32 +134,6 @@ def upgrade():
                           AND status.topic_id = topic.topic_id
                    ) <> 6;
                 IF topic_count = 0
-                   OR topic_count <> visible_topic_count
-                   OR EXISTS (
-                       SELECT 1
-                         FROM role_run_topics topic
-                        WHERE topic.role_run_id = NEW.id
-                          AND NOT EXISTS (
-                              SELECT 1
-                                FROM topic_snapshots snapshot
-                                JOIN topic_import_batches batch
-                                  ON batch.id = snapshot.batch_id
-                               CROSS JOIN LATERAL jsonb_array_elements(
-                                   batch.canonical_json::jsonb -> 'topics'
-                               ) definition
-                               WHERE snapshot.id = NEW.topic_snapshot_id
-                                 AND definition ->> 'topic_id' = topic.topic_id
-                                 AND (definition ->> 'available_at')::timestamptz
-                                     <= NEW.knowledge_cutoff
-                                 AND (definition ->> 'effective_from')::date
-                                     <= NEW.trade_date
-                                 AND (
-                                     (definition ->> 'effective_to') IS NULL
-                                     OR NEW.trade_date
-                                        < (definition ->> 'effective_to')::date
-                                 )
-                          )
-                   )
                    OR status_count <> topic_count * 6
                    OR invalid_topic_count <> 0
                 THEN
@@ -213,45 +204,9 @@ def upgrade():
     for table in (
         role_validations,
         role_validation_inputs,
-        role_validation_commands,
         role_materialization_attempts,
     ):
         _immutable(table.name)
-    op.execute("""
-        CREATE FUNCTION guard_role_validation_chain() RETURNS trigger AS $$
-        DECLARE
-            previous_pending uuid;
-            previous_revision integer;
-        BEGIN
-            IF NEW.revision = 1 THEN
-                IF NEW.supersedes IS NOT NULL THEN
-                    RAISE EXCEPTION
-                        'first validation revision cannot supersede another record';
-                END IF;
-                RETURN NEW;
-            END IF;
-            IF NEW.revision <= 1 OR NEW.supersedes IS NULL THEN
-                RAISE EXCEPTION
-                    'validation correction requires a previous revision';
-            END IF;
-            SELECT pending_validation_id, revision
-              INTO previous_pending, previous_revision
-              FROM role_validations
-             WHERE id = NEW.supersedes;
-            IF NOT FOUND
-               OR previous_pending <> NEW.pending_validation_id
-               OR previous_revision <> NEW.revision - 1
-            THEN
-                RAISE EXCEPTION
-                    'validation correction must supersede the same pending chain';
-            END IF;
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-        CREATE TRIGGER role_validations_chain
-        BEFORE INSERT ON role_validations
-        FOR EACH ROW EXECUTE FUNCTION guard_role_validation_chain();
-    """)
 
     op.execute("""
         CREATE FUNCTION guard_publication_role_binding() RETURNS trigger AS $$
