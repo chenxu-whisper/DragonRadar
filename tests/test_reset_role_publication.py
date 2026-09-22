@@ -1138,7 +1138,7 @@ def test_validate_pending_calls_relay_validator_atomically_and_is_idempotent(
     ] == [str(run_id) for run_id in future_ids]
 
 
-def test_validate_pending_rejects_withdrawn_observation_run_atomically(
+def test_validate_pending_reauthorizes_replay_inputs_atomically(
     materializer,
     role_inputs,
     database,
@@ -1151,70 +1151,91 @@ def test_validate_pending_rejects_withdrawn_observation_run_atomically(
         member_ends={"A": "120", "B": "125"},
     )
     source = _materialize(materializer, role_inputs, key="withdrawn-observation")
+    second_source = _materialize(
+        materializer,
+        role_inputs,
+        key="withdrawn-observation-second",
+    )
     with database.engine.begin() as connection:
         connection.execute(text("ALTER TABLE role_results DISABLE TRIGGER USER"))
         connection.execute(
             text("ALTER TABLE role_pending_validations DISABLE TRIGGER USER")
         )
-        pending_result_id = _result_row(connection, source.id)
-        pending_id = uuid4()
-        observation_run = pending.observation_run.model_copy(
-            update={"role_run_id": str(source.id)}
-        )
-        stored_pending = pending.model_copy(
-            update={
-                "pending_result_id": str(pending_result_id),
-                "observation_run_id": str(source.id),
-                "observation_run": observation_run,
-            }
-        )
-        connection.execute(
-            insert(role_pending_validations).values(
-                id=pending_id,
-                pending_result_id=pending_result_id,
-                observation_run_id=source.id,
-                topic_id=stored_pending.topic_id,
-                observation_date=stored_pending.observation_date,
-                validation_sessions=[
-                    day.isoformat() for day in stored_pending.validation_sessions
-                ],
-                baseline_evidence=stored_pending.model_dump(mode="json"),
-                created_at=NOW,
+        for observation_source in (source, second_source):
+            pending_result_id = _result_row(connection, observation_source.id)
+            observation_run = pending.observation_run.model_copy(
+                update={"role_run_id": str(observation_source.id)}
             )
-        )
+            stored_pending = pending.model_copy(
+                update={
+                    "pending_result_id": str(pending_result_id),
+                    "observation_run_id": str(observation_source.id),
+                    "observation_run": observation_run,
+                }
+            )
+            connection.execute(
+                insert(role_pending_validations).values(
+                    id=uuid4(),
+                    pending_result_id=pending_result_id,
+                    observation_run_id=observation_source.id,
+                    topic_id=stored_pending.topic_id,
+                    observation_date=stored_pending.observation_date,
+                    validation_sessions=[
+                        day.isoformat() for day in stored_pending.validation_sessions
+                    ],
+                    baseline_evidence=stored_pending.model_dump(mode="json"),
+                    created_at=NOW,
+                )
+            )
         connection.execute(text("ALTER TABLE role_results ENABLE TRIGGER USER"))
         connection.execute(
             text("ALTER TABLE role_pending_validations ENABLE TRIGGER USER")
         )
 
-    retention = RetentionService(database, repository, clock=lambda: NOW)
-    retention.withdraw_storage(
-        "synthetic",
-        policy=RetentionPolicy(
-            reference="withdraw-observation-run",
-            approved=True,
-            action="deidentify",
-        ),
+    target_source_id = "validation-target"
+    target_grant = grant(source_id=target_source_id)
+    repository.register_source(target_grant)
+    target_batch = future_evidence[-1].context.market.model_copy(
+        update={
+            "source_id": target_source_id,
+            "grant": target_grant,
+            "security_states": tuple(
+                item.model_copy(update={"source_id": target_source_id})
+                for item in future_evidence[-1].context.market.security_states
+            ),
+            "bars": tuple(
+                item.model_copy(update={"source_id": target_source_id})
+                for item in future_evidence[-1].context.market.bars
+            ),
+            "limit_up_events": tuple(
+                item.model_copy(update={"source_id": target_source_id})
+                for item in future_evidence[-1].context.market.limit_up_events
+            ),
+        }
     )
-    retention.replay_withdrawals("synthetic")
-    retention.restore_source("synthetic", grant())
-
     future_repository = type(repository)(
         database,
         clock=lambda: pending.operation_at,
     )
     target = future_repository.publish(
         future_repository.import_batch(
-            future_evidence[-1].context.market,
+            target_batch,
             key="withdrawn-observation-target",
         ).id
     )
+    topic_source_id = "validation-topic"
+    topic_grant = grant(source_id=topic_source_id)
+    repository.register_source(topic_grant)
     topic_repository = TopicRepository(
         database,
         clock=lambda: pending.operation_at,
     )
     future_topic_batch = role_inputs[1].batch.model_copy(
-        update={"source_version": "s2"}
+        update={
+            "source_id": topic_source_id,
+            "source_version": "s2",
+            "grant": topic_grant,
+        }
     )
     future_topic = topic_repository.publish(
         topic_repository.import_batch(
@@ -1270,6 +1291,66 @@ def test_validate_pending_rejects_withdrawn_observation_run_atomically(
         lambda _connection, row, _topic_id, **_kwargs: by_id[row["id"]],
     )
 
+    first = role_repository.validate_pending(
+        target.id,
+        key="withdrawn-observation-command",
+    )
+    with database.engine.connect() as connection:
+        command_before = dict(
+            connection.execute(
+                select(role_validation_commands).where(
+                    role_validation_commands.c.idempotency_key
+                    == "withdrawn-observation-command"
+                )
+            )
+            .mappings()
+            .one()
+        )
+        validations_before = tuple(
+            connection.execute(select(role_validations).order_by(role_validations.c.id))
+            .mappings()
+            .all()
+        )
+        inputs_before = tuple(
+            connection.execute(
+                select(role_validation_inputs).order_by(
+                    role_validation_inputs.c.validation_id,
+                    role_validation_inputs.c.position,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert command_before["validation_ids"] == [
+        str(validation_id) for validation_id in first.validation_ids
+    ]
+    assert len(first.validation_ids) == 2
+    assert {row["input_role_run_id"] for row in inputs_before} == set(future_ids)
+
+    def fail_relay(*_args, **_kwargs):
+        raise AssertionError("idempotent replay must not recompute validation")
+
+    monkeypatch.setattr("dragon_radar.roles.repository.validate_relay", fail_relay)
+    future_repository.revoke_source(target_source_id)
+    with pytest.raises(Forbidden):
+        role_repository.validate_pending(
+            target.id,
+            key="withdrawn-observation-command",
+        )
+    future_repository.register_source(target_grant)
+
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="withdraw-observation-run",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
     with pytest.raises(Forbidden, match="withdrawn"):
         role_repository.validate_pending(
             target.id,
@@ -1277,21 +1358,34 @@ def test_validate_pending_rejects_withdrawn_observation_run_atomically(
         )
 
     with database.engine.connect() as connection:
-        assert (
-            connection.scalar(select(text("count(*)")).select_from(role_validations))
-            == 0
-        )
-        assert (
-            connection.scalar(
-                select(text("count(*)"))
-                .select_from(role_validation_commands)
-                .where(
+        command_after = dict(
+            connection.execute(
+                select(role_validation_commands).where(
                     role_validation_commands.c.idempotency_key
                     == "withdrawn-observation-command"
                 )
             )
-            == 0
+            .mappings()
+            .one()
         )
+        validations_after = tuple(
+            connection.execute(select(role_validations).order_by(role_validations.c.id))
+            .mappings()
+            .all()
+        )
+        inputs_after = tuple(
+            connection.execute(
+                select(role_validation_inputs).order_by(
+                    role_validation_inputs.c.validation_id,
+                    role_validation_inputs.c.position,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert command_after == command_before
+    assert validations_after == validations_before
+    assert inputs_after == inputs_before
 
 
 def test_role_materialize_cli_outputs_only_root_identity(

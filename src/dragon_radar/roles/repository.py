@@ -188,6 +188,76 @@ class RoleRepository:
         self._context(connection, row)
         return row
 
+    def _authorized_market_snapshot_input(self, connection, snapshot_id: UUID):
+        snapshot_row = (
+            connection.execute(select(snapshots).where(snapshots.c.id == snapshot_id))
+            .mappings()
+            .first()
+        )
+        if snapshot_row is None:
+            raise NotFound("Market snapshot not found")
+        archive = (
+            connection.execute(
+                select(import_batches).where(
+                    import_batches.c.id == snapshot_row["batch_id"]
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if archive is None:
+            raise Forbidden("Market snapshot identity is invalid")
+        target = self.market._snapshot(snapshot_row, archive).batch
+        current_grant = self.market._source(connection, snapshot_row["source_id"])
+        self.market._authorize(current_grant, target)
+        if source_has_active_withdrawal(
+            connection, snapshot_row["source_id"]
+        ) or archive_was_withdrawn(
+            connection,
+            snapshot_row["source_id"],
+            "market_import_batch",
+            snapshot_row["batch_id"],
+        ):
+            raise Forbidden("Market snapshot input was withdrawn")
+        return target
+
+    def _authorize_validation_replay(
+        self,
+        connection,
+        validation_ids: tuple[UUID, ...],
+    ) -> None:
+        if not validation_ids:
+            return
+        validation_rows = (
+            connection.execute(
+                select(
+                    role_validations.c.id,
+                    role_pending_validations.c.observation_run_id,
+                )
+                .join(
+                    role_pending_validations,
+                    role_pending_validations.c.id
+                    == role_validations.c.pending_validation_id,
+                )
+                .where(role_validations.c.id.in_(validation_ids))
+            )
+            .mappings()
+            .all()
+        )
+        if {row["id"] for row in validation_rows} != set(validation_ids):
+            raise Forbidden("Role validation identity is invalid")
+        input_run_ids = connection.execute(
+            select(role_validation_inputs.c.input_role_run_id).where(
+                role_validation_inputs.c.validation_id.in_(validation_ids)
+            )
+        ).scalars()
+        run_ids = {
+            *(row["observation_run_id"] for row in validation_rows),
+            *input_run_ids,
+        }
+        for run_id in sorted(run_ids, key=str):
+            self.authorized_row(connection, run_id)
+
     def get(self, role_run_id: UUID | str) -> RoleRunRecord:
         with self.database.engine.begin() as connection:
             return _record(self.authorized_row(connection, role_run_id))
@@ -782,50 +852,24 @@ class RoleRepository:
             if existing is not None:
                 if existing["payload_hash"] != payload_hash:
                     raise Conflict("Idempotency key already belongs to another payload")
+                self._authorized_market_snapshot_input(
+                    connection,
+                    existing["through_market_snapshot_id"],
+                )
+                validation_ids = tuple(
+                    UUID(value) for value in existing["validation_ids"]
+                )
+                self._authorize_validation_replay(connection, validation_ids)
                 return RoleValidationBatch(
                     through_market_snapshot_id=existing["through_market_snapshot_id"],
-                    validation_ids=tuple(
-                        UUID(value) for value in existing["validation_ids"]
-                    ),
+                    validation_ids=validation_ids,
                     mature_count=existing["mature_count"],
                     immature_count=existing["immature_count"],
                 )
-            target_row = (
-                connection.execute(
-                    select(snapshots).where(
-                        snapshots.c.id == through_market_snapshot_id
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if target_row is None:
-                raise NotFound("Market snapshot not found")
-            target_archive = (
-                connection.execute(
-                    select(import_batches).where(
-                        import_batches.c.id == target_row["batch_id"]
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if target_archive is None:
-                raise Forbidden("Market snapshot identity is invalid")
-            target = self.market._snapshot(target_row, target_archive).batch
-            current_target_grant = self.market._source(
-                connection, target_row["source_id"]
-            )
-            self.market._authorize(current_target_grant, target)
-            if source_has_active_withdrawal(
-                connection, target_row["source_id"]
-            ) or archive_was_withdrawn(
+            target = self._authorized_market_snapshot_input(
                 connection,
-                target_row["source_id"],
-                "market_import_batch",
-                target_row["batch_id"],
-            ):
-                raise Forbidden("Market snapshot input was withdrawn")
+                through_market_snapshot_id,
+            )
 
             pending_rows = (
                 connection.execute(
