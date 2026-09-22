@@ -706,11 +706,13 @@ async def test_publication_materializes_all_market_views_and_routes_only_read_th
     assert set(market.payload) == {
         "schema",
         "schema_version",
+        "analysis",
         "overview",
         "sector_flow",
         "sentiment",
         "heatmap",
         "search",
+        "stocks",
     }
     flat_members = market.payload["overview"]["breadth"]["members"]["flat"]
     assert [dict(member) for member in flat_members] == [
