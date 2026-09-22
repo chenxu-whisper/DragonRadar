@@ -7,7 +7,7 @@ from typing import Any
 from dragon_radar.analysis_jobs.models import AnalysisJobCommand, AnalysisJobRecord
 from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
 from dragon_radar.publication.models import PublishedSnapshot
-from dragon_radar.readmodels.analysis import _window
+from dragon_radar.readmodels.analysis import _eligible_security_ids, _window
 from dragon_radar.readmodels.projection import MarketProjection
 from dragon_radar.storage.repository import Forbidden, NotFound
 
@@ -23,14 +23,9 @@ def materialize_custom_analysis(
     )
     if not sessions:
         raise ValueError("Analysis window has no trading sessions")
-    known = set(batch.expected_security_ids)
     projection = MarketProjection(batch)
-    if any(
-        symbol not in known
-        or (identity := projection.state(symbol, batch.trade_date)) is None
-        or identity.security_type != "common_stock"
-        for symbol in command.symbols
-    ):
+    eligible_security_ids = _eligible_security_ids(projection)
+    if not set(command.symbols) <= set(eligible_security_ids):
         raise NotFound("Stock not found")
 
     if command.adjustment in {"qfq", "hfq"}:
@@ -45,6 +40,7 @@ def materialize_custom_analysis(
             "adjusted_end": sessions[-1].isoformat(),
             "benchmark": command.benchmark,
             "adjustment": command.adjustment,
+            "eligible_security_ids": list(eligible_security_ids),
             "available": False,
             "reason": (
                 f"{command.adjustment}_semantics_unproven_from_generic_"
@@ -60,6 +56,7 @@ def materialize_custom_analysis(
         None,
         sessions,
         command.benchmark,
+        eligible_security_ids,
     )
     projected = window["adjustments"][command.adjustment]
     stored_curves = projected["curves"]
@@ -118,6 +115,7 @@ def materialize_custom_analysis(
         "adjusted_end": sessions[-1].isoformat(),
         "benchmark": command.benchmark,
         "adjustment": command.adjustment,
+        "eligible_security_ids": list(eligible_security_ids),
         "available": True,
         "reason": None,
         "ranking": ranking,

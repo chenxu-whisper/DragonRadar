@@ -229,6 +229,23 @@ def _string_list(value, *, nonempty: bool = False) -> bool:
     )
 
 
+def _published_eligible_ids(analysis, stocks) -> tuple[str, ...]:
+    try:
+        values = analysis["eligible_security_ids"]
+        stock_rows = stocks["stocks"]
+        if (
+            not isinstance(values, list)
+            or not isinstance(stock_rows, dict)
+            or any(not isinstance(item, str) or not item for item in values)
+            or values != sorted(set(values))
+            or not set(values) <= set(stock_rows)
+        ):
+            raise DataUnavailable
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise DataUnavailable from None
+    return tuple(values)
+
+
 def _decimal(value, *, nullable: bool = True) -> bool:
     return (nullable and value is None) or (
         isinstance(value, Decimal) and value.is_finite()
@@ -340,7 +357,13 @@ def _curve_ids(rows, allowed_ids: set[str], sessions: tuple[date, ...]) -> set[s
     return set(identifiers)
 
 
-def _validate_cached_result(result, command, sessions, stocks):
+def _validate_cached_result(
+    result,
+    command,
+    sessions,
+    stocks,
+    eligible_security_ids: tuple[str, ...],
+):
     available_fields = {
         "schema",
         "schema_version",
@@ -352,6 +375,7 @@ def _validate_cached_result(result, command, sessions, stocks):
         "adjusted_end",
         "benchmark",
         "adjustment",
+        "eligible_security_ids",
         "available",
         "reason",
         "ranking",
@@ -386,6 +410,7 @@ def _validate_cached_result(result, command, sessions, stocks):
             or result.get("adjusted_end") != sessions[-1].isoformat()
             or result.get("benchmark") != command.benchmark
             or result.get("adjustment") != command.adjustment
+            or result.get("eligible_security_ids") != list(eligible_security_ids)
             or type(result.get("available")) is not bool
             or not isinstance(stock_rows, dict)
             or any(not isinstance(item, str) or not item for item in stock_ids)
@@ -412,7 +437,9 @@ def _validate_cached_result(result, command, sessions, stocks):
             or not _string_list(result["benchmark_reasons"])
         ):
             raise DataUnavailable
-        allowed_ids = stock_ids if not command.symbols else set(command.symbols)
+        allowed_ids = (
+            set(eligible_security_ids) if not command.symbols else set(command.symbols)
+        )
         if not allowed_ids <= stock_ids:
             raise DataUnavailable
         ranking_ids = _ranking_ids(result["ranking"], allowed_ids)
@@ -427,7 +454,7 @@ def _validate_cached_result(result, command, sessions, stocks):
                 raise DataUnavailable
         elif (
             ranking_ids & exclusion_ids
-            or ranking_ids | exclusion_ids != stock_ids
+            or ranking_ids | exclusion_ids != allowed_ids
             or curve_ids
         ):
             raise DataUnavailable
@@ -436,7 +463,15 @@ def _validate_cached_result(result, command, sessions, stocks):
     return result
 
 
-def _cached_result(request: Request, snapshot, values, symbols, sessions, stocks):
+def _cached_result(
+    request: Request,
+    snapshot,
+    values,
+    symbols,
+    sessions,
+    stocks,
+    eligible_security_ids: tuple[str, ...],
+):
     repository = request.app.state.analysis_repository
     if repository is None:
         return None
@@ -452,7 +487,13 @@ def _cached_result(request: Request, snapshot, values, symbols, sessions, stocks
     if result is None:
         return None
     result = _restore_decimals(result)
-    return _validate_cached_result(result, command, sessions, stocks)
+    return _validate_cached_result(
+        result,
+        command,
+        sessions,
+        stocks,
+        eligible_security_ids,
+    )
 
 
 @router.get("/api/rank/range")
@@ -470,6 +511,7 @@ def rank_range(request: Request):
             values["adjustment"],
             benchmark=values["benchmark"],
         )
+    eligible_security_ids = _published_eligible_ids(analysis, stocks)
     reason = _adjustment(analysis, values["adjustment"])
     if reason is not None:
         return _unavailable(
@@ -481,7 +523,15 @@ def rank_range(request: Request):
         )
     window_days, window = _window(analysis, sessions, values["benchmark"])
     if window is None or window_days is None:
-        cached = _cached_result(request, snapshot, values, (), sessions, stocks)
+        cached = _cached_result(
+            request,
+            snapshot,
+            values,
+            (),
+            sessions,
+            stocks,
+            eligible_security_ids,
+        )
         if cached is None:
             return _unavailable(
                 snapshot,
@@ -503,16 +553,22 @@ def rank_range(request: Request):
         window = {"adjustments": {values["adjustment"]: result}}
     try:
         projected = window["adjustments"][values["adjustment"]]
-        rows = _sorted_ranking(projected["ranking"], values["sort"])
+        projected_rows = projected["ranking"]
         exclusions = projected["exclusions"]
         benchmark_return = projected["benchmark_return_ratio"]
+        allowed_ids = set(eligible_security_ids)
+        ranking_ids = _ranking_ids(projected_rows, allowed_ids)
+        exclusion_ids = _exclusion_ids(exclusions, allowed_ids)
+        if ranking_ids & exclusion_ids or ranking_ids | exclusion_ids != allowed_ids:
+            raise DataUnavailable
+        rows = _sorted_ranking(projected_rows, values["sort"])
     except (AttributeError, KeyError, TypeError, ValueError):
         raise DataUnavailable from None
     if not isinstance(exclusions, list):
         raise DataUnavailable
     field = _SORT_FIELDS[values["sort"]][0]
     valid = sum(row.get(field) is not None for row in rows)
-    expected = len(stocks["stocks"])
+    expected = len(eligible_security_ids)
     response = _response(
         snapshot,
         {
@@ -546,6 +602,7 @@ def compare_curves(request: Request):
             values["adjustment"],
             benchmark=values["benchmark"],
         )
+    eligible_security_ids = _published_eligible_ids(analysis, stocks)
     reason = _adjustment(analysis, values["adjustment"])
     if reason is not None:
         return _unavailable(
@@ -566,6 +623,7 @@ def compare_curves(request: Request):
             symbols,
             sessions,
             stocks,
+            eligible_security_ids,
         )
         if cached is None:
             return _unavailable(

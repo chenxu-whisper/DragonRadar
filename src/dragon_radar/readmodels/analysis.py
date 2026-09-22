@@ -137,6 +137,20 @@ def _display_curves(
     return normalized, drawdown
 
 
+def _eligible_security_ids(projection: MarketProjection) -> tuple[str, ...]:
+    batch = projection.batch
+    return tuple(
+        sorted(
+            security_id
+            for security_id in set(batch.expected_security_ids)
+            if (
+                (state := projection.state(security_id, batch.trade_date)) is not None
+                and state.security_type == "common_stock"
+            )
+        )
+    )
+
+
 def _series(
     projection: MarketProjection,
     security_id: str,
@@ -199,15 +213,13 @@ def _window(
     topic_batch: TopicBatch | None,
     sessions: tuple[date, ...],
     benchmark_id: str,
+    eligible_security_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     batch = projection.batch
-    stock_ids = tuple(
-        security_id
-        for security_id in dict.fromkeys(batch.expected_security_ids)
-        if (
-            (current_state := projection.state(security_id, batch.trade_date)) is None
-            or current_state.security_type != "index"
-        )
+    stock_ids = (
+        _eligible_security_ids(projection)
+        if eligible_security_ids is None
+        else tuple(eligible_security_ids)
     )
     benchmark_state = projection.state(benchmark_id, batch.trade_date)
     benchmark_identity_valid = (
@@ -331,6 +343,7 @@ def materialize_analysis(
     """Build fixed N-offset windows from exactly N+1 supplied sessions."""
     calendar = TradingCalendar(batch.calendar)
     projection = MarketProjection(batch)
+    eligible_security_ids = _eligible_security_ids(projection)
     materialized = {}
     for size in windows:
         try:
@@ -349,6 +362,7 @@ def materialize_analysis(
             topic_batch,
             sessions,
             benchmark_id,
+            eligible_security_ids,
         )
     return {
         "schema": ANALYSIS_SCHEMA,
@@ -356,6 +370,7 @@ def materialize_analysis(
         "rule_version": ANALYSIS_RULE_VERSION,
         "trade_date": batch.trade_date.isoformat(),
         "adjustment_version": batch.adjustment_version,
+        "eligible_security_ids": list(eligible_security_ids),
         "adjustments": {
             "raw": {
                 "available": True,

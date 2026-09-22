@@ -269,6 +269,7 @@ def test_analysis_ranking_excludes_effective_indexes_and_benchmark():
 
     result = materialize_analysis(source, windows=(20,))
 
+    assert result["eligible_security_ids"] == ["A", "C", "D", "E"]
     for adjustment in ("raw", "adjusted"):
         projected = result["windows"]["20"]["adjustments"][adjustment]
         assert {row["security_id"] for row in projected["ranking"]} == {
@@ -1489,6 +1490,37 @@ async def test_analysis_routes_reject_extension_trade_date_mismatch(extension):
         "trade_date",
         "1999-01-01",
     )
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "DATA_UNAVAILABLE",
+        "message": "Data unavailable",
+    }
+
+
+@pytest.mark.anyio
+async def test_analysis_routes_reject_legacy_materialization_without_eligible_ids():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    del payload["analysis"]["eligible_security_ids"]
+    snapshot = _replace_market_payload(snapshot, payload)
     app = create_workbench_app(repository=_PublishedRepository(snapshot))
 
     async with AsyncClient(

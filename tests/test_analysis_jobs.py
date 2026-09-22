@@ -579,6 +579,7 @@ def test_worker_limits_rankings_exclusions_and_curves_to_requested_symbols(job_s
     assert completed.result["exclusions"][0]["reasons"]
     assert [curve["security_id"] for curve in completed.result["curves"]] == ["B"]
     assert completed.result["benchmark"] == "INDEX"
+    assert completed.result["eligible_security_ids"] == ("A", "B", "C", "D")
 
 
 def test_worker_keeps_partial_curve_without_treating_it_as_compare_exclusion(
@@ -648,6 +649,84 @@ def test_worker_empty_symbols_returns_full_market_ranking_without_curves(job_set
     assert [row["security_id"] for row in completed.result["ranking"]] == ["A", "B"]
     assert [row["security_id"] for row in completed.result["exclusions"]] == ["C"]
     assert not completed.result["curves"]
+
+
+@pytest.mark.anyio
+async def test_cached_rank_uses_eligible_stock_universe_when_pool_contains_index(
+    job_setup,
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.http.app import create_workbench_app
+
+    jobs, _owners, session, _publication = job_setup
+    security_ids = ("A", "B", "C", "INDEX")
+    publication = _publish(
+        jobs.database,
+        jobs.publications.market,
+        batch(
+            expected_security_ids=security_ids,
+            security_states=tuple(
+                state(
+                    security_id,
+                    security_type=(
+                        "index" if security_id == "INDEX" else "common_stock"
+                    ),
+                )
+                for security_id in security_ids
+            ),
+            bars=tuple(
+                bar(security_id, trade_date=day)
+                for security_id in security_ids
+                for day in DAYS
+                if not (security_id == "C" and day == DAYS[0])
+            ),
+        ),
+        suffix="-eligible-rank",
+    )
+    jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id, benchmark="INDEX", symbols=()),
+        key="eligible-rank",
+    )
+    completed = AnalysisJobWorker(jobs, worker_id="eligible-rank-worker").run_once()
+    assert completed.status == "succeeded"
+    app = create_workbench_app(
+        repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "snapshot_id": str(publication.id),
+                "start": DAYS[0].isoformat(),
+                "end": DAYS[-1].isoformat(),
+                "benchmark": "INDEX",
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 200
+    assert {row["security_id"] for row in response.json()["data"]["ranking"]} == {
+        "A",
+        "B",
+    }
+    exclusions = response.json()["data"]["exclusions"]
+    assert [row["security_id"] for row in exclusions] == ["C"]
+    assert "missing_price" in exclusions[0]["reasons"]
+    assert response.json()["coverage"] == {
+        "expected": 3,
+        "valid": 2,
+        "excluded": 0,
+        "missing": 1,
+    }
 
 
 def test_worker_rejects_index_in_expected_security_ids_as_analysis_symbol(job_setup):
