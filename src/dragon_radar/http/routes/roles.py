@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Request
 
 from dragon_radar.http.contracts import (
-    archived_coverage,
+    coverage_view,
     empty_envelope,
     snapshot_envelope,
 )
@@ -86,10 +86,6 @@ def _role_payload(snapshot: PublishedSnapshot):
     return payload, result
 
 
-def _role_coverage(result) -> dict[str, int]:
-    return archived_coverage(dict(result.coverage))
-
-
 def _response(
     snapshot: PublishedSnapshot,
     role_result,
@@ -97,6 +93,7 @@ def _response(
     data,
     coverage,
     *,
+    price_type="adjusted",
     quality_flags=(),
 ):
     payload = snapshot_envelope(snapshot, data, unit="ratio", coverage=coverage)
@@ -104,7 +101,7 @@ def _response(
     payload["rule_version"] = (
         role_payload["rule_version"] if role_payload is not None else None
     )
-    payload["basis"]["price_type"] = "adjusted"
+    payload["basis"]["price_type"] = price_type
     payload["basis"]["benchmark"] = (
         role_payload["benchmark_id"] if role_payload is not None else None
     )
@@ -230,6 +227,22 @@ def _promote_rate(market_payload):
         raise DataUnavailable from None
 
 
+def _promote_coverage(market_payload):
+    try:
+        stored = market_payload["overview"]["sentiment"]["promote_rate"]
+        valid = stored["denominator"]
+        excluded = stored["excluded"]
+        missing = stored["missing"]
+        return coverage_view(
+            valid + excluded + missing,
+            valid,
+            excluded,
+            missing,
+        )
+    except (KeyError, TypeError, ValueError):
+        raise DataUnavailable from None
+
+
 @router.get("/api/limit-up/ladder")
 def ladder(request: Request):
     query, trade_date, snapshot_id = _selection(request, set(), {"sector"})
@@ -246,8 +259,15 @@ def ladder(request: Request):
     sector = query.get("sector")
     names = _names(market_payload)
     by_security = {}
-    for topic in _selected_topics(role_payload, sector):
+    selected_topics = _selected_topics(role_payload, sector)
+    member_ids = {
+        security_id
+        for topic in selected_topics
+        for security_id in topic.get("member_ids", ())
+    }
+    for topic in selected_topics:
         topic_id = topic["topic_id"]
+        topic_members = set(topic.get("member_ids", ()))
         formal_roles = defaultdict(list)
         for internal_role in ROLE_NAMES:
             for evidence in _adapted(
@@ -262,6 +282,7 @@ def ladder(request: Request):
                 row.get("trade_date") != snapshot.trade_date.isoformat()
                 or type(boards) is not int
                 or boards < 1
+                or security_id not in topic_members
                 or security_id not in names
             ):
                 continue
@@ -314,12 +335,19 @@ def ladder(request: Request):
         "cells": cells,
         "promote_rate": _promote_rate(market_payload),
     }
+    coverage = coverage_view(
+        len(member_ids),
+        total,
+        0,
+        len(member_ids) - total,
+    )
     return _response(
         snapshot,
         role_result,
         role_payload,
         data,
-        _role_coverage(role_result),
+        coverage,
+        price_type="raw",
     )
 
 
@@ -352,7 +380,8 @@ def continuity(request: Request):
         role_result,
         role_payload,
         data,
-        _role_coverage(role_result),
+        _promote_coverage(market_payload),
+        price_type="raw",
     )
 
 
@@ -377,6 +406,7 @@ def candidates(request: Request):
     selected_topics = _selected_topics(role_payload, query.get("sector"))
     coverage = {"expected": 0, "valid": 0, "excluded": 0, "missing": 0}
     output = []
+    statuses = []
     quality_flags = set()
     for topic in selected_topics:
         evaluation = _evaluation(topic, internal_role, role_payload["rule_version"])
@@ -394,6 +424,23 @@ def candidates(request: Request):
             evaluation,
             rule_version=role_payload["rule_version"],
             approved_rule_versions=RESET_APPROVED_RULE_VERSIONS,
+        )
+        status_reasons = list(status.reasons)
+        if role_payload["rule_version"] not in RESET_APPROVED_RULE_VERSIONS:
+            for reason in (
+                "rule_version_not_approved",
+                "historical_research_only",
+            ):
+                if reason not in status_reasons:
+                    status_reasons.append(reason)
+            quality_flags.add("rule_version_not_approved")
+        statuses.append(
+            {
+                "sector_id": topic["topic_id"],
+                "status": status.status,
+                "capability": status.capability,
+                "reasons": status_reasons,
+            }
         )
         for evidence in adapted:
             if "rule_version_not_approved" in evidence.reasons:
@@ -427,7 +474,12 @@ def candidates(request: Request):
         snapshot,
         role_result,
         role_payload,
-        {"role": external_role, "candidates": output, "total": len(output)},
+        {
+            "role": external_role,
+            "statuses": statuses,
+            "candidates": output,
+            "total": len(output),
+        },
         coverage,
         quality_flags=quality_flags,
     )
@@ -438,9 +490,9 @@ def _factor_projection(item):
     metadata = item.get("metadata") or {}
     source_time = next(
         (
-            metadata[key]
-            for key in ("observation_at", "knowledge_cutoff", "source_time")
-            if metadata.get(key) is not None
+            value
+            for key in ("observation_at", "source_time", "available_at")
+            if (value := item.get(key, metadata.get(key))) is not None
         ),
         None,
     )
@@ -458,6 +510,9 @@ def _factor_projection(item):
         "coverage": dict(item.get("coverage") or {}),
         "reasons": reasons,
         "source_time": source_time,
+        "knowledge_cutoff": item.get(
+            "knowledge_cutoff", metadata.get("knowledge_cutoff")
+        ),
     }
 
 
@@ -559,12 +614,24 @@ def evidence(request: Request):
                 "missing_evidence": missing,
             }
         )
-    coverage = {
-        "expected": len(topic.get("member_ids", ())),
-        "valid": 1,
-        "excluded": 0,
-        "missing": max(len(topic.get("member_ids", ())) - 1, 0),
-    }
+    security_results = [
+        item
+        for item in topic.get("results", ())
+        if item.get("security_id") == query["security_id"]
+    ]
+    factor_available = any(
+        (item.get("coverage") or {}).get("valid", 0) > 0 for item in factor_rows
+    )
+    valid = int(
+        factor_available
+        or any(item.get("internal_status") != "excluded" for item in security_results)
+    )
+    excluded = int(
+        not valid
+        and bool(security_results)
+        and all(item.get("internal_status") == "excluded" for item in security_results)
+    )
+    coverage = coverage_view(1, valid, excluded, 1 - valid - excluded)
     return _response(
         snapshot,
         role_result,

@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 from factories import NOW, bar, batch, state
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 from topic_factories import topic_batch
 
 from dragon_radar.domain.models import LimitUpEvent
@@ -55,12 +55,16 @@ def _role_payload(run_id, trade_date):
         {
             "role": role,
             "capability": capability,
-            "status": "insufficient",
+            "status": "no_candidate" if role == "core" else "insufficient",
             "expected": 2,
-            "valid": 0,
+            "valid": 2 if role == "core" else 0,
             "legal_excluded": 0,
-            "missing": 2,
-            "reasons": ["required_inputs_missing"],
+            "missing": 0 if role == "core" else 2,
+            "reasons": (
+                ["no_ranked_candidate"]
+                if role == "core"
+                else ["required_inputs_missing"]
+            ),
         }
         for role, capability in (
             ("core", "ready"),
@@ -99,12 +103,30 @@ def _role_payload(run_id, trade_date):
         "reasons": [],
         "metadata": {"knowledge_cutoff": NOW.isoformat()},
     }
+    observed_factor = {
+        **factor,
+        "factor_id": "FAC-C01",
+        "metric": "circulating_market_cap",
+        "window": "T",
+        "value": "100000000.00",
+        "unit": "CNY",
+        "coverage": {
+            "expected": 1,
+            "valid": 1,
+            "excluded": 0,
+            "missing": 0,
+        },
+        "metadata": {
+            "available_at": datetime(2026, 9, 8, 15, tzinfo=UTC).isoformat(),
+            "knowledge_cutoff": NOW.isoformat(),
+        },
+    }
     topic_a = {
         "topic_id": "topic-a",
         "member_ids": ["A", "B"],
         "statuses": [status, *other_statuses],
         "results": results,
-        "factors": [factor],
+        "factors": [factor, observed_factor],
         "ladder": [
             {
                 "security_id": "A",
@@ -138,9 +160,18 @@ def _role_payload(run_id, trade_date):
         "statuses": [
             {**item, "expected": 1, "valid": 1, "missing": 0} for item in [status]
         ]
-        + [{**item, "expected": 1, "missing": 1} for item in other_statuses],
+        + [
+            {
+                **item,
+                "expected": 1,
+                "valid": 1 if item["status"] == "no_candidate" else 0,
+                "legal_excluded": 0,
+                "missing": 0 if item["status"] == "no_candidate" else 1,
+            }
+            for item in other_statuses
+        ],
         "results": [results[0]],
-        "factors": [factor],
+        "factors": [factor, observed_factor],
         "ladder": [topic_a["ladder"][0]],
     }
     return {
@@ -150,6 +181,36 @@ def _role_payload(run_id, trade_date):
         "benchmark_id": "CSI300",
         "topics": [topic_a, topic_b],
     }
+
+
+def _update_domain_payload(database, publication, domain, transform):
+    with database.engine.begin() as connection:
+        stored = (
+            connection.execute(
+                select(publication_results.c.payload).where(
+                    publication_results.c.publication_id == publication.id,
+                    publication_results.c.domain == domain,
+                )
+            )
+            .mappings()
+            .one()
+        )
+        payload = dict(stored["payload"])
+        transform(payload)
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results DISABLE TRIGGER USER"
+        )
+        connection.execute(
+            update(publication_results)
+            .where(
+                publication_results.c.publication_id == publication.id,
+                publication_results.c.domain == domain,
+            )
+            .values(payload=payload)
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results ENABLE TRIGGER USER"
+        )
 
 
 @pytest.fixture
@@ -212,8 +273,8 @@ def role_publication(database, repository):
         "numerator": 1,
         "denominator": 2,
         "value": "0.5000",
-        "excluded": 0,
-        "missing": 0,
+        "excluded": 1,
+        "missing": 2,
         "reason": None,
     }
     market_payload["overview"]["sentiment"]["yesterday_limit_up_median_return"] = (
@@ -446,9 +507,15 @@ async def test_current_source_withdrawal_is_forbidden(role_publication):
 
 
 async def test_ladder_deduplicates_multisector_stocks_and_matches_heatmap(
-    role_publication, monkeypatch
+    role_publication, database, monkeypatch
 ):
     publication, persisted, _repository = role_publication
+    _update_domain_payload(
+        database,
+        publication,
+        "role",
+        lambda payload: payload["topics"][0]["member_ids"].append("C"),
+    )
     monkeypatch.setattr(
         "dragon_radar.http.routes.roles.RESET_APPROVED_RULE_VERSIONS",
         frozenset({"role-v1"}),
@@ -484,6 +551,24 @@ async def test_ladder_deduplicates_multisector_stocks_and_matches_heatmap(
     assert sector.json()["data"]["total"] == 2
     assert empty.json()["data"]["cells"] == []
     assert empty.json()["data"]["total"] == 0
+    assert ladder.json()["coverage"] == {
+        "expected": 3,
+        "valid": 2,
+        "excluded": 0,
+        "missing": 1,
+    }
+    assert sector.json()["coverage"] == {
+        "expected": 3,
+        "valid": 2,
+        "excluded": 0,
+        "missing": 1,
+    }
+    assert empty.json()["coverage"] == {
+        "expected": 0,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 0,
+    }
 
 
 async def test_continuity_reuses_decimal_materialization(role_publication):
@@ -511,6 +596,12 @@ async def test_continuity_reuses_decimal_materialization(role_publication):
     assert (
         body["data"]["promote_rate"]["rate"].as_tuple() == Decimal("0.5000").as_tuple()
     )
+    assert body["coverage"] == {
+        "expected": 5,
+        "valid": 2,
+        "excluded": 1,
+        "missing": 2,
+    }
 
 
 async def test_candidates_preserve_ties_filter_coverage_and_fail_closed(
@@ -531,11 +622,25 @@ async def test_candidates_preserve_ties_filter_coverage_and_fail_closed(
         )
         approved = await client.get("/api/role/candidates", params=params)
         no_candidate = await client.get(
+            "/api/role/candidates", params={**params, "role": "zhongjun"}
+        )
+        insufficient = await client.get(
             "/api/role/candidates", params={**params, "role": "emotion_leader"}
         )
 
     assert closed.json()["data"]["candidates"] == []
     assert "rule_version_not_approved" in closed.json()["quality_flags"]
+    assert closed.json()["data"]["statuses"] == [
+        {
+            "sector_id": "topic-a",
+            "status": "ready",
+            "capability": "ready",
+            "reasons": [
+                "rule_version_not_approved",
+                "historical_research_only",
+            ],
+        }
+    ]
     candidates = approved.json()["data"]["candidates"]
     assert [(item["security_id"], item["rank"]) for item in candidates] == [
         ("A", 1),
@@ -547,10 +652,23 @@ async def test_candidates_preserve_ties_filter_coverage_and_fail_closed(
         "excluded": 0,
         "missing": 0,
     }
-    assert no_candidate.json()["data"]["candidates"] == []
-    assert no_candidate.json()["coverage"]["expected"] == sum(
-        no_candidate.json()["coverage"][key] for key in ("valid", "excluded", "missing")
-    )
+    assert no_candidate.json()["data"]["statuses"][0] == {
+        "sector_id": "topic-a",
+        "status": "no_candidate",
+        "capability": "ready",
+        "reasons": ["no_ranked_candidate"],
+    }
+    assert insufficient.json()["data"]["statuses"][0] == {
+        "sector_id": "topic-a",
+        "status": "insufficient",
+        "capability": "simplified",
+        "reasons": ["required_inputs_missing"],
+    }
+    for response in (no_candidate, insufficient):
+        assert response.json()["data"]["candidates"] == []
+        assert response.json()["coverage"]["expected"] == sum(
+            response.json()["coverage"][key] for key in ("valid", "excluded", "missing")
+        )
 
 
 async def test_evidence_is_traceable_and_missing_entity_is_404(
@@ -591,7 +709,116 @@ async def test_evidence_is_traceable_and_missing_entity_is_404(
         "coverage",
         "reasons",
         "source_time",
+        "knowledge_cutoff",
     } <= factor.keys()
-    assert factor["source_time"] == NOW.isoformat()
+    assert factor["source_time"] is None
+    assert factor["knowledge_cutoff"] == NOW.isoformat()
     assert "available_at" not in factor
+    observed = next(item for item in role["factors"] if item["factor_id"] == "FAC-C01")
+    assert observed["source_time"] == datetime(2026, 9, 8, 15, tzinfo=UTC).isoformat()
+    assert observed["knowledge_cutoff"] == NOW.isoformat()
+    assert response.json()["coverage"] == {
+        "expected": 1,
+        "valid": 1,
+        "excluded": 0,
+        "missing": 0,
+    }
+    assert response.json()["basis"]["price_type"] == "adjusted"
     assert missing.status_code == 404
+
+
+async def test_evidence_coverage_classifies_excluded_and_missing_security(
+    role_publication, database, monkeypatch
+):
+    publication, persisted, _repository = role_publication
+    monkeypatch.setattr(
+        "dragon_radar.http.routes.roles.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+
+    def add_evidence_states(payload):
+        topic = payload["topics"][0]
+        topic["member_ids"].extend(["C", "D"])
+        core = next(item for item in topic["statuses"] if item["role"] == "core")
+        core.update(
+            status="insufficient",
+            expected=1,
+            valid=0,
+            legal_excluded=1,
+            missing=0,
+            reasons=["source_not_authorized"],
+        )
+        topic["results"].append(
+            {
+                "id": str(uuid4()),
+                "security_id": "D",
+                "role": "core",
+                "rule_version": "role-v1",
+                "internal_status": "excluded",
+                "tie_rank": 1,
+                "factors": [],
+                "reasons": ["source_not_authorized"],
+            }
+        )
+
+    _update_domain_payload(
+        database,
+        publication,
+        "role",
+        add_evidence_states,
+    )
+    common = {
+        "date": str(publication.trade_date),
+        "snapshot_id": str(publication.id),
+        "sector": "topic-a",
+    }
+    async with await _client(persisted) as client:
+        excluded = await client.get(
+            "/api/role/evidence",
+            params={**common, "security_id": "D"},
+        )
+        missing = await client.get(
+            "/api/role/evidence",
+            params={**common, "security_id": "C"},
+        )
+
+    assert excluded.status_code == 200, excluded.text
+    assert excluded.json()["coverage"] == {
+        "expected": 1,
+        "valid": 0,
+        "excluded": 1,
+        "missing": 0,
+    }
+    assert missing.status_code == 200, missing.text
+    assert missing.json()["coverage"] == {
+        "expected": 1,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 1,
+    }
+
+
+async def test_role_endpoint_price_basis_matches_contract(role_publication):
+    publication, persisted, _repository = role_publication
+    common = {
+        "date": str(publication.trade_date),
+        "snapshot_id": str(publication.id),
+    }
+    async with await _client(persisted) as client:
+        responses = {
+            path: await client.get(path, params={**common, **params})
+            for path, params in (
+                ("/api/limit-up/ladder", {}),
+                ("/api/limit-up/continuity", {}),
+                ("/api/role/candidates", {"role": "trend_leader"}),
+                (
+                    "/api/role/evidence",
+                    {"security_id": "A", "sector": "topic-a"},
+                ),
+            )
+        }
+
+    assert responses["/api/limit-up/ladder"].json()["basis"]["price_type"] == "raw"
+    assert responses["/api/limit-up/continuity"].json()["basis"]["price_type"] == "raw"
+    assert responses["/api/role/candidates"].json()["basis"]["price_type"] == "adjusted"
+    assert responses["/api/role/evidence"].json()["basis"]["price_type"] == "adjusted"
