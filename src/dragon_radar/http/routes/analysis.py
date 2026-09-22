@@ -93,7 +93,7 @@ def _sessions(stocks):
             for stock in stocks["stocks"].values()
             if isinstance(stock, dict) and isinstance(stock.get("history"), list)
         ]
-    except (KeyError, TypeError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         raise DataUnavailable from None
     if not histories:
         raise DataUnavailable
@@ -104,17 +104,28 @@ def _window(analysis, sessions: tuple[date, ...], benchmark: str):
     expected = [day.isoformat() for day in sessions]
     try:
         windows = analysis["windows"]
-    except (KeyError, TypeError):
+        if not isinstance(windows, dict):
+            raise DataUnavailable
+        for key in ("20", "60", "120"):
+            candidate = windows[key]
+            if (
+                not isinstance(candidate, dict)
+                or type(candidate.get("available")) is not bool
+            ):
+                raise DataUnavailable
+            if not candidate["available"]:
+                continue
+            stored_sessions = candidate["sessions"]
+            if not isinstance(stored_sessions, list):
+                raise DataUnavailable
+            tuple(date.fromisoformat(day) for day in stored_sessions)
+            if (
+                candidate.get("benchmark_id") == benchmark
+                and stored_sessions == expected
+            ):
+                return int(key), candidate
+    except (AttributeError, KeyError, TypeError, ValueError):
         raise DataUnavailable from None
-    for key in ("20", "60", "120"):
-        candidate = windows.get(key)
-        if (
-            isinstance(candidate, dict)
-            and candidate.get("available") is True
-            and candidate.get("benchmark_id") == benchmark
-            and candidate.get("sessions") == expected
-        ):
-            return int(key), candidate
     return None, None
 
 
@@ -244,7 +255,7 @@ def rank_range(request: Request):
         rows = _sorted_ranking(projected["ranking"], values["sort"])
         exclusions = projected["exclusions"]
         benchmark_return = projected["benchmark_return_ratio"]
-    except (KeyError, TypeError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         raise DataUnavailable from None
     if not isinstance(exclusions, list):
         raise DataUnavailable
@@ -309,43 +320,43 @@ def compare_curves(request: Request):
         raise NotFound("Stock not found")
     try:
         stored_curves = window["adjustments"][values["adjustment"]]["curves"]
-    except (KeyError, TypeError):
-        raise DataUnavailable from None
-    curves = []
-    exclusions = []
-    for symbol in symbols:
-        curve = stored_curves.get(symbol)
-        if not isinstance(curve, dict):
-            raise DataUnavailable
-        normalized = curve.get("normalized")
-        drawdown = curve.get("drawdown")
-        reasons = curve.get("reasons")
-        if (
-            not isinstance(normalized, list)
-            or not isinstance(drawdown, list)
-            or not isinstance(reasons, list)
-            or len(normalized) != len(sessions)
-            or len(drawdown) != len(sessions)
-        ):
-            raise DataUnavailable
-        points = [
-            {
-                "trade_date": day,
-                "normalized": normalized[index],
-                "drawdown": drawdown[index],
-            }
-            for index, day in enumerate(sessions)
-        ]
-        if all(point["normalized"] is None for point in points):
-            exclusions.append({"security_id": symbol, "reasons": reasons})
-        else:
-            curves.append(
+        curves = []
+        exclusions = []
+        for symbol in symbols:
+            curve = stored_curves.get(symbol)
+            if not isinstance(curve, dict):
+                raise DataUnavailable
+            normalized = curve.get("normalized")
+            drawdown = curve.get("drawdown")
+            reasons = curve.get("reasons")
+            if (
+                not isinstance(normalized, list)
+                or not isinstance(drawdown, list)
+                or not isinstance(reasons, list)
+                or len(normalized) != len(sessions)
+                or len(drawdown) != len(sessions)
+            ):
+                raise DataUnavailable
+            points = [
                 {
-                    "security_id": symbol,
-                    "points": points,
-                    "reasons": reasons,
+                    "trade_date": day,
+                    "normalized": normalized[index],
+                    "drawdown": drawdown[index],
                 }
-            )
+                for index, day in enumerate(sessions)
+            ]
+            if all(point["normalized"] is None for point in points):
+                exclusions.append({"security_id": symbol, "reasons": reasons})
+            else:
+                curves.append(
+                    {
+                        "security_id": symbol,
+                        "points": points,
+                        "reasons": reasons,
+                    }
+                )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise DataUnavailable from None
     return _response(
         snapshot,
         {

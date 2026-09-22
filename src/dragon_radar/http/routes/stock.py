@@ -61,19 +61,29 @@ def _snapshot(
 
 def _market_extensions(snapshot: PublishedSnapshot):
     payload, coverage, materialized = _published_payload(snapshot)
+    if not materialized:
+        return None, None, coverage
     analysis = payload.get("analysis")
     stocks = payload.get("stocks")
+    expected_trade_date = snapshot.trade_date.isoformat()
     if (
-        not materialized
-        or not isinstance(analysis, dict)
+        not isinstance(analysis, dict)
         or analysis.get("schema") != "dragon-radar.analysis"
-        or analysis.get("schema_version") != 1
+        or type(analysis.get("schema_version")) is not int
+        or analysis["schema_version"] != 1
+        or not isinstance(analysis.get("rule_version"), str)
+        or not analysis["rule_version"]
+        or analysis.get("trade_date") != expected_trade_date
         or not isinstance(stocks, dict)
         or stocks.get("schema") != "dragon-radar.stocks"
-        or stocks.get("schema_version") != 1
+        or type(stocks.get("schema_version")) is not int
+        or stocks["schema_version"] != 1
+        or not isinstance(stocks.get("rule_version"), str)
+        or not stocks["rule_version"]
+        or stocks.get("trade_date") != expected_trade_date
         or not isinstance(stocks.get("stocks"), dict)
     ):
-        return None, None, coverage
+        raise DataUnavailable
     return analysis, stocks, coverage
 
 

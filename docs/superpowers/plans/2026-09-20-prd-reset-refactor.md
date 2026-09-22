@@ -439,6 +439,7 @@ ROLE_NAMES = {
 - [ ] 冷查询超5秒时，本机owner可通过受控 `POST /api/analysis/jobs` 提交同参数后台任务，使用 `GET /api/analysis/jobs/{job_id}` 轮询。任务只读取已发布输入，结果按版本缓存。公开GET不创建任务或写缓存；公开未预计算区间返回明确不可用，不能暴露owner任务。任务表并入0006迁移，租约/失败/重放边界在本任务测试；这些工程扩展由Task01写入契约。
 - [ ] 前端增加基准/复权控件和回撤图；缺口不连线、起止调整可见。K线仅在OHLC具备时绘制。
 - [ ] 跑分析、证券详情和原analytics测试、E2E；提交 `feat: complete benchmark and drawdown analysis`。
+- [ ] 后续性能验证风险：当前 `PublicationRepository` 会载入完整 market archive JSONB；Task 13 仍按发布时物化契约读取，且本任务文件范围未新增分析/股票持久化表。本轮不做拆表或读取架构重构，后续以真实 payload 体积、读取延迟和内存占用决定是否引入独立投影存储。
 
 **完成条件：** 排行、图表、详情与笔记引用的是同一价格和快照版本。
 
