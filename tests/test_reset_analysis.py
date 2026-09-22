@@ -1273,6 +1273,86 @@ async def test_cached_compare_counts_suspension_as_legal_exclusion():
     }
 
 
+def test_analysis_coverage_classifier_partitions_legal_exclusions_and_missing():
+    from dragon_radar.readmodels.analysis_validation import (
+        classify_analysis_coverage,
+    )
+
+    assert classify_analysis_coverage(
+        expected_ids=("A", "B", "C", "D"),
+        valid_ids={"A"},
+        exclusions=[
+            {"security_id": "B", "reasons": ["suspension"]},
+            {"security_id": "C", "reasons": ["suspension", "missing_price"]},
+        ],
+    ) == (4, 1, 1, 2)
+
+
+def test_comparison_projection_validator_returns_exact_partition():
+    from dragon_radar.readmodels.analysis_validation import (
+        validate_comparison_projection,
+    )
+
+    sessions = _sessions()[:2]
+    curve_ids, exclusion_ids = validate_comparison_projection(
+        curves=[
+            {
+                "security_id": "A",
+                "points": [
+                    {
+                        "trade_date": day.isoformat(),
+                        "normalized": Decimal("1"),
+                        "drawdown": Decimal("0"),
+                    }
+                    for day in sessions
+                ],
+                "reasons": [],
+            }
+        ],
+        exclusions=[{"security_id": "B", "reasons": ["suspension"]}],
+        expected_ids=("A", "B"),
+        sessions=sessions,
+    )
+
+    assert curve_ids == frozenset({"A"})
+    assert exclusion_ids == frozenset({"B"})
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("corruption", ("unpaired_point", "empty_exclusion_reason"))
+async def test_precomputed_compare_rejects_malformed_projection(corruption):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    curves = payload["analysis"]["windows"]["20"]["adjustments"]["raw"]["curves"]
+    if corruption == "unpaired_point":
+        curves["A"]["drawdown"][0] = None
+        symbols = "A"
+    else:
+        curves["C"]["reasons"] = []
+        symbols = "C"
+    snapshot = _replace_market_payload(snapshot, payload)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/compare/curves",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+                "symbols": symbols,
+            },
+        )
+
+    assert response.status_code == 503
+
+
 @pytest.mark.anyio
 async def test_rank_keeps_return_valid_rows_with_null_sort_value_last():
     from dragon_radar.http.app import create_workbench_app

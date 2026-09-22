@@ -19,12 +19,15 @@ from dragon_radar.http.routes.stock import (
 )
 from dragon_radar.http.selection import query_date, query_values
 from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.readmodels.analysis_validation import (
+    classify_analysis_coverage,
+    validate_comparison_projection,
+)
 from dragon_radar.storage.repository import NotFound
 
 router = APIRouter()
 
 _ADJUSTMENTS = frozenset({"raw", "qfq", "hfq"})
-_LEGAL_EXCLUSION_REASONS = frozenset({"suspension"})
 _SORT_FIELDS = {
     "return": ("return_ratio", True),
     "excess_return": ("excess_return_ratio", True),
@@ -322,48 +325,18 @@ def _exclusion_ids(rows, allowed_ids: set[str]) -> set[str]:
     return set(identifiers)
 
 
-def _analysis_coverage(expected: int, valid: int, exclusions) -> dict[str, int]:
-    excluded = sum(
-        bool(reasons := set(item["reasons"])) and reasons <= _LEGAL_EXCLUSION_REASONS
-        for item in exclusions
+def _analysis_coverage(
+    expected_ids,
+    valid_ids,
+    exclusions,
+) -> dict[str, int]:
+    return coverage_view(
+        *classify_analysis_coverage(
+            expected_ids=expected_ids,
+            valid_ids=valid_ids,
+            exclusions=exclusions,
+        )
     )
-    return coverage_view(expected, valid, excluded, expected - valid - excluded)
-
-
-def _curve_ids(rows, allowed_ids: set[str], sessions: tuple[date, ...]) -> set[str]:
-    expected_dates = [day.isoformat() for day in sessions]
-    identifiers = []
-    for row in rows:
-        if (
-            not isinstance(row, dict)
-            or set(row) != {"security_id", "points", "reasons"}
-            or not isinstance(row["security_id"], str)
-            or row["security_id"] not in allowed_ids
-            or not isinstance(row["points"], list)
-            or len(row["points"]) != len(sessions)
-            or not _string_list(row["reasons"])
-        ):
-            raise DataUnavailable
-        point_dates = []
-        has_value = False
-        for point in row["points"]:
-            if (
-                not isinstance(point, dict)
-                or set(point) != {"trade_date", "normalized", "drawdown"}
-                or not isinstance(point["trade_date"], str)
-                or not _decimal(point["normalized"])
-                or not _decimal(point["drawdown"])
-                or (point["normalized"] is None) != (point["drawdown"] is None)
-            ):
-                raise DataUnavailable
-            point_dates.append(point["trade_date"])
-            has_value = has_value or point["normalized"] is not None
-        if point_dates != expected_dates or not has_value:
-            raise DataUnavailable
-        identifiers.append(row["security_id"])
-    if len(set(identifiers)) != len(identifiers):
-        raise DataUnavailable
-    return set(identifiers)
 
 
 def _validate_cached_result(
@@ -452,21 +425,23 @@ def _validate_cached_result(
         if not allowed_ids <= stock_ids:
             raise DataUnavailable
         ranking_ids = _ranking_ids(result["ranking"], allowed_ids)
-        exclusion_ids = _exclusion_ids(result["exclusions"], allowed_ids)
-        curve_ids = _curve_ids(result["curves"], allowed_ids, sessions)
         if command.symbols:
+            curve_ids, _ = validate_comparison_projection(
+                curves=result["curves"],
+                exclusions=result["exclusions"],
+                expected_ids=allowed_ids,
+                sessions=sessions,
+            )
+            if not ranking_ids <= curve_ids:
+                raise DataUnavailable
+        else:
+            exclusion_ids = _exclusion_ids(result["exclusions"], allowed_ids)
             if (
-                curve_ids & exclusion_ids
-                or curve_ids | exclusion_ids != allowed_ids
-                or not ranking_ids <= curve_ids
+                ranking_ids & exclusion_ids
+                or ranking_ids | exclusion_ids != allowed_ids
+                or result["curves"]
             ):
                 raise DataUnavailable
-        elif (
-            ranking_ids & exclusion_ids
-            or ranking_ids | exclusion_ids != allowed_ids
-            or curve_ids
-        ):
-            raise DataUnavailable
     except (AttributeError, KeyError, TypeError, ValueError):
         raise DataUnavailable from None
     return result
@@ -576,8 +551,7 @@ def rank_range(request: Request):
     if not isinstance(exclusions, list):
         raise DataUnavailable
     field = _SORT_FIELDS[values["sort"]][0]
-    valid = sum(row.get(field) is not None for row in rows)
-    expected = len(eligible_security_ids)
+    valid_ids = {row["security_id"] for row in rows if row.get(field) is not None}
     response = _response(
         snapshot,
         {
@@ -588,7 +562,7 @@ def rank_range(request: Request):
             "ranking": rows,
             "exclusions": exclusions,
         },
-        _analysis_coverage(expected, valid, exclusions),
+        _analysis_coverage(eligible_security_ids, valid_ids, exclusions),
         adjustment=values["adjustment"],
         benchmark=values["benchmark"],
         rule_version=analysis.get("rule_version"),
@@ -653,6 +627,7 @@ def compare_curves(request: Request):
                 benchmark=values["benchmark"],
                 rule_version=analysis.get("rule_version"),
             )
+        curve_ids = frozenset(curve["security_id"] for curve in result["curves"])
         return _response(
             snapshot,
             {
@@ -663,8 +638,8 @@ def compare_curves(request: Request):
                 "exclusions": result["exclusions"],
             },
             _analysis_coverage(
-                len(symbols),
-                len(result["curves"]),
+                symbols,
+                curve_ids,
                 result["exclusions"],
             ),
             adjustment=values["adjustment"],
@@ -692,7 +667,7 @@ def compare_curves(request: Request):
                 raise DataUnavailable
             points = [
                 {
-                    "trade_date": day,
+                    "trade_date": day.isoformat(),
                     "normalized": normalized[index],
                     "drawdown": drawdown[index],
                 }
@@ -710,6 +685,15 @@ def compare_curves(request: Request):
                 )
     except (AttributeError, KeyError, TypeError, ValueError):
         raise DataUnavailable from None
+    try:
+        curve_ids, _ = validate_comparison_projection(
+            curves=curves,
+            exclusions=exclusions,
+            expected_ids=symbols,
+            sessions=sessions,
+        )
+    except ValueError:
+        raise DataUnavailable from None
     return _response(
         snapshot,
         {
@@ -720,8 +704,8 @@ def compare_curves(request: Request):
             "exclusions": exclusions,
         },
         _analysis_coverage(
-            len(symbols),
-            len(curves),
+            symbols,
+            curve_ids,
             exclusions,
         ),
         adjustment=values["adjustment"],
