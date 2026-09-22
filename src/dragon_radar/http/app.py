@@ -7,28 +7,23 @@ from uuid import UUID
 from fastapi import FastAPI, Request
 
 from dragon_radar.analytics.metrics import market_breadth  # noqa: F401
-from dragon_radar.http.contracts import (
-    empty_envelope,
-    snapshot_envelope,
-    snapshot_summary,
-)
+from dragon_radar.http.contracts import empty_envelope, snapshot_summary
 from dragon_radar.http.errors import (
     StorageUnavailable,
     error_response,
     register_error_handlers,
 )
+from dragon_radar.http.routes.analysis import router as analysis_router
 from dragon_radar.http.routes.market import router as market_router
 from dragon_radar.http.routes.roles import router as roles_router
+from dragon_radar.http.routes.stock import router as stock_router
 from dragon_radar.http.selection import (
     query_date,
     query_integer,
     query_values,
-    select_snapshot,
-    selectors,
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.publication.repository import PublicationRepository
-from dragon_radar.readmodels.securities import security_detail
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import NotFound, Repository
 
@@ -120,18 +115,7 @@ def create_workbench_app(
 
     app.include_router(market_router)
     app.include_router(roles_router)
-
-    @app.get("/api/stock/{security_id}")
-    def stock(security_id: str, request: Request):
-        trade_date, snapshot_id = selectors(request)
-        snapshot = select_snapshot(get_repository(request), trade_date, snapshot_id)
-        if snapshot is None:
-            return DecimalJSONResponse(empty_envelope(trade_date))
-        result = security_detail(snapshot.batch, security_id)
-        return DecimalJSONResponse(
-            snapshot_envelope(
-                snapshot, result.model_dump(mode="python"), unit="currency/share"
-            )
-        )
+    app.include_router(stock_router)
+    app.include_router(analysis_router)
 
     return app

@@ -28,7 +28,9 @@ from dragon_radar.publication.tables import (
     publications,
     source_dependencies,
 )
+from dragon_radar.readmodels.analysis import materialize_analysis
 from dragon_radar.readmodels.market import materialize_market
+from dragon_radar.readmodels.stock import materialize_stocks
 from dragon_radar.roles.repository import RoleRepository
 from dragon_radar.roles.rules import validate_rule_definition
 from dragon_radar.storage.models import import_batches, snapshots
@@ -187,6 +189,8 @@ class PublicationService:
         _row, archive, batch = context
         topic_batch = topic_context[2] if topic_context is not None else None
         payload = materialize_market(batch, topic_batch)
+        payload["analysis"] = materialize_analysis(batch, topic_batch)
+        payload["stocks"] = materialize_stocks(batch)
         wire_coverage = payload["overview"]["breadth"]["coverage"]
         coverage = {
             "expected": wire_coverage["expected"],

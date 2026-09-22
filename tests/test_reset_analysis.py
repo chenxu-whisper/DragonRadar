@@ -3,9 +3,11 @@
 import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal, Inexact, localcontext
+from uuid import uuid4
 
 import pytest
 from factories import bar, batch, state
+from httpx import ASGITransport, AsyncClient
 
 
 def _sessions(count: int = 21) -> tuple[date, ...]:
@@ -569,3 +571,397 @@ def test_market_projection_caches_security_scoped_batches_and_observations():
     assert {item.security_id for item in first_batch.security_states} == {"A"}
     assert len(first_batch.security_states) < len(source.security_states)
     assert first_observation is second_observation
+
+
+def _published_analysis_snapshot(*, role_ready: bool = False):
+    from dragon_radar.publication.models import (
+        Publication,
+        PublicationResult,
+        PublishedSnapshot,
+    )
+    from dragon_radar.publication.service import _stored_json
+    from dragon_radar.readmodels.analysis import materialize_analysis
+    from dragon_radar.readmodels.market import materialize_market
+    from dragon_radar.readmodels.stock import materialize_stocks
+    from dragon_radar.storage.models import Snapshot
+
+    source = _analysis_batch()
+    publication_id = uuid4()
+    market_snapshot_id = uuid4()
+    market_payload = materialize_market(source, None)
+    market_payload["analysis"] = materialize_analysis(source, None)
+    market_payload["stocks"] = materialize_stocks(source)
+    role_payload = {
+        "role_run_id": str(uuid4()),
+        "trade_date": source.trade_date.isoformat(),
+        "rule_version": "role-v1",
+        "benchmark_id": "B000300",
+        "topics": [
+            {
+                "topic_id": "topic-a",
+                "member_ids": ["A"],
+                "statuses": [],
+                "results": [
+                    {
+                        "security_id": "A",
+                        "role": "trend",
+                        "internal_status": "candidate",
+                        "tie_rank": 1,
+                        "reasons": [],
+                    }
+                ],
+                "ladder": [
+                    {
+                        "security_id": "A",
+                        "trade_date": source.trade_date.isoformat(),
+                        "closing_limit_streak": 2,
+                    }
+                ],
+            }
+        ],
+    }
+    publication = Publication(
+        id=publication_id,
+        trade_date=source.trade_date,
+        version=1,
+        supersedes=None,
+        status="published",
+        market_snapshot_id=market_snapshot_id,
+        topic_snapshot_id=None,
+        news_input_id=None,
+        regulation_input_id=None,
+        role_input_id=uuid4() if role_ready else None,
+        domains={
+            "market": "ready",
+            "topic": "disabled",
+            "news": "disabled",
+            "regulation": "disabled",
+            "role": "ready" if role_ready else "disabled",
+        },
+        coverage={},
+        quality_flags=(),
+        command_json="{}",
+        published_at=source.as_of,
+    )
+    coverage = {
+        "expected": 4,
+        "valid": 4,
+        "legal_excluded": 0,
+        "missing": 0,
+    }
+    snapshot = Snapshot(
+        id=market_snapshot_id,
+        batch_id=uuid4(),
+        revision=1,
+        supersedes=None,
+        published_at=source.as_of,
+        manifest={"rule_version": "market-v1"},
+        batch=source,
+        quality_report={"issues": [], "coverage": coverage},
+    )
+    results = (
+        PublicationResult(
+            publication_id=publication_id,
+            domain="market",
+            input_id=market_snapshot_id,
+            status="ready",
+            payload=_stored_json(market_payload),
+            coverage=coverage,
+            quality_flags=(),
+        ),
+        PublicationResult(
+            publication_id=publication_id,
+            domain="role",
+            input_id=publication.role_input_id,
+            status="ready" if role_ready else "disabled",
+            payload=role_payload if role_ready else {},
+            coverage={},
+            quality_flags=(),
+        ),
+        PublicationResult(
+            publication_id=publication_id,
+            domain="regulation",
+            input_id=None,
+            status="disabled",
+            payload={},
+            coverage={},
+            quality_flags=(),
+        ),
+    )
+    return PublishedSnapshot(publication, snapshot, results)
+
+
+class _PublishedRepository:
+    database = object()
+
+    def __init__(self, snapshot=None):
+        self.snapshot = snapshot
+        self.accesses = 0
+
+    def get_snapshot(self, snapshot_id):
+        self.accesses += 1
+        if self.snapshot is not None and snapshot_id == self.snapshot.id:
+            return self.snapshot
+        return None
+
+    def list_snapshots(self, *, trade_date=None, **_kwargs):
+        self.accesses += 1
+        if self.snapshot is None:
+            return []
+        if trade_date is not None and trade_date != self.snapshot.trade_date:
+            return []
+        return [self.snapshot]
+
+
+def test_publication_market_payload_adds_versioned_analysis_and_stocks():
+    from dragon_radar.publication.service import PublicationService
+
+    source = _analysis_batch()
+    result = PublicationService._market_materialization(
+        (
+            None,
+            {"quality_report": {"issues": []}},
+            source,
+        ),
+    )
+
+    assert result.payload["schema"] == "dragon-radar.market-read-model"
+    assert result.payload["analysis"]["schema"] == "dragon-radar.analysis"
+    assert result.payload["analysis"]["schema_version"] == 1
+    assert result.payload["stocks"]["schema"] == "dragon-radar.stocks"
+    assert result.payload["stocks"]["schema_version"] == 1
+    assert (
+        result.payload["analysis"]["windows"]["20"]["adjustments"]["raw"]["ranking"][0][
+            "return_ratio"
+        ]
+        == "0.1"
+    )
+    assert result.payload["stocks"]["stocks"]["A"]["quote"]["last"] == "110"
+
+
+@pytest.mark.anyio
+async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot(role_ready=True)
+    repository = _PublishedRepository(snapshot)
+
+    def recomputation_is_forbidden(*_args, **_kwargs):
+        raise AssertionError("published read model was recomputed")
+
+    monkeypatch.setattr(
+        "dragon_radar.readmodels.analysis.materialize_analysis",
+        recomputation_is_forbidden,
+    )
+    monkeypatch.setattr(
+        "dragon_radar.readmodels.stock.materialize_stocks",
+        recomputation_is_forbidden,
+    )
+    app = create_workbench_app(repository=repository)
+    start, end = _sessions()[0], _sessions()[-1]
+    common = {"snapshot_id": str(snapshot.id), "start": str(start), "end": str(end)}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        stock_response = await client.get(
+            "/api/stock/A", params={"snapshot_id": str(snapshot.id)}
+        )
+        raw_kline = await client.get(
+            "/api/stock/A/kline", params={**common, "adj": "raw"}
+        )
+        qfq_kline = await client.get("/api/stock/A/kline", params=common)
+        raw_rank = await client.get(
+            "/api/rank/range",
+            params={**common, "adj": "raw", "benchmark": "B000300"},
+        )
+        qfq_rank = await client.get("/api/rank/range", params=common)
+        curves = await client.get(
+            "/api/compare/curves",
+            params={**common, "symbols": "A,D", "adj": "raw"},
+        )
+        qfq_curves = await client.get(
+            "/api/compare/curves",
+            params={**common, "symbols": "A,D"},
+        )
+        uncomputed = await client.get(
+            "/api/rank/range",
+            params={
+                **common,
+                "start": str(_sessions()[1]),
+                "adj": "raw",
+            },
+        )
+        adjusted = await client.get(
+            "/api/rank/range",
+            params={
+                **common,
+                "start": str(start - timedelta(days=1)),
+                "end": str(end + timedelta(days=1)),
+                "adj": "raw",
+            },
+        )
+        unpinned_adjusted = await client.get(
+            "/api/rank/range",
+            params={
+                "start": str(start - timedelta(days=1)),
+                "end": str(end + timedelta(days=1)),
+                "adj": "raw",
+            },
+        )
+
+    assert stock_response.status_code == 200
+    stock = stock_response.json()["data"]
+    assert set(stock) >= {
+        "security_id",
+        "name",
+        "quote",
+        "roles",
+        "seal",
+        "regulation",
+    }
+    assert stock["security_id"] == "A"
+    assert stock["name"] == "Synthetic A"
+    assert stock["roles"]["items"] == [
+        {"role": "trend_leader", "sector_id": "topic-a", "status": "candidate"}
+    ]
+    assert stock["seal"] == {"closing_limit_streak": 2, "reason": None}
+    assert stock["regulation"] == {
+        "active_events": None,
+        "reason": "regulation_disabled",
+    }
+
+    assert raw_kline.status_code == 200
+    raw_kline_data = raw_kline.json()["data"]
+    assert raw_kline_data["adjustment"] == "raw"
+    assert raw_kline_data["adjusted_start"] == str(start)
+    assert raw_kline_data["adjusted_end"] == str(end)
+    assert raw_kline_data["points"][-1]["open"] == 110
+    assert qfq_kline.status_code == 200
+    assert qfq_kline.json()["data"] is None
+    assert qfq_kline.json()["reason"] == (
+        "qfq_semantics_unproven_from_generic_adjustment_factor"
+    )
+    assert "adjustment_unavailable" in qfq_kline.json()["quality_flags"]
+
+    assert raw_rank.status_code == 200
+    rank_body = json.loads(raw_rank.content, parse_float=Decimal)
+    assert rank_body["data"]["window_days"] == 20
+    assert rank_body["data"]["adjusted_start"] == str(start)
+    assert rank_body["data"]["adjusted_end"] == str(end)
+    assert rank_body["data"]["benchmark_return"] == Decimal("0.02")
+    assert rank_body["basis"]["benchmark"] == "B000300"
+    assert rank_body["rule_version"] == "analysis-v1-decimal34"
+    by_id = {item["security_id"]: item for item in rank_body["data"]["ranking"]}
+    assert by_id["A"]["return_ratio"] == Decimal("0.1")
+    assert by_id["A"]["excess_return_ratio"] == Decimal("0.08")
+    assert by_id["D"]["max_drawdown_ratio"] == Decimal("0.25")
+    assert b'"return_ratio":0.1' in raw_rank.content
+    assert qfq_rank.status_code == 200
+    assert qfq_rank.json()["data"] is None
+    assert qfq_rank.json()["reason"] == (
+        "qfq_semantics_unproven_from_generic_adjustment_factor"
+    )
+
+    assert curves.status_code == 200
+    curve_data = curves.json()["data"]
+    assert curve_data["adjusted_start"] == str(start)
+    assert curve_data["adjusted_end"] == str(end)
+    assert [item["security_id"] for item in curve_data["curves"]] == ["A", "D"]
+    assert curve_data["curves"][0]["points"][-1] == {
+        "trade_date": str(end),
+        "normalized": 110,
+        "drawdown": 0,
+    }
+    assert curve_data["curves"][1]["points"][-1]["drawdown"] == 0.25
+    assert curve_data["exclusions"] == []
+    assert qfq_curves.status_code == 200
+    assert qfq_curves.json()["data"] is None
+    assert "adjustment_unavailable" in qfq_curves.json()["quality_flags"]
+    assert uncomputed.status_code == 200
+    assert uncomputed.json()["data"] is None
+    assert uncomputed.json()["reason"] == "analysis_not_precomputed"
+    assert "analysis_not_precomputed" in uncomputed.json()["quality_flags"]
+    assert adjusted.status_code == 200
+    assert adjusted.json()["data"]["adjusted_start"] == str(start)
+    assert adjusted.json()["data"]["adjusted_end"] == str(end)
+    assert unpinned_adjusted.status_code == 200
+    assert unpinned_adjusted.json()["snapshot_id"] == str(snapshot.id)
+    assert unpinned_adjusted.json()["data"]["adjusted_end"] == str(end)
+
+
+@pytest.mark.anyio
+async def test_analysis_routes_validate_before_storage_and_bind_snapshot_date():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    repository = _PublishedRepository(snapshot)
+    app = create_workbench_app(repository=repository)
+    start, end = _sessions()[0], _sessions()[-1]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        for symbols in ("A,B,C,D,E,F", "A,A", "A,,B", ""):
+            response = await client.get(
+                "/api/compare/curves",
+                params={"symbols": symbols, "start": str(start), "end": str(end)},
+            )
+            assert response.status_code == 400
+        assert repository.accesses == 0
+
+        mismatch = await client.get(
+            "/api/rank/range",
+            params={
+                "start": str(start),
+                "end": str(end),
+                "date": str(start),
+                "snapshot_id": str(snapshot.id),
+                "adj": "raw",
+            },
+        )
+        assert mismatch.status_code == 400
+
+        reversed_window = await client.get(
+            "/api/stock/A/kline",
+            params={
+                "start": str(end),
+                "end": str(start),
+                "snapshot_id": str(snapshot.id),
+                "adj": "raw",
+            },
+        )
+        assert reversed_window.status_code == 400
+
+        missing_stock = await client.get(
+            "/api/stock/UNKNOWN", params={"snapshot_id": str(snapshot.id)}
+        )
+        assert missing_stock.status_code == 404
+        missing_roles = await client.get(
+            "/api/stock/A", params={"snapshot_id": str(snapshot.id)}
+        )
+        assert missing_roles.json()["data"]["roles"] == {
+            "items": None,
+            "reason": "role_disabled",
+        }
+        assert missing_roles.json()["data"]["seal"] == {
+            "closing_limit_streak": None,
+            "reason": "role_disabled",
+        }
+
+    missing_repository = _PublishedRepository()
+    missing_app = create_workbench_app(repository=missing_repository)
+    async with AsyncClient(
+        transport=ASGITransport(app=missing_app), base_url="http://testserver"
+    ) as client:
+        missing = await client.get(
+            "/api/rank/range",
+            params={
+                "start": str(start),
+                "end": str(end),
+                "snapshot_id": str(uuid4()),
+                "adj": "raw",
+            },
+        )
+    assert missing.status_code == 200
+    assert missing.json()["data"] is None
