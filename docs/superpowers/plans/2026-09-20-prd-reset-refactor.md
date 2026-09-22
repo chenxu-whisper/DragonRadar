@@ -376,9 +376,9 @@ export function sameSavedValue(
 
 **文件：** 新建 `roles/adapters.py`、`roles/research_factors.py`、`tests/test_reset_role_contracts.py`；修改 `roles/rules.py`、`roles/engine.py`（仅明确差异）、`docs/source-contracts.md`。
 
-- [ ] 写失败用例：六类枚举映射完整；未批准规则不能产出正式候选；指数基准缺失时RS不可计算；20/60/120窗口不前移补样本。
-- [ ] 运行 `uv run pytest tests/test_reset_role_contracts.py -q` 确认失败。
-- [ ] 实现显式映射，保留simplified/watch_only等能力元信息，不把所有内部状态折叠成“正式候选”。
+- [x] 写失败用例：六类枚举映射完整；未批准规则不能产出正式候选；指数基准缺失时RS不可计算；20/60/120窗口不前移补样本。
+- [x] 运行 `uv run pytest tests/test_reset_role_contracts.py -q` 确认失败。
+- [x] 实现显式映射，保留simplified/watch_only等能力元信息，不把所有内部状态折叠成“正式候选”。
 
 ```python
 ROLE_NAMES = {
@@ -391,9 +391,9 @@ ROLE_NAMES = {
 }
 ```
 
-- [ ] 补FAC-R01指数RS、FAC-R02均线/斜率、FAC-R03新高与窗口回撤、FAC-C01/C02所需规模/成交观察；每个因子输出value/unit/window/coverage/reasons，缺字段不替代。
-- [ ] 旧role-v1输出可保留为历史研究版本；新基准或门槛产生新rule_version。未确认阈值先展示因子与insufficient，不编造正式排名。
-- [ ] 跑新契约和现有角色因子/正式/分层测试；提交 `feat: adapt role evidence to reset contracts`。
+- [x] 补FAC-R01指数RS、FAC-R02均线/斜率、FAC-R03新高与窗口回撤、FAC-C01/C02所需规模/成交观察；每个因子输出value/unit/window/coverage/reasons，缺字段不替代。
+- [x] 旧role-v1输出可保留为历史研究版本；新基准或门槛产生新rule_version。未确认阈值先展示因子与insufficient，不编造正式排名。
+- [x] 跑新契约和现有角色因子/正式/分层测试；提交 `feat: adapt role evidence to reset contracts`。
 
 **完成条件：** 因子口径可追溯；不是通过更名把旧市场中位数当成沪深300。
 
