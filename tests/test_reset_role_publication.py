@@ -46,6 +46,7 @@ from dragon_radar.roles.tables import (
     role_validation_inputs,
     role_validations,
 )
+from dragon_radar.storage.database import SCHEMA_REVISION
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 from dragon_radar.topics.models import TopicBatch
 from dragon_radar.topics.repository import TopicRepository
@@ -577,7 +578,7 @@ def test_migration_creates_role_schema_and_readiness(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0007b_role_validation_inputs"
+            == SCHEMA_REVISION
         )
 
 

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0007b_role_validation_inputs"
+SCHEMA_REVISION = "0007c_analysis_jobs"
 
 
 class Database:
@@ -93,6 +93,8 @@ class Database:
                     "role_validation_inputs",
                     "role_validation_commands",
                     "role_materialization_attempts",
+                    "analysis_jobs",
+                    "analysis_job_cache",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True
