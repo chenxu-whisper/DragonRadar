@@ -76,21 +76,37 @@ def materialize_custom_analysis(
             current_rank = position
             previous_return = row["return_ratio"]
         row["rank"] = current_rank
-    curves = [
-        {
-            "security_id": symbol,
-            "points": [
+    curves = []
+    curve_exclusions = []
+    for symbol in command.symbols:
+        stored_curve = stored_curves[symbol]
+        if all(value is None for value in stored_curve["normalized"]):
+            curve_exclusions.append(
                 {
-                    "trade_date": day.isoformat(),
-                    "normalized": stored_curves[symbol]["normalized"][index],
-                    "drawdown": stored_curves[symbol]["drawdown"][index],
+                    "security_id": symbol,
+                    "reasons": stored_curve["reasons"],
                 }
-                for index, day in enumerate(sessions)
-            ],
-            "reasons": stored_curves[symbol]["reasons"],
-        }
-        for symbol in command.symbols
-    ]
+            )
+            continue
+        curves.append(
+            {
+                "security_id": symbol,
+                "points": [
+                    {
+                        "trade_date": day.isoformat(),
+                        "normalized": stored_curve["normalized"][index],
+                        "drawdown": stored_curve["drawdown"][index],
+                    }
+                    for index, day in enumerate(sessions)
+                ],
+                "reasons": stored_curve["reasons"],
+            }
+        )
+    exclusions = (
+        curve_exclusions
+        if requested
+        else [dict(row) for row in projected["exclusions"]]
+    )
     return {
         "schema": "dragon-radar.custom-analysis",
         "schema_version": 1,
@@ -105,11 +121,7 @@ def materialize_custom_analysis(
         "available": True,
         "reason": None,
         "ranking": ranking,
-        "exclusions": [
-            row
-            for row in projected["exclusions"]
-            if not requested or row["security_id"] in requested
-        ],
+        "exclusions": exclusions,
         "benchmark_return_ratio": projected["benchmark_return_ratio"],
         "benchmark_reasons": projected["benchmark_reasons"],
         "curves": curves,

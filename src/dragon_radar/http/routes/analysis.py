@@ -1,6 +1,7 @@
 """Published fixed-window ranking and comparison routes."""
 
 from datetime import date
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Request
@@ -219,7 +220,223 @@ def _sorted_ranking(rows, sort: str):
     return ranked
 
 
-def _cached_result(request: Request, snapshot, values, symbols):
+def _string_list(value, *, nonempty: bool = False) -> bool:
+    return (
+        isinstance(value, list)
+        and (not nonempty or bool(value))
+        and all(isinstance(item, str) and item for item in value)
+        and len(set(value)) == len(value)
+    )
+
+
+def _decimal(value, *, nullable: bool = True) -> bool:
+    return (nullable and value is None) or (
+        isinstance(value, Decimal) and value.is_finite()
+    )
+
+
+def _ranking_ids(rows, allowed_ids: set[str]) -> set[str]:
+    expected_fields = {
+        "rank",
+        "security_id",
+        "name",
+        "topics",
+        "topic_status",
+        "topic_reasons",
+        "return_ratio",
+        "excess_return_ratio",
+        "max_drawdown_ratio",
+        "amount_change_ratio",
+        "reasons",
+    }
+    identifiers = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != expected_fields:
+            raise DataUnavailable
+        security_id = row["security_id"]
+        topics = row["topics"]
+        if (
+            not isinstance(security_id, str)
+            or security_id not in allowed_ids
+            or (
+                row["rank"] is not None
+                and (type(row["rank"]) is not int or row["rank"] < 1)
+            )
+            or (row["name"] is not None and not isinstance(row["name"], str))
+            or not isinstance(topics, list)
+            or any(
+                not isinstance(topic, dict)
+                or set(topic) != {"topic_id", "name"}
+                or not isinstance(topic["topic_id"], str)
+                or not topic["topic_id"]
+                or not isinstance(topic["name"], str)
+                for topic in topics
+            )
+            or row["topic_status"] not in {"available", "unavailable"}
+            or not _string_list(row["topic_reasons"])
+            or not _decimal(row["return_ratio"], nullable=False)
+            or not _decimal(row["excess_return_ratio"])
+            or not _decimal(row["max_drawdown_ratio"], nullable=False)
+            or not _decimal(row["amount_change_ratio"])
+            or not _string_list(row["reasons"])
+        ):
+            raise DataUnavailable
+        identifiers.append(security_id)
+    if len(set(identifiers)) != len(identifiers):
+        raise DataUnavailable
+    return set(identifiers)
+
+
+def _exclusion_ids(rows, allowed_ids: set[str]) -> set[str]:
+    identifiers = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"security_id", "reasons"}
+            or not isinstance(row["security_id"], str)
+            or row["security_id"] not in allowed_ids
+            or not _string_list(row["reasons"], nonempty=True)
+        ):
+            raise DataUnavailable
+        identifiers.append(row["security_id"])
+    if len(set(identifiers)) != len(identifiers):
+        raise DataUnavailable
+    return set(identifiers)
+
+
+def _curve_ids(rows, allowed_ids: set[str], sessions: tuple[date, ...]) -> set[str]:
+    expected_dates = [day.isoformat() for day in sessions]
+    identifiers = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"security_id", "points", "reasons"}
+            or not isinstance(row["security_id"], str)
+            or row["security_id"] not in allowed_ids
+            or not isinstance(row["points"], list)
+            or len(row["points"]) != len(sessions)
+            or not _string_list(row["reasons"])
+        ):
+            raise DataUnavailable
+        point_dates = []
+        has_value = False
+        for point in row["points"]:
+            if (
+                not isinstance(point, dict)
+                or set(point) != {"trade_date", "normalized", "drawdown"}
+                or not isinstance(point["trade_date"], str)
+                or not _decimal(point["normalized"])
+                or not _decimal(point["drawdown"])
+                or (point["normalized"] is None) != (point["drawdown"] is None)
+            ):
+                raise DataUnavailable
+            point_dates.append(point["trade_date"])
+            has_value = has_value or point["normalized"] is not None
+        if point_dates != expected_dates or not has_value:
+            raise DataUnavailable
+        identifiers.append(row["security_id"])
+    if len(set(identifiers)) != len(identifiers):
+        raise DataUnavailable
+    return set(identifiers)
+
+
+def _validate_cached_result(result, command, sessions, stocks):
+    available_fields = {
+        "schema",
+        "schema_version",
+        "algorithm_version",
+        "snapshot_id",
+        "requested_start",
+        "requested_end",
+        "adjusted_start",
+        "adjusted_end",
+        "benchmark",
+        "adjustment",
+        "available",
+        "reason",
+        "ranking",
+        "exclusions",
+        "benchmark_return_ratio",
+        "benchmark_reasons",
+        "curves",
+    }
+    unavailable_fields = available_fields - {
+        "benchmark_return_ratio",
+        "benchmark_reasons",
+    }
+    try:
+        stock_rows = stocks["stocks"]
+        stock_ids = set(stock_rows)
+        result_fields = frozenset(result)
+        if (
+            not isinstance(result, dict)
+            or result_fields
+            not in {
+                frozenset(available_fields),
+                frozenset(unavailable_fields),
+            }
+            or result.get("schema") != "dragon-radar.custom-analysis"
+            or type(result.get("schema_version")) is not int
+            or result["schema_version"] != 1
+            or result.get("algorithm_version") != command.algorithm_version
+            or result.get("snapshot_id") != str(command.snapshot_id)
+            or result.get("requested_start") != command.start.isoformat()
+            or result.get("requested_end") != command.end.isoformat()
+            or result.get("adjusted_start") != sessions[0].isoformat()
+            or result.get("adjusted_end") != sessions[-1].isoformat()
+            or result.get("benchmark") != command.benchmark
+            or result.get("adjustment") != command.adjustment
+            or type(result.get("available")) is not bool
+            or not isinstance(stock_rows, dict)
+            or any(not isinstance(item, str) or not item for item in stock_ids)
+            or not isinstance(result.get("ranking"), list)
+            or not isinstance(result.get("exclusions"), list)
+            or not isinstance(result.get("curves"), list)
+        ):
+            raise DataUnavailable
+        if not result["available"]:
+            if (
+                result_fields != unavailable_fields
+                or not isinstance(result.get("reason"), str)
+                or not result["reason"]
+                or result["ranking"]
+                or result["exclusions"]
+                or result["curves"]
+            ):
+                raise DataUnavailable
+            return result
+        if (
+            result_fields != available_fields
+            or result.get("reason") is not None
+            or not _decimal(result["benchmark_return_ratio"])
+            or not _string_list(result["benchmark_reasons"])
+        ):
+            raise DataUnavailable
+        allowed_ids = stock_ids if not command.symbols else set(command.symbols)
+        if not allowed_ids <= stock_ids:
+            raise DataUnavailable
+        ranking_ids = _ranking_ids(result["ranking"], allowed_ids)
+        exclusion_ids = _exclusion_ids(result["exclusions"], allowed_ids)
+        curve_ids = _curve_ids(result["curves"], allowed_ids, sessions)
+        if command.symbols:
+            if (
+                curve_ids & exclusion_ids
+                or curve_ids | exclusion_ids != allowed_ids
+                or not ranking_ids <= curve_ids
+            ):
+                raise DataUnavailable
+        elif (
+            ranking_ids & exclusion_ids
+            or ranking_ids | exclusion_ids != stock_ids
+            or curve_ids
+        ):
+            raise DataUnavailable
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise DataUnavailable from None
+    return result
+
+
+def _cached_result(request: Request, snapshot, values, symbols, sessions, stocks):
     repository = request.app.state.analysis_repository
     if repository is None:
         return None
@@ -235,33 +452,7 @@ def _cached_result(request: Request, snapshot, values, symbols):
     if result is None:
         return None
     result = _restore_decimals(result)
-    try:
-        if (
-            not isinstance(result, dict)
-            or result.get("schema") != "dragon-radar.custom-analysis"
-            or result.get("schema_version") != 1
-            or result.get("algorithm_version") != command.algorithm_version
-            or result.get("snapshot_id") != str(command.snapshot_id)
-            or result.get("requested_start") != command.start.isoformat()
-            or result.get("requested_end") != command.end.isoformat()
-            or result.get("benchmark") != command.benchmark
-            or result.get("adjustment") != command.adjustment
-            or type(result.get("available")) is not bool
-            or not isinstance(result.get("ranking"), list)
-            or not isinstance(result.get("exclusions"), list)
-            or not isinstance(result.get("curves"), list)
-        ):
-            raise DataUnavailable
-        adjusted_start = date.fromisoformat(result["adjusted_start"])
-        adjusted_end = date.fromisoformat(result["adjusted_end"])
-        if result["available"]:
-            if result.get("reason") is not None:
-                raise DataUnavailable
-        elif not isinstance(result.get("reason"), str) or not result["reason"]:
-            raise DataUnavailable
-    except (KeyError, TypeError, ValueError):
-        raise DataUnavailable from None
-    return result, adjusted_start, adjusted_end
+    return _validate_cached_result(result, command, sessions, stocks)
 
 
 @router.get("/api/rank/range")
@@ -290,7 +481,7 @@ def rank_range(request: Request):
         )
     window_days, window = _window(analysis, sessions, values["benchmark"])
     if window is None or window_days is None:
-        cached = _cached_result(request, snapshot, values, ())
+        cached = _cached_result(request, snapshot, values, (), sessions, stocks)
         if cached is None:
             return _unavailable(
                 snapshot,
@@ -299,7 +490,7 @@ def rank_range(request: Request):
                 benchmark=values["benchmark"],
                 rule_version=analysis.get("rule_version"),
             )
-        result, adjusted_start, adjusted_end = cached
+        result = cached
         if not result["available"]:
             return _unavailable(
                 snapshot,
@@ -308,8 +499,6 @@ def rank_range(request: Request):
                 benchmark=values["benchmark"],
                 rule_version=analysis.get("rule_version"),
             )
-        if adjusted_start != sessions[0] or adjusted_end != sessions[-1]:
-            raise DataUnavailable
         window_days = len(sessions)
         window = {"adjustments": {values["adjustment"]: result}}
     try:
@@ -323,7 +512,7 @@ def rank_range(request: Request):
         raise DataUnavailable
     field = _SORT_FIELDS[values["sort"]][0]
     valid = sum(row.get(field) is not None for row in rows)
-    expected = len(rows) + len(exclusions)
+    expected = len(stocks["stocks"])
     response = _response(
         snapshot,
         {
@@ -370,7 +559,14 @@ def compare_curves(request: Request):
     if window is None:
         symbols = values["symbols"]
         assert symbols is not None
-        cached = _cached_result(request, snapshot, values, symbols)
+        cached = _cached_result(
+            request,
+            snapshot,
+            values,
+            symbols,
+            sessions,
+            stocks,
+        )
         if cached is None:
             return _unavailable(
                 snapshot,
@@ -379,7 +575,7 @@ def compare_curves(request: Request):
                 benchmark=values["benchmark"],
                 rule_version=analysis.get("rule_version"),
             )
-        result, adjusted_start, adjusted_end = cached
+        result = cached
         if not result["available"]:
             return _unavailable(
                 snapshot,
@@ -388,13 +584,11 @@ def compare_curves(request: Request):
                 benchmark=values["benchmark"],
                 rule_version=analysis.get("rule_version"),
             )
-        if adjusted_start != sessions[0] or adjusted_end != sessions[-1]:
-            raise DataUnavailable
         return _response(
             snapshot,
             {
-                "adjusted_start": adjusted_start,
-                "adjusted_end": adjusted_end,
+                "adjusted_start": sessions[0],
+                "adjusted_end": sessions[-1],
                 "benchmark": values["benchmark"],
                 "curves": result["curves"],
                 "exclusions": result["exclusions"],
@@ -403,7 +597,7 @@ def compare_curves(request: Request):
                 len(symbols),
                 len(result["curves"]),
                 0,
-                len(symbols) - len(result["curves"]),
+                len(result["exclusions"]),
             ),
             adjustment=values["adjustment"],
             benchmark=values["benchmark"],

@@ -577,11 +577,37 @@ def test_worker_limits_rankings_exclusions_and_curves_to_requested_symbols(job_s
     assert [row["security_id"] for row in completed.result["ranking"]] == ["B"]
     assert [row["security_id"] for row in completed.result["exclusions"]] == ["C"]
     assert completed.result["exclusions"][0]["reasons"]
-    assert [curve["security_id"] for curve in completed.result["curves"]] == [
-        "C",
-        "B",
-    ]
+    assert [curve["security_id"] for curve in completed.result["curves"]] == ["B"]
     assert completed.result["benchmark"] == "INDEX"
+
+
+def test_worker_keeps_partial_curve_without_treating_it_as_compare_exclusion(
+    job_setup,
+):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    jobs, _owners, session, _publication = job_setup
+    publication = _publish(
+        jobs.database,
+        jobs.publications.market,
+        batch(
+            expected_security_ids=("A",),
+            security_states=(state("A"),),
+            bars=tuple(bar("A", trade_date=day) for day in DAYS if day != DAYS[1]),
+        ),
+        suffix="-partial-curve",
+    )
+    jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id, symbols=("A",)),
+        key="partial-curve",
+    )
+
+    completed = AnalysisJobWorker(jobs, worker_id="partial-worker").run_once()
+
+    assert [curve["security_id"] for curve in completed.result["curves"]] == ["A"]
+    assert not completed.result["exclusions"]
 
 
 def test_worker_empty_symbols_returns_full_market_ranking_without_curves(job_setup):
@@ -1034,6 +1060,186 @@ async def test_public_analysis_gets_use_cache_without_writes(job_setup):
             connection.scalar(text("SELECT count(*) FROM analysis_job_cache"))
             == cache_before
         )
+
+
+@pytest.mark.anyio
+async def test_cached_compare_counts_all_empty_curve_as_missing(job_setup):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.http.app import create_workbench_app
+
+    jobs, _owners, session, _publication = job_setup
+    publication = _publish(
+        jobs.database,
+        jobs.publications.market,
+        batch(
+            expected_security_ids=("A", "B"),
+            security_states=(state("A"), state("B")),
+            bars=tuple(
+                bar(security_id, trade_date=day)
+                for security_id in ("A", "B")
+                for day in DAYS
+                if not (security_id == "B" and day == DAYS[0])
+            ),
+        ),
+        suffix="-compare-coverage",
+    )
+    jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id, symbols=("B", "A")),
+        key="compare-coverage",
+    )
+    assert (
+        AnalysisJobWorker(jobs, worker_id="coverage-worker").run_once().status
+        == "succeeded"
+    )
+    app = create_workbench_app(
+        repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+    params = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "adj": "raw",
+        "symbols": "B,A",
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/api/compare/curves", params=params)
+
+    assert response.status_code == 200
+    assert [row["security_id"] for row in response.json()["data"]["curves"]] == ["A"]
+    assert [row["security_id"] for row in response.json()["data"]["exclusions"]] == [
+        "B"
+    ]
+    assert "missing_price" in response.json()["data"]["exclusions"][0]["reasons"]
+    assert response.json()["coverage"] == {
+        "expected": 2,
+        "valid": 1,
+        "excluded": 0,
+        "missing": 1,
+    }
+
+
+async def _request_cached_result(jobs, result, path, params):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.http.app import create_workbench_app
+
+    lease = jobs.claim("invalid-cache-worker")
+    jobs.succeed(lease, result)
+    app = create_workbench_app(
+        repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        return await client.get(path, params=params)
+
+
+@pytest.mark.anyio
+async def test_cached_rank_requires_full_stock_partition(job_setup):
+    from dragon_radar.analysis_jobs.worker import materialize_custom_analysis
+
+    jobs, _owners, session, publication = job_setup
+    command = _command(publication.id, symbols=())
+    jobs.submit(session.token, session.csrf, command, key="rank-partition")
+    snapshot = jobs.publications.get_snapshot(publication.id)
+    result = materialize_custom_analysis(snapshot, command)
+    result["ranking"] = []
+    params = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "adj": "raw",
+    }
+
+    response = await _request_cached_result(
+        jobs,
+        result,
+        "/api/rank/range",
+        params,
+    )
+
+    assert response.status_code == 503
+
+
+@pytest.mark.anyio
+async def test_cached_compare_requires_exact_requested_partition(job_setup):
+    from dragon_radar.analysis_jobs.worker import materialize_custom_analysis
+
+    jobs, _owners, session, publication = job_setup
+    command = _command(publication.id, symbols=("A",))
+    jobs.submit(session.token, session.csrf, command, key="compare-partition")
+    snapshot = jobs.publications.get_snapshot(publication.id)
+    result = materialize_custom_analysis(snapshot, command)
+    result["curves"] = []
+    params = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "adj": "raw",
+        "symbols": "A",
+    }
+
+    response = await _request_cached_result(
+        jobs,
+        result,
+        "/api/compare/curves",
+        params,
+    )
+
+    assert response.status_code == 503
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("corruption", ("ranking", "curve_sessions"))
+async def test_cached_result_deeply_validates_nested_rows(job_setup, corruption):
+    from dragon_radar.analysis_jobs.worker import materialize_custom_analysis
+
+    jobs, _owners, session, publication = job_setup
+    symbols = () if corruption == "ranking" else ("A",)
+    command = _command(publication.id, symbols=symbols)
+    jobs.submit(
+        session.token,
+        session.csrf,
+        command,
+        key=f"nested-{corruption}",
+    )
+    snapshot = jobs.publications.get_snapshot(publication.id)
+    result = materialize_custom_analysis(snapshot, command)
+    if corruption == "ranking":
+        result["ranking"][0]["topics"] = [{"topic_id": "incomplete"}]
+        path = "/api/rank/range"
+        extra = {}
+    else:
+        result["curves"][0]["points"][0]["trade_date"] = DAYS[1].isoformat()
+        path = "/api/compare/curves"
+        extra = {"symbols": "A"}
+    params = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "adj": "raw",
+        **extra,
+    }
+
+    response = await _request_cached_result(
+        jobs,
+        result,
+        path,
+        params,
+    )
+
+    assert response.status_code == 503
 
 
 @pytest.mark.anyio
