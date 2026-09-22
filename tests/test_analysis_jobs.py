@@ -539,6 +539,47 @@ def test_worker_limits_rankings_exclusions_and_curves_to_requested_symbols(job_s
     assert completed.result["benchmark"] == "INDEX"
 
 
+def test_worker_rejects_index_in_expected_security_ids_as_analysis_symbol(job_setup):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    jobs, _owners, session, _publication = job_setup
+    publication = _publish(
+        jobs.database,
+        jobs.publications.market,
+        batch(
+            expected_security_ids=("A", "OTHER_INDEX"),
+            security_states=(
+                state("A"),
+                state("BENCHMARK", security_type="index"),
+                state("OTHER_INDEX", security_type="index"),
+            ),
+            bars=tuple(
+                bar(security_id, trade_date=day)
+                for security_id in ("A", "BENCHMARK", "OTHER_INDEX")
+                for day in DAYS
+            ),
+        ),
+        suffix="-index-symbol",
+    )
+    submitted = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(
+            publication.id,
+            benchmark="BENCHMARK",
+            symbols=("OTHER_INDEX",),
+        ),
+        key="index-symbol",
+    )
+
+    failed = AnalysisJobWorker(jobs, worker_id="index-symbol-worker").run_once()
+
+    assert failed.id == submitted.id
+    assert failed.status == "failed"
+    assert failed.failure == {"code": "input_unavailable"}
+    assert failed.result is None
+
+
 def test_worker_rechecks_source_authorization_after_submit(job_setup):
     from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
 

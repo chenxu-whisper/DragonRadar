@@ -24,7 +24,13 @@ def materialize_custom_analysis(
     if not sessions:
         raise ValueError("Analysis window has no trading sessions")
     known = set(batch.expected_security_ids)
-    if any(symbol not in known for symbol in command.symbols):
+    projection = MarketProjection(batch)
+    if any(
+        symbol not in known
+        or (identity := projection.state(symbol, batch.trade_date)) is None
+        or identity.security_type != "common_stock"
+        for symbol in command.symbols
+    ):
         raise NotFound("Stock not found")
 
     if command.adjustment in {"qfq", "hfq"}:
@@ -50,7 +56,7 @@ def materialize_custom_analysis(
         }
 
     window = _window(
-        MarketProjection(batch),
+        projection,
         None,
         sessions,
         command.benchmark,
