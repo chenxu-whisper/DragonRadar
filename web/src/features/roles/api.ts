@@ -211,6 +211,21 @@ export function validateCandidates(
       || typeof change.membership_changed !== 'boolean') throw new ApiError(502, '角色变化状态无效，已丢弃该响应。');
     texts(change.reasons);
   }
+  for (const raw of data.role_changes) {
+    const change = object(raw);
+    text(change.id);
+    const sector = text(change.sector_id);
+    if (selection.sector && sector !== selection.sector) throw new ApiError(409, '变化响应题材与当前请求不匹配，已丢弃该响应。');
+    if (typeof change.security_id !== 'string' || typeof change.role !== 'string') {
+      throw new ApiError(502, '角色变化明细无效，已丢弃该响应。');
+    }
+    if (!['comparable', 'not_comparable'].includes(text(change.comparison_status))
+      || (change.change_type !== null && !['added', 'exited', 'tie_changed', 'unchanged'].includes(text(change.change_type)))
+      || typeof change.membership_changed !== 'boolean') {
+      throw new ApiError(502, '角色变化明细无效，已丢弃该响应。');
+    }
+    texts(change.reasons);
+  }
   if (integer(data.total) !== data.candidates.length) throw new ApiError(502, '候选总数不一致，已丢弃该响应。');
   return root as unknown as RoleEnvelope<CandidatesData>;
 }

@@ -74,7 +74,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const [notice, setNotice] = useState(() => parseState(window.location.search, privateEnabled, resetEnabled, window.location.pathname).notices.join(' '));
   const [menu, setMenu] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
-  const [drawer, setDrawer] = useState<{ id: string; trigger: HTMLElement; context: string } | null>(null);
+  const [drawer, setDrawer] = useState<{ id: string; sector?: string; trigger: HTMLElement; context: string } | null>(null);
   const context = stateSearch(state, privateEnabled, resetEnabled);
   const PendingPage = resetEnabled ? ({ news: News, regulation: Regulation } as Partial<Record<ResearchState['view'], ComponentType>>)[state.view] : undefined;
   const list = useResource<Snapshot[] | ResetSnapshotList>(resetEnabled
@@ -133,7 +133,8 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     if (result.error) setNotice(result.error);
     else if (patch({ compare: result.ids })) setNotice('');
   };
-  const open = (id: string, trigger: HTMLElement) => setDrawer({ id, trigger, context });
+  const open = (id: string, sector: string | undefined, trigger: HTMLElement) =>
+    setDrawer({ id, sector, trigger, context });
   const ActiveReviewActions = resetEnabled ? ResetReviewActions : ReviewActions;
   const navigate = (view: 'overview' | 'analysis'): Partial<ResearchState> => ({
     view, security: '', page: 1, sort: 'security_id', order: 'asc',
@@ -212,7 +213,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             </>}
             <SnapshotEvidence snapshot={snapshot} />
             {drawer && drawer.context === context && state.view !== 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载证券详情…</p>}>
-              <SecurityDrawer state={state} id={drawer.id} trigger={drawer.trigger} close={() => setDrawer(null)}
+              <SecurityDrawer state={state} id={drawer.id} sector={drawer.sector} trigger={drawer.trigger} close={() => setDrawer(null)}
                 patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}
           </>}

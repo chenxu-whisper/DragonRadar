@@ -144,6 +144,28 @@ export async function mockMarket(page: Page, state: MockState = {}) {
     if (url.pathname === `/api/snapshots/${OLD}`) return respond(resetSummary(oldSnapshot));
     return respond({}, 404);
   });
+  await page.route('**/api/stock/**', async (route: Route) => {
+    const url = new URL(route.request().url());
+    if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
+    if (state.offline) return route.abort('failed');
+    const securityId = decodeURIComponent(url.pathname.split('/').at(-1)!);
+    const security = securities.find(item => item.security_id === securityId);
+    if (!security) return route.fulfill({ status: 404, json: { code: 'NOT_FOUND' } });
+    return route.fulfill({ json: {
+      ...resetSummary(snapshot),
+      data: {
+        security_id: securityId,
+        name: security.name,
+        quote: { last: Number(security.close), change_ratio: Number(security.change), amount: Number(security.amount) },
+        roles: [],
+        seal: {
+          first_seal_time: null, last_seal_time: null, break_count: null, seal_amount: null,
+          reason: 'intraday_seal_fields_unavailable',
+        },
+        regulation: { active_events: 0 },
+      },
+    } });
+  });
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -183,16 +205,22 @@ export type LeaderMockState = {
   noCandidate?: boolean;
   insufficient?: boolean;
   unapproved?: boolean;
+  roleChangesOnly?: boolean;
+  stockNotFound?: boolean;
 };
 
 const roleCoverage = { expected: 2, valid: 2, excluded: 0, missing: 0 };
-const roleEnvelope = (data: unknown, quality_flags: string[] = []) => ({
+const roleEnvelope = (
+  data: unknown,
+  quality_flags: string[] = [],
+  coverage = roleCoverage,
+) => ({
   trade_date: '2026-09-10',
   as_of: '2026-09-10T10:00:00Z',
   snapshot_id: ID,
   source: 'role_materialization',
   source_version: 'role-source-v1',
-  coverage: roleCoverage,
+  coverage,
   quality_flags,
   rule_version: 'role-v1',
   basis: { unit: 'ratio', currency: 'CNY', price_type: 'adjusted', benchmark: 'CSI300' },
@@ -209,7 +237,7 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
       data: {
         columns: [1, 2],
         cells: [
-          { trade_date: '2026-09-09', boards: 2, count: 1 },
+          { trade_date: '2026-09-09', boards: 2, count: 99 },
           { trade_date: '2026-09-10', boards: 1, count: 1 },
           { trade_date: '2026-09-10', boards: 2, count: 1 },
         ],
@@ -264,21 +292,28 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
         role,
         statuses: [{ sector_id: 'SEC001', status, capability: role === 'genfeng' ? 'watch_only' : 'ready', reasons }],
         candidates,
-        change_summaries: [{
+        change_summaries: state.roleChangesOnly ? [] : [{
           sector_id: 'SEC001', role: 'trend', previous_role_run_id: 'previous-run',
           comparison_status: 'not_comparable', membership_changed: true,
           reasons: ['rule_version_changed', 'topic_membership_changed'],
         }],
-        role_changes: [],
+        role_changes: [{
+          id: 'change-1', sector_id: 'SEC001', security_id: 'TEST001',
+          role: 'trend_leader', comparison_status: 'comparable',
+          change_type: 'added', membership_changed: true, reasons: ['entered_rank'],
+        }],
         total: candidates.length,
-      }, state.unapproved ? ['rule_version_not_approved'] : []) });
+      }, state.unapproved ? ['rule_version_not_approved'] : [], {
+        expected: 4, valid: 2, excluded: 1, missing: 1,
+      }) });
     }
     if (url.pathname === '/api/role/evidence') {
       const security = url.searchParams.get('security_id') || '';
+      const sector = url.searchParams.get('sector') || '';
       const roleNames = ['emotion_leader', 'trend_leader', 'zhongjun', 'genfeng', 'buZhang', 'jieli'];
       return route.fulfill({ json: roleEnvelope({
         security_id: security,
-        sector_id: 'SEC001',
+        sector_id: sector,
         roles: roleNames.map((role, index) => ({
           role_type: role,
           evidence_status: index === 1 ? 'candidate' : index === 3 ? 'watch' : 'insufficient',
@@ -306,6 +341,7 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
     const url = new URL(route.request().url());
     if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
     if (state.offline) return route.abort('failed');
+    if (state.stockNotFound) return route.fulfill({ status: 404, json: { code: 'NOT_FOUND' } });
     const securityId = decodeURIComponent(url.pathname.split('/').at(-1)!);
     const security = securities.find(item => item.security_id === securityId) ?? securities[0];
     return route.fulfill({ json: roleEnvelope({

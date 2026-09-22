@@ -2,6 +2,18 @@ import { expect, test } from '@playwright/test';
 import { ID, mockLeaders, type LeaderMockState } from '../fixtures/market';
 
 const leadersUrl = `/?view=leaders&snapshot=${ID}&date=2026-09-10&sector=SEC001&role=trend_leader`;
+const allSectorsUrl = `/?view=leaders&snapshot=${ID}&date=2026-09-10&role=trend_leader`;
+
+test('sector matrix never mixes full-market historical counts with filtered ladder rows', async ({ page }) => {
+  await mockLeaders(page);
+  await page.goto(leadersUrl);
+
+  const matrix = page.getByRole('table', { name: '日期与板数矩阵' });
+  await expect(matrix.getByText('2026-09-10', { exact: true })).toBeVisible();
+  await expect(matrix.getByText('2026-09-09', { exact: true })).toHaveCount(0);
+  await expect(matrix.getByText('99 家', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('题材筛选下仅展示所选日期的可验证梯队；历史题材矩阵不可用。', { exact: true })).toBeVisible();
+});
 
 test('renders the date-by-board matrix, tied candidates and honest comparison evidence', async ({ page }) => {
   await mockLeaders(page);
@@ -45,6 +57,63 @@ test('matrix securities share one drawer and expose six traceable evidence group
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByRole('table', { name: '角色候选' })
     .getByRole('button', { name: '合成测试证券2', exact: true })).toBeFocused();
+});
+
+test('all-sector matrix and candidate rows carry their own evidence sector without changing the filter', async ({ page }) => {
+  const evidenceRequests: string[] = [];
+  await mockLeaders(page);
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/role/evidence') {
+      evidenceRequests.push(`${url.searchParams.get('security_id')}:${url.searchParams.get('sector')}`);
+    }
+  });
+  await page.goto(allSectorsUrl);
+
+  await page.getByRole('table', { name: '日期与板数矩阵' })
+    .getByRole('button', { name: '合成测试证券1', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: '六类角色证据' })).toBeVisible();
+  await expect.poll(() => evidenceRequests).toContain('TEST001:SEC001');
+
+  await page.getByRole('table', { name: '角色候选' })
+    .getByRole('button', { name: '合成测试证券2', exact: true })
+    .evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(page.getByRole('dialog').getByRole('heading', { name: '合成测试证券2' })).toBeVisible();
+  await expect.poll(() => evidenceRequests).toContain('TEST002:SEC001');
+  await expect(page).not.toHaveURL(/sector=/);
+});
+
+test('renders role change details even when comparison summaries are empty', async ({ page }) => {
+  await mockLeaders(page, { roleChangesOnly: true });
+  await page.goto(leadersUrl);
+
+  const changes = page.getByRole('table', { name: '角色变化明细' });
+  await expect(changes).toBeVisible();
+  await expect(changes.getByRole('row', { name: /TEST001.*added.*trend_leader.*comparable.*entered_rank/ })).toBeVisible();
+});
+
+test('reset stock 404 is shown directly and never falls back to the legacy endpoint', async ({ page }) => {
+  const legacyStockRequests: string[] = [];
+  await mockLeaders(page, { stockNotFound: true });
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.includes('/api/v1/snapshots/') && request.url().includes('/securities/')) {
+      legacyStockRequests.push(request.url());
+    }
+  });
+  await page.goto(leadersUrl);
+  await page.getByRole('table', { name: '角色候选' })
+    .getByRole('button', { name: '合成测试证券1', exact: true }).click();
+
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('未找到该快照或证券');
+  expect(legacyStockRequests).toEqual([]);
+});
+
+test('candidate coverage discloses valid, expected, excluded and missing counts', async ({ page }) => {
+  await mockLeaders(page);
+  await page.goto(leadersUrl);
+
+  await expect(page.getByText('有效 2 / 应有 4 · 排除 1 · 缺失 1', { exact: true })).toBeVisible();
 });
 
 test('preserves leaders filters through drawer, local watchlist and a bound note', async ({ page }) => {

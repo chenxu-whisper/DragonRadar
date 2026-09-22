@@ -91,4 +91,31 @@ describe('reset role API client', () => {
       snapshot, date: '2026-09-10', security: 'A', sector: 'SEC001',
     })).toThrow();
   });
+
+  it('rejects malformed role change details instead of displaying unverified comparisons', () => {
+    const candidates = {
+      ...base,
+      data: {
+        role: 'trend_leader',
+        statuses: [{ sector_id: 'SEC001', status: 'ready', capability: 'ready', reasons: [] }],
+        candidates: [],
+        change_summaries: [],
+        role_changes: [{
+          id: 'change-1',
+          sector_id: 'SEC001',
+          security_id: 600001,
+          role: 'trend_leader',
+          comparison_status: 'comparable',
+          change_type: 'added',
+          membership_changed: true,
+          reasons: ['entered_rank'],
+        }],
+        total: 0,
+      },
+    };
+
+    expect(() => validateCandidates(candidates, {
+      snapshot, date: '2026-09-10', role: 'trend_leader',
+    })).toThrow('变化');
+  });
 });

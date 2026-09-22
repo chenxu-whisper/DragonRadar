@@ -42,7 +42,7 @@ export function IntervalForm({ state, patch }: { state: ResearchState; patch: Pa
 
 export function Analysis({ state, patch, refreshToken, open, compare, ReviewActions }: {
   state: ResearchState; patch: Patch; refreshToken: number;
-  open: (id: string, trigger: HTMLElement) => void; compare: (id: string) => void;
+  open: (id: string, sector: string | undefined, trigger: HTMLElement) => void; compare: (id: string) => void;
   ReviewActions?: ComponentType<{ snapshot: string; security: string }>;
 }) {
   let query = '', error = '';
@@ -81,9 +81,9 @@ export function Analysis({ state, patch, refreshToken, open, compare, ReviewActi
       </tr></thead><tbody>{visible.map(item => <tr key={item.security_id} className="clickable-row" onClick={event => {
         if ((event.target as HTMLElement).closest('button,input,label,a')) return;
         const trigger = event.currentTarget.querySelector<HTMLButtonElement>('button');
-        if (trigger) { trigger.focus(); open(item.security_id, trigger); }
+        if (trigger) { trigger.focus(); open(item.security_id, undefined, trigger); }
       }}>
-        <th className="identity"><button className="security-button" onClick={e => open(item.security_id, e.currentTarget)}>{item.security_id}</button>
+        <th className="identity"><button className="security-button" onClick={e => open(item.security_id, undefined, e.currentTarget)}>{item.security_id}</button>
           {ReviewActions && <ReviewActions snapshot={state.snapshot} security={item.security_id} />}</th>
         <td><label className="check-target"><input type="checkbox" aria-label={`比较 ${item.security_id}`} checked={state.compare.includes(item.security_id)} onChange={() => compare(item.security_id)} /></label></td>
         <td className="numeric"><Percent value={item.interval_return} /></td><td className="numeric"><Percent value={item.maximum_drawdown} signed={false} /></td>

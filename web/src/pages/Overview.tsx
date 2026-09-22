@@ -7,7 +7,7 @@ import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
 
 interface Props {
-  state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, trigger: HTMLElement) => void;
+  state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, sector: string | undefined, trigger: HTMLElement) => void;
   compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>; reset?: boolean;
 }
 const memberDirections = ['up', 'down', 'flat'] as const;
@@ -85,7 +85,7 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
               <strong>{memberContext}</strong>
               <ul className="filter-members">{selectedMembers.map(item =>
                 <li key={item.security_id}>
-                  <button className="security-button" onClick={event => open(item.security_id, event.currentTarget)}>{item.name}</button>
+                  <button className="security-button" onClick={event => open(item.security_id, undefined, event.currentTarget)}>{item.name}</button>
                   <small>{item.code ?? '代码未知'} · {item.security_id}</small>
                 </li>)}
               </ul>
@@ -201,9 +201,9 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
             <tbody>{rows.data.result.items.map(row => <tr key={row.security_id} className="clickable-row" onClick={e => {
               if ((e.target as HTMLElement).closest('button,input,label,a')) return;
               const trigger = e.currentTarget.querySelector<HTMLButtonElement>('.security-button');
-              if (trigger) { trigger.focus(); open(row.security_id, trigger); }
+              if (trigger) { trigger.focus(); open(row.security_id, undefined, trigger); }
             }}>
-              <th className="identity"><button className="security-button" onClick={e => open(row.security_id, e.currentTarget)}>{row.name || '名称未知'}</button><span className="security-id">{row.security_id}</span>
+              <th className="identity"><button className="security-button" onClick={e => open(row.security_id, undefined, e.currentTarget)}>{row.name || '名称未知'}</button><span className="security-id">{row.security_id}</span>
                 {ReviewActions && <ReviewActions snapshot={state.snapshot} security={row.security_id} />}</th>
               <td><label className="check-target"><input type="checkbox" checked={state.compare.includes(row.security_id)} onChange={() => compare(row.security_id)} aria-label={`比较 ${row.security_id}`} /></label></td>
               <td className="numeric">{formatDecimal(row.close)}<small>{label(row.currency)} · {label(row.price_unit)}</small></td>
