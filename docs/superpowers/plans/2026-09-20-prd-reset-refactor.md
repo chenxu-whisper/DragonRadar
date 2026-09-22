@@ -418,11 +418,11 @@ ROLE_NAMES = {
 
 **文件：** 新建 `http/routes/roles.py`、`web/src/features/roles/{api,types}.ts`、`EvidencePanel.tsx`、`tests/test_reset_role_api.py`、`web/tests/e2e/reset-leaders.spec.ts`；修改 `pages/Leaders.tsx`、`pages/SecurityDetail.tsx`、`http/app.py`。
 
-- [ ] 写失败用例：接口05～08绑定同snapshot；点击矩阵证券仅开一个抽屉；并列全部保留；角色变化跨版本显示不可比；证据可定位因子/源时间。
-- [ ] 运行对应pytest与 `npx playwright test tests/e2e/reset-leaders.spec.ts` 确认失败。
-- [ ] 注册ladder/continuity/candidates/evidence；外部角色枚举调用Task10适配；对题材、角色和证券过滤后披露候选/排除/缺失数量。
-- [ ] 实现日期×板数矩阵、角色/题材筛选、晋级率明细、角色变化和支持/反证/缺失证据；盘中封板字段未取得时明确不可用。
-- [ ] 演示“梯队→股票证据→加自选→保存判断→返回原筛选”，跑构建与E2E；提交 `feat: deliver leaders evidence workflow`。
+- [x] 写失败用例：接口05～08绑定同snapshot；点击矩阵证券仅开一个抽屉；并列全部保留；角色变化跨版本显示不可比；证据可定位因子/源时间。
+- [x] 运行对应pytest与 `npx playwright test tests/e2e/reset-leaders.spec.ts` 确认失败。
+- [x] 注册ladder/continuity/candidates/evidence；外部角色枚举调用Task10适配；对题材、角色和证券过滤后披露候选/排除/缺失数量。
+- [x] 实现日期×板数矩阵、角色/题材筛选、晋级率明细、角色变化和支持/反证/缺失证据；盘中封板字段未取得时明确不可用。
+- [x] 演示“梯队→股票证据→加自选→保存判断→返回原筛选”，跑构建与E2E；提交 `feat: deliver leaders evidence workflow`。
 
 **完成条件：** 六类入口和证据状态可见，不因角色无候选而填入示例股票。
 
