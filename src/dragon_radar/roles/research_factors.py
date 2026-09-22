@@ -15,6 +15,7 @@ from dragon_radar.domain.models import (
     Identifier,
     MarketBatch,
 )
+from dragon_radar.domain.quality import grant_allows_local
 from dragon_radar.roles.factors import (
     AnalysisUnavailable,
     _decimal34_operation,
@@ -528,6 +529,39 @@ def _topic_share(
             metadata=metadata,
         )
     day = inputs.market.trade_date
+    binding_reason = None
+    if topic.trade_date != day:
+        binding_reason = "topic_trade_date_mismatch"
+    elif topic.exchange != inputs.market.calendar.exchange:
+        binding_reason = "topic_exchange_mismatch"
+    elif topic.calendar.exchange != inputs.market.calendar.exchange:
+        binding_reason = "topic_calendar_exchange_mismatch"
+    elif (
+        topic.calendar_version != inputs.market.calendar_version
+        or topic.calendar.version != inputs.market.calendar.version
+        or topic.calendar_version != topic.calendar.version
+        or inputs.market.calendar_version != inputs.market.calendar.version
+    ):
+        binding_reason = "topic_calendar_version_mismatch"
+    elif topic.calendar.sessions != inputs.market.calendar.sessions:
+        binding_reason = "topic_calendar_sessions_mismatch"
+    elif not grant_allows_local(
+        topic.grant,
+        source_id=topic.source_id,
+        now=inputs.cutoff,
+    ):
+        binding_reason = "topic_source_grant_unavailable"
+    if binding_reason is not None:
+        return _observation(
+            "FAC-C01",
+            "topic_amount_share",
+            None,
+            "ratio",
+            "T",
+            _coverage(1, 0),
+            reasons=(binding_reason,),
+            metadata=metadata,
+        )
     definitions = tuple(
         item
         for item in topic.topics
@@ -552,10 +586,7 @@ def _topic_share(
         and item.complete_as_of <= inputs.cutoff
     )
     valid_contract = (
-        topic.trade_date == day
-        and topic.calendar.sessions == inputs.market.calendar.sessions
-        and topic.calendar_version == inputs.market.calendar_version
-        and len(definitions) == 1
+        len(definitions) == 1
         and len(cells) == 1
         and cells[0].status == "complete"
         and cells[0].expected_member_count
@@ -625,7 +656,7 @@ def _topic_share(
             None,
             "ratio",
             "T",
-            _coverage(len(members), len(members)),
+            _coverage(len(members), 0),
             reasons=("topic_amounts_incompatible",),
             metadata=metadata,
         )
@@ -695,23 +726,16 @@ def _directional_amounts(
     metadata: Mapping[str, str],
 ) -> tuple[FactorObservation, FactorObservation]:
     days = _window(inputs.market, 21)
-    closes, close_valid = _complete_closes(inputs, security_id, days)
-    amount_days = days[1:] if len(days) == 21 else ()
-    amounts, amount_valid = _complete_nonnegative(
-        inputs,
-        security_id,
-        amount_days,
-        "amount",
-    )
-    valid = min(max(close_valid - 1, 0), amount_valid)
     groups: dict[str, list[Decimal]] = {"up": [], "down": []}
-    if len(days) == 21 and closes is not None and amounts is not None:
-        for previous, current, amount in zip(
-            closes[:-1],
-            closes[1:],
-            amounts,
-            strict=True,
-        ):
+    valid = 0
+    if len(days) == 21:
+        for previous_day, current_day in zip(days, days[1:], strict=False):
+            previous = inputs.close(security_id, previous_day)
+            current = inputs.close(security_id, current_day)
+            amount = inputs.nonnegative(security_id, current_day, "amount")
+            if previous is None or current is None or amount is None:
+                continue
+            valid += 1
             if current > previous:
                 groups["up"].append(amount)
             elif current < previous:
@@ -719,7 +743,7 @@ def _directional_amounts(
     observations = []
     for direction in ("up", "down"):
         sample = groups[direction]
-        if len(days) != 21 or closes is None or amounts is None:
+        if len(days) != 21 or valid != 20:
             value = None
             reasons = ("directional_amount_window_incomplete",)
         elif not sample:

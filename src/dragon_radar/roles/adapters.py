@@ -45,51 +45,60 @@ def adapt_role_evaluation(
     *,
     rule_version: str,
     approved_rule_versions: Collection[str] = RESET_APPROVED_RULE_VERSIONS,
-) -> ResetRoleEvidence:
-    """Project one historical evaluation through the reset approval boundary."""
+) -> tuple[ResetRoleEvidence, ...]:
+    """Project every historical result row through the reset approval boundary."""
     topic_status = evaluation.topic_status
-    row = evaluation.candidates[0] if evaluation.candidates else None
-    internal_status = row.status if row is not None else topic_status.status
-    reasons = (*topic_status.reasons, *(row.reasons if row is not None else ()))
-    common = {
-        "role": ROLE_NAMES[topic_status.role],
-        "security_id": row.security_id if row is not None else None,
-        "capability": topic_status.capability,
-        "internal_status": internal_status,
-        "rule_version": rule_version,
-    }
-    if rule_version not in approved_rule_versions:
-        return ResetRoleEvidence(
-            **common,
-            status="insufficient",
-            reasons=(*reasons, "rule_version_not_approved", "historical_research_only"),
-        )
-    if (
-        topic_status.status == "pending_validation"
-        and row is not None
-        and row.status == "pending_validation"
-    ):
-        return ResetRoleEvidence(
-            **common,
-            status="waiting_verify",
-            reasons=(*reasons, "pending_validation"),
-        )
-    if (
-        topic_status.capability == "ready"
-        and row is not None
-        and row.status == "candidate"
-    ):
-        return ResetRoleEvidence(
-            **common,
-            status="candidate",
-            rank=row.tie_rank,
-            reasons=reasons,
-        )
-    return ResetRoleEvidence(
-        **common,
-        status="insufficient",
-        reasons=(*reasons, "capability_not_formal_candidate"),
-    )
+    rows = evaluation.candidates or (None,)
+    result = []
+    for row in rows:
+        internal_status = row.status if row is not None else topic_status.status
+        reasons = (*topic_status.reasons, *(row.reasons if row is not None else ()))
+        common = {
+            "role": ROLE_NAMES[topic_status.role],
+            "security_id": row.security_id if row is not None else None,
+            "capability": topic_status.capability,
+            "internal_status": internal_status,
+            "rule_version": rule_version,
+        }
+        if rule_version not in approved_rule_versions:
+            evidence = ResetRoleEvidence(
+                **common,
+                status="insufficient",
+                reasons=(
+                    *reasons,
+                    "rule_version_not_approved",
+                    "historical_research_only",
+                ),
+            )
+        elif (
+            topic_status.status == "pending_validation"
+            and row is not None
+            and row.status == "pending_validation"
+        ):
+            evidence = ResetRoleEvidence(
+                **common,
+                status="waiting_verify",
+                reasons=(*reasons, "pending_validation"),
+            )
+        elif (
+            topic_status.capability == "ready"
+            and row is not None
+            and row.status == "candidate"
+        ):
+            evidence = ResetRoleEvidence(
+                **common,
+                status="candidate",
+                rank=row.tie_rank,
+                reasons=reasons,
+            )
+        else:
+            evidence = ResetRoleEvidence(
+                **common,
+                status="insufficient",
+                reasons=(*reasons, "capability_not_formal_candidate"),
+            )
+        result.append(evidence)
+    return tuple(result)
 
 
 __all__ = [

@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from factories import bar, batch, state
+from factories import bar, batch, grant, state
 from pydantic import ValidationError
 from topic_factories import (
     coverage_cell,
@@ -220,21 +220,22 @@ def test_unapproved_or_nonready_rules_never_become_formal_candidates(
         approved_rule_versions=frozenset({"role-v1"}),
     )
 
-    assert unapproved.status == "insufficient"
-    assert unapproved.rank is None
-    assert unapproved.capability == capability
-    assert unapproved.internal_status == row_status
-    assert unapproved.rule_version == "role-v1"
-    assert "rule_version_not_approved" in unapproved.reasons
+    assert len(unapproved) == 1
+    assert unapproved[0].status == "insufficient"
+    assert unapproved[0].rank is None
+    assert unapproved[0].capability == capability
+    assert unapproved[0].internal_status == row_status
+    assert unapproved[0].rule_version == "role-v1"
+    assert "rule_version_not_approved" in unapproved[0].reasons
     if capability == "ready":
-        assert approved.status == "candidate"
-        assert approved.rank == 1
+        assert approved[0].status == "candidate"
+        assert approved[0].rank == 1
     elif capability == "pending_validation":
-        assert approved.status == "waiting_verify"
-        assert approved.rank is None
+        assert approved[0].status == "waiting_verify"
+        assert approved[0].rank is None
     else:
-        assert approved.status == "insufficient"
-        assert approved.rank is None
+        assert approved[0].status == "insufficient"
+        assert approved[0].rank is None
 
 
 def test_approved_relay_without_pending_row_remains_insufficient():
@@ -257,8 +258,74 @@ def test_approved_relay_without_pending_row_remains_insufficient():
         approved_rule_versions=frozenset({"reset-role-v2"}),
     )
 
-    assert adapted.status == "insufficient"
-    assert adapted.rank is None
+    assert len(adapted) == 1
+    assert adapted[0].security_id is None
+    assert adapted[0].status == "insufficient"
+    assert adapted[0].rank is None
+
+
+def test_role_adapter_preserves_every_tied_and_non_candidate_evidence_row():
+    evaluation = RoleEvaluation(
+        topic_status=RoleTopicStatus(
+            topic_id="topic-a",
+            role="trend",
+            capability="ready",
+            status="ready",
+            expected=3,
+            valid=3,
+            legal_excluded=0,
+            missing=0,
+            reasons=("topic-ready",),
+        ),
+        candidates=(
+            RankedCandidate(
+                topic_id="topic-a",
+                security_id="A",
+                role="trend",
+                status="candidate",
+                factors=(Decimal("3"),),
+                tie_rank=1,
+                reasons=("first-tie-a",),
+            ),
+            RankedCandidate(
+                topic_id="topic-a",
+                security_id="B",
+                role="trend",
+                status="candidate",
+                factors=(Decimal("3"),),
+                tie_rank=1,
+                reasons=("first-tie-b",),
+            ),
+            RankedCandidate(
+                topic_id="topic-a",
+                security_id="C",
+                role="trend",
+                status="eligible_non_candidate",
+                factors=(Decimal("2"),),
+                tie_rank=2,
+                reasons=("below-first-tie",),
+            ),
+        ),
+    )
+
+    unapproved = adapt_role_evaluation(evaluation, rule_version="role-v1")
+    approved = adapt_role_evaluation(
+        evaluation,
+        rule_version="role-v1",
+        approved_rule_versions=frozenset({"role-v1"}),
+    )
+
+    assert tuple(row.security_id for row in unapproved) == ("A", "B", "C")
+    assert all(row.status == "insufficient" and row.rank is None for row in unapproved)
+    assert tuple(row.status for row in approved) == (
+        "candidate",
+        "candidate",
+        "insufficient",
+    )
+    assert tuple(row.rank for row in approved) == (1, 1, None)
+    assert "first-tie-a" in approved[0].reasons
+    assert "first-tie-b" in approved[1].reasons
+    assert "below-first-tie" in approved[2].reasons
 
 
 def test_index_rs_is_unavailable_without_explicit_index():
@@ -381,6 +448,12 @@ def test_research_factors_emit_traceable_independent_observations():
     assert metrics["up_day_average_amount"].value is not None
     assert metrics["down_day_average_amount"].value is None
     assert metrics["down_day_average_amount"].reasons == ("not_applicable",)
+    assert metrics["down_day_average_amount"].coverage == FactorCoverage(
+        expected=20,
+        valid=20,
+        excluded=0,
+        missing=0,
+    )
 
 
 def test_missing_optional_capacity_fields_are_not_substituted():
@@ -423,6 +496,132 @@ def test_topic_share_requires_member_identity_as_well_as_amount():
     assert observations["topic_amount_share"].reasons == (
         "topic_member_identity_unavailable",
     )
+
+
+@pytest.mark.parametrize(
+    ("topic_change", "reason"),
+    (
+        ({"trade_date": SESSIONS[-2]}, "topic_trade_date_mismatch"),
+        ({"exchange": "OTHER"}, "topic_exchange_mismatch"),
+        (
+            {
+                "calendar": ExchangeCalendar(
+                    exchange="OTHER",
+                    version="research-c1",
+                    sessions=SESSIONS,
+                )
+            },
+            "topic_calendar_exchange_mismatch",
+        ),
+        ({"calendar_version": "other-c1"}, "topic_calendar_version_mismatch"),
+        (
+            {
+                "calendar": ExchangeCalendar(
+                    exchange="TEST",
+                    version="other-c1",
+                    sessions=SESSIONS,
+                )
+            },
+            "topic_calendar_version_mismatch",
+        ),
+        (
+            {
+                "calendar": ExchangeCalendar(
+                    exchange="TEST",
+                    version="research-c1",
+                    sessions=SESSIONS[1:],
+                )
+            },
+            "topic_calendar_sessions_mismatch",
+        ),
+        (
+            {"grant": grant(local_display=False)},
+            "topic_source_grant_unavailable",
+        ),
+        (
+            {"grant": grant(source_id="other")},
+            "topic_source_grant_unavailable",
+        ),
+        (
+            {"grant": grant(expires_at=CUTOFF - timedelta(seconds=1))},
+            "topic_source_grant_unavailable",
+        ),
+    ),
+)
+def test_topic_share_requires_complete_snapshot_binding(topic_change, reason):
+    market, topic = _topic(_market())
+    topic = topic.model_copy(update=topic_change)
+
+    observation = _by_metric(
+        research_role_factors(
+            market,
+            "STOCK",
+            "CSI300",
+            topic=topic,
+            topic_id="topic-a",
+        )
+    )["topic_amount_share"]
+
+    assert observation.value is None
+    assert observation.reasons == (reason,)
+
+
+def test_directional_amount_coverage_counts_each_adjacent_return_observation():
+    market = _market()
+    missing_day = SESSIONS[-11]
+    market = market.model_copy(
+        update={
+            "bars": tuple(
+                item.model_copy(update={"close": None})
+                if item.security_id == "STOCK" and item.trade_date == missing_day
+                else item
+                for item in market.bars
+            )
+        }
+    )
+
+    metrics = _by_metric(research_role_factors(market, "STOCK", "CSI300"))
+
+    for metric in ("up_day_average_amount", "down_day_average_amount"):
+        assert metrics[metric].coverage == FactorCoverage(
+            expected=20,
+            valid=18,
+            excluded=0,
+            missing=2,
+        )
+
+
+def test_topic_share_currency_mismatch_is_missing_coverage():
+    market, topic = _topic(_market())
+    market = market.model_copy(
+        update={
+            "bars": tuple(
+                item.model_copy(update={"currency": "USD"})
+                if item.security_id == "PEER"
+                else item
+                for item in market.bars
+            )
+        }
+    )
+
+    observation = _by_metric(
+        research_role_factors(
+            market,
+            "STOCK",
+            "CSI300",
+            topic=topic,
+            topic_id="topic-a",
+        )
+    )["topic_amount_share"]
+
+    assert observation.value is None
+    assert observation.coverage == FactorCoverage(
+        expected=2,
+        valid=0,
+        excluded=0,
+        missing=2,
+    )
+    assert observation.reasons == ("topic_amounts_incompatible",)
 
 
 def test_factor_coverage_is_a_strict_nonnegative_partition():

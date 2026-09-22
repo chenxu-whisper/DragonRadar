@@ -67,8 +67,11 @@ it as CSI 300 or another market index. `role-test-v1` remains test-only.
 Reset-facing roles use an explicit, case-sensitive adapter:
 `emotion_leader`, `trend_leader`, `zhongjun`, `genfeng`, `buZhang`, and
 `jieli`. The adapter preserves the internal capability, result status, rule
-version, and reasons. Simplified, watch-only, and pending-validation evidence
-is not relabeled as a formal candidate.
+version, and reasons for every result row, including tied first candidates and
+later non-candidates. An evaluation without result rows retains one topic-level
+row with a null security ID. Simplified and watch-only evidence is not
+relabeled as a formal candidate; pending-validation rows become
+`waiting_verify` only after explicit rule approval.
 
 Reset production approval is a separate allowlist and defaults to empty.
 `production_activatable=true` in a historical rule does not approve that rule
@@ -86,7 +89,22 @@ median or move a window endpoint.
 FAC-R01 through FAC-C02 are research observations, not an approved ranking
 rule. Each metric records its value, unit, exact window, coverage partition,
 reasons, and source/version metadata. Topic amount share additionally requires
-a bound `TopicBatch` with complete same-day member and currency coverage.
+a bound `TopicBatch`: its trade date must equal the market trade date; its
+declared exchange and embedded calendar exchange must equal the market calendar
+exchange; declared and embedded calendar versions and sessions must agree; and
+its embedded grant must allow local storage and display for its source ID at
+the knowledge cutoff. Any failed binding returns a null value with a specific
+reason. Complete same-day member, amount, and currency coverage is also
+required. Currency-incompatible members are missing inputs rather than valid
+coverage.
+
+FAC-C02 directional amount coverage is evaluated per adjacent return
+observation. Position `i` is valid only when adjusted closes at `i-1` and `i`
+and amount at `i` are all valid. An incomplete 20-return window keeps its real
+valid/missing partition while the metric value remains null. A complete window
+with no rising or no falling observations reports `not_applicable` for that
+direction without reducing coverage.
+
 Missing turnover or float market capitalization remains unavailable and is
 not replaced by traded amount or total market capitalization. No real index
 provider or new role threshold has been approved by this contract.
