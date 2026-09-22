@@ -249,6 +249,23 @@ def _seal(stock):
     return {field: seal[field] for field in (*_SEAL_FIELDS, "reason")}
 
 
+def _published_stock(stocks: dict, security_id: str) -> dict:
+    published = stocks["stocks"]
+    if security_id not in published:
+        raise NotFound("Stock not found")
+    stock = published[security_id]
+    if (
+        not isinstance(stock, dict)
+        or not isinstance(stock.get("quote"), dict)
+        or not isinstance(stock.get("history"), list)
+        or any(not isinstance(point, dict) for point in stock["history"])
+        or not isinstance(stock.get("chart_type"), str)
+        or stock["chart_type"] not in {"candlestick", "line"}
+    ):
+        raise DataUnavailable
+    return stock
+
+
 def _regulation(snapshot: PublishedSnapshot):
     result = snapshot.result("regulation")
     return {
@@ -276,12 +293,8 @@ def stock_detail(security_id: str, request: Request):
             reason="materialization_unavailable",
             quality_flags=("materialization_unavailable",),
         )
-    stock = stocks["stocks"].get(security_id)
-    if stock is None:
-        raise NotFound("Stock not found")
-    quote = stock.get("quote")
-    if not isinstance(quote, dict):
-        raise DataUnavailable
+    stock = _published_stock(stocks, security_id)
+    quote = stock["quote"]
     roles, role_reason = _roles(snapshot, security_id)
     data = {
         "security_id": security_id,
@@ -325,12 +338,8 @@ def stock_kline(security_id: str, request: Request):
             reason="materialization_unavailable",
             quality_flags=("materialization_unavailable",),
         )
-    stock = stocks["stocks"].get(security_id)
-    if stock is None:
-        raise NotFound("Stock not found")
-    history = stock.get("history")
-    if not isinstance(history, list):
-        raise DataUnavailable
+    stock = _published_stock(stocks, security_id)
+    history = stock["history"]
     sessions = _adjust_window(history, start, end)
     _validate_snapshot_window(snapshot, trade_date, sessions[-1])
     adjustment_contract = analysis.get("adjustments", {}).get(adjustment)
@@ -363,7 +372,7 @@ def stock_kline(security_id: str, request: Request):
             "adjustment": adjustment,
             "adjusted_start": sessions[0],
             "adjusted_end": sessions[-1],
-            "chart_type": stock.get("chart_type"),
+            "chart_type": stock["chart_type"],
             "points": points,
         },
         coverage_view(1, valid, 0, 1 - valid),

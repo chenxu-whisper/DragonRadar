@@ -1539,6 +1539,57 @@ async def test_analysis_routes_reject_non_object_stocks_extension():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        (None, []),
+        (None, "bad-stock"),
+        ("quote", []),
+        ("quote", "bad-quote"),
+        ("history", {}),
+        ("history", ["bad-point"]),
+        ("chart_type", []),
+        ("chart_type", "area"),
+    ),
+)
+@pytest.mark.parametrize("path", ("/api/stock/A", "/api/stock/A/kline"))
+async def test_stock_routes_reject_malformed_published_stock_payload(
+    field, value, path
+):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    if field is None:
+        payload["stocks"]["stocks"]["A"] = value
+    else:
+        payload["stocks"]["stocks"]["A"][field] = value
+    snapshot = _replace_market_payload(snapshot, payload)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+    params = {"snapshot_id": str(snapshot.id)}
+    if path.endswith("/kline"):
+        params.update(
+            {
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+            }
+        )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(path, params=params)
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "DATA_UNAVAILABLE",
+        "message": "Data unavailable",
+    }
+
+
+@pytest.mark.anyio
 async def test_analysis_routes_reject_bad_published_session_date():
     from dragon_radar.http.app import create_workbench_app
 
