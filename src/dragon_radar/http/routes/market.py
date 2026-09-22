@@ -63,6 +63,7 @@ _DECIMAL_FIELDS = {
     "open",
     "previous_close",
     "return_ratio",
+    "seal_amount",
     "today_total",
     "value",
     "volume",

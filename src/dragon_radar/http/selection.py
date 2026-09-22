@@ -44,7 +44,11 @@ def selectors(request: Request) -> tuple[date | None, UUID | None]:
 
 
 def select_snapshot(
-    repository: Repository, trade_date: date | None, snapshot_id: UUID | None
+    repository: Repository,
+    trade_date: date | None,
+    snapshot_id: UUID | None,
+    *,
+    through_date: date | None = None,
 ) -> Snapshot | None:
     if snapshot_id is not None:
         snapshot = repository.get_snapshot(snapshot_id)
@@ -53,5 +57,8 @@ def select_snapshot(
         if trade_date is not None and snapshot.trade_date != trade_date:
             raise ValueError("Snapshot date mismatch")
         return snapshot
-    snapshots = repository.list_snapshots(trade_date=trade_date, limit=1)
+    filters = {"trade_date": trade_date, "limit": 1}
+    if through_date is not None:
+        filters["through_date"] = through_date
+    snapshots = repository.list_snapshots(**filters)
     return snapshots[0] if snapshots else None

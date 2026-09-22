@@ -1,7 +1,7 @@
 """Pure publication-time analysis and stock read-model contracts."""
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal, Inexact, localcontext
 from uuid import uuid4
 
@@ -186,6 +186,7 @@ def test_analysis_uses_exact_n_plus_one_positions_and_never_shifts_gaps():
     assert rows["C"]["return_ratio"] is None
     assert "missing_price" in rows["C"]["reasons"]
     assert adjusted["curves"]["C"]["normalized"] == [None] * 21
+    assert adjusted["curves"]["C"]["drawdown"] == [None] * 21
     assert [row["security_id"] for row in adjusted["ranking"]] == [
         "E",
         "A",
@@ -193,6 +194,45 @@ def test_analysis_uses_exact_n_plus_one_positions_and_never_shifts_gaps():
         "C",
     ]
     assert [row["rank"] for row in adjusted["ranking"]] == [1, 2, 3, None]
+
+
+def test_analysis_keeps_fixed_baseline_curves_across_middle_gap():
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    source = _analysis_batch()
+    gap_day = _sessions()[2]
+    source = source.model_copy(
+        update={
+            "bars": tuple(
+                item
+                for item in source.bars
+                if not (item.security_id == "D" and item.trade_date == gap_day)
+            )
+        }
+    )
+
+    projected = materialize_analysis(source, windows=(20,))["windows"]["20"][
+        "adjustments"
+    ]["raw"]
+    row = next(item for item in projected["ranking"] if item["security_id"] == "D")
+    curve = projected["curves"]["D"]
+
+    assert row["return_ratio"] is None
+    assert row["max_drawdown_ratio"] is None
+    assert "missing_price" in row["reasons"]
+    assert curve["normalized"][:4] == [
+        Decimal("100"),
+        Decimal("120"),
+        None,
+        Decimal("90"),
+    ]
+    assert curve["drawdown"][:4] == [
+        Decimal("0"),
+        Decimal("0"),
+        None,
+        Decimal("0.25"),
+    ]
+    assert "missing_price" in curve["reasons"]
 
 
 def test_analysis_gives_equal_returns_equal_ranks_with_stable_security_order():
@@ -464,6 +504,81 @@ def test_stock_materialization_preserves_real_ohlc_and_selects_chart_type():
     json.dumps(result, default=str, allow_nan=False)
 
 
+def _limit_up_event(source, **changes):
+    from dragon_radar.domain.models import LimitUpEvent
+
+    return LimitUpEvent(
+        **{
+            "security_id": "A",
+            "trade_date": source.trade_date,
+            "available_at": source.as_of - timedelta(minutes=1),
+            "source_id": source.source_id,
+            "source_version": source.source_version,
+            "is_limit_up": True,
+            "first_seal_time": time(9, 35),
+            "last_seal_time": time(14, 55),
+            "break_count": 2,
+            "seal_amount": Decimal("123456.78"),
+            "seal_amount_unit": "currency",
+            "continuous_boards": 3,
+            **changes,
+        }
+    )
+
+
+def test_stock_materialization_projects_unique_current_trusted_seal():
+    from dragon_radar.readmodels.stock import materialize_stocks
+
+    source = _analysis_batch()
+    source = source.model_copy(update={"limit_up_events": (_limit_up_event(source),)})
+
+    assert materialize_stocks(source)["stocks"]["A"]["seal"] == {
+        "first_seal_time": "09:35:00",
+        "last_seal_time": "14:55:00",
+        "break_count": 2,
+        "seal_amount": Decimal("123456.78"),
+        "seal_amount_unit": "currency",
+        "continuous_boards": 3,
+        "reason": None,
+    }
+
+
+@pytest.mark.parametrize("kind", ("missing", "late", "source_mismatch", "conflict"))
+def test_stock_materialization_nulls_untrusted_or_conflicting_seal(kind):
+    from dragon_radar.readmodels.stock import materialize_stocks
+
+    source = _analysis_batch()
+    event = _limit_up_event(source)
+    if kind == "missing":
+        events = ()
+    elif kind == "late":
+        events = (
+            event.model_copy(update={"available_at": source.as_of + timedelta(1)}),
+        )
+    elif kind == "source_mismatch":
+        events = (event.model_copy(update={"source_id": "other"}),)
+    else:
+        events = (event, event.model_copy(update={"break_count": 4}))
+    source = source.model_copy(update={"limit_up_events": events})
+
+    seal = materialize_stocks(source)["stocks"]["A"]["seal"]
+
+    assert all(
+        seal[field] is None
+        for field in (
+            "first_seal_time",
+            "last_seal_time",
+            "break_count",
+            "seal_amount",
+            "seal_amount_unit",
+            "continuous_boards",
+        )
+    )
+    assert seal["reason"] == (
+        "seal_event_conflict" if kind == "conflict" else "seal_event_missing"
+    )
+
+
 def test_stock_materialization_preserves_per_bar_units_and_nulls_missing_bar_units():
     from dragon_radar.readmodels.stock import materialize_stocks
 
@@ -573,7 +688,7 @@ def test_market_projection_caches_security_scoped_batches_and_observations():
     assert first_observation is second_observation
 
 
-def _published_analysis_snapshot(*, role_ready: bool = False):
+def _published_analysis_snapshot(*, role_ready: bool = False, source=None):
     from dragon_radar.publication.models import (
         Publication,
         PublicationResult,
@@ -585,7 +700,7 @@ def _published_analysis_snapshot(*, role_ready: bool = False):
     from dragon_radar.readmodels.stock import materialize_stocks
     from dragon_radar.storage.models import Snapshot
 
-    source = _analysis_batch()
+    source = source or _analysis_batch()
     publication_id = uuid4()
     market_snapshot_id = uuid4()
     market_payload = materialize_market(source, None)
@@ -694,23 +809,39 @@ def _published_analysis_snapshot(*, role_ready: bool = False):
 class _PublishedRepository:
     database = object()
 
-    def __init__(self, snapshot=None):
-        self.snapshot = snapshot
+    def __init__(self, snapshot=None, *additional):
+        self.snapshots = tuple(
+            item for item in (snapshot, *additional) if item is not None
+        )
         self.accesses = 0
+        self.list_calls = []
+        self.get_calls = []
 
     def get_snapshot(self, snapshot_id):
         self.accesses += 1
-        if self.snapshot is not None and snapshot_id == self.snapshot.id:
-            return self.snapshot
-        return None
+        self.get_calls.append(snapshot_id)
+        return next(
+            (item for item in self.snapshots if snapshot_id == item.id),
+            None,
+        )
 
-    def list_snapshots(self, *, trade_date=None, **_kwargs):
+    def list_snapshots(self, *, trade_date=None, through_date=None, limit=50, **kwargs):
         self.accesses += 1
-        if self.snapshot is None:
-            return []
-        if trade_date is not None and trade_date != self.snapshot.trade_date:
-            return []
-        return [self.snapshot]
+        self.list_calls.append(
+            {
+                "trade_date": trade_date,
+                "through_date": through_date,
+                "limit": limit,
+                **kwargs,
+            }
+        )
+        selected = [
+            item
+            for item in self.snapshots
+            if (trade_date is None or trade_date == item.trade_date)
+            and (through_date is None or item.trade_date <= through_date)
+        ]
+        return sorted(selected, key=lambda item: item.trade_date, reverse=True)[:limit]
 
 
 def test_publication_market_payload_adds_versioned_analysis_and_stocks():
@@ -825,7 +956,15 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
     assert stock["roles"]["items"] == [
         {"role": "trend_leader", "sector_id": "topic-a", "status": "candidate"}
     ]
-    assert stock["seal"] == {"closing_limit_streak": 2, "reason": None}
+    assert stock["seal"] == {
+        "first_seal_time": None,
+        "last_seal_time": None,
+        "break_count": None,
+        "seal_amount": None,
+        "seal_amount_unit": None,
+        "continuous_boards": None,
+        "reason": "seal_event_missing",
+    }
     assert stock["regulation"] == {
         "active_events": None,
         "reason": "regulation_disabled",
@@ -891,6 +1030,188 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_range_routes_select_latest_publication_not_after_requested_end():
+    from dragon_radar.http.app import create_workbench_app
+    from dragon_radar.publication.models import PublishedSnapshot
+
+    selected = _published_analysis_snapshot()
+    end = selected.trade_date
+    future = PublishedSnapshot(
+        selected.publication.model_copy(
+            update={"id": uuid4(), "trade_date": end + timedelta(days=1)}
+        ),
+        selected.market_snapshot,
+        selected.results,
+    )
+    repository = _PublishedRepository(future, selected)
+    app = create_workbench_app(repository=repository)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        for path, extra in (
+            ("/api/stock/A/kline", {}),
+            ("/api/rank/range", {"benchmark": "B000300"}),
+            ("/api/compare/curves", {"symbols": "A"}),
+        ):
+            response = await client.get(
+                path,
+                params={
+                    "start": str(_sessions()[0]),
+                    "end": str(end),
+                    "adj": "raw",
+                    **extra,
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["snapshot_id"] == str(selected.id)
+
+    assert len(repository.list_calls) == 3
+    assert all(
+        call
+        == {
+            "trade_date": None,
+            "through_date": end,
+            "limit": 1,
+        }
+        for call in repository.list_calls
+    )
+
+
+@pytest.mark.anyio
+async def test_explicit_snapshot_is_authorized_on_every_range_request():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    repository = _PublishedRepository(snapshot)
+    app = create_workbench_app(repository=repository)
+    common = {
+        "snapshot_id": str(snapshot.id),
+        "start": str(_sessions()[0]),
+        "end": str(snapshot.trade_date),
+        "adj": "raw",
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        first = await client.get("/api/rank/range", params=common)
+        second = await client.get(
+            "/api/compare/curves",
+            params={**common, "symbols": "A"},
+        )
+
+    assert first.status_code == second.status_code == 200
+    assert repository.get_calls == [snapshot.id, snapshot.id]
+    assert repository.list_calls == []
+
+
+@pytest.mark.anyio
+async def test_unpinned_explicit_date_must_equal_adjusted_end():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    repository = _PublishedRepository(snapshot)
+    app = create_workbench_app(repository=repository)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "start": str(_sessions()[0]),
+                "end": str(snapshot.trade_date + timedelta(days=1)),
+                "date": str(_sessions()[0]),
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 400
+    assert repository.list_calls == [
+        {
+            "trade_date": None,
+            "through_date": snapshot.trade_date + timedelta(days=1),
+            "limit": 1,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_compare_curve_returns_middle_nulls_and_reasons():
+    from dragon_radar.http.app import create_workbench_app
+
+    source = _analysis_batch()
+    gap_day = _sessions()[2]
+    source = source.model_copy(
+        update={
+            "bars": tuple(
+                item
+                for item in source.bars
+                if not (item.security_id == "D" and item.trade_date == gap_day)
+            )
+        }
+    )
+    snapshot = _published_analysis_snapshot(source=source)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/compare/curves",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "symbols": "D",
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["exclusions"] == []
+    assert data["curves"][0]["reasons"] == ["missing_price"]
+    assert data["curves"][0]["points"][2] == {
+        "trade_date": str(gap_day),
+        "normalized": None,
+        "drawdown": None,
+    }
+    assert data["curves"][0]["points"][3]["normalized"] == 90
+    assert data["curves"][0]["points"][3]["drawdown"] == 0.25
+
+
+@pytest.mark.anyio
+async def test_stock_detail_prefers_complete_published_stock_seal():
+    from dragon_radar.http.app import create_workbench_app
+
+    source = _analysis_batch()
+    source = source.model_copy(update={"limit_up_events": (_limit_up_event(source),)})
+    snapshot = _published_analysis_snapshot(role_ready=True, source=source)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/stock/A",
+            params={"snapshot_id": str(snapshot.id)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["seal"] == {
+        "first_seal_time": "09:35:00",
+        "last_seal_time": "14:55:00",
+        "break_count": 2,
+        "seal_amount": 123456.78,
+        "seal_amount_unit": "currency",
+        "continuous_boards": 3,
+        "reason": None,
+    }
+
+
+@pytest.mark.anyio
 async def test_analysis_routes_validate_before_storage_and_bind_snapshot_date():
     from dragon_radar.http.app import create_workbench_app
 
@@ -945,8 +1266,13 @@ async def test_analysis_routes_validate_before_storage_and_bind_snapshot_date():
             "reason": "role_disabled",
         }
         assert missing_roles.json()["data"]["seal"] == {
-            "closing_limit_streak": None,
-            "reason": "role_disabled",
+            "first_seal_time": None,
+            "last_seal_time": None,
+            "break_count": None,
+            "seal_amount": None,
+            "seal_amount_unit": None,
+            "continuous_boards": None,
+            "reason": "seal_event_missing",
         }
 
     missing_repository = _PublishedRepository()

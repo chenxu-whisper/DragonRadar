@@ -148,6 +148,7 @@ def _selection(request: Request, values):
         request,
         values["trade_date"],
         values["snapshot_id"],
+        through_date=values["end"],
     )
     if snapshot is None:
         return None, None, None, None
@@ -333,7 +334,13 @@ def compare_curves(request: Request):
         if all(point["normalized"] is None for point in points):
             exclusions.append({"security_id": symbol, "reasons": reasons})
         else:
-            curves.append({"security_id": symbol, "points": points})
+            curves.append(
+                {
+                    "security_id": symbol,
+                    "points": points,
+                    "reasons": reasons,
+                }
+            )
     return _response(
         snapshot,
         {

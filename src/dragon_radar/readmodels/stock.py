@@ -10,6 +10,52 @@ from dragon_radar.readmodels.projection import MarketProjection
 STOCK_SCHEMA = "dragon-radar.stocks"
 STOCK_SCHEMA_VERSION = 1
 STOCK_RULE_VERSION = "stocks-v1-raw"
+_SEAL_FIELDS = (
+    "first_seal_time",
+    "last_seal_time",
+    "break_count",
+    "seal_amount",
+    "seal_amount_unit",
+    "continuous_boards",
+)
+
+
+def _unavailable_seal(reason: str) -> dict[str, Any]:
+    return {**dict.fromkeys(_SEAL_FIELDS), "reason": reason}
+
+
+def _seal(batch: MarketBatch, security_id: str) -> dict[str, Any]:
+    events = [
+        event
+        for event in batch.limit_up_events
+        if event.security_id == security_id
+        and event.trade_date == batch.trade_date
+        and event.available_at <= batch.as_of
+        and event.source_id == batch.source_id
+        and event.source_version == batch.source_version
+    ]
+    if len(events) != 1:
+        return _unavailable_seal(
+            "seal_event_conflict" if len(events) > 1 else "seal_event_missing"
+        )
+    event = events[0]
+    return {
+        "first_seal_time": (
+            event.first_seal_time.isoformat()
+            if event.first_seal_time is not None
+            else None
+        ),
+        "last_seal_time": (
+            event.last_seal_time.isoformat()
+            if event.last_seal_time is not None
+            else None
+        ),
+        "break_count": event.break_count,
+        "seal_amount": event.seal_amount,
+        "seal_amount_unit": event.seal_amount_unit,
+        "continuous_boards": event.continuous_boards,
+        "reason": None,
+    }
 
 
 def _history_point(
@@ -106,6 +152,7 @@ def materialize_stocks(batch: MarketBatch) -> dict[str, Any]:
         stocks[security_id] = {
             "quote": _quote(projection, security_id),
             "history": history,
+            "seal": _seal(batch, security_id),
             "chart_type": "candlestick" if has_complete_ohlc else "line",
             "price_basis": "raw_close",
         }

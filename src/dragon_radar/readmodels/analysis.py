@@ -10,11 +10,9 @@ from dragon_radar.analytics.calendar import TradingCalendar
 from dragon_radar.analytics.metrics import (
     _batch_reasons,
     _decimal_context,
-    drawdown_curve,
     excess_return,
     interval_return,
     maximum_drawdown,
-    normalized_curve,
 )
 from dragon_radar.domain.models import DailyBar, MarketBatch
 from dragon_radar.readmodels.projection import MarketProjection
@@ -116,6 +114,29 @@ def _amount_change(bars: Sequence[DailyBar]) -> tuple[Decimal | None, str | None
         return current / baseline - 1, None
 
 
+def _display_curves(
+    bars: Sequence[DailyBar | None],
+    adjustment: Adjustment,
+) -> tuple[list[Decimal | None], list[Decimal | None]]:
+    if not bars or bars[0] is None:
+        return [None] * len(bars), [None] * len(bars)
+    baseline = _price(bars[0], adjustment)
+    peak = baseline
+    normalized = []
+    drawdown = []
+    with localcontext(_decimal_context()):
+        for bar in bars:
+            if bar is None:
+                normalized.append(None)
+                drawdown.append(None)
+                continue
+            price = _price(bar, adjustment)
+            peak = max(peak, price)
+            normalized.append(Decimal(100) * price / baseline)
+            drawdown.append(1 - price / peak)
+    return normalized, drawdown
+
+
 def _series(
     projection: MarketProjection,
     security_id: str,
@@ -128,9 +149,10 @@ def _series(
     for day in sessions:
         observation, errors = projection.observation(security_id, day)
         reasons.update(errors)
-        if observation is not None:
-            bars.append(observation)
-    if len({(item.currency, item.price_unit) for item in bars}) > 1:
+        bars.append(observation)
+    valid_bars = [item for item in bars if item is not None]
+    unit_mismatch = len({(item.currency, item.price_unit) for item in valid_bars}) > 1
+    if unit_mismatch:
         reasons.add("unit_mismatch")
 
     amount_bars = []
@@ -142,7 +164,11 @@ def _series(
         amount_bars.append(records[0])
     amount_change, amount_reason = _amount_change(amount_bars)
 
-    complete = not reasons and len(bars) == len(sessions)
+    display_normalized, display_drawdown = _display_curves(bars, adjustment)
+    if _batch_reasons(batch) or unit_mismatch:
+        display_normalized = [None] * len(sessions)
+        display_drawdown = [None] * len(sessions)
+    complete = not reasons and len(valid_bars) == len(sessions)
     if not complete:
         if amount_reason is not None:
             reasons.add(amount_reason)
@@ -150,20 +176,20 @@ def _series(
             "return_ratio": None,
             "max_drawdown_ratio": None,
             "amount_change_ratio": None,
-            "normalized": [None] * len(sessions),
-            "drawdown": [None] * len(sessions),
+            "normalized": display_normalized,
+            "drawdown": display_drawdown,
             "reasons": sorted(reasons),
         }
 
-    prices = tuple(_price(item, adjustment) for item in bars)
+    prices = tuple(_price(item, adjustment) for item in valid_bars)
     if amount_reason is not None:
         reasons.add(amount_reason)
     return {
         "return_ratio": interval_return(prices),
         "max_drawdown_ratio": maximum_drawdown(prices),
         "amount_change_ratio": amount_change,
-        "normalized": list(normalized_curve(prices)),
-        "drawdown": list(drawdown_curve(prices)),
+        "normalized": display_normalized,
+        "drawdown": display_drawdown,
         "reasons": sorted(reasons),
     }
 

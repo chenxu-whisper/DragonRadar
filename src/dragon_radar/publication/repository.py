@@ -613,7 +613,12 @@ class PublicationRepository:
             return result
 
     def list_snapshots(
-        self, *, trade_date: date | None = None, limit: int = 50, offset: int = 0
+        self,
+        *,
+        trade_date: date | None = None,
+        through_date: date | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[PublishedSnapshot]:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("limit must be from 1 to 100")
@@ -622,6 +627,8 @@ class PublicationRepository:
         query = select(publications).where(publications.c.status == "published")
         if trade_date is not None:
             query = query.where(publications.c.trade_date == trade_date)
+        if through_date is not None:
+            query = query.where(publications.c.trade_date <= through_date)
         query = query.order_by(
             publications.c.trade_date.desc(),
             publications.c.version.desc(),

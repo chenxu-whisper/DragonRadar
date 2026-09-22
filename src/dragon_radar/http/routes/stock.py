@@ -17,6 +17,14 @@ from dragon_radar.storage.repository import NotFound
 router = APIRouter()
 
 _ADJUSTMENTS = frozenset({"raw", "qfq", "hfq"})
+_SEAL_FIELDS = (
+    "first_seal_time",
+    "last_seal_time",
+    "break_count",
+    "seal_amount",
+    "seal_amount_unit",
+    "continuous_boards",
+)
 
 
 def _repository(request: Request):
@@ -30,11 +38,17 @@ def _snapshot(
     request: Request,
     trade_date: date | None,
     snapshot_id: UUID | None,
+    *,
+    through_date: date | None = None,
 ):
+    selection_date = (
+        None if through_date is not None and snapshot_id is None else trade_date
+    )
     selected = select_snapshot(
         _repository(request),
-        trade_date,
+        selection_date,
         snapshot_id,
+        through_date=through_date,
     )
     if selected is None or not isinstance(selected, PublishedSnapshot):
         return None
@@ -139,18 +153,14 @@ def _validate_snapshot_window(
         raise ValueError("Date does not match adjusted end")
 
 
-def _roles_and_seal(snapshot: PublishedSnapshot, security_id: str):
+def _roles(snapshot: PublishedSnapshot, security_id: str):
     result = snapshot.result("role")
     if result.status != "ready":
         reason = f"role_{result.status}"
-        return {"items": None, "reason": reason}, {
-            "closing_limit_streak": None,
-            "reason": reason,
-        }
+        return {"items": None, "reason": reason}
     try:
         topics = result.payload["topics"]
         items = []
-        seals = set()
         for topic in topics:
             topic_id = topic["topic_id"]
             for row in topic.get("results", ()):
@@ -165,25 +175,26 @@ def _roles_and_seal(snapshot: PublishedSnapshot, security_id: str):
                             "status": row.get("internal_status"),
                         }
                     )
-            for row in topic.get("ladder", ()):
-                if (
-                    row.get("security_id") == security_id
-                    and row.get("trade_date") == snapshot.trade_date.isoformat()
-                    and row.get("closing_limit_streak") is not None
-                ):
-                    seals.add(row["closing_limit_streak"])
     except (KeyError, TypeError):
         raise DataUnavailable from None
     items.sort(key=lambda item: (item["role"], item["sector_id"]))
     unique_items = list(dict.fromkeys(tuple(item.items()) for item in items))
     projected_items = [dict(item) for item in unique_items]
-    if len(seals) > 1:
+    return {"items": projected_items, "reason": None}
+
+
+def _seal(stock):
+    seal = stock.get("seal")
+    if seal is None:
+        return {**dict.fromkeys(_SEAL_FIELDS), "reason": "seal_event_missing"}
+    if not isinstance(seal, dict) or any(field not in seal for field in _SEAL_FIELDS):
         raise DataUnavailable
-    seal = next(iter(seals), None)
-    return {"items": projected_items, "reason": None}, {
-        "closing_limit_streak": seal,
-        "reason": None if seal is not None else "seal_unavailable",
-    }
+    reason = seal.get("reason")
+    if reason is not None and (not isinstance(reason, str) or not reason):
+        raise DataUnavailable
+    if reason is not None and any(seal[field] is not None for field in _SEAL_FIELDS):
+        raise DataUnavailable
+    return {field: seal[field] for field in (*_SEAL_FIELDS, "reason")}
 
 
 def _regulation(snapshot: PublishedSnapshot):
@@ -219,7 +230,7 @@ def stock_detail(security_id: str, request: Request):
     quote = stock.get("quote")
     if not isinstance(quote, dict):
         raise DataUnavailable
-    roles, seal = _roles_and_seal(snapshot, security_id)
+    roles = _roles(snapshot, security_id)
     return _response(
         snapshot,
         {
@@ -227,7 +238,7 @@ def stock_detail(security_id: str, request: Request):
             "name": quote.get("name"),
             "quote": quote,
             "roles": roles,
-            "seal": seal,
+            "seal": _seal(stock),
             "regulation": _regulation(snapshot),
         },
         coverage_view(
@@ -245,6 +256,7 @@ def stock_kline(security_id: str, request: Request):
         request,
         trade_date,
         snapshot_id,
+        through_date=end,
     )
     if snapshot is None:
         return DecimalJSONResponse(empty_envelope(trade_date or end))
