@@ -50,7 +50,8 @@ export function useResource<T>(path: string | null, snapshot?: string, refreshTo
         if (enabled) window.dispatchEvent(new Event('private-source-revoked'));
         setResult({ key: null, loading: false }); return;
       }
-      const retain = failure.status === 0 || failure.status === 408 || failure.status >= 500;
+      const retain = failure.code !== 'malformed_response' &&
+        (failure.status === 0 || failure.status === 408 || failure.status >= 500);
       setResult(previous => ({ key, data: retain && previous.key === key ? previous.data : undefined, error: failure, loading: false }));
     });
     return () => { gate.current.next(); controller.abort(); };

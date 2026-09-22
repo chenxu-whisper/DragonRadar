@@ -7,9 +7,19 @@ import {
   validateCandidates, validateContinuity, validateLadder,
 } from '../features/roles/api';
 import {
-  ROLE_LABELS, ROLE_NAMES,
+  ROLE_NAMES,
   type CandidatesData, type ContinuityData, type LadderData, type RoleEnvelope,
 } from '../features/roles/types';
+import {
+  aggregateRoleStatuses,
+  capabilityLabel,
+  changeTypeLabel,
+  comparisonStatusLabel,
+  evidenceStatusLabel,
+  reasonLabels,
+  roleLabel,
+  statusLabel,
+} from '../features/roles/labels';
 import type { ResearchState } from '../state';
 import type { ResetHeatmap, WorkbenchEnvelope } from '../types';
 
@@ -36,8 +46,9 @@ function percent(value: number | null): string {
 }
 
 function StateMessage({ status, reasons }: { status?: string; reasons?: string[] }) {
-  if (status === 'no_candidate') return <div className="leader-state"><CircleDashed size={18} /><strong>完整输入下暂无候选</strong><span>{reasons?.join('；')}</span></div>;
-  if (status === 'insufficient') return <div className="leader-state"><AlertTriangle size={18} /><strong>角色输入不足</strong><span>{reasons?.join('；')}</span></div>;
+  const readableReasons = reasonLabels(reasons ?? []).join('；');
+  if (status === 'no_candidate') return <div className="leader-state"><CircleDashed size={18} /><strong>完整输入下暂无候选</strong><span>{readableReasons}</span></div>;
+  if (status === 'insufficient') return <div className="leader-state"><AlertTriangle size={18} /><strong>角色输入不足</strong><span>{readableReasons}</span></div>;
   return null;
 }
 
@@ -89,7 +100,9 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
   const historical = new Map(
     heatmap.data?.data?.cells.map(cell => [`${cell.trade_date}:${cell.boards}`, cell.count]) ?? [],
   );
-  const selectedStatus = candidateData?.statuses.find(item => !state.sector || item.sector_id === state.sector);
+  const selectedStatus = state.sector
+    ? candidateData?.statuses.find(item => item.sector_id === state.sector)
+    : aggregateRoleStatuses(candidateData?.statuses ?? []);
 
   return <>
     <div className="page-heading leaders-heading"><div><p className="eyebrow">梯队结构 / 角色证据</p><h1>梯队</h1></div>
@@ -101,9 +114,9 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
         {sectorOptions.map(sector => <option key={sector} value={sector}>{sector}</option>)}
       </select></label>
       <label>角色<select aria-label="角色筛选" value={state.role} onChange={event => patch({ role: event.target.value as ResearchState['role'] })}>
-        {ROLE_NAMES.map(role => <option key={role} value={role}>{ROLE_LABELS[role]}</option>)}
+        {ROLE_NAMES.map(role => <option key={role} value={role}>{roleLabel(role)}</option>)}
       </select></label>
-      <span className="status-token">{selectedStatus?.status || (unavailable ? 'unavailable' : 'loading')}</span>
+      <span className="status-token">{statusLabel(selectedStatus?.status || (unavailable ? 'unavailable' : 'loading'))}</span>
     </div>
 
     <ResourceStatus resource={ladder} name="梯队矩阵" />
@@ -147,11 +160,11 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
         <div><dt>昨日涨停收益中位数</dt><dd>{percent(continuityData.yesterday_limit_up_median_return)}</dd></div>
       </dl>
       {[...continuityData.promote_rate_quality.reasons, ...continuityData.yesterday_limit_up_feedback.reasons].length > 0 &&
-        <p className="muted">{[...continuityData.promote_rate_quality.reasons, ...continuityData.yesterday_limit_up_feedback.reasons].join('；')}</p>}
+        <p className="muted">{reasonLabels([...continuityData.promote_rate_quality.reasons, ...continuityData.yesterday_limit_up_feedback.reasons]).join('；')}</p>}
     </section>}
 
     {candidateData && <section className="leaders-section" aria-labelledby="candidates-title">
-      <div className="section-heading"><h2 id="candidates-title">{ROLE_LABELS[state.role]}候选</h2>
+      <div className="section-heading"><h2 id="candidates-title">{roleLabel(state.role)}候选</h2>
         <span className="muted">有效 {candidateResult.value?.coverage?.valid ?? '—'} / 应有 {candidateResult.value?.coverage?.expected ?? '—'} · 排除 {candidateResult.value?.coverage?.excluded ?? '—'} · 缺失 {candidateResult.value?.coverage?.missing ?? '—'}</span></div>
       {candidateResult.value?.quality_flags.includes('rule_version_not_approved') &&
         <div className="leader-state"><AlertTriangle size={18} /><strong>规则尚未批准</strong><span>不展示正式候选。</span></div>}
@@ -162,17 +175,29 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
             <td>并列 {candidate.rank}</td>
             <th><button type="button" className="security-button" aria-label={candidate.name} onClick={event => open(candidate.security_id, candidate.sector_id, event.currentTarget)}>
               {candidate.name}<span className="security-id">{candidate.security_id}</span></button></th>
-            <td>{candidate.sector_id}</td><td>{candidate.boards ?? '—'}</td><td><span className="status-token">{candidate.evidence_status}</span></td>
+            <td>{candidate.sector_id}</td><td>{candidate.boards ?? '—'}</td><td><span className="status-token">{evidenceStatusLabel(candidate.evidence_status)}</span></td>
           </tr>)}</tbody></table>
       </TableScroll>}
+      <details className="evidence">
+        <summary>逐题材状态与原始依据</summary>
+        <TableScroll label="逐题材状态与原始依据横向滚动">
+          <table aria-label="逐题材状态与原始依据"><thead><tr><th>题材</th><th>状态</th><th>能力</th><th>原因</th><th>原始码</th></tr></thead>
+            <tbody>{candidateData.statuses.map(item => <tr key={item.sector_id}>
+              <th>{item.sector_id}</th><td>{statusLabel(item.status)}</td><td>{capabilityLabel(item.capability)}</td>
+              <td>{reasonLabels(item.reasons).join('；') || '无原因'}</td>
+              <td><code>{[item.status, item.capability, ...item.reasons].join(' / ')}</code></td>
+            </tr>)}</tbody>
+          </table>
+        </TableScroll>
+      </details>
     </section>}
 
     {candidateData && <section className="leaders-section changes-section" aria-labelledby="changes-title">
       <div className="section-heading"><h2 id="changes-title">角色变化</h2></div>
       {candidateData.change_summaries.map((change, index) => <div className="change-row" key={`${change.sector_id}:${index}`}>
           <span>{change.sector_id}</span>
-          <strong>{change.comparison_status === 'not_comparable' ? '不可比较' : '可比较'}</strong>
-          <span>{change.reasons.join('；') || '无原因'}</span>
+          <strong>{comparisonStatusLabel(change.comparison_status)}</strong>
+          <span>{reasonLabels(change.reasons).join('；') || '无原因'}</span>
           {change.membership_changed && <span>成员发生变化</span>}
           <ArrowRight size={16} aria-hidden="true" />
         </div>)}
@@ -180,11 +205,18 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
         <table aria-label="角色变化明细">
           <thead><tr><th>题材</th><th>证券</th><th>变化类型</th><th>角色</th><th>比较状态</th><th>原因</th></tr></thead>
           <tbody>{candidateData.role_changes.map(change => <tr key={change.id}>
-            <td>{change.sector_id}</td><th>{change.security_id}</th><td>{change.change_type ?? '—'}</td>
-            <td>{change.role}</td><td>{change.comparison_status}</td><td>{change.reasons.join('；') || '无原因'}</td>
+            <td>{change.sector_id}</td><th>{change.security_id}</th><td>{change.change_type ? changeTypeLabel(change.change_type) : '—'}</td>
+            <td>{roleLabel(change.role)}</td><td>{comparisonStatusLabel(change.comparison_status)}</td><td>{reasonLabels(change.reasons).join('；') || '无原因'}</td>
           </tr>)}</tbody>
         </table>
       </TableScroll>}
+      {(candidateData.change_summaries.length > 0 || candidateData.role_changes.length > 0) && <details className="evidence">
+        <summary>角色变化原始证据</summary>
+        <pre>{JSON.stringify({
+          change_summaries: candidateData.change_summaries,
+          role_changes: candidateData.role_changes,
+        }, null, 2)}</pre>
+      </details>}
       {candidateData.change_summaries.length === 0 && candidateData.role_changes.length === 0 &&
         <p className="muted">没有已发布的变化记录。</p>}
     </section>}

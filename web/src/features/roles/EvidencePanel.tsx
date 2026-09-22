@@ -3,7 +3,13 @@ import { AlertCircle, CheckCircle2, CircleDashed } from 'lucide-react';
 import { ResourceStatus, TableScroll } from '../../components/Common';
 import { useResource } from '../../hooks/useResource';
 import { evidencePath, validateEvidence } from './api';
-import { ROLE_LABELS, type EvidenceData, type RoleEnvelope } from './types';
+import {
+  evidenceStatusLabel,
+  metricLabel,
+  reasonLabels,
+  roleLabel,
+} from './labels';
+import type { EvidenceData, RoleEnvelope } from './types';
 
 function time(value: string | null): string {
   if (!value || !Number.isFinite(Date.parse(value))) return '未知';
@@ -29,7 +35,7 @@ function EvidenceList({ title, values, kind }: {
   const Icon = kind === 'support' ? CheckCircle2 : kind === 'oppose' ? AlertCircle : CircleDashed;
   return <section className={`evidence-list evidence-${kind}`}>
     <h4><Icon size={15} aria-hidden="true" />{title}</h4>
-    {values.length ? <ul>{values.map(value => <li key={value}>{value}</li>)}</ul> : <p className="muted">无</p>}
+    {values.length ? <ul>{reasonLabels(values).map((value, index) => <li key={`${values[index]}:${index}`}>{value}</li>)}</ul> : <p className="muted">无</p>}
   </section>;
 }
 
@@ -64,21 +70,21 @@ export function EvidencePanel({ snapshot, date, sector, security, refreshToken }
     {parsed.value && !data && <p className="empty">角色证据域当前不可用。</p>}
     {data?.roles.map(item => <article className="role-evidence" key={item.role_type}>
       <div className="role-evidence-heading">
-        <h4>{ROLE_LABELS[item.role_type]}</h4>
-        <span className="status-token">{item.evidence_status}</span>
+        <h4>{roleLabel(item.role_type)}</h4>
+        <span className="status-token">{evidenceStatusLabel(item.evidence_status)}</span>
       </div>
-      <TableScroll label={`${ROLE_LABELS[item.role_type]}因子`}>
-        <table aria-label={`${ROLE_LABELS[item.role_type]}因子`}>
+      <TableScroll label={`${roleLabel(item.role_type)}因子`}>
+        <table aria-label={`${roleLabel(item.role_type)}因子`}>
           <thead><tr><th>因子</th><th>值</th><th>单位</th><th>窗口</th><th>覆盖</th><th>来源时间</th><th>知识截止</th><th>原因</th></tr></thead>
           <tbody>{item.factors.map((factor, index) => <tr key={`${factor.factor_id}:${index}`}>
-            <th>{factor.factor_id}<small>{factor.metric || '—'}</small></th>
+            <th>{factor.factor_id}<small>{factor.metric ? metricLabel(factor.metric) : '—'}</small></th>
             <td>{factor.value === null ? '—' : String(factor.value)}</td>
             <td>{factor.unit || '—'}</td>
             <td>{factor.window || '—'}</td>
             <td>{factor.coverage.valid}/{factor.coverage.expected} · 排除 {factor.coverage.excluded} · 缺失 {factor.coverage.missing}</td>
             <td>{time(factor.source_time)}</td>
             <td>{time(factor.knowledge_cutoff)}</td>
-            <td>{factor.reasons.join('；') || '—'}</td>
+            <td>{reasonLabels(factor.reasons).join('；') || '—'}</td>
           </tr>)}</tbody>
         </table>
       </TableScroll>
@@ -87,6 +93,10 @@ export function EvidencePanel({ snapshot, date, sector, security, refreshToken }
         <EvidenceList title="反证" values={item.opposing_evidence} kind="oppose" />
         <EvidenceList title="缺失" values={item.missing_evidence} kind="missing" />
       </div>
+      <details className="evidence">
+        <summary>原始证据</summary>
+        <pre>{JSON.stringify(item, null, 2)}</pre>
+      </details>
     </article>)}
   </section>;
 }

@@ -28,9 +28,10 @@ test('renders the date-by-board matrix, tied candidates and honest comparison ev
   await expect(candidates.getByRole('button').nth(0)).toHaveAccessibleName('合成测试证券1');
   await expect(candidates.getByRole('button').nth(1)).toHaveAccessibleName('合成测试证券2');
   await expect(page.getByText('不可比较', { exact: true })).toBeVisible();
-  await expect(page.getByText('rule_version_changed')).toBeVisible();
-  await expect(page.getByText('topic_membership_changed')).toBeVisible();
+  await expect(page.getByText('规则版本已变化')).toBeVisible();
+  await expect(page.getByText('题材成员已变化')).toBeVisible();
   await expect(page.getByText('盘中封板字段不可用', { exact: true })).toBeVisible();
+  await expect(page.getByText('rule_version_changed', { exact: true })).toBeHidden();
 });
 
 test('matrix securities share one drawer and expose six traceable evidence groups', async ({ page }) => {
@@ -44,9 +45,14 @@ test('matrix securities share one drawer and expose six traceable evidence group
   await expect(page.getByRole('dialog').getByRole('heading', { name: '六类角色证据' })).toBeVisible();
   await expect(page.getByRole('dialog').getByRole('row', { name: /FAC-R01/ })).toBeVisible();
   await expect(page.getByRole('dialog').getByText('2026-09-10 15:30:00', { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('dialog').getByText('relative_strength_positive', { exact: true })).toBeVisible();
-  await expect(page.getByRole('dialog').getByText('lags_unique_core', { exact: true })).toBeVisible();
-  await expect(page.getByRole('dialog').getByText('intraday_seal_detail_unavailable', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('相对强度为正', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('落后于唯一核心标的', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('盘中封板明细不可用', { exact: true })).toBeVisible();
+  const dialog = page.getByRole('dialog');
+  expect(await dialog.evaluate(element => (element as HTMLElement).innerText)).not.toContain('relative_strength_positive');
+  const trendEvidence = dialog.locator('.role-evidence').filter({ hasText: '趋势龙头' });
+  await trendEvidence.getByText('原始证据').click();
+  await expect(trendEvidence.locator('pre')).toContainText('relative_strength_positive');
 
   await page.getByRole('table', { name: '角色候选' })
     .getByRole('button', { name: '合成测试证券2', exact: true })
@@ -90,7 +96,23 @@ test('renders role change details even when comparison summaries are empty', asy
 
   const changes = page.getByRole('table', { name: '角色变化明细' });
   await expect(changes).toBeVisible();
-  await expect(changes.getByRole('row', { name: /TEST001.*added.*trend_leader.*comparable.*entered_rank/ })).toBeVisible();
+  await expect(changes.getByRole('row', { name: /TEST001.*新增.*趋势龙头.*可比较.*进入排名/ })).toBeVisible();
+});
+
+test('all topics use the weakest status while a selected sector uses only its own status', async ({ page }) => {
+  await mockLeaders(page, { mixedStatuses: true });
+  await page.goto(allSectorsUrl);
+
+  await expect(page.locator('.leaders-controls .status-token')).toHaveText('证据不足');
+  const topicDetails = page.getByText('逐题材状态与原始依据');
+  await topicDetails.click();
+  await expect(page.getByRole('row', { name: /SEC001.*可正式候选/ })).toBeVisible();
+  await expect(page.getByRole('row', { name: /SEC002.*证据不足.*必要输入缺失/ })).toBeVisible();
+  await expect(page.getByText('有效 2 / 应有 4 · 排除 1 · 缺失 1', { exact: true })).toBeVisible();
+
+  await page.getByLabel('题材筛选').selectOption('SEC001');
+  await expect(page.locator('.leaders-controls .status-token')).toHaveText('可正式候选');
+  await expect(page.getByText('角色输入不足', { exact: true })).toHaveCount(0);
 });
 
 test('reset stock 404 is shown directly and never falls back to the legacy endpoint', async ({ page }) => {
@@ -107,6 +129,24 @@ test('reset stock 404 is shown directly and never falls back to the legacy endpo
 
   await expect(page.getByRole('dialog').getByRole('alert')).toContainText('未找到该快照或证券');
   expect(legacyStockRequests).toEqual([]);
+});
+
+test('malformed reset stock response uses the public error state and clears stale detail', async ({ page }) => {
+  const state: LeaderMockState = {};
+  await mockLeaders(page, state);
+  await page.goto(leadersUrl);
+  await page.getByRole('table', { name: '角色候选' })
+    .getByRole('button', { name: '合成测试证券1', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: '合成测试证券1' })).toBeVisible();
+
+  state.malformedStock = true;
+  await page.getByRole('button', { name: '刷新快照' }).evaluate((button: HTMLButtonElement) => button.click());
+  await expect(dialog.getByRole('alert')).toContainText('证券详情加载失败：数据格式不完整。');
+  await expect(dialog.getByRole('heading', { name: '合成测试证券1' })).toHaveCount(0);
+  await expect(dialog.getByText('不应泄露的旧证券数据')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '我的复盘', exact: true })).toHaveCount(0);
+  await expect(page.locator('main')).toHaveCount(1);
 });
 
 test('candidate coverage discloses valid, expected, excluded and missing counts', async ({ page }) => {

@@ -5,15 +5,6 @@ export const ROLE_NAMES = [
 ] as const;
 export type RoleName = typeof ROLE_NAMES[number];
 
-export const ROLE_LABELS: Record<RoleName, string> = {
-  emotion_leader: '情绪龙头',
-  trend_leader: '趋势龙头',
-  zhongjun: '中军',
-  genfeng: '跟风',
-  buZhang: '补涨',
-  jieli: '接力龙头',
-};
-
 export interface RoleEnvelope<T> {
   trade_date: string;
   as_of: string;

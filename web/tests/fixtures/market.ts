@@ -204,9 +204,11 @@ export type LeaderMockState = {
   domainUnavailable?: boolean;
   noCandidate?: boolean;
   insufficient?: boolean;
+  mixedStatuses?: boolean;
   unapproved?: boolean;
   roleChangesOnly?: boolean;
   stockNotFound?: boolean;
+  malformedStock?: boolean;
 };
 
 const roleCoverage = { expected: 2, valid: 2, excluded: 0, missing: 0 };
@@ -284,13 +286,20 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
       const reasons = state.insufficient
         ? ['required_inputs_missing']
         : state.noCandidate ? ['no_ranked_candidate'] : [];
+      const statuses = [
+        { sector_id: 'SEC001', status, capability: role === 'genfeng' ? 'watch_only' : 'ready', reasons },
+        ...(state.mixedStatuses ? [{
+          sector_id: 'SEC002', status: 'insufficient', capability: 'ready',
+          reasons: ['required_inputs_missing'],
+        }] : []),
+      ].filter(item => !url.searchParams.get('sector') || item.sector_id === url.searchParams.get('sector'));
       const candidates = state.noCandidate || state.insufficient || state.unapproved ? [] : [
         { security_id: 'TEST001', name: '合成测试证券1', rank: 1, evidence_status: 'candidate', sector_id: 'SEC001', boards: 2 },
         { security_id: 'TEST002', name: '合成测试证券2', rank: 1, evidence_status: 'candidate', sector_id: 'SEC001', boards: 1 },
       ];
       return route.fulfill({ json: roleEnvelope({
         role,
-        statuses: [{ sector_id: 'SEC001', status, capability: role === 'genfeng' ? 'watch_only' : 'ready', reasons }],
+        statuses,
         candidates,
         change_summaries: state.roleChangesOnly ? [] : [{
           sector_id: 'SEC001', role: 'trend', previous_role_run_id: 'previous-run',
@@ -344,6 +353,14 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
     if (state.stockNotFound) return route.fulfill({ status: 404, json: { code: 'NOT_FOUND' } });
     const securityId = decodeURIComponent(url.pathname.split('/').at(-1)!);
     const security = securities.find(item => item.security_id === securityId) ?? securities[0];
+    if (state.malformedStock) return route.fulfill({ json: roleEnvelope({
+      security_id: securityId,
+      name: '不应泄露的旧证券数据',
+      quote: { last: 'broken', change_ratio: 0.1, amount: 100 },
+      roles: {},
+      seal: null,
+      regulation: { active_events: 'zero' },
+    }) });
     return route.fulfill({ json: roleEnvelope({
       security_id: securityId,
       name: security.name,

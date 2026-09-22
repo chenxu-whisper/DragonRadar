@@ -93,10 +93,12 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       let requested: string;
       try { requested = decodeURIComponent(resetStockPath[1]); }
       catch { throw new ApiError(400, '证券标识无效，请返回研究列表重新选择。'); }
-      const payload = record(data) && record(data.data) ? data.data : undefined;
-      if (!payload || payload.security_id !== requested) {
-        throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
-      }
+      const query = new URLSearchParams(path.split('?', 2)[1] ?? '');
+      const { validateResetStockResponse } = await import('./stock-validation');
+      const failure = validateResetStockResponse(data, requested, query.get('date'));
+      if (failure === 'date_mismatch') throw new ApiError(409, '响应日期与当前请求不匹配，已丢弃该响应。');
+      if (failure === 'security_mismatch') throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
+      if (failure) throw new ApiError(502, '证券详情加载失败：数据格式不完整。', 'malformed_response');
     }
     return data as T;
   } catch (error) {

@@ -6,6 +6,7 @@ import { stateSearch, type ResearchState } from '../state';
 import type { Detail, Envelope } from '../types';
 import { Chart } from '../components/Chart';
 import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch } from '../components/Common';
+import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/labels';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
@@ -75,7 +76,13 @@ function DetailContent({ state, id, evidenceSector, refreshToken, ReviewActions 
         <div><dt>成交额</dt><dd>{modernData.quote.amount ?? '—'}</dd></div>
         <div><dt>正式监管事件</dt><dd>{modernData.regulation.active_events}</dd></div>
       </dl>
-      <p className="detail-reasons">{modernData.seal.reason || '封板字段按已发布数据展示'}</p>
+      <p className="detail-reasons">{modernData.seal.reason ? reasonLabel(modernData.seal.reason) : '封板字段按已发布数据展示'}</p>
+      <p className="detail-reasons">{modernData.roles.length
+        ? modernData.roles.map(role => `${roleLabel(role.role_type)}：${evidenceStatusLabel(role.evidence_status)}`).join('；')
+        : '暂无角色证据'}</p>
+      <details className="evidence"><summary>证券原始证据</summary>
+        <pre>{JSON.stringify({ roles: modernData.roles, seal: modernData.seal }, null, 2)}</pre>
+      </details>
     </>}
     {data && <>
       <div className="detail-heading"><h2>{data.security.name || '名称未知'}</h2><span>{data.security.security_id} · {label(data.security.exchange)} · {label(data.security.board)}</span></div>
