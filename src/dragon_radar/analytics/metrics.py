@@ -70,6 +70,17 @@ def interval_return(prices: Sequence[Decimal]) -> Decimal:
         return values[-1] / values[0] - 1
 
 
+def excess_return(value: Decimal, benchmark: Decimal) -> Decimal:
+    """Subtract two finite Decimal returns under the fixed analytics context."""
+    if any(
+        not isinstance(item, Decimal) or not item.is_finite()
+        for item in (value, benchmark)
+    ):
+        raise ValueError("returns must be finite Decimal values")
+    with localcontext(_decimal_context()):
+        return value - benchmark
+
+
 def maximum_drawdown(prices: Sequence[Decimal]) -> Decimal:
     """Maximum 1 - price/running_peak; never use the initial price as every peak."""
     values = _prices(prices)
@@ -80,6 +91,18 @@ def maximum_drawdown(prices: Sequence[Decimal]) -> Decimal:
             peak = max(peak, price)
             worst = max(worst, 1 - price / peak)
     return worst
+
+
+def drawdown_curve(prices: Sequence[Decimal]) -> tuple[Decimal, ...]:
+    """Nonnegative 1 - price/running_peak for each supplied observation."""
+    values = _prices(prices)
+    peak = values[0]
+    result = []
+    with localcontext(_decimal_context()):
+        for price in values:
+            peak = max(peak, price)
+            result.append(1 - price / peak)
+    return tuple(result)
 
 
 def normalized_curve(prices: Sequence[Decimal]) -> tuple[Decimal, ...]:
