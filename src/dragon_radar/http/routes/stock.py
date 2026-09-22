@@ -160,8 +160,7 @@ def _validate_snapshot_window(
 def _roles(snapshot: PublishedSnapshot, security_id: str):
     result = snapshot.result("role")
     if result.status != "ready":
-        reason = f"role_{result.status}"
-        return {"items": None, "reason": reason}
+        return [], f"role_{result.status}"
     try:
         topics = result.payload["topics"]
         items = []
@@ -223,7 +222,7 @@ def _roles(snapshot: PublishedSnapshot, security_id: str):
     items.sort(key=lambda item: (item["role_type"], item["sector_id"]))
     unique_items = list(dict.fromkeys(tuple(item.items()) for item in items))
     projected_items = [dict(item) for item in unique_items]
-    return {"items": projected_items, "reason": None}
+    return projected_items, None
 
 
 def _seal(stock):
@@ -273,17 +272,20 @@ def stock_detail(security_id: str, request: Request):
     quote = stock.get("quote")
     if not isinstance(quote, dict):
         raise DataUnavailable
-    roles = _roles(snapshot, security_id)
+    roles, role_reason = _roles(snapshot, security_id)
+    data = {
+        "security_id": security_id,
+        "name": quote.get("name"),
+        "quote": quote,
+        "roles": roles,
+        "seal": _seal(stock),
+        "regulation": _regulation(snapshot),
+    }
+    if role_reason is not None:
+        data["role_reason"] = role_reason
     return _response(
         snapshot,
-        {
-            "security_id": security_id,
-            "name": quote.get("name"),
-            "quote": quote,
-            "roles": roles,
-            "seal": _seal(stock),
-            "regulation": _regulation(snapshot),
-        },
+        data,
         coverage_view(
             1, int(quote.get("last") is not None), 0, int(quote.get("last") is None)
         ),
