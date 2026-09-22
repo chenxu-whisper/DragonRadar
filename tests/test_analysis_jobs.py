@@ -1,24 +1,30 @@
 """Versioned owner-only analysis jobs on real PostgreSQL."""
 
 import hashlib
+import json
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from factories import DAYS, NOW, batch
+from factories import DAYS, NOW, bar, batch, state
 from pydantic import ValidationError
 from sqlalchemy import insert, inspect, text, update
 
 ALGORITHM_VERSION = "analysis-custom-v1-decimal34"
 
 
-def _publish(database, repository):
+def _publish(database, repository, market_batch=None, *, suffix=""):
     from dragon_radar.publication.models import PublicationCommand
     from dragon_radar.publication.service import PublicationService
 
     market = repository.publish(
-        repository.import_batch(batch(), key="analysis-job-market").id
+        repository.import_batch(
+            market_batch or batch(),
+            key=f"analysis-job-market{suffix}",
+        ).id
     )
     return PublicationService(database, repository, clock=lambda: NOW).publish(
         PublicationCommand(
@@ -26,7 +32,7 @@ def _publish(database, repository):
             market_snapshot_id=market.id,
             disabled_domains=("topic", "news", "regulation", "role"),
         ),
-        key="analysis-job-publication",
+        key=f"analysis-job-publication{suffix}",
     )
 
 
@@ -199,7 +205,69 @@ def test_submit_is_owner_scoped_idempotent_and_rechecks_published_input(job_setu
         jobs.submit(session.token, session.csrf, command, key="same")
 
 
-def test_jobs_cache_and_reads_never_cross_owner(job_setup):
+def test_cache_identity_binds_authorized_snapshot_adjustment_version(job_setup):
+    jobs, _owners, session, first_publication = job_setup
+    second_publication = _publish(
+        jobs.database,
+        jobs.publications.market,
+        batch(
+            adjustment_version="a2",
+            bars=tuple(bar(trade_date=day, adjustment_version="a2") for day in DAYS),
+        ),
+        suffix="-a2",
+    )
+    first_command = _command(first_publication.id)
+    second_command = _command(second_publication.id)
+
+    first = jobs.submit(
+        session.token,
+        session.csrf,
+        first_command,
+        key="adjustment-a1",
+    )
+    second = jobs.submit(
+        session.token,
+        session.csrf,
+        second_command,
+        key="adjustment-a2",
+    )
+
+    with jobs.database.engine.connect() as connection:
+        rows = (
+            connection.execute(
+                text(
+                    "SELECT id, request_hash, cache_key, input_manifest "
+                    "FROM analysis_jobs ORDER BY input_manifest->>'adjustment_version'"
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["input_manifest"]["adjustment_version"] for row in rows] == [
+        "a1",
+        "a2",
+    ]
+    assert rows[0]["input_manifest"]["command"] == first_command.model_dump(mode="json")
+    assert rows[1]["input_manifest"]["command"] == second_command.model_dump(
+        mode="json"
+    )
+    assert rows[0]["request_hash"] == first_command.cache_key
+    assert rows[1]["request_hash"] == second_command.cache_key
+    for row in rows:
+        canonical = json.dumps(
+            row["input_manifest"],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        assert row["cache_key"] == hashlib.sha256(canonical.encode("ascii")).hexdigest()
+    assert rows[0]["cache_key"] != rows[1]["cache_key"]
+    assert first.command == first_command
+    assert second.command == second_command
+
+
+def test_global_cache_reuses_result_across_owners_but_jobs_remain_isolated(job_setup):
     from dragon_radar.owner.models import owner_principals, owner_sessions
     from dragon_radar.owner.repository import _hash
     from dragon_radar.storage.repository import NotFound
@@ -246,7 +314,33 @@ def test_jobs_cache_and_reads_never_cross_owner(job_setup):
     second = jobs.submit(second_token, second_csrf, command, key="first")
     assert second.owner_id == second_owner
     assert second.id != first.id
-    assert second.status == "queued"
+    assert second.status == "succeeded"
+    assert second.result == {"value": "1.25"}
+    with pytest.raises(NotFound):
+        jobs.get(first_session.token, second.id)
+    with jobs.database.engine.connect() as connection:
+        cache_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("analysis_job_cache")
+        }
+        assert "owner_id" not in cache_columns
+        assert connection.scalar(text("SELECT count(*) FROM analysis_job_cache")) == 1
+
+
+def test_get_cache_reauthorizes_publication_and_source(job_setup):
+    from dragon_radar.storage.repository import Forbidden
+
+    jobs, _owners, session, publication = job_setup
+    command = _command(publication.id)
+    jobs.submit(session.token, session.csrf, command, key="cache-reader")
+    lease = jobs.claim("cache-worker")
+    jobs.succeed(lease, {"cached": True})
+
+    assert jobs.get_cache(command) == {"cached": True}
+
+    jobs.publications.market.revoke_source("synthetic")
+    with pytest.raises(Forbidden):
+        jobs.get_cache(command)
 
 
 def test_get_reauthorizes_session_and_input(job_setup):
@@ -291,6 +385,81 @@ def test_expired_lease_can_be_reclaimed_but_stale_worker_cannot_finish(job_setup
     assert completed.status == "succeeded"
 
 
+def test_claim_enforces_attempt_limit_and_fails_expired_exhausted_job(job_setup):
+    from dragon_radar.storage.repository import Conflict
+
+    jobs, _owners, session, publication = job_setup
+    submitted = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id),
+        key="attempt-limit",
+    )
+
+    for invalid in (True, 0, 11, "3"):
+        with pytest.raises(ValueError, match="max attempts"):
+            jobs.claim("worker", max_attempts=invalid)
+
+    first = jobs.claim("worker-1", lease_for=timedelta(seconds=10))
+    jobs.clock = lambda: NOW + timedelta(seconds=11)
+    second = jobs.claim("worker-2", lease_for=timedelta(seconds=10))
+    jobs.clock = lambda: NOW + timedelta(seconds=22)
+    third = jobs.claim("worker-3", lease_for=timedelta(seconds=10))
+    jobs.clock = lambda: NOW + timedelta(seconds=33)
+
+    assert first.job.id == submitted.id
+    assert second.job.attempt_count == 2
+    assert third.job.attempt_count == 3
+    assert jobs.claim("worker-4") is None
+    exhausted = jobs.get(session.token, submitted.id)
+    assert exhausted.status == "failed"
+    assert exhausted.attempt_count == 3
+    assert exhausted.failure == {"code": "attempts_exhausted"}
+    assert exhausted.completed_at == NOW + timedelta(seconds=33)
+    with pytest.raises(Conflict):
+        jobs.succeed(third, {"stale": True})
+
+
+def test_claim_skips_locked_exhausted_job_and_claims_other_work(job_setup):
+    jobs, _owners, session, publication = job_setup
+    exhausted = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id),
+        key="locked-exhausted",
+    )
+    jobs.claim("worker-1", lease_for=timedelta(seconds=10))
+    jobs.clock = lambda: NOW + timedelta(seconds=11)
+    jobs.claim("worker-2", lease_for=timedelta(seconds=10))
+    jobs.clock = lambda: NOW + timedelta(seconds=22)
+    jobs.claim("worker-3", lease_for=timedelta(seconds=10))
+    available = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id, symbols=("A",), benchmark="OTHER"),
+        key="available",
+    )
+    jobs.clock = lambda: NOW + timedelta(seconds=33)
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        with jobs.database.engine.begin() as connection:
+            connection.execute(
+                text("SELECT id FROM analysis_jobs WHERE id = :id FOR UPDATE"),
+                {"id": exhausted.id},
+            )
+            claimed = pool.submit(
+                jobs.claim,
+                "other-worker",
+                max_attempts=3,
+            ).result(timeout=2)
+    finally:
+        pool.shutdown(wait=True)
+
+    assert claimed.job.id == available.id
+    assert claimed.job.attempt_count == 1
+
+
 def test_worker_computes_custom_window_and_reuses_versioned_cache(job_setup):
     from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
 
@@ -312,6 +481,62 @@ def test_worker_computes_custom_window_and_reuses_versioned_cache(job_setup):
     assert completed.result["adjusted_start"] == DAYS[0].isoformat()
     assert completed.result["adjusted_end"] == DAYS[-1].isoformat()
     assert [item["security_id"] for item in completed.result["curves"]] == ["A"]
+
+
+def test_worker_limits_rankings_exclusions_and_curves_to_requested_symbols(job_setup):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    jobs, _owners, session, _publication = job_setup
+    security_ids = ("A", "B", "C", "D", "INDEX")
+    publication = _publish(
+        jobs.database,
+        jobs.publications.market,
+        batch(
+            expected_security_ids=security_ids,
+            security_states=tuple(
+                state(
+                    security_id,
+                    security_type=(
+                        "index" if security_id == "INDEX" else "common_stock"
+                    ),
+                )
+                for security_id in security_ids
+            ),
+            bars=tuple(
+                bar(
+                    security_id,
+                    trade_date=day,
+                    close=Decimal("10"),
+                )
+                for security_id in security_ids
+                for day in DAYS
+                if not (security_id == "C" and day == DAYS[0])
+            ),
+        ),
+        suffix="-symbols",
+    )
+    submitted = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(
+            publication.id,
+            benchmark="INDEX",
+            symbols=("C", "B"),
+        ),
+        key="symbol-filter",
+    )
+
+    completed = AnalysisJobWorker(jobs, worker_id="symbol-worker").run_once()
+
+    assert completed.id == submitted.id
+    assert [row["security_id"] for row in completed.result["ranking"]] == ["B"]
+    assert [row["security_id"] for row in completed.result["exclusions"]] == ["C"]
+    assert completed.result["exclusions"][0]["reasons"]
+    assert [curve["security_id"] for curve in completed.result["curves"]] == [
+        "C",
+        "B",
+    ]
+    assert completed.result["benchmark"] == "INDEX"
 
 
 def test_worker_rechecks_source_authorization_after_submit(job_setup):

@@ -57,6 +57,17 @@ def materialize_custom_analysis(
     )
     projected = window["adjustments"][command.adjustment]
     stored_curves = projected["curves"]
+    requested = set(command.symbols)
+    ranking = [
+        dict(row) for row in projected["ranking"] if row["security_id"] in requested
+    ]
+    previous_return = None
+    current_rank = 0
+    for position, row in enumerate(ranking, start=1):
+        if previous_return is None or row["return_ratio"] != previous_return:
+            current_rank = position
+            previous_return = row["return_ratio"]
+        row["rank"] = current_rank
     curves = [
         {
             "security_id": symbol,
@@ -85,8 +96,10 @@ def materialize_custom_analysis(
         "adjustment": command.adjustment,
         "available": True,
         "reason": None,
-        "ranking": projected["ranking"],
-        "exclusions": projected["exclusions"],
+        "ranking": ranking,
+        "exclusions": [
+            row for row in projected["exclusions"] if row["security_id"] in requested
+        ],
         "benchmark_return_ratio": projected["benchmark_return_ratio"],
         "benchmark_reasons": projected["benchmark_reasons"],
         "curves": curves,

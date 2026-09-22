@@ -109,18 +109,11 @@ analysis_job_cache = Table(
     "analysis_job_cache",
     metadata,
     Column("id", PGUUID(as_uuid=True), primary_key=True),
-    Column(
-        "owner_id",
-        PGUUID(as_uuid=True),
-        ForeignKey("owner_principals.id", ondelete="RESTRICT"),
-        nullable=False,
-    ),
-    Column("cache_key", String(64), nullable=False),
+    Column("cache_key", String(64), nullable=False, unique=True),
     Column("algorithm_version", String(100), nullable=False),
     Column("input_manifest", JSONB, nullable=False),
     Column("result", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
-    UniqueConstraint("owner_id", "cache_key"),
 )
 
 analysis_jobs = Table(

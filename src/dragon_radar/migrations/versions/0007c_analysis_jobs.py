@@ -1,4 +1,4 @@
-"""Add owner-scoped versioned analysis jobs and immutable result cache."""
+"""Add owner-scoped versioned jobs and a global immutable result cache."""
 
 from alembic import op
 

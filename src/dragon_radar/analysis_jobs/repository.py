@@ -1,5 +1,6 @@
 """Transactional owner-scoped analysis job persistence."""
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -38,11 +39,13 @@ def _json_object(value: Mapping) -> dict:
 
 
 def _record(row) -> AnalysisJobRecord:
+    manifest = row["input_manifest"]
+    command = manifest.get("command", manifest)
     return AnalysisJobRecord(
         id=row["id"],
         owner_id=row["owner_id"],
         command=AnalysisJobCommand.model_validate_json(
-            json.dumps(row["input_manifest"], ensure_ascii=True)
+            json.dumps(command, ensure_ascii=True)
         ),
         status=row["status"],
         attempt_count=row["attempt_count"],
@@ -52,6 +55,24 @@ def _record(row) -> AnalysisJobRecord:
         started_at=row["started_at"],
         completed_at=row["completed_at"],
     )
+
+
+def _cache_identity(
+    command: AnalysisJobCommand,
+    adjustment_version: str,
+) -> tuple[dict, str]:
+    manifest = {
+        "command": command.model_dump(mode="json"),
+        "adjustment_version": adjustment_version,
+    }
+    canonical = json.dumps(
+        manifest,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return manifest, hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
 
 class AnalysisJobRepository:
@@ -143,11 +164,14 @@ class AnalysisJobRepository:
         if not isinstance(owner_id, UUID):
             raise ValueError("Invalid owner ID")
         command = AnalysisJobCommand.model_validate(command.model_dump())
-        manifest = command.model_dump(mode="json")
         request_hash = command.cache_key
 
         # Authorization precedes every idempotency replay or cache lookup.
-        self._authorized_input(connection, command.snapshot_id)
+        snapshot = self._authorized_input(connection, command.snapshot_id)
+        manifest, cache_key = _cache_identity(
+            command,
+            snapshot.batch.adjustment_version,
+        )
         self._lock(connection, f"analysis-job:{owner_id}:{key}")
         existing = (
             connection.execute(
@@ -167,8 +191,7 @@ class AnalysisJobRepository:
         cached = (
             connection.execute(
                 select(analysis_job_cache).where(
-                    analysis_job_cache.c.owner_id == owner_id,
-                    analysis_job_cache.c.cache_key == command.cache_key,
+                    analysis_job_cache.c.cache_key == cache_key,
                 )
             )
             .mappings()
@@ -180,7 +203,7 @@ class AnalysisJobRepository:
             "owner_id": owner_id,
             "idempotency_key": key,
             "request_hash": request_hash,
-            "cache_key": command.cache_key,
+            "cache_key": cache_key,
             "snapshot_id": command.snapshot_id,
             "input_manifest": manifest,
             "status": "succeeded" if cached is not None else "queued",
@@ -203,6 +226,20 @@ class AnalysisJobRepository:
             .one()
         )
         return _record(row)
+
+    def get_cache(self, command: AnalysisJobCommand) -> dict | None:
+        command = AnalysisJobCommand.model_validate(command.model_dump())
+        with self.database.engine.begin() as connection:
+            snapshot = self._authorized_input(connection, command.snapshot_id)
+            _manifest, cache_key = _cache_identity(
+                command,
+                snapshot.batch.adjustment_version,
+            )
+            return connection.scalar(
+                select(analysis_job_cache.c.result).where(
+                    analysis_job_cache.c.cache_key == cache_key,
+                )
+            )
 
     def get(self, token: str, job_id: UUID | str) -> AnalysisJobRecord:
         try:
@@ -231,36 +268,62 @@ class AnalysisJobRepository:
         worker_id: str,
         *,
         lease_for: timedelta = timedelta(seconds=30),
+        max_attempts: int = 3,
     ) -> AnalysisJobLease | None:
         _identifier(worker_id)
         if not isinstance(lease_for, timedelta) or not (
             timedelta(seconds=1) <= lease_for <= timedelta(hours=1)
         ):
             raise ValueError("Invalid lease duration")
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
+            raise ValueError("Invalid max attempts")
         now = self._now()
         with self.database.engine.begin() as connection:
-            row = (
-                connection.execute(
-                    select(analysis_jobs)
-                    .where(
-                        analysis_jobs.c.available_at <= now,
-                        or_(
-                            analysis_jobs.c.status == "queued",
-                            and_(
-                                analysis_jobs.c.status == "running",
-                                analysis_jobs.c.lease_expires_at <= now,
+            while True:
+                row = (
+                    connection.execute(
+                        select(analysis_jobs)
+                        .where(
+                            analysis_jobs.c.available_at <= now,
+                            or_(
+                                and_(
+                                    analysis_jobs.c.status == "queued",
+                                    analysis_jobs.c.attempt_count < max_attempts,
+                                ),
+                                and_(
+                                    analysis_jobs.c.status == "running",
+                                    analysis_jobs.c.lease_expires_at <= now,
+                                ),
                             ),
-                        ),
+                        )
+                        .order_by(
+                            analysis_jobs.c.available_at,
+                            analysis_jobs.c.created_at,
+                        )
+                        .with_for_update(skip_locked=True)
+                        .limit(1)
                     )
-                    .order_by(analysis_jobs.c.available_at, analysis_jobs.c.created_at)
-                    .with_for_update(skip_locked=True)
-                    .limit(1)
+                    .mappings()
+                    .first()
                 )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return None
+                if row is None:
+                    return None
+                if row["attempt_count"] >= max_attempts:
+                    connection.execute(
+                        update(analysis_jobs)
+                        .where(analysis_jobs.c.id == row["id"])
+                        .values(
+                            status="failed",
+                            lease_token=None,
+                            lease_owner=None,
+                            lease_expires_at=None,
+                            result=None,
+                            failure={"code": "attempts_exhausted"},
+                            completed_at=now,
+                        )
+                    )
+                    continue
+                break
             token = uuid4()
             expires_at = now + lease_for
             claimed = (
@@ -323,23 +386,18 @@ class AnalysisJobRepository:
                 pg_insert(analysis_job_cache)
                 .values(
                     id=uuid4(),
-                    owner_id=row["owner_id"],
                     cache_key=row["cache_key"],
-                    algorithm_version=row["input_manifest"]["algorithm_version"],
+                    algorithm_version=row["input_manifest"]["command"][
+                        "algorithm_version"
+                    ],
                     input_manifest=row["input_manifest"],
                     result=result,
                     created_at=now,
                 )
-                .on_conflict_do_nothing(
-                    index_elements=[
-                        analysis_job_cache.c.owner_id,
-                        analysis_job_cache.c.cache_key,
-                    ]
-                )
+                .on_conflict_do_nothing(index_elements=[analysis_job_cache.c.cache_key])
             )
             authoritative = connection.scalar(
                 select(analysis_job_cache.c.result).where(
-                    analysis_job_cache.c.owner_id == row["owner_id"],
                     analysis_job_cache.c.cache_key == row["cache_key"],
                 )
             )
