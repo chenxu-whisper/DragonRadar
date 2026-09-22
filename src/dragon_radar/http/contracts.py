@@ -81,6 +81,11 @@ def snapshot_envelope(
 
 
 def snapshot_summary(snapshot: Snapshot) -> dict:
+    calendar_sessions = [
+        session.isoformat()
+        for session in snapshot.batch.calendar.sessions
+        if session <= snapshot.trade_date
+    ]
     return snapshot_envelope(
         snapshot,
         {
@@ -88,5 +93,7 @@ def snapshot_summary(snapshot: Snapshot) -> dict:
             "supersedes": snapshot.supersedes,
             "published_at": snapshot.published_at,
             "security_count": len(snapshot.batch.expected_security_ids),
+            "calendar_sessions": calendar_sessions,
+            "earliest_date": calendar_sessions[0] if calendar_sessions else None,
         },
     )

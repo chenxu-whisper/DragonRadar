@@ -137,6 +137,14 @@ async def test_empty_list_is_discovery_with_collection_metadata(empty_client):
 
 
 async def test_snapshot_summary_is_read_directly_by_publication_id():
+    selected_batch = batch()
+    selected_batch = selected_batch.model_copy(
+        update={
+            "calendar": selected_batch.calendar.model_copy(
+                update={"sessions": (*DAYS, NOW.date())}
+            )
+        }
+    )
     selected = Snapshot(
         id=uuid4(),
         batch_id=uuid4(),
@@ -144,7 +152,7 @@ async def test_snapshot_summary_is_read_directly_by_publication_id():
         supersedes=None,
         published_at=NOW,
         manifest={"rule_version": "summary-v1"},
-        batch=batch(),
+        batch=selected_batch,
         quality_report={
             "issues": [],
             "coverage": {
@@ -172,8 +180,40 @@ async def test_snapshot_summary_is_read_directly_by_publication_id():
         "supersedes": None,
         "published_at": NOW.isoformat(),
         "security_count": 1,
+        "calendar_sessions": [day.isoformat() for day in DAYS],
+        "earliest_date": DAYS[0].isoformat(),
     }
     assert repository.calls == [selected.id]
+
+
+async def test_snapshot_summary_reports_null_earliest_date_without_prior_session():
+    from dragon_radar.http.contracts import snapshot_summary
+
+    source = batch()
+    source = source.model_copy(update={"trade_date": DAYS[0].replace(year=2020)})
+    selected = Snapshot(
+        id=uuid4(),
+        batch_id=uuid4(),
+        revision=1,
+        supersedes=None,
+        published_at=NOW,
+        manifest={"rule_version": "summary-v1"},
+        batch=source,
+        quality_report={
+            "issues": [],
+            "coverage": {
+                "expected": 1,
+                "valid": 1,
+                "legal_excluded": 0,
+                "missing": 0,
+            },
+        },
+    )
+
+    data = snapshot_summary(selected)["data"]
+
+    assert data["calendar_sessions"] == []
+    assert data["earliest_date"] is None
 
 
 @pytest.mark.parametrize("path", ["/api/market/overview", "/api/stock/A"])
@@ -483,6 +523,12 @@ async def test_pinned_version_never_drifts_and_discovery_is_paginated(
     result = (await client.get("/api/snapshots/list?limit=1&offset=1")).json()
     assert len(result["data"]["snapshots"]) == 1
     assert_metadata(result["data"]["snapshots"][0], snapshot)
+    assert result["data"]["snapshots"][0]["data"]["calendar_sessions"] == [
+        day.isoformat() for day in DAYS
+    ]
+    assert (
+        result["data"]["snapshots"][0]["data"]["earliest_date"] == DAYS[0].isoformat()
+    )
     absent = (await client.get("/api/snapshots/list?date=2020-01-01")).json()
     assert absent["data"] == {"snapshots": []}
 
