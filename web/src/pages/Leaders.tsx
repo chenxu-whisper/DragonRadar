@@ -170,12 +170,13 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
         <div className="leader-state"><AlertTriangle size={18} /><strong>规则尚未批准</strong><span>不展示正式候选。</span></div>}
       <StateMessage status={selectedStatus?.status} reasons={selectedStatus?.reasons} />
       {candidateData.candidates.length > 0 && <TableScroll label="角色候选横向滚动">
-        <table aria-label="角色候选"><thead><tr><th>名次</th><th>证券</th><th>题材</th><th>板数</th><th>证据状态</th></tr></thead>
+        <table className="responsive-record-table candidate-table" aria-label="角色候选"><thead><tr><th>名次</th><th>证券</th><th>题材</th><th>板数</th><th>证据状态</th></tr></thead>
           <tbody>{candidateData.candidates.map(candidate => <tr key={`${candidate.sector_id}:${candidate.security_id}`}>
-            <td>并列 {candidate.rank}</td>
-            <th><button type="button" className="security-button" aria-label={candidate.name} onClick={event => open(candidate.security_id, candidate.sector_id, event.currentTarget)}>
+            <td data-label="名次">并列 {candidate.rank}</td>
+            <th data-label="证券"><button type="button" className="security-button" aria-label={candidate.name} onClick={event => open(candidate.security_id, candidate.sector_id, event.currentTarget)}>
               {candidate.name}<span className="security-id">{candidate.security_id}</span></button></th>
-            <td>{candidate.sector_id}</td><td>{candidate.boards ?? '—'}</td><td><span className="status-token">{evidenceStatusLabel(candidate.evidence_status)}</span></td>
+            <td data-label="题材">{candidate.sector_id}</td><td data-label="板数">{candidate.boards ?? '—'}</td>
+            <td data-label="证据状态"><span className="status-token">{evidenceStatusLabel(candidate.evidence_status)}</span></td>
           </tr>)}</tbody></table>
       </TableScroll>}
       <details className="evidence">
@@ -202,11 +203,14 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
           <ArrowRight size={16} aria-hidden="true" />
         </div>)}
       {candidateData.role_changes.length > 0 && <TableScroll label="角色变化明细横向滚动">
-        <table aria-label="角色变化明细">
+        <table className="responsive-record-table role-changes-table" aria-label="角色变化明细">
           <thead><tr><th>题材</th><th>证券</th><th>变化类型</th><th>角色</th><th>比较状态</th><th>原因</th></tr></thead>
           <tbody>{candidateData.role_changes.map(change => <tr key={change.id}>
-            <td>{change.sector_id}</td><th>{change.security_id}</th><td>{change.change_type ? changeTypeLabel(change.change_type) : '—'}</td>
-            <td>{roleLabel(change.role)}</td><td>{comparisonStatusLabel(change.comparison_status)}</td><td>{reasonLabels(change.reasons).join('；') || '无原因'}</td>
+            <td data-label="题材">{change.sector_id}</td><th data-label="证券">{change.security_id}</th>
+            <td data-label="变化类型">{change.change_type ? changeTypeLabel(change.change_type) : '—'}</td>
+            <td data-label="角色">{roleLabel(change.role)}</td>
+            <td data-label="比较状态">{comparisonStatusLabel(change.comparison_status)}</td>
+            <td data-label="原因">{reasonLabels(change.reasons).join('；') || '无原因'}</td>
           </tr>)}</tbody>
         </table>
       </TableScroll>}

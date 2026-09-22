@@ -4,6 +4,13 @@ import { ID, mockLeaders, type LeaderMockState } from '../fixtures/market';
 const leadersUrl = `/?view=leaders&snapshot=${ID}&date=2026-09-10&sector=SEC001&role=trend_leader`;
 const allSectorsUrl = `/?view=leaders&snapshot=${ID}&date=2026-09-10&role=trend_leader`;
 
+async function expectHorizontallyContained(locator: import('@playwright/test').Locator) {
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(375);
+}
+
 test('sector matrix never mixes full-market historical counts with filtered ladder rows', async ({ page }) => {
   await mockLeaders(page);
   await page.goto(leadersUrl);
@@ -97,6 +104,59 @@ test('renders role change details even when comparison summaries are empty', asy
   const changes = page.getByRole('table', { name: '角色变化明细' });
   await expect(changes).toBeVisible();
   await expect(changes.getByRole('row', { name: /TEST001.*新增.*趋势龙头.*可比较.*进入排名/ })).toBeVisible();
+});
+
+test('keeps candidate and role-change fields readable without horizontal scrolling at 375px', async ({ page }) => {
+  await mockLeaders(page);
+  await page.goto(leadersUrl);
+
+  const candidates = page.getByRole('table', { name: '角色候选' });
+  const changes = page.getByRole('table', { name: '角色变化明细' });
+  for (const label of ['名次', '证券', '题材', '板数', '证据状态']) {
+    await expect(candidates.locator('thead').getByText(label, { exact: true })).toBeVisible();
+  }
+  for (const label of ['题材', '证券', '变化类型', '角色', '比较状态', '原因']) {
+    await expect(changes.locator('thead').getByText(label, { exact: true })).toBeVisible();
+  }
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  const candidateRow = candidates.locator('tbody tr').first();
+  const changeRow = changes.locator('tbody tr').first();
+  const candidateFields = [
+    ['名次', '并列 1'],
+    ['证券', '合成测试证券1'],
+    ['题材', 'SEC001'],
+    ['板数', '2'],
+    ['证据状态', '候选'],
+  ] as const;
+  const changeFields = [
+    ['题材', 'SEC001'],
+    ['证券', 'TEST001'],
+    ['变化类型', '新增'],
+    ['角色', '趋势龙头'],
+    ['比较状态', '可比较'],
+    ['原因', '进入排名'],
+  ] as const;
+
+  for (const [label, value] of candidateFields) {
+    const field = candidateRow.locator(`[data-label="${label}"]`);
+    await expect(field).toContainText(value);
+    await expectHorizontallyContained(field);
+    expect(await field.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(160);
+  }
+  for (const [label, value] of changeFields) {
+    const field = changeRow.locator(`[data-label="${label}"]`);
+    await expect(field).toContainText(value);
+    await expectHorizontallyContained(field);
+    expect(await field.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(160);
+  }
+
+  for (const label of ['角色候选横向滚动', '角色变化明细横向滚动']) {
+    const region = page.getByRole('region', { name: label });
+    expect(await region.evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(
+      await region.evaluate(element => element.clientWidth),
+    );
+  }
 });
 
 test('all topics use the weakest status while a selected sector uses only its own status', async ({ page }) => {
