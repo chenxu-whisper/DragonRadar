@@ -2,6 +2,8 @@
 
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import timedelta
 from typing import Any
 
@@ -155,7 +157,6 @@ class AnalysisJobWorker:
             return None
         try:
             snapshot = self.repository.load_input(lease)
-            result = self.compute(snapshot, lease.job.command)
         except Forbidden:
             return self.repository.fail(lease, {"code": "input_forbidden"})
         except NotFound:
@@ -168,6 +169,34 @@ class AnalysisJobWorker:
                     "error_type": type(error).__name__,
                 },
             )
+        heartbeat_seconds = self.lease_for.total_seconds() / 3
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.compute, snapshot, lease.job.command)
+            while not future.done():
+                try:
+                    future.result(timeout=heartbeat_seconds)
+                except FutureTimeoutError:
+                    if not future.done():
+                        lease = self.repository.renew(
+                            lease,
+                            lease_for=self.lease_for,
+                        )
+                except Exception:
+                    break
+            try:
+                result = future.result()
+            except Forbidden:
+                return self.repository.fail(lease, {"code": "input_forbidden"})
+            except NotFound:
+                return self.repository.fail(lease, {"code": "input_unavailable"})
+            except Exception as error:
+                return self.repository.fail(
+                    lease,
+                    {
+                        "code": "analysis_failed",
+                        "error_type": type(error).__name__,
+                    },
+                )
         return self.repository.succeed(lease, result)
 
     def run_forever(

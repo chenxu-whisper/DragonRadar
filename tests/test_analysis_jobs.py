@@ -7,16 +7,18 @@ import os
 import secrets
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from threading import Event
+from time import monotonic, sleep
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from factories import DAYS, NOW, bar, batch, state
 from pydantic import ValidationError
-from sqlalchemy import insert, inspect, text, update
+from sqlalchemy import insert, inspect, select, text, update
 
 ALGORITHM_VERSION = "analysis-custom-v1-decimal34"
 
@@ -552,6 +554,27 @@ def test_expired_lease_can_be_reclaimed_but_stale_worker_cannot_finish(job_setup
     assert completed.status == "succeeded"
 
 
+def test_active_lease_can_be_renewed_but_expired_lease_cannot(job_setup):
+    from dragon_radar.storage.repository import Conflict
+
+    jobs, _owners, session, publication = job_setup
+    jobs.submit(session.token, session.csrf, _command(publication.id), key="renew")
+    lease = jobs.claim("worker-1", lease_for=timedelta(seconds=10))
+
+    jobs.clock = lambda: NOW + timedelta(seconds=6)
+    renewed = jobs.renew(lease, lease_for=timedelta(seconds=10))
+
+    assert renewed.token == lease.token
+    assert renewed.worker_id == lease.worker_id
+    assert renewed.expires_at == NOW + timedelta(seconds=16)
+    jobs.clock = lambda: NOW + timedelta(seconds=11)
+    assert jobs.claim("worker-2", lease_for=timedelta(seconds=10)) is None
+
+    jobs.clock = lambda: NOW + timedelta(seconds=17)
+    with pytest.raises(Conflict, match="no longer active"):
+        jobs.renew(renewed, lease_for=timedelta(seconds=10))
+
+
 def test_claim_enforces_attempt_limit_and_fails_expired_exhausted_job(job_setup):
     from dragon_radar.storage.repository import Conflict
 
@@ -648,6 +671,68 @@ def test_worker_computes_custom_window_and_reuses_versioned_cache(job_setup):
     assert completed.result["adjusted_start"] == DAYS[0].isoformat()
     assert completed.result["adjusted_end"] == DAYS[-1].isoformat()
     assert [item["security_id"] for item in completed.result["curves"]] == ["A"]
+
+
+def test_worker_renews_lease_while_long_analysis_is_running(job_setup):
+    from dragon_radar.analysis_jobs.models import analysis_jobs
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    jobs, _owners, session, publication = job_setup
+    submitted = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id),
+        key="long-compute",
+    )
+    jobs.clock = lambda: datetime.now(UTC)
+    compute_started = Event()
+    release_compute = Event()
+
+    def slow_compute(snapshot, command):
+        compute_started.set()
+        assert release_compute.wait(5)
+        return {"ok": True}
+
+    worker = AnalysisJobWorker(
+        jobs,
+        worker_id="heartbeat-worker",
+        lease_for=timedelta(seconds=1),
+        compute=slow_compute,
+    )
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(worker.run_once)
+    try:
+        assert compute_started.wait(5)
+        with jobs.database.engine.begin() as connection:
+            original_expiry = connection.scalar(
+                select(analysis_jobs.c.lease_expires_at).where(
+                    analysis_jobs.c.id == submitted.id
+                )
+            )
+
+        deadline = monotonic() + 2
+        renewed_expiry = original_expiry
+        while renewed_expiry <= original_expiry and monotonic() < deadline:
+            sleep(0.05)
+            with jobs.database.engine.begin() as connection:
+                renewed_expiry = connection.scalar(
+                    select(analysis_jobs.c.lease_expires_at).where(
+                        analysis_jobs.c.id == submitted.id
+                    )
+                )
+
+        assert renewed_expiry > original_expiry
+        while datetime.now(UTC) <= original_expiry:
+            sleep(0.01)
+        assert jobs.claim("competing-worker", lease_for=timedelta(seconds=1)) is None
+        release_compute.set()
+        completed = future.result(timeout=5)
+    finally:
+        release_compute.set()
+        pool.shutdown(wait=True)
+
+    assert completed.status == "succeeded"
+    assert completed.attempt_count == 1
 
 
 def test_worker_limits_rankings_exclusions_and_curves_to_requested_symbols(job_setup):
@@ -953,12 +1038,14 @@ def test_worker_rechecks_source_authorization_after_submit(job_setup):
 
 
 class _WorkerRepository:
-    def __init__(self, *, succeed_error=None, fail_error=None):
+    def __init__(self, *, succeed_error=None, fail_error=None, renew_error=None):
         self.lease = SimpleNamespace(job=SimpleNamespace(command=object()))
         self.succeed_error = succeed_error
         self.fail_error = fail_error
+        self.renew_error = renew_error
         self.fail_calls = 0
         self.claim_calls = []
+        self.renew_calls = 0
 
     def claim(self, worker_id, *, lease_for, max_attempts):
         self.claim_calls.append((worker_id, lease_for, max_attempts))
@@ -966,6 +1053,12 @@ class _WorkerRepository:
 
     def load_input(self, lease):
         return object()
+
+    def renew(self, lease, *, lease_for):
+        self.renew_calls += 1
+        if self.renew_error is not None:
+            raise self.renew_error
+        return lease
 
     def succeed(self, lease, result):
         if self.succeed_error is not None:
@@ -1102,6 +1195,54 @@ def test_worker_propagates_succeed_error_without_failing_job(error_kind):
 
     assert caught.value is error
     assert repository.fail_calls == 0
+
+
+def test_worker_propagates_renew_error_without_failing_job():
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    error = RuntimeError("database unavailable")
+    repository = _WorkerRepository(renew_error=error)
+
+    def slow_compute(snapshot, command):
+        sleep(0.4)
+        return {"value": "computed"}
+
+    with pytest.raises(RuntimeError) as caught:
+        AnalysisJobWorker(
+            repository,
+            worker_id="worker",
+            lease_for=timedelta(seconds=1),
+            compute=slow_compute,
+        ).run_once()
+
+    assert caught.value is error
+    assert repository.renew_calls == 1
+    assert repository.fail_calls == 0
+
+
+def test_worker_treats_compute_timeout_error_as_analysis_failure():
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    repository = _WorkerRepository(
+        renew_error=RuntimeError("completed future must not renew")
+    )
+
+    def fail_compute(snapshot, command):
+        raise TimeoutError("analysis timed out")
+
+    failed = AnalysisJobWorker(
+        repository,
+        worker_id="worker",
+        lease_for=timedelta(seconds=1),
+        compute=fail_compute,
+    ).run_once()
+
+    assert failed == {
+        "code": "analysis_failed",
+        "error_type": "TimeoutError",
+    }
+    assert repository.renew_calls == 0
+    assert repository.fail_calls == 1
 
 
 def test_worker_propagates_fail_conflict_without_retrying_fail():

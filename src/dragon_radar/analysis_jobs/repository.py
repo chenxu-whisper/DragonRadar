@@ -360,6 +360,36 @@ class AnalysisJobRepository:
             row = self._active_lease(connection, lease)
             return self._authorized_input(connection, row["snapshot_id"])
 
+    def renew(
+        self,
+        lease: AnalysisJobLease,
+        *,
+        lease_for: timedelta = timedelta(seconds=30),
+    ) -> AnalysisJobLease:
+        if not isinstance(lease_for, timedelta) or not (
+            timedelta(seconds=1) <= lease_for <= timedelta(hours=1)
+        ):
+            raise ValueError("Invalid lease duration")
+        with self.database.engine.begin() as connection:
+            row = self._active_lease(connection, lease)
+            expires_at = self._now() + lease_for
+            renewed = (
+                connection.execute(
+                    update(analysis_jobs)
+                    .where(analysis_jobs.c.id == row["id"])
+                    .values(lease_expires_at=expires_at)
+                    .returning(analysis_jobs)
+                )
+                .mappings()
+                .one()
+            )
+            return AnalysisJobLease(
+                job=_record(renewed),
+                token=lease.token,
+                worker_id=lease.worker_id,
+                expires_at=expires_at,
+            )
+
     def _active_lease(self, connection: Connection, lease: AnalysisJobLease):
         row = (
             connection.execute(
