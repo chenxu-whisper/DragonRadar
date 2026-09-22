@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0007a_role_integrity"
+SCHEMA_REVISION = "0007b_role_validation_inputs"
 
 
 class Database:

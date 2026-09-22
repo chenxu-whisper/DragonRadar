@@ -346,6 +346,10 @@ role_validations = Table(
     Column("reasons", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("pending_validation_id", "revision"),
+    CheckConstraint(
+        "outcome IN ('supported', 'weakened', 'refuted', 'unavailable')",
+        name="role_validations_outcome",
+    ),
 )
 
 role_validation_inputs = Table(
@@ -365,6 +369,10 @@ role_validation_inputs = Table(
         nullable=False,
     ),
     UniqueConstraint("validation_id", "input_role_run_id"),
+    CheckConstraint(
+        "position >= 0 AND position < 5",
+        name="role_validation_inputs_position",
+    ),
 )
 
 role_validation_commands = Table(

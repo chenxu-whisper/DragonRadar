@@ -75,7 +75,7 @@ class PublicationService:
         self.roles = RoleRepository(database, self.market, clock=self.clock)
         self.repository = PublicationRepository(database, self.market, clock=self.clock)
 
-    def _validate_inputs(self, connection, command):
+    def _prepare_inputs(self, connection, command):
         market_row = (
             connection.execute(
                 select(snapshots).where(snapshots.c.id == command.market_snapshot_id)
@@ -142,10 +142,16 @@ class PublicationService:
                     "topic",
                 )
             )
-        grants = {
-            source_id: self.market._source(connection, source_id)
-            for source_id in sorted({dependency[0] for dependency in dependencies})
-        }
+        return (market_row, market_archive, market_batch), topic_context, dependencies
+
+    def _authorize_inputs(
+        self,
+        connection,
+        market_context,
+        topic_context,
+        grants,
+    ) -> None:
+        market_row, market_archive, market_batch = market_context
         market_now = self.market._authorize(
             grants[market_row["source_id"]], market_batch
         )
@@ -175,7 +181,6 @@ class PublicationService:
                 topic_row["batch_id"],
             ):
                 raise Forbidden("Topic archive was withdrawn")
-        return (market_row, market_archive, market_batch), topic_context, dependencies
 
     @staticmethod
     def _market_materialization(context, topic_context=None) -> DomainMaterialization:
@@ -216,6 +221,7 @@ class PublicationService:
         self,
         connection,
         command: PublicationCommand,
+        grants,
     ) -> tuple[DomainMaterialization, tuple[tuple[str, str, UUID, str], ...]]:
         row = self.roles._role_rows(connection, (command.role_input_id,))[
             command.role_input_id
@@ -230,7 +236,9 @@ class PublicationService:
         if hashlib.sha256(row["rule_json"].encode()).hexdigest() != row["rule_hash"]:
             raise Forbidden("Role run rule identity is invalid")
         payload, role_dependencies = self.roles.payload_with_dependencies(
-            row["id"], connection=connection
+            row["id"],
+            connection=connection,
+            grants=grants,
         )
         statuses = [
             status for topic in payload["topics"] for status in topic["statuses"]
@@ -314,11 +322,29 @@ class PublicationService:
                         connection,
                         "publication-date:" + command.trade_date.isoformat(),
                     )
-                    market_context, topic_context, dependencies = self._validate_inputs(
+                    market_context, topic_context, dependencies = self._prepare_inputs(
                         connection, command
                     )
                     overrides = dict(materializers or {})
                     references = command.input_references()
+                    source_ids = {dependency[0] for dependency in dependencies}
+                    if (
+                        command.role_input_id is not None
+                        and "role" not in command.disabled_domains
+                    ):
+                        source_ids.update(
+                            self.roles.payload_source_ids(
+                                connection,
+                                command.role_input_id,
+                            )
+                        )
+                    grants = self.roles._lock_sources(connection, source_ids)
+                    self._authorize_inputs(
+                        connection,
+                        market_context,
+                        topic_context,
+                        grants,
+                    )
                     results = {}
                     role_dependencies = ()
                     for domain in DOMAIN_NAMES:
@@ -337,7 +363,9 @@ class PublicationService:
                             result = self._topic_materialization(topic_context)
                         elif domain == "role":
                             result, role_dependencies = self._role_materialization(
-                                connection, command
+                                connection,
+                                command,
+                                grants,
                             )
                         else:
                             raise ValueError(f"No materializer registered for {domain}")

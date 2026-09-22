@@ -10,7 +10,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from factories import DAYS, NOW, batch, grant
-from sqlalchemy import event, insert, inspect, select, text, update
+from sqlalchemy import delete, event, insert, inspect, select, text, update
 from sqlalchemy.exc import DBAPIError
 from test_role_history import _validation_fixture
 from topic_factories import (
@@ -25,7 +25,11 @@ from topic_factories import (
 from dragon_radar.publication.models import PublicationCommand, RetentionPolicy
 from dragon_radar.publication.retention import RetentionService
 from dragon_radar.publication.service import PublicationService
-from dragon_radar.publication.tables import publications, source_dependencies
+from dragon_radar.publication.tables import (
+    publication_results,
+    publications,
+    source_dependencies,
+)
 from dragon_radar.roles.materialize import RoleMaterializer
 from dragon_radar.roles.models import RoleContext
 from dragon_radar.roles.repository import RoleRepository
@@ -171,8 +175,8 @@ def _pending_row(connection, run_id, result_id, *, topic_id="topic-a"):
     return pending_id
 
 
-def _validation_values(pending_id, *, revision, supersedes):
-    return {
+def _validation_values(pending_id, *, revision, supersedes, **changes):
+    values = {
         "id": uuid4(),
         "pending_validation_id": pending_id,
         "revision": revision,
@@ -188,6 +192,42 @@ def _validation_values(pending_id, *, revision, supersedes):
         "reasons": ["validation_runs_missing"],
         "created_at": NOW,
     }
+    values.update(changes)
+    return values
+
+
+def _validation_integrity_rows(connection, source, *, key):
+    input_run_ids = [source.id]
+    input_run_ids.extend(
+        _materialized_clone(
+            connection,
+            source,
+            key=f"{key}-input-{position}",
+            trade_date=DAYS[-1],
+        )
+        for position in range(1, 5)
+    )
+    pending_run_id = _draft_run(connection, source, key=f"{key}-pending")
+    _topic_row(connection, pending_run_id)
+    pending_id = _pending_row(
+        connection,
+        pending_run_id,
+        _result_row(connection, pending_run_id),
+    )
+    return pending_id, tuple(input_run_ids)
+
+
+def _available_validation_values(pending_id):
+    return _validation_values(
+        pending_id,
+        revision=1,
+        supersedes=None,
+        outcome="supported",
+        old_return_raw="0.10",
+        new_return_raw="0.20",
+        topic_median_raw="0.15",
+        reasons=["outcome:supported"],
+    )
 
 
 def _materialized_clone(connection, source_run, *, key, trade_date, **changes):
@@ -322,6 +362,45 @@ def _persist_validation_input_graph(
         "validation_id": validation["id"],
         "input_run_ids": input_run_ids,
     }
+
+
+def _corrupt_available_validation_input_count(database, validation_id):
+    with database.engine.begin() as connection:
+        connection.execute(text("ALTER TABLE role_validations DISABLE TRIGGER USER"))
+        connection.execute(
+            text("ALTER TABLE role_validation_inputs DISABLE TRIGGER USER")
+        )
+        connection.execute(
+            update(role_validations)
+            .where(role_validations.c.id == validation_id)
+            .values(
+                outcome="supported",
+                old_return_raw="0.10",
+                new_return_raw="0.20",
+                topic_median_raw="0.15",
+                reasons=["outcome:supported"],
+            )
+        )
+        last_input = (
+            connection.execute(
+                select(role_validation_inputs)
+                .where(role_validation_inputs.c.validation_id == validation_id)
+                .order_by(role_validation_inputs.c.position.desc())
+                .limit(1)
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            delete(role_validation_inputs).where(
+                role_validation_inputs.c.validation_id == validation_id,
+                role_validation_inputs.c.position == last_input["position"],
+            )
+        )
+        connection.execute(text("ALTER TABLE role_validations ENABLE TRIGGER USER"))
+        connection.execute(
+            text("ALTER TABLE role_validation_inputs ENABLE TRIGGER USER")
+        )
 
 
 def test_previous_published_uses_latest_authorized_publication_version(
@@ -498,7 +577,7 @@ def test_migration_creates_role_schema_and_readiness(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0007a_role_integrity"
+            == "0007b_role_validation_inputs"
         )
 
 
@@ -893,6 +972,143 @@ def test_database_allows_contiguous_validation_correction_chain(
         )
 
 
+@pytest.mark.parametrize("input_count", [0, 4])
+def test_database_rejects_available_validation_without_all_five_real_inputs(
+    materializer,
+    role_inputs,
+    database,
+    input_count,
+):
+    source = _materialize(
+        materializer,
+        role_inputs,
+        key=f"incomplete-available-source-{input_count}",
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        pending_id, input_run_ids = _validation_integrity_rows(
+            connection,
+            source,
+            key=f"incomplete-available-{input_count}",
+        )
+        validation = _available_validation_values(pending_id)
+        connection.execute(insert(role_validations).values(**validation))
+        if input_count:
+            connection.execute(
+                insert(role_validation_inputs),
+                [
+                    {
+                        "validation_id": validation["id"],
+                        "position": position,
+                        "input_role_run_id": run_id,
+                    }
+                    for position, run_id in enumerate(input_run_ids[:input_count])
+                ],
+            )
+
+
+def test_database_accepts_available_validation_with_five_real_inputs(
+    materializer,
+    role_inputs,
+    database,
+):
+    source = _materialize(
+        materializer,
+        role_inputs,
+        key="complete-available-source",
+    )
+
+    with database.engine.begin() as connection:
+        pending_id, input_run_ids = _validation_integrity_rows(
+            connection,
+            source,
+            key="complete-available",
+        )
+        validation = _available_validation_values(pending_id)
+        connection.execute(insert(role_validations).values(**validation))
+        connection.execute(
+            insert(role_validation_inputs),
+            [
+                {
+                    "validation_id": validation["id"],
+                    "position": position,
+                    "input_role_run_id": run_id,
+                }
+                for position, run_id in enumerate(input_run_ids)
+            ],
+        )
+
+
+@pytest.mark.parametrize("position", [-1, 5])
+def test_database_rejects_validation_input_position_outside_five_day_window(
+    materializer,
+    role_inputs,
+    database,
+    position,
+):
+    source = _materialize(
+        materializer,
+        role_inputs,
+        key=f"invalid-position-source-{position}",
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        pending_id, input_run_ids = _validation_integrity_rows(
+            connection,
+            source,
+            key=f"invalid-position-{position}",
+        )
+        validation = _validation_values(
+            pending_id,
+            revision=1,
+            supersedes=None,
+        )
+        connection.execute(insert(role_validations).values(**validation))
+        connection.execute(
+            insert(role_validation_inputs).values(
+                validation_id=validation["id"],
+                position=position,
+                input_role_run_id=input_run_ids[0],
+            )
+        )
+
+
+def test_database_accepts_unavailable_validation_with_legal_missing_windows(
+    materializer,
+    role_inputs,
+    database,
+):
+    source = _materialize(
+        materializer,
+        role_inputs,
+        key="unavailable-missing-source",
+    )
+
+    with database.engine.begin() as connection:
+        pending_id, input_run_ids = _validation_integrity_rows(
+            connection,
+            source,
+            key="unavailable-missing",
+        )
+        validation = _validation_values(
+            pending_id,
+            revision=1,
+            supersedes=None,
+        )
+        connection.execute(insert(role_validations).values(**validation))
+        connection.execute(
+            insert(role_validation_inputs),
+            [
+                {
+                    "validation_id": validation["id"],
+                    "position": position,
+                    "input_role_run_id": input_run_ids[position],
+                }
+                for position in (0, 2, 4)
+            ],
+        )
+
+
 def test_publication_binds_materialized_role_run_and_reads_stored_payload(
     materializer, role_inputs, database, repository, monkeypatch
 ):
@@ -992,6 +1208,51 @@ def test_role_payload_reauthorizes_all_exposed_validation_inputs(
         roles.payload(graph["root"].id)
 
 
+def test_role_payload_rejects_corrupt_available_validation_input_count(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="payload-incomplete-validation",
+    )
+    _corrupt_available_validation_input_count(database, graph["validation_id"])
+
+    with pytest.raises(Forbidden, match="validation inputs"):
+        RoleRepository(database, repository, clock=lambda: NOW).payload(
+            graph["root"].id
+        )
+
+
+def test_publication_create_rejects_corrupt_available_validation_input_count(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="publication-incomplete-validation",
+    )
+    _corrupt_available_validation_input_count(database, graph["validation_id"])
+
+    with pytest.raises(Forbidden, match="validation inputs"):
+        _validation_publication(
+            PublicationService(database, repository, clock=lambda: NOW),
+            role_inputs,
+            graph["root"].id,
+            key="reject-incomplete-validation-publication",
+        )
+
+
 def test_validate_pending_locks_cross_source_commands_in_one_stable_order(
     materializer,
     role_inputs,
@@ -1070,6 +1331,49 @@ def test_validate_pending_locks_cross_source_commands_in_one_stable_order(
         }
     )
     assert observed_orders == [expected, expected]
+
+
+@pytest.mark.parametrize("validation_source_prefix", ["aaa-locks", "zzz-locks"])
+def test_role_publication_locks_all_sources_once_in_global_sorted_order(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+    validation_source_prefix,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key=validation_source_prefix,
+    )
+    source_locks = []
+
+    def observe_source_locks(
+        conn,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        lock_key = str(parameters.get("key", ""))
+        if "pg_advisory_xact_lock" in statement and lock_key.startswith("source:"):
+            source_locks.append(lock_key)
+
+    event.listen(database.engine, "after_cursor_execute", observe_source_locks)
+    try:
+        _validation_publication(
+            PublicationService(database, repository, clock=lambda: NOW),
+            role_inputs,
+            graph["root"].id,
+            key=f"{validation_source_prefix}-publication",
+        )
+    finally:
+        event.remove(database.engine, "after_cursor_execute", observe_source_locks)
+
+    assert source_locks == sorted(set(source_locks))
 
 
 def _validation_publication(service, role_inputs, role_run_id, *, key):
@@ -1181,6 +1485,61 @@ def test_role_publication_read_reauthorizes_validation_input_dependencies(
 
     repository.revoke_source(graph["topic_grant"].source_id)
     with pytest.raises(Forbidden):
+        service.repository.list_results(publication.id)
+
+
+def test_role_publication_read_rejects_corrupt_validation_payload(
+    materializer,
+    role_inputs,
+    database,
+    repository,
+):
+    graph = _persist_validation_input_graph(
+        materializer,
+        role_inputs,
+        database,
+        repository,
+        key="read-incomplete-validation",
+    )
+    service = PublicationService(database, repository, clock=lambda: NOW)
+    publication = _validation_publication(
+        service,
+        role_inputs,
+        graph["root"].id,
+        key="read-incomplete-validation",
+    )
+
+    with database.engine.begin() as connection:
+        connection.execute(text("ALTER TABLE publication_results DISABLE TRIGGER USER"))
+        role_result = (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == publication.id,
+                    publication_results.c.domain == "role",
+                )
+            )
+            .mappings()
+            .one()
+        )
+        payload = json.loads(json.dumps(role_result["payload"]))
+        validation = payload["topics"][0]["role_validations"][0]
+        validation["outcome"] = "supported"
+        validation["old_return_raw"] = "0.10"
+        validation["new_return_raw"] = "0.20"
+        validation["topic_median_raw"] = "0.15"
+        validation["reasons"] = ["outcome:supported"]
+        validation["validation_inputs"] = validation["validation_inputs"][:4]
+        connection.execute(
+            update(publication_results)
+            .where(
+                publication_results.c.publication_id == publication.id,
+                publication_results.c.domain == "role",
+            )
+            .values(payload=payload)
+        )
+        connection.execute(text("ALTER TABLE publication_results ENABLE TRIGGER USER"))
+
+    with pytest.raises(Forbidden, match="payload"):
         service.repository.list_results(publication.id)
 
 

@@ -285,6 +285,7 @@ class RoleRepository:
             connection.execute(
                 select(
                     role_validations.c.id,
+                    role_validations.c.outcome,
                     role_pending_validations.c.observation_run_id,
                 )
                 .join(
@@ -299,15 +300,68 @@ class RoleRepository:
         )
         if {row["id"] for row in validation_rows} != set(validation_ids):
             raise Forbidden("Role validation identity is invalid")
-        input_run_ids = set(
+        input_rows = (
             connection.execute(
-                select(role_validation_inputs.c.input_role_run_id).where(
+                select(role_validation_inputs).where(
                     role_validation_inputs.c.validation_id.in_(validation_ids)
                 )
-            ).scalars()
+            )
+            .mappings()
+            .all()
         )
+        self._validate_validation_input_rows(validation_rows, input_rows)
+        input_run_ids = {row["input_role_run_id"] for row in input_rows}
         observation_run_ids = {row["observation_run_id"] for row in validation_rows}
         return observation_run_ids, input_run_ids
+
+    @staticmethod
+    def _validate_validation_input_rows(validation_rows, input_rows) -> None:
+        inputs_by_validation = defaultdict(list)
+        validation_ids = {row["id"] for row in validation_rows}
+        for row in input_rows:
+            if row["validation_id"] not in validation_ids:
+                raise Forbidden("Role validation inputs are invalid")
+            inputs_by_validation[row["validation_id"]].append(row)
+        for validation in validation_rows:
+            inputs = inputs_by_validation[validation["id"]]
+            positions = {row["position"] for row in inputs}
+            run_ids = {row["input_role_run_id"] for row in inputs}
+            if (
+                validation["outcome"]
+                not in {"supported", "weakened", "refuted", "unavailable"}
+                or len(inputs) > 5
+                or positions - set(range(5))
+                or len(positions) != len(inputs)
+                or len(run_ids) != len(inputs)
+                or (
+                    validation["outcome"] != "unavailable"
+                    and positions != set(range(5))
+                )
+            ):
+                raise Forbidden("Role validation inputs are invalid")
+
+    def payload_source_ids(self, connection, role_run_id: UUID | str) -> set[str]:
+        role_run_id = _uuid(role_run_id)
+        self._role_rows(connection, (role_run_id,))
+        validation_ids = tuple(
+            connection.execute(
+                select(role_validations.c.id)
+                .join(
+                    role_pending_validations,
+                    role_pending_validations.c.id
+                    == role_validations.c.pending_validation_id,
+                )
+                .where(role_pending_validations.c.observation_run_id == role_run_id)
+            ).scalars()
+        )
+        observation_run_ids, input_run_ids = self._validation_run_ids(
+            connection, validation_ids
+        )
+        _rows, _contexts, source_ids = self._prepare_role_authorization(
+            connection,
+            {role_run_id, *observation_run_ids, *input_run_ids},
+        )
+        return source_ids
 
     def _authorize_validation_replay(
         self,
@@ -517,8 +571,11 @@ class RoleRepository:
         role_run_id: UUID | str,
         *,
         connection=None,
+        grants=None,
     ) -> tuple[dict, tuple[tuple[str, str, UUID], ...]]:
         if connection is None:
+            if grants is not None:
+                raise ValueError("Preloaded grants require an existing connection")
             with self.database.engine.begin() as owned:
                 return self.payload_with_dependencies(role_run_id, connection=owned)
         role_run_id = _uuid(role_run_id)
@@ -659,7 +716,10 @@ class RoleRepository:
             connection,
             {run_id, *observation_run_ids, *input_run_ids},
         )
-        grants = self._lock_sources(connection, source_ids)
+        if grants is None:
+            grants = self._lock_sources(connection, source_ids)
+        elif not source_ids <= set(grants):
+            raise Forbidden("Role run source authorization is incomplete")
         self._authorize_prepared_roles(connection, contexts, grants)
         pending_topics = {
             pending["id"]: pending["topic_id"] for pending in pending_rows

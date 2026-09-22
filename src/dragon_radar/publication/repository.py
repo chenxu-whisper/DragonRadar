@@ -93,6 +93,57 @@ def source_has_active_withdrawal(connection, source_id: str) -> bool:
     return action is not None and action != "restored"
 
 
+def _role_validation_input_ids(payload) -> set[UUID]:
+    try:
+        topics = payload["topics"]
+        input_ids = set()
+        for topic in topics:
+            nested_inputs = []
+            for validation in topic["role_validations"]:
+                validation_id = UUID(validation["id"])
+                inputs = validation["validation_inputs"]
+                positions = set()
+                run_ids = set()
+                for item in inputs:
+                    item_validation_id = UUID(
+                        item.get("validation_id", str(validation_id))
+                    )
+                    position = item["position"]
+                    run_id = UUID(item["input_role_run_id"])
+                    if item_validation_id != validation_id or type(position) is not int:
+                        raise ValueError
+                    positions.add(position)
+                    run_ids.add(run_id)
+                    nested_inputs.append((item_validation_id, position, run_id))
+                    input_ids.add(run_id)
+                if (
+                    validation["outcome"]
+                    not in {"supported", "weakened", "refuted", "unavailable"}
+                    or len(inputs) > 5
+                    or positions - set(range(5))
+                    or len(positions) != len(inputs)
+                    or len(run_ids) != len(inputs)
+                    or (
+                        validation["outcome"] != "unavailable"
+                        and positions != set(range(5))
+                    )
+                ):
+                    raise ValueError
+            flat_inputs = [
+                (
+                    UUID(item["validation_id"]),
+                    item["position"],
+                    UUID(item["input_role_run_id"]),
+                )
+                for item in topic["role_validation_inputs"]
+            ]
+            if sorted(nested_inputs, key=str) != sorted(flat_inputs, key=str):
+                raise ValueError
+        return input_ids
+    except (KeyError, TypeError, ValueError):
+        raise Forbidden("Publication role payload is invalid") from None
+
+
 class PublicationRepository:
     """Select publication IDs while preserving legacy market snapshot reads."""
 
@@ -369,12 +420,7 @@ class PublicationRepository:
             )
             input_ids = set()
             if role_result is not None:
-                try:
-                    for topic in role_result["payload"]["topics"]:
-                        for item in topic["role_validation_inputs"]:
-                            input_ids.add(UUID(item["input_role_run_id"]))
-                except (KeyError, TypeError, ValueError):
-                    raise Forbidden("Publication role payload is invalid") from None
+                input_ids = _role_validation_input_ids(role_result["payload"])
             role_input_ids_by_publication[publication_id] = input_ids
             all_role_input_ids.update(input_ids)
         validation_input_runs = {

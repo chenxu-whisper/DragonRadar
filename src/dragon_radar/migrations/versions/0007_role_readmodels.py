@@ -85,6 +85,8 @@ def upgrade():
             "role_topic_statuses_role_run_id_topic_id_fkey",
         ),
         ("role_topic_statuses", "role_topic_statuses_role"),
+        ("role_validations", "role_validations_outcome"),
+        ("role_validation_inputs", "role_validation_inputs_position"),
     ):
         op.drop_constraint(constraint_name, table_name)
     op.drop_column("role_pending_validations", "pending_result_role")
