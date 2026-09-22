@@ -8,6 +8,18 @@ from typing import Any
 
 ROLE_RULE_VERSION = "role-v1"
 
+ROLE_NAMES: Mapping[str, str] = MappingProxyType(
+    {
+        "emotion": "emotion_leader",
+        "trend": "trend_leader",
+        "core": "zhongjun",
+        "follower": "genfeng",
+        "catchup": "buZhang",
+        "relay": "jieli",
+    }
+)
+RESET_APPROVED_RULE_VERSIONS = frozenset()
+
 _DECIMAL_CONTEXT = {
     "precision": 34,
     "rounding": "ROUND_HALF_EVEN",

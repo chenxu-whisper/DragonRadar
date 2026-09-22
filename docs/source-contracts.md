@@ -56,3 +56,37 @@ Net inflow is not derivable from turnover or traded amount. Until an approved
 source supplies net inflow with a documented unit and methodology, downstream
 read models must return `null` with a reason such as
 `net_inflow_source_unavailable`.
+
+## Reset role evidence
+
+The frozen `role-v1` trend benchmark remains the median return of the eligible
+declared market pool. It is a historical research rule and is not an index.
+Neither its name nor its archived canonical digest may be changed to describe
+it as CSI 300 or another market index. `role-test-v1` remains test-only.
+
+Reset-facing roles use an explicit, case-sensitive adapter:
+`emotion_leader`, `trend_leader`, `zhongjun`, `genfeng`, `buZhang`, and
+`jieli`. The adapter preserves the internal capability, result status, rule
+version, and reasons. Simplified, watch-only, and pending-validation evidence
+is not relabeled as a formal candidate.
+
+Reset production approval is a separate allowlist and defaults to empty.
+`production_activatable=true` in a historical rule does not approve that rule
+for the reset product. An unapproved rule returns `insufficient` evidence and
+no formal rank. New benchmark definitions or candidate thresholds require a
+new immutable rule version and explicit product approval.
+
+FAC-R01 requires an explicit benchmark security whose point-in-time identity
+is `index`. Security and benchmark bars must match the `MarketBatch`
+source ID, source version, adjustment version, calendar positions, and
+knowledge cutoff. Missing, duplicated, mismatched, or short windows are
+unavailable; the implementation does not substitute the historical market
+median or move a window endpoint.
+
+FAC-R01 through FAC-C02 are research observations, not an approved ranking
+rule. Each metric records its value, unit, exact window, coverage partition,
+reasons, and source/version metadata. Topic amount share additionally requires
+a bound `TopicBatch` with complete same-day member and currency coverage.
+Missing turnover or float market capitalization remains unavailable and is
+not replaced by traded amount or total market capitalization. No real index
+provider or new role threshold has been approved by this contract.
