@@ -27,6 +27,10 @@ def _history_point(
         "close": observation.close if observation is not None else None,
         "volume": observation.volume if observation is not None else None,
         "amount": observation.amount if observation is not None else None,
+        "currency": observation.currency if observation is not None else None,
+        "price_unit": observation.price_unit if observation is not None else None,
+        "volume_unit": observation.volume_unit if observation is not None else None,
+        "amount_unit": observation.amount_unit if observation is not None else None,
         "suspended": state.suspended if state is not None else None,
         "reasons": list(reasons),
     }
@@ -76,6 +80,10 @@ def _quote(
         "change_ratio": change,
         "volume": current.volume if current is not None else None,
         "amount": current.amount if current is not None else None,
+        "currency": current.currency if current is not None else None,
+        "price_unit": current.price_unit if current is not None else None,
+        "volume_unit": current.volume_unit if current is not None else None,
+        "amount_unit": current.amount_unit if current is not None else None,
         "suspended": state.suspended if state is not None else None,
         "reasons": sorted(reasons),
     }

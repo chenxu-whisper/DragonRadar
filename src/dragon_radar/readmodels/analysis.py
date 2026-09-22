@@ -28,9 +28,18 @@ Adjustment = Literal["raw", "adjusted"]
 
 def _topic_memberships(
     batch: MarketBatch, topic_batch: TopicBatch | None
-) -> tuple[dict[str, list[dict[str, str]]], tuple[str, ...]]:
+) -> tuple[
+    dict[str, list[dict[str, str]]],
+    Literal["available", "unavailable"],
+    tuple[str, ...],
+]:
     if topic_batch is None:
-        return {}, ()
+        return {}, "unavailable", ("topic_batch_unavailable",)
+    if (
+        topic_batch.trade_date != batch.trade_date
+        or topic_batch.exchange != batch.calendar.exchange
+    ):
+        return {}, "unavailable", ("topic_binding_mismatch",)
     cutoff = min(batch.as_of, topic_batch.as_of)
     definitions = {
         topic.topic_id: topic
@@ -39,10 +48,8 @@ def _topic_memberships(
         and topic.effective_from <= batch.trade_date
         and (topic.effective_to is None or batch.trade_date < topic.effective_to)
     }
-    memberships: dict[str, list[dict[str, str]]] = defaultdict(list)
-    coverage_unavailable = False
-    for topic_id, topic in definitions.items():
-        visible_members = {
+    visible_memberships = {
+        topic_id: {
             membership.security_id
             for membership in topic_batch.memberships
             if membership.topic_id == topic_id
@@ -53,30 +60,37 @@ def _topic_memberships(
                 or batch.trade_date < membership.effective_to
             )
         }
-        cells = [
-            cell
-            for cell in topic_batch.coverage_cells
-            if cell.topic_id == topic_id
-            and cell.trade_date == batch.trade_date
-            and cell.complete_as_of <= cutoff
-        ]
+        for topic_id in definitions
+    }
+    current_cells = [
+        cell
+        for cell in topic_batch.coverage_cells
+        if cell.trade_date == batch.trade_date and cell.complete_as_of <= cutoff
+    ]
+    if not current_cells or {cell.topic_id for cell in current_cells} != set(
+        definitions
+    ):
+        return {}, "unavailable", ("topic_coverage_unavailable",)
+    for topic_id in definitions:
+        cells = [cell for cell in current_cells if cell.topic_id == topic_id]
         coverage_ready = (
             len(cells) == 1
             and cells[0].status == "complete"
             and cells[0].received_member_count == cells[0].expected_member_count
-            and len(visible_members) == cells[0].received_member_count
+            and len(visible_memberships[topic_id]) == cells[0].received_member_count
         )
         if not coverage_ready:
-            coverage_unavailable = True
-            continue
-        for security_id in visible_members:
+            return {}, "unavailable", ("topic_coverage_unavailable",)
+
+    memberships: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for topic_id, topic in definitions.items():
+        for security_id in visible_memberships[topic_id]:
             memberships[security_id].append(
                 {"topic_id": topic.topic_id, "name": topic.name}
             )
     for values in memberships.values():
         values.sort(key=lambda item: item["topic_id"])
-    reasons = ("topic_coverage_unavailable",) if coverage_unavailable else ()
-    return dict(memberships), reasons
+    return dict(memberships), "available", ()
 
 
 def _price(bar: DailyBar, adjustment: Adjustment) -> Decimal:
@@ -164,13 +178,16 @@ def _window(
     stock_ids = tuple(
         security_id
         for security_id in dict.fromkeys(batch.expected_security_ids)
-        if security_id != benchmark_id
-        and (
+        if (
             (current_state := projection.state(security_id, batch.trade_date)) is None
             or current_state.security_type != "index"
         )
     )
-    topics, topic_reasons = _topic_memberships(batch, topic_batch)
+    benchmark_state = projection.state(benchmark_id, batch.trade_date)
+    benchmark_identity_valid = (
+        benchmark_state is not None and benchmark_state.security_type == "index"
+    )
+    topics, topic_status, topic_reasons = _topic_memberships(batch, topic_batch)
     identities = {
         security_id: projection.state(security_id, batch.trade_date)
         for security_id in stock_ids
@@ -188,7 +205,16 @@ def _window(
             security_id: _series(projection, security_id, sessions, adjustment)
             for security_id in stock_ids
         }
-        benchmark = _series(projection, benchmark_id, sessions, adjustment)
+        benchmark = (
+            _series(projection, benchmark_id, sessions, adjustment)
+            if benchmark_identity_valid
+            else {
+                "return_ratio": None,
+                "normalized": [None] * len(sessions),
+                "drawdown": [None] * len(sessions),
+                "reasons": ["benchmark_identity_invalid"],
+            }
+        )
         benchmark_return = benchmark["return_ratio"]
         rows = []
         curves = {}
@@ -198,7 +224,11 @@ def _window(
             value = current["return_ratio"]
             relative = None
             if benchmark_return is None:
-                reasons.append("benchmark_unavailable")
+                reasons.append(
+                    "benchmark_unavailable"
+                    if benchmark_identity_valid
+                    else "benchmark_identity_invalid"
+                )
             elif value is not None:
                 relative = excess_return(value, benchmark_return)
             identity = identities[security_id]
@@ -208,6 +238,7 @@ def _window(
                     "security_id": security_id,
                     "name": identity.name if identity is not None else None,
                     "topics": topics.get(security_id, []),
+                    "topic_status": topic_status,
                     "topic_reasons": list(topic_reasons),
                     "return_ratio": value,
                     "excess_return_ratio": relative,
@@ -239,11 +270,14 @@ def _window(
                 current_rank = position
                 previous_return = value
             row["rank"] = current_rank
-        curves[benchmark_id] = {
-            "normalized": benchmark["normalized"],
-            "drawdown": benchmark["drawdown"],
-            "reasons": benchmark["reasons"],
-        }
+        curves.setdefault(
+            benchmark_id,
+            {
+                "normalized": benchmark["normalized"],
+                "drawdown": benchmark["drawdown"],
+                "reasons": benchmark["reasons"],
+            },
+        )
         result["adjustments"][adjustment] = {
             "ranking": rows,
             "curves": curves,
