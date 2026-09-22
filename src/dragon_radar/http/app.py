@@ -18,6 +18,7 @@ from dragon_radar.http.errors import (
     register_error_handlers,
 )
 from dragon_radar.http.routes.market import router as market_router
+from dragon_radar.http.routes.roles import router as roles_router
 from dragon_radar.http.selection import (
     query_date,
     query_integer,
@@ -118,6 +119,7 @@ def create_workbench_app(
         return DecimalJSONResponse(snapshot_summary(snapshot))
 
     app.include_router(market_router)
+    app.include_router(roles_router)
 
     @app.get("/api/stock/{security_id}")
     def stock(security_id: str, request: Request):
