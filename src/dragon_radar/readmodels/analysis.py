@@ -70,17 +70,19 @@ def _price(bar: DailyBar, adjustment: Adjustment) -> Decimal:
 
 
 def _amount_change(bars: Sequence[DailyBar]) -> tuple[Decimal | None, str | None]:
-    start, end = bars[0].amount, bars[-1].amount
-    if (
-        start is None
-        or end is None
-        or not start.is_finite()
-        or not end.is_finite()
-        or start <= 0
-        or end < 0
+    if len(bars) < 6:
+        return None, "amount_change_unavailable"
+    amounts = tuple(bar.amount for bar in bars[-6:])
+    if any(
+        amount is None or not amount.is_finite() or amount < 0 for amount in amounts
     ):
         return None, "amount_change_unavailable"
-    return interval_return((start, end)), None
+    current = amounts[-1]
+    with localcontext(_decimal_context()):
+        baseline = sum(amounts[:-1], start=Decimal(0)) / Decimal(5)
+        if baseline == 0:
+            return None, "amount_change_unavailable"
+        return current / baseline - 1, None
 
 
 def _series(
@@ -100,8 +102,19 @@ def _series(
     if len({(item.currency, item.price_unit) for item in bars}) > 1:
         reasons.add("unit_mismatch")
 
+    amount_bars = []
+    for day in sessions[-6:]:
+        records = index.get((security_id, day), [])
+        if len(records) != 1:
+            amount_bars = []
+            break
+        amount_bars.append(records[0])
+    amount_change, amount_reason = _amount_change(amount_bars)
+
     complete = not reasons and len(bars) == len(sessions)
     if not complete:
+        if amount_reason is not None:
+            reasons.add(amount_reason)
         return {
             "return_ratio": None,
             "max_drawdown_ratio": None,
@@ -112,7 +125,6 @@ def _series(
         }
 
     prices = tuple(_price(item, adjustment) for item in bars)
-    amount_change, amount_reason = _amount_change(bars)
     if amount_reason is not None:
         reasons.add(amount_reason)
     return {
@@ -191,11 +203,16 @@ def _window(
         )
         missing = [item for item in rows if item["return_ratio"] is None]
         rows = present + missing
-        rank = 0
-        for row in rows:
-            if row["return_ratio"] is not None:
-                rank += 1
-                row["rank"] = rank
+        previous_return = None
+        current_rank = 0
+        for position, row in enumerate(rows, start=1):
+            value = row["return_ratio"]
+            if value is None:
+                continue
+            if previous_return is None or value != previous_return:
+                current_rank = position
+                previous_return = value
+            row["rank"] = current_rank
         curves[benchmark_id] = {
             "normalized": benchmark["normalized"],
             "drawdown": benchmark["drawdown"],

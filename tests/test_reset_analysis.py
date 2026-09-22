@@ -4,6 +4,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal, Inexact, localcontext
 
+import pytest
 from factories import bar, batch, state
 
 
@@ -112,6 +113,61 @@ def test_decimal34_analysis_primitives_cover_frozen_examples():
         ) == Decimal("0.1034567891234567891234567891234567")
 
 
+def test_amount_change_uses_current_against_prior_five_session_average():
+    from dragon_radar.readmodels.analysis import _amount_change
+
+    amounts = ("100", "10", "20", "30", "40", "50", "90")
+    bars = tuple(bar(amount=Decimal(amount)) for amount in amounts)
+
+    assert _amount_change(bars) == (Decimal("2"), None)
+
+
+@pytest.mark.parametrize(
+    "amounts",
+    (
+        ("1", "1", "1", "1", "1"),
+        ("1", "1", None, "1", "1", "1"),
+        ("1", "1", "NaN", "1", "1", "1"),
+        ("1", "1", "-1", "1", "1", "1"),
+        ("0", "0", "0", "0", "0", "1"),
+    ),
+)
+def test_amount_change_is_unavailable_without_six_valid_positions_or_nonzero_basis(
+    amounts,
+):
+    from dragon_radar.readmodels.analysis import _amount_change
+
+    bars = tuple(
+        bar(amount=None if amount is None else Decimal(amount)) for amount in amounts
+    )
+
+    assert _amount_change(bars) == (None, "amount_change_unavailable")
+
+
+@pytest.mark.parametrize("invalid_amount", (Decimal("-1"), Decimal("NaN")))
+def test_analysis_marks_invalid_required_amount_unavailable(invalid_amount):
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    source = _analysis_batch()
+    invalid_day = _sessions()[-2]
+    bars = tuple(
+        item.model_copy(update={"amount": invalid_amount})
+        if item.security_id == "A" and item.trade_date == invalid_day
+        else item
+        for item in source.bars
+    )
+
+    result = materialize_analysis(
+        source.model_copy(update={"bars": bars}),
+        windows=(20,),
+    )
+    rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
+    row = next(item for item in rows if item["security_id"] == "A")
+
+    assert row["amount_change_ratio"] is None
+    assert "amount_change_unavailable" in row["reasons"]
+
+
 def test_analysis_uses_exact_n_plus_one_positions_and_never_shifts_gaps():
     from dragon_radar.readmodels.analysis import materialize_analysis
 
@@ -135,6 +191,16 @@ def test_analysis_uses_exact_n_plus_one_positions_and_never_shifts_gaps():
         "C",
     ]
     assert [row["rank"] for row in adjusted["ranking"]] == [1, 2, 3, None]
+
+
+def test_analysis_gives_equal_returns_equal_ranks_with_stable_security_order():
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    result = materialize_analysis(_analysis_batch(), windows=(20,))
+    rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
+
+    assert [row["security_id"] for row in rows] == ["A", "E", "D", "C"]
+    assert [row["rank"] for row in rows] == [1, 1, 3, None]
 
 
 def test_analysis_default_windows_report_short_history_independently():
