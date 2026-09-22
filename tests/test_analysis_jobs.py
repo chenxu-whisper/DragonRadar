@@ -729,6 +729,46 @@ async def test_cached_rank_uses_eligible_stock_universe_when_pool_contains_index
     }
 
 
+@pytest.mark.anyio
+async def test_cached_rank_counts_suspension_as_legal_exclusion(job_setup):
+    from dragon_radar.analysis_jobs.worker import materialize_custom_analysis
+
+    jobs, _owners, session, publication = job_setup
+    command = _command(publication.id, symbols=())
+    jobs.submit(
+        session.token,
+        session.csrf,
+        command,
+        key="suspended-rank",
+    )
+    snapshot = jobs.publications.get_snapshot(publication.id)
+    result = materialize_custom_analysis(snapshot, command)
+    result["ranking"] = []
+    result["exclusions"] = [{"security_id": "A", "reasons": ["suspension"]}]
+    response = await _request_cached_result(
+        jobs,
+        result,
+        "/api/rank/range",
+        {
+            "snapshot_id": str(publication.id),
+            "start": DAYS[0].isoformat(),
+            "end": DAYS[-1].isoformat(),
+            "adj": "raw",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["exclusions"] == [
+        {"security_id": "A", "reasons": ["suspension"]}
+    ]
+    assert response.json()["coverage"] == {
+        "expected": 1,
+        "valid": 0,
+        "excluded": 1,
+        "missing": 0,
+    }
+
+
 def test_worker_rejects_index_in_expected_security_ids_as_analysis_symbol(job_setup):
     from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
 

@@ -1083,6 +1083,86 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_precomputed_compare_rejects_published_index_symbol():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    payload["stocks"]["stocks"]["B000300"] = {
+        **payload["stocks"]["stocks"]["A"],
+        "security_id": "B000300",
+        "name": "Synthetic Benchmark",
+    }
+    snapshot = _replace_market_payload(snapshot, payload)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/compare/curves",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+                "symbols": "B000300",
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
+
+
+@pytest.mark.anyio
+async def test_precomputed_rank_counts_suspension_as_legal_exclusion():
+    from dragon_radar.http.app import create_workbench_app
+
+    source = _analysis_batch()
+    source = source.model_copy(
+        update={
+            "security_states": tuple(
+                item.model_copy(update={"suspended": True})
+                if item.security_id == "C"
+                else item
+                for item in source.security_states
+            )
+        }
+    )
+    snapshot = _published_analysis_snapshot(source=source)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["exclusions"] == [
+        {"security_id": "C", "reasons": ["suspension"]}
+    ]
+    assert response.json()["coverage"] == {
+        "expected": 4,
+        "valid": 3,
+        "excluded": 1,
+        "missing": 0,
+    }
+
+
+@pytest.mark.anyio
 async def test_rank_keeps_return_valid_rows_with_null_sort_value_last():
     from dragon_radar.http.app import create_workbench_app
 

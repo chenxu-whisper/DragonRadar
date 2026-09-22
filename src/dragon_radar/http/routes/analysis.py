@@ -24,6 +24,7 @@ from dragon_radar.storage.repository import NotFound
 router = APIRouter()
 
 _ADJUSTMENTS = frozenset({"raw", "qfq", "hfq"})
+_LEGAL_EXCLUSION_REASONS = frozenset({"suspension"})
 _SORT_FIELDS = {
     "return": ("return_ratio", True),
     "excess_return": ("excess_return_ratio", True),
@@ -321,6 +322,14 @@ def _exclusion_ids(rows, allowed_ids: set[str]) -> set[str]:
     return set(identifiers)
 
 
+def _analysis_coverage(expected: int, valid: int, exclusions) -> dict[str, int]:
+    excluded = sum(
+        bool(reasons := set(item["reasons"])) and reasons <= _LEGAL_EXCLUSION_REASONS
+        for item in exclusions
+    )
+    return coverage_view(expected, valid, excluded, expected - valid - excluded)
+
+
 def _curve_ids(rows, allowed_ids: set[str], sessions: tuple[date, ...]) -> set[str]:
     expected_dates = [day.isoformat() for day in sessions]
     identifiers = []
@@ -579,7 +588,7 @@ def rank_range(request: Request):
             "ranking": rows,
             "exclusions": exclusions,
         },
-        coverage_view(expected, valid, 0, expected - valid),
+        _analysis_coverage(expected, valid, exclusions),
         adjustment=values["adjustment"],
         benchmark=values["benchmark"],
         rule_version=analysis.get("rule_version"),
@@ -603,6 +612,10 @@ def compare_curves(request: Request):
             benchmark=values["benchmark"],
         )
     eligible_security_ids = _published_eligible_ids(analysis, stocks)
+    symbols = values["symbols"]
+    assert symbols is not None
+    if not set(symbols) <= set(eligible_security_ids):
+        raise NotFound("Stock not found")
     reason = _adjustment(analysis, values["adjustment"])
     if reason is not None:
         return _unavailable(
@@ -614,8 +627,6 @@ def compare_curves(request: Request):
         )
     _window_days, window = _window(analysis, sessions, values["benchmark"])
     if window is None:
-        symbols = values["symbols"]
-        assert symbols is not None
         cached = _cached_result(
             request,
             snapshot,
@@ -661,11 +672,6 @@ def compare_curves(request: Request):
             benchmark=values["benchmark"],
             rule_version=analysis.get("rule_version"),
         )
-    symbols = values["symbols"]
-    assert symbols is not None
-    known = stocks["stocks"]
-    if any(symbol not in known for symbol in symbols):
-        raise NotFound("Stock not found")
     try:
         stored_curves = window["adjustments"][values["adjustment"]]["curves"]
         curves = []
