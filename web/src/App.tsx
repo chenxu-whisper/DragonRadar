@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ComponentType } from 'react';
-import { BarChart3, ChartNoAxesCombined, ChevronLeft, Menu, Radar, Newspaper, Layers, ShieldCheck, NotebookPen } from 'lucide-react';
+import { ArrowLeft, BarChart3, ChartNoAxesCombined, ChevronLeft, Menu, Radar, Newspaper, Layers, ShieldCheck, NotebookPen } from 'lucide-react';
 import { useLocation } from './hooks/useLocation';
 import { AccessProvider, useAccess, useResource } from './hooks/useResource';
 import { parseState, stateSearch, toggleCompare, type ResearchState } from './state';
@@ -12,11 +12,11 @@ import { LazyLoadBoundary } from './components/LazyLoadBoundary';
 import type { Patch } from './components/Common';
 import { Overview } from './pages/Overview';
 import { Analysis, IntervalForm } from './pages/Analysis';
-import { SecurityDrawer, SecurityPage } from './pages/SecurityDetail';
 import { News } from './pages/News';
-import { Leaders } from './pages/Leaders';
 import { Regulation } from './pages/Regulation';
 import { verifiedSnapshotTradeDate } from './features/local-review/note-command';
+import type { LeadersProps } from './pages/Leaders';
+import type { SecurityDrawerProps, SecurityPageProps } from './pages/SecurityDetail';
 
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 type ResetSnapshot = WorkbenchEnvelope<ResetSnapshotData>;
@@ -40,6 +40,15 @@ const LocalReview = import.meta.env.VITE_RESET_WORKBENCH === '1'
 const LocalReviewActions = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(() => import('./features/local-review/LocalReviewActions'))
   : null;
+const Leaders = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(async () => ({ default: (await import('./pages/Leaders')).Leaders as ComponentType<LeadersProps> }))
+  : null;
+const SecurityDrawer = lazy(async () => ({
+  default: (await import('./pages/SecurityDetail')).SecurityDrawer as ComponentType<SecurityDrawerProps>,
+}));
+const SecurityPage = lazy(async () => ({
+  default: (await import('./pages/SecurityDetail')).SecurityPage as ComponentType<SecurityPageProps>,
+}));
 
 function ResetReviewActions(props: { snapshot: string; security: string }) {
   return LocalReviewActions
@@ -67,7 +76,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const [refreshToken, setRefreshToken] = useState(0);
   const [drawer, setDrawer] = useState<{ id: string; trigger: HTMLElement; context: string } | null>(null);
   const context = stateSearch(state, privateEnabled, resetEnabled);
-  const PendingPage = resetEnabled ? ({ news: News, leaders: Leaders, regulation: Regulation } as Partial<Record<ResearchState['view'], ComponentType>>)[state.view] : undefined;
+  const PendingPage = resetEnabled ? ({ news: News, regulation: Regulation } as Partial<Record<ResearchState['view'], ComponentType>>)[state.view] : undefined;
   const list = useResource<Snapshot[] | ResetSnapshotList>(resetEnabled
     ? `/api/snapshots/list?${new URLSearchParams({ ...(state.date ? { date: state.date } : {}), limit: '100', offset: '0' })}`
     : !state.snapshot ? `/api/v1/snapshots?${new URLSearchParams({
@@ -93,11 +102,15 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     if (!resetEnabled) return;
     const openReview = (event: Event) => {
       setDrawer(null);
-      patch({ view: 'review', security: (event as CustomEvent<string>).detail });
+      patch({
+        view: 'review',
+        security: (event as CustomEvent<string>).detail,
+        return_view: state.view === 'leaders' ? 'leaders' : state.view === 'analysis' ? 'analysis' : 'overview',
+      });
     };
     window.addEventListener('local-open-review', openReview);
     return () => window.removeEventListener('local-open-review', openReview);
-  }, [patch]);
+  }, [patch, state.view]);
   useEffect(() => {
     if (!state.snapshot && availableSnapshots.length && !denied) {
       const chosen = availableSnapshots[0];
@@ -160,6 +173,13 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')}>关闭提示</button></div>}
         {LocalReview && state.view === 'review'
           ? <section aria-label="本地复盘">
+            {state.return_view === 'leaders' && <a className="back-link" href={urlFor({ ...state, view: 'leaders', security: '', return_view: 'overview' })}
+              onClick={event => {
+                if (shouldHandleSpaClick(event)) {
+                  event.preventDefault();
+                  patch({ view: 'leaders', security: '', return_view: 'overview' });
+                }
+              }}><ArrowLeft size={18} />返回梯队</a>}
             <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载本地复盘…</p>}>
               <LocalReview
                 snapshot={state.snapshot || undefined}
@@ -180,14 +200,21 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />
             {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled} />}
             {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} />}
-            {state.view === 'stock' && <SecurityPage state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />}
-            {state.view !== 'stock' && <>
+            {Leaders && state.view === 'leaders' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载梯队…</p>}>
+              <Leaders state={state} patch={patch} open={open} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />
+            </Suspense></LazyLoadBoundary>}
+            {state.view === 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载证券详情…</p>}>
+              <SecurityPage state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
+            </Suspense></LazyLoadBoundary>}
+            {['overview', 'analysis'].includes(state.view) && <>
               {state.view === 'overview' && state.compare.length > 0 && <IntervalForm state={state} patch={patch} />}
               <Comparison state={state} patch={patch} refreshToken={refreshToken} />
             </>}
             <SnapshotEvidence snapshot={snapshot} />
-            {drawer && drawer.context === context && state.view !== 'stock' && <SecurityDrawer state={state} id={drawer.id} trigger={drawer.trigger} close={() => setDrawer(null)}
-              patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />}
+            {drawer && drawer.context === context && state.view !== 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载证券详情…</p>}>
+              <SecurityDrawer state={state} id={drawer.id} trigger={drawer.trigger} close={() => setDrawer(null)}
+                patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
+            </Suspense></LazyLoadBoundary>}
           </>}
         </>}
       </main>

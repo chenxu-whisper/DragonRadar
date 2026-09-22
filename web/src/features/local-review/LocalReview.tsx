@@ -77,7 +77,9 @@ export default function LocalReview({
     const effectiveTradeDate = copy ? tradeDate || selected?.trade_date : selected?.trade_date ?? tradeDate;
     const signature = localNoteCommandSignature({
       copy, noteId: selected?.note_id, revision: selected?.revision,
-      snapshotId, tradeDate: effectiveTradeDate, content,
+      snapshotId, tradeDate: effectiveTradeDate,
+      securityId: copy ? security || selected?.security_id : selected?.security_id ?? security,
+      content,
     });
     if (command.current?.signature !== signature) {
       command.current = { signature, id: !copy && selected ? selected.note_id : crypto.randomUUID(), key: crypto.randomUUID() };
@@ -88,6 +90,7 @@ export default function LocalReview({
         expected_revision: copy ? 0 : selected?.revision ?? 0,
         snapshot_id: snapshotId,
         trade_date: effectiveTradeDate,
+        security_id: copy ? security || selected?.security_id : selected?.security_id ?? security,
         content,
       });
       if (!mounted.current) return;

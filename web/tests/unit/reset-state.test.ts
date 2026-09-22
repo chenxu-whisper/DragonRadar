@@ -28,8 +28,38 @@ describe('explicit reset URL state', () => {
   });
 
   it('accepts a reset standalone stock path without losing fixed query context', () => {
-    const { state } = parseState(`?snapshot=${snapshot}&date=2026-09-10&q=TEST&sort=amount&page=2`, false, true, '/stock/TEST%20001');
-    expect(state).toMatchObject({ view: 'stock', security: 'TEST 001', snapshot, date: '2026-09-10', q: 'TEST', sort: 'amount', page: 2 });
+    const { state } = parseState(`?snapshot=${snapshot}&date=2026-09-10&q=TEST&sort=amount&page=2&sector=SEC001&role=trend_leader&return_view=leaders`, false, true, '/stock/TEST%20001');
+    expect(state).toMatchObject({
+      view: 'stock', security: 'TEST 001', snapshot, date: '2026-09-10',
+      q: 'TEST', sort: 'amount', page: 2, sector: 'SEC001',
+      role: 'trend_leader', return_view: 'leaders',
+    });
+  });
+
+  it.each([
+    'emotion_leader', 'trend_leader', 'zhongjun', 'genfeng', 'buZhang', 'jieli',
+  ])('round trips the allowed role %s with leaders filters', role => {
+    const parsed = parseState(
+      `?view=leaders&snapshot=${snapshot}&date=2026-09-10&sector=SEC001&role=${role}`,
+      false,
+      true,
+    );
+    expect(parsed.notices).toEqual([]);
+    expect(parsed.state).toMatchObject({ view: 'leaders', snapshot, date: '2026-09-10', sector: 'SEC001', role });
+    expect(parseState(stateSearch(parsed.state, false, true), false, true).state).toEqual(parsed.state);
+  });
+
+  it('rejects non-whitelisted roles without losing other leaders filters', () => {
+    const parsed = parseState(
+      `?view=leaders&snapshot=${snapshot}&date=2026-09-10&sector=SEC001&role=Trend_leader`,
+      false,
+      true,
+    );
+    expect(parsed.state).toMatchObject({
+      view: 'leaders', snapshot, date: '2026-09-10', sector: 'SEC001',
+      role: 'trend_leader',
+    });
+    expect(parsed.notices).toHaveLength(1);
   });
 
   it('does not interpret paths in legacy mode', () => {

@@ -26,6 +26,7 @@ h1, h2, h3, p { margin: 0; }
 h1 { font-size: 24px; font-weight: 650; line-height: 1.4; }
 h2 { font-size: 18px; font-weight: 650; }
 h3 { font-size: 16px; }
+h4 { margin: 0; font-size: 14px; }
 p { margin-block: 8px; }
 small { display: block; font-size: 12px; color: var(--muted); }
 strong { font-weight: 600; }
@@ -162,6 +163,36 @@ body:has(dialog[open]) { overflow: hidden; }
 .quote dt { color: var(--muted); font-size: 12px; }
 .quote dd { font-size: 20px; margin: 4px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .detail-reasons { font-size: 13px; color: #625b51; }
+.leaders-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 18px; padding-block: 12px; border-block: 1px solid var(--line); }
+.leaders-controls label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.leaders-controls select { min-width: 150px; color: #202b3b; }
+.status-token { display: inline-flex; align-items: center; min-height: 26px; width: fit-content; padding: 2px 8px; border: 1px solid #aeb8c6; border-radius: 999px; color: #354458; background: #f5f7f9; font-size: 12px; line-height: 1.3; white-space: nowrap; }
+.leaders-section { margin-top: 24px; }
+.ladder-matrix { min-width: 660px; table-layout: fixed; }
+.ladder-matrix th:not(.identity), .ladder-matrix td { width: 170px; }
+.ladder-cell { height: 92px; vertical-align: top; }
+.matrix-security { display: flex; width: 100%; min-height: 40px; align-items: flex-start; flex-direction: column; padding: 5px 7px; border: 0; border-left: 2px solid #7990aa; border-radius: 0; white-space: normal; text-align: left; color: var(--blue); background: transparent; }
+.matrix-security + .matrix-security { margin-top: 4px; }
+.matrix-security span, .matrix-count { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.continuity-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border-block: 1px solid var(--line); }
+.continuity-strip div { padding: 12px 14px; border-right: 1px solid var(--line); }
+.continuity-strip div:last-child { border-right: 0; }
+.continuity-strip dt { color: var(--muted); font-size: 12px; }
+.continuity-strip dd { margin: 3px 0 0; font-size: 19px; font-variant-numeric: tabular-nums; }
+.leaders-section table[aria-label="角色候选"] { min-width: 620px; }
+.leader-state { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 12px 0; border-block: 1px solid var(--line); color: #354458; }
+.leader-state span { color: var(--muted); overflow-wrap: anywhere; }
+.change-row { display: grid; grid-template-columns: minmax(100px, 0.7fr) minmax(90px, auto) minmax(180px, 2fr) minmax(110px, auto) 20px; gap: 12px; align-items: center; min-height: 48px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.role-evidence-panel { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }
+.role-evidence { padding-block: 14px; border-bottom: 1px solid var(--line); }
+.role-evidence-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.role-evidence .table-scroll { border-top: 0; }
+.role-evidence table { min-width: 760px; }
+.evidence-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+.evidence-list { min-width: 0; padding: 10px 12px 0 0; }
+.evidence-list h4 { display: flex; align-items: center; gap: 5px; color: #415169; }
+.evidence-list ul { margin: 6px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
+.evidence-list li { margin-block: 3px; }
 .security-drawer .chart { height: 250px; }
 .security-drawer .metadata-grid { grid-template-columns: 90px minmax(0, 1fr); }
 @media (max-width: 1100px) {
@@ -199,6 +230,15 @@ body:has(dialog[open]) { overflow: hidden; }
   .market-grid { grid-template-columns: minmax(0, 1fr); }
   .market-observations { grid-template-columns: minmax(0, 1fr); }
   .factor-grid { grid-template-columns: minmax(0, 1fr); }
+  .leaders-controls { align-items: stretch; gap: 8px; }
+  .leaders-controls label { flex: 1 1 140px; min-width: 0; }
+  .leaders-controls select, .leaders-controls input { width: 100%; min-width: 0; max-width: none; }
+  .continuity-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .continuity-strip div:nth-child(2) { border-right: 0; }
+  .continuity-strip div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .change-row { grid-template-columns: minmax(90px, 1fr) minmax(90px, auto); }
+  .change-row span:nth-of-type(2), .change-row span:nth-of-type(3), .change-row svg { grid-column: 1 / -1; }
+  .evidence-groups { grid-template-columns: minmax(0, 1fr); }
   .search-form { gap: 8px; }
   .search-label { flex: 1; min-width: 150px; }
   .search-label input { width: 100%; }

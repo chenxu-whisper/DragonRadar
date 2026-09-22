@@ -1,18 +1,17 @@
 import { expect, test } from '@playwright/test';
-import { ID, OLD, mockMarket } from '../fixtures/market';
+import { ID, OLD, mockLeaders, mockMarket } from '../fixtures/market';
 
 test.beforeEach(async ({}, testInfo) => {
   test.skip(!testInfo.project.use.baseURL?.endsWith(':5174'), 'Requires the explicit reset server.');
 });
 
 test('six reset destinations retain a fixed historical snapshot', async ({ page }) => {
-  await mockMarket(page);
+  await mockLeaders(page);
   await page.goto(`/?snapshot=${OLD}&date=2026-09-09`);
   const nav = page.getByRole('navigation', { name: '主导航' });
   await expect(nav.getByRole('link')).toHaveText(['总览', '消息', '梯队', '涨幅', '监管', '我的复盘']);
   for (const [name, view, reason] of [
     ['消息', 'news', '消息来源'],
-    ['梯队', 'leaders', '角色计算'],
     ['监管', 'regulation', '正式规则'],
   ]) {
     await nav.getByRole('link', { name, exact: true }).click();
@@ -22,6 +21,10 @@ test('six reset destinations retain a fixed historical snapshot', async ({ page 
     await expect(page.getByRole('status').filter({ hasText: '未就绪' })).toContainText(reason);
     await expect(page.getByRole('table', { name: '证券列表' })).toHaveCount(0);
   }
+  await nav.getByRole('link', { name: '梯队', exact: true }).click();
+  await expect(page).toHaveURL(/view=leaders/);
+  await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
+  await expect(page.getByRole('heading', { name: '梯队', exact: true })).toBeVisible();
 });
 
 test('per-page filter and sort survive navigation, drawer and browser back', async ({ page }) => {
@@ -72,7 +75,7 @@ test('standalone stock path returns to a usable root list', async ({ page }) => 
   await page.getByRole('link', { name: '返回研究列表' }).click();
   await expect(page).toHaveURL(url => url.pathname === '/' && url.searchParams.get('q') === 'TEST002');
   await page.reload();
-  await expect(page.getByRole('table', { name: '证券列表' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '合成测试证券2', exact: true })).toBeVisible();
 });
 
 test('empty source still loads local review after reload', async ({ page }) => {

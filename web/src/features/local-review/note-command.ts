@@ -13,6 +13,7 @@ export function localNoteCommandSignature(input: {
   revision?: number;
   snapshotId: string;
   tradeDate?: string | null;
+  securityId?: string | null;
   content: unknown;
 }): string {
   return JSON.stringify([
@@ -21,6 +22,7 @@ export function localNoteCommandSignature(input: {
     input.revision,
     input.snapshotId,
     input.tradeDate ?? null,
+    input.securityId ?? null,
     input.content,
   ]);
 }

@@ -47,7 +47,7 @@ export interface LocalImportPlan extends LocalImportWrites {
 }
 interface SaveNote {
   note_id: string; expected_revision: number; key: string; snapshot_id: string;
-  trade_date?: string | null; content: NoteContent;
+  trade_date?: string | null; security_id?: string | null; content: NoteContent;
 }
 interface Command { key: string; payload: string; result: LocalNote | LocalWatch }
 
@@ -287,12 +287,14 @@ export class LocalRepository {
       throw new Error('交易日期无效');
     }
     if (!input.note_id || !input.key || !Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0) throw new Error('保存参数无效');
+    if (input.security_id && (input.security_id.length > 200 || ['.', '..'].includes(input.security_id))) throw new Error('证券标识无效');
     const normalized = storedContent(input.content);
     const canonical = JSON.stringify([input.snapshot_id, normalized.title, normalized.content, normalized.judgment,
       normalized.evidence, normalized.invalid_condition, normalized.verify_date]);
     const content_hash = await digest(canonical);
     const payload = await digest(JSON.stringify([
-      'putNote', input.note_id, input.expected_revision, input.key, input.trade_date ?? null, canonical,
+      'putNote', input.note_id, input.expected_revision, input.key, input.trade_date ?? null,
+      input.security_id ?? null, canonical,
     ]));
     const profile = await this.profile(), db = await this.db();
     const tx = db.transaction(['notes', 'note_revisions', 'commands'], 'readwrite');
@@ -313,7 +315,7 @@ export class LocalRepository {
         result = {
           note_id: input.note_id, local_profile_id: profile, snapshot_id: input.snapshot_id,
           trade_date: input.trade_date ?? current?.trade_date ?? null,
-          security_id: current?.security_id, content: normalized,
+          security_id: input.security_id ?? current?.security_id ?? null, content: normalized,
           revision: input.expected_revision + 1, content_hash,
           idempotency_key: input.key, updated_at: new Date().toISOString(),
         };

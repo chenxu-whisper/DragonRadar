@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ComponentType } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, type ComponentType } from 'react';
 import { ArrowLeft, ExternalLink, X } from 'lucide-react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
@@ -8,11 +8,38 @@ import { Chart } from '../components/Chart';
 import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch } from '../components/Common';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
+const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
+const EvidencePanel = resetEnabled
+  ? lazy(async () => ({ default: (await import('../features/roles/EvidencePanel')).EvidencePanel }))
+  : null;
+interface ResetStock {
+  security_id: string;
+  name: string | null;
+  quote: { last: number | null; change_ratio: number | null; amount: number | null };
+  roles: { role_type: string; evidence_status: string; sector_id: string }[];
+  seal: {
+    first_seal_time: string | null; last_seal_time: string | null;
+    break_count: number | null; seal_amount: number | null; reason?: string | null;
+  };
+  regulation: { active_events: number };
+}
+interface ResetStockEnvelope {
+  snapshot_id: string;
+  trade_date: string;
+  data: ResetStock;
+}
+
 function DetailContent({ state, id, refreshToken, ReviewActions }: {
   state: ResearchState; id: string; refreshToken: number; ReviewActions?: ReviewActionComponent;
 }) {
-  const resource = useResource<Envelope<Detail>>(`/api/v1/snapshots/${state.snapshot}/securities/${encodeURIComponent(id)}`, state.snapshot, refreshToken);
+  const modern = useResource<ResetStockEnvelope>(resetEnabled
+    ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
+    : null, state.snapshot, refreshToken);
+  const resource = useResource<Envelope<Detail>>(!resetEnabled || modern.error?.status === 404
+    ? `/api/v1/snapshots/${state.snapshot}/securities/${encodeURIComponent(id)}`
+    : null, state.snapshot, refreshToken);
   const data = resource.data?.result;
+  const modernData = modern.data?.data;
   const pricedHistory = data?.history.filter(point => point.close !== null) || [];
   const firstPrice = pricedHistory[0];
   const inconsistentUnits = pricedHistory.some(point =>
@@ -36,7 +63,19 @@ function DetailContent({ state, id, refreshToken, ReviewActions }: {
     }],
   }), [data]);
   return <>
+    {resetEnabled && modern.error?.status !== 404 && <ResourceStatus resource={modern} name="证券详情" />}
     <ResourceStatus resource={resource} name="证券详情" />
+    {modernData && <>
+      <div className="detail-heading"><h2>{modernData.name || '名称未知'}</h2><span>{modernData.security_id}</span></div>
+      {ReviewActions && <ReviewActions snapshot={state.snapshot} security={id} />}
+      <dl className="quote">
+        <div><dt>最新价</dt><dd>{modernData.quote.last ?? '—'}</dd></div>
+        <div><dt>日涨跌幅</dt><dd><Percent value={modernData.quote.change_ratio === null ? null : String(modernData.quote.change_ratio)} /></dd></div>
+        <div><dt>成交额</dt><dd>{modernData.quote.amount ?? '—'}</dd></div>
+        <div><dt>正式监管事件</dt><dd>{modernData.regulation.active_events}</dd></div>
+      </dl>
+      <p className="detail-reasons">{modernData.seal.reason || '封板字段按已发布数据展示'}</p>
+    </>}
     {data && <>
       <div className="detail-heading"><h2>{data.security.name || '名称未知'}</h2><span>{data.security.security_id} · {label(data.security.exchange)} · {label(data.security.board)}</span></div>
       {ReviewActions && <ReviewActions snapshot={state.snapshot} security={id} />}
@@ -63,30 +102,46 @@ function DetailContent({ state, id, refreshToken, ReviewActions }: {
         </tr>)}</tbody></table></TableScroll>
       </details>
     </>}
+    {EvidencePanel && state.sector && <Suspense fallback={<p role="status" className="status">正在加载角色证据…</p>}>
+      <EvidencePanel
+        snapshot={state.snapshot}
+        date={state.date}
+        sector={state.sector}
+        security={id}
+        refreshToken={refreshToken}
+      />
+    </Suspense>}
   </>;
 }
-export function SecurityDrawer({ state, id, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions }: {
+export interface SecurityDrawerProps {
   state: ResearchState; id: string; trigger: HTMLElement; close: () => void; patch: Patch; refreshToken: number;
   allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
-}) {
+}
+export function SecurityDrawer({ state, id, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityDrawerProps) {
   const dialog = useRef<HTMLDialogElement>(null), closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     dialog.current?.showModal(); closeButton.current?.focus();
     return () => { dialog.current?.close(); if (trigger.isConnected) trigger.focus(); };
   }, [trigger]);
-  const next = { ...state, view: 'stock' as const, security: id, return_view: state.view === 'analysis' ? 'analysis' as const : 'overview' as const };
+  const next = {
+    ...state,
+    view: 'stock' as const,
+    security: id,
+    return_view: state.view === 'leaders' ? 'leaders' as const : state.view === 'analysis' ? 'analysis' as const : 'overview' as const,
+  };
   return <dialog ref={dialog} className="security-drawer" aria-labelledby="drawer-title" onCancel={e => { e.preventDefault(); close(); }}>
     <div className="drawer-toolbar"><h2 id="drawer-title">证券详情 · 只读</h2><button ref={closeButton} onClick={close} aria-label="关闭详情" title="关闭详情（退出键）"><X size={20} /></button></div>
-    <a className="fullpage-link" href={stateSearch(next, allowPrivate)} onClick={e => { if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(next)) close(); } }}><ExternalLink size={16} />打开完整详情</a>
+    <a className="fullpage-link" href={stateSearch(next, allowPrivate, resetEnabled)} onClick={e => { if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(next)) close(); } }}><ExternalLink size={16} />打开完整详情</a>
     <DetailContent state={state} id={id} refreshToken={refreshToken} ReviewActions={ReviewActions} />
   </dialog>;
 }
-export function SecurityPage({ state, patch, refreshToken, allowPrivate = false, ReviewActions }: {
+export interface SecurityPageProps {
   state: ResearchState; patch: Patch; refreshToken: number; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
-}) {
+}
+export function SecurityPage({ state, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityPageProps) {
   const back = { ...state, view: state.return_view, security: '' };
   return <>
-    <a className="back-link" href={stateSearch(back, allowPrivate)} onClick={event => { if (shouldHandleSpaClick(event)) { event.preventDefault(); patch(back); } }}><ArrowLeft size={18} />返回研究列表</a>
+    <a className="back-link" href={stateSearch(back, allowPrivate, resetEnabled)} onClick={event => { if (shouldHandleSpaClick(event)) { event.preventDefault(); patch(back); } }}><ArrowLeft size={18} />返回研究列表</a>
     <h1>证券详情</h1>
     {state.security ? <DetailContent state={state} id={state.security} refreshToken={refreshToken} ReviewActions={ReviewActions} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
   </>;

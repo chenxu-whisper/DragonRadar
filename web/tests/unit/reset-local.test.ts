@@ -20,11 +20,12 @@ describe('local review transactions', () => {
     const profile = await repo.profile();
     const saved = await repo.putNote({
       note_id: 'n1', expected_revision: 0, key: 'save1', snapshot_id: 'snapshot',
-      trade_date: '2026-09-10', content,
+      trade_date: '2026-09-10', security_id: 'SSE.600519', content,
     });
     expect(saved.revision).toBe(1);
     expect(saved.content_hash).toMatch(/^[\da-f]{64}$/);
     expect(saved.trade_date).toBe('2026-09-10');
+    expect(saved.security_id).toBe('SSE.600519');
     expect(saved.idempotency_key).toBe('save1');
     expect((await repo.listNotes())[0].content).toEqual({
       ...content, judgment: '观察', evidence: null, invalid_condition: null, verify_date: null,
@@ -36,6 +37,18 @@ describe('local review transactions', () => {
     expect(await reopened.profile()).toBe(profile);
     expect((await reopened.listNotes())[0]).toEqual(saved);
     reopened.close();
+  });
+  test('binds deep-link security identity into every saved revision and command digest', async () => {
+    const repo = repository();
+    const command = {
+      note_id: 'n1', expected_revision: 0, key: 'bound', snapshot_id: 'snapshot',
+      trade_date: '2026-09-10', security_id: 'SSE.600519', content,
+    };
+    const first = await repo.putNote(command);
+    expect(first.security_id).toBe('SSE.600519');
+    expect((await repo.revisions('n1'))[0].security_id).toBe('SSE.600519');
+    await expect(repo.putNote({ ...command, security_id: 'SZSE.000001' })).rejects.toThrow('幂等');
+    repo.close();
   });
   test('same command replays; changed payload with same key fails', async () => {
     const repo = repository();

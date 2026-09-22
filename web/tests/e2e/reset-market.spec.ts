@@ -206,7 +206,7 @@ test('reset overview uses versioned APIs and persists drill-down context in URL'
   await page.getByRole('button', { name: /合成题材甲/ }).click();
   await expect(page).toHaveURL(/view=leaders/);
   await expect(page).toHaveURL(/sector=SEC001/);
-  await expect(page.getByText('题材上下文：SEC001')).toBeVisible();
+  await expect(page.getByLabel('题材筛选')).toHaveValue('SEC001');
   expect(requests.some(path => path.startsWith('/api/v1/') && (path.endsWith('/overview') || path.endsWith('/securities')))).toBe(false);
 });
 

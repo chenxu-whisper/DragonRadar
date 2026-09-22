@@ -175,3 +175,149 @@ export async function mockMarket(page: Page, state: MockState = {}) {
     return respond(id === OLD ? oldSnapshot : snapshot);
   });
 }
+
+export type LeaderMockState = {
+  denied?: boolean;
+  offline?: boolean;
+  domainUnavailable?: boolean;
+  noCandidate?: boolean;
+  insufficient?: boolean;
+  unapproved?: boolean;
+};
+
+const roleCoverage = { expected: 2, valid: 2, excluded: 0, missing: 0 };
+const roleEnvelope = (data: unknown, quality_flags: string[] = []) => ({
+  trade_date: '2026-09-10',
+  as_of: '2026-09-10T10:00:00Z',
+  snapshot_id: ID,
+  source: 'role_materialization',
+  source_version: 'role-source-v1',
+  coverage: roleCoverage,
+  quality_flags,
+  rule_version: 'role-v1',
+  basis: { unit: 'ratio', currency: 'CNY', price_type: 'adjusted', benchmark: 'CSI300' },
+  data,
+});
+
+export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
+  await mockMarket(page);
+  await page.route('**/api/market/heatmap?**', async route => {
+    if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
+    if (state.offline) return route.abort('failed');
+    return route.fulfill({ json: {
+      ...resetSummary(snapshot),
+      data: {
+        columns: [1, 2],
+        cells: [
+          { trade_date: '2026-09-09', boards: 2, count: 1 },
+          { trade_date: '2026-09-10', boards: 1, count: 1 },
+          { trade_date: '2026-09-10', boards: 2, count: 1 },
+        ],
+      },
+    } });
+  });
+  await page.route('**/api/limit-up/**', async route => {
+    const url = new URL(route.request().url());
+    if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
+    if (state.offline) return route.abort('failed');
+    if (state.domainUnavailable) return route.fulfill({ json: roleEnvelope(null, ['role_missing']) });
+    if (url.pathname === '/api/limit-up/ladder') {
+      return route.fulfill({ json: roleEnvelope({
+        columns: [1, 2],
+        total: 2,
+        cells: [
+          { boards: 1, count: 1, stocks: [{ security_id: 'TEST002', name: '合成测试证券2', roles: [], sector_id: 'SEC001' }] },
+          { boards: 2, count: 1, stocks: [{ security_id: 'TEST001', name: '合成测试证券1', roles: ['trend_leader'], sector_id: 'SEC001' }] },
+        ],
+        promote_rate: { yesterday_ge2: 3, today_sealed: 1, tradable: 2, rate: 0.5 },
+      }) });
+    }
+    if (url.pathname === '/api/limit-up/continuity') {
+      return route.fulfill({ json: roleEnvelope({
+        promote_rate: { yesterday_ge2: 3, today_sealed: 1, tradable: 2, rate: 0.5 },
+        promote_rate_quality: { coverage: { expected: 3, valid: 2, excluded: 0, missing: 1 }, reasons: ['promotion_observation_missing'] },
+        yesterday_limit_up_median_return: 0.012,
+        yesterday_limit_up_feedback: {
+          status: 'available', coverage: { expected: 2, valid: 2, excluded: 0, missing: 0 }, reasons: [],
+        },
+        tradable_count: 2,
+      }) });
+    }
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.route('**/api/role/**', async route => {
+    const url = new URL(route.request().url());
+    if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
+    if (state.offline) return route.abort('failed');
+    if (state.domainUnavailable) return route.fulfill({ json: roleEnvelope(null, ['role_disabled']) });
+    if (url.pathname === '/api/role/candidates') {
+      const role = url.searchParams.get('role') || 'trend_leader';
+      const status = state.insufficient ? 'insufficient' : state.noCandidate ? 'no_candidate' : 'ready';
+      const reasons = state.insufficient
+        ? ['required_inputs_missing']
+        : state.noCandidate ? ['no_ranked_candidate'] : [];
+      const candidates = state.noCandidate || state.insufficient || state.unapproved ? [] : [
+        { security_id: 'TEST001', name: '合成测试证券1', rank: 1, evidence_status: 'candidate', sector_id: 'SEC001', boards: 2 },
+        { security_id: 'TEST002', name: '合成测试证券2', rank: 1, evidence_status: 'candidate', sector_id: 'SEC001', boards: 1 },
+      ];
+      return route.fulfill({ json: roleEnvelope({
+        role,
+        statuses: [{ sector_id: 'SEC001', status, capability: role === 'genfeng' ? 'watch_only' : 'ready', reasons }],
+        candidates,
+        change_summaries: [{
+          sector_id: 'SEC001', role: 'trend', previous_role_run_id: 'previous-run',
+          comparison_status: 'not_comparable', membership_changed: true,
+          reasons: ['rule_version_changed', 'topic_membership_changed'],
+        }],
+        role_changes: [],
+        total: candidates.length,
+      }, state.unapproved ? ['rule_version_not_approved'] : []) });
+    }
+    if (url.pathname === '/api/role/evidence') {
+      const security = url.searchParams.get('security_id') || '';
+      const roleNames = ['emotion_leader', 'trend_leader', 'zhongjun', 'genfeng', 'buZhang', 'jieli'];
+      return route.fulfill({ json: roleEnvelope({
+        security_id: security,
+        sector_id: 'SEC001',
+        roles: roleNames.map((role, index) => ({
+          role_type: role,
+          evidence_status: index === 1 ? 'candidate' : index === 3 ? 'watch' : 'insufficient',
+          factors: [{
+            factor_id: index === 1 ? 'FAC-R01' : `FAC-${index + 1}`,
+            metric: index === 1 ? 'relative_strength_20' : 'observed_factor',
+            value: index === 1 ? 0.12 : null,
+            status: index === 1 ? 'computed' : 'unavailable',
+            unit: 'ratio',
+            window: index === 1 ? '20d' : null,
+            coverage: index === 1 ? { expected: 21, valid: 21, excluded: 0, missing: 0 } : { expected: 1, valid: 0, excluded: 0, missing: 1 },
+            reasons: index === 1 ? [] : ['required_input_unavailable'],
+            source_time: '2026-09-10T07:30:00Z',
+            knowledge_cutoff: '2026-09-10T08:00:00Z',
+          }],
+          supporting_evidence: index === 1 ? ['relative_strength_positive'] : [],
+          opposing_evidence: index === 3 ? ['lags_unique_core'] : [],
+          missing_evidence: index === 1 ? ['intraday_seal_detail_unavailable'] : ['required_input_unavailable'],
+        })),
+      }) });
+    }
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.route('**/api/stock/**', async route => {
+    const url = new URL(route.request().url());
+    if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
+    if (state.offline) return route.abort('failed');
+    const securityId = decodeURIComponent(url.pathname.split('/').at(-1)!);
+    const security = securities.find(item => item.security_id === securityId) ?? securities[0];
+    return route.fulfill({ json: roleEnvelope({
+      security_id: securityId,
+      name: security.name,
+      quote: { last: Number(security.close), change_ratio: Number(security.change), amount: Number(security.amount) },
+      roles: [{ role_type: 'trend_leader', evidence_status: 'candidate', sector_id: 'SEC001' }],
+      seal: {
+        first_seal_time: null, last_seal_time: null, break_count: null, seal_amount: null,
+        reason: 'intraday_seal_fields_unavailable',
+      },
+      regulation: { active_events: 0 },
+    }) });
+  });
+}

@@ -49,7 +49,7 @@ function validateSecurityResponse(data: unknown, id: string): void {
 }
 
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|search)(?:[?#]|$)/i.test(path);
+  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|stock\/[^/?#]+|search)(?:[?#]|$)/i.test(path);
   if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
@@ -88,6 +88,16 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       throw new ApiError(409, '响应快照与当前选择不匹配，已丢弃该响应。');
     }
     if (securityId !== undefined) validateSecurityResponse(data, securityId);
+    const resetStockPath = path.match(/^\/api\/stock\/([^/?#]+)\/?(?:[?#]|$)/);
+    if (resetStockPath) {
+      let requested: string;
+      try { requested = decodeURIComponent(resetStockPath[1]); }
+      catch { throw new ApiError(400, '证券标识无效，请返回研究列表重新选择。'); }
+      const payload = record(data) && record(data.data) ? data.data : undefined;
+      if (!payload || payload.security_id !== requested) {
+        throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
+      }
+    }
     return data as T;
   } catch (error) {
     if (error instanceof ApiError || (error instanceof DOMException && error.name === 'AbortError')) throw error;
