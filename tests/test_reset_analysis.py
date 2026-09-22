@@ -1454,3 +1454,152 @@ async def test_analysis_routes_validate_before_storage_and_bind_snapshot_date():
         )
     assert missing.status_code == 200
     assert missing.json()["data"] is None
+
+
+def _replace_market_payload(snapshot, payload):
+    from dragon_radar.publication.models import PublishedSnapshot
+
+    results = tuple(
+        result.model_copy(update={"payload": payload})
+        if result.domain == "market"
+        else result
+        for result in snapshot.results
+    )
+    return PublishedSnapshot(snapshot.publication, snapshot.market_snapshot, results)
+
+
+def _mutable_market_payload(snapshot):
+    return snapshot.result("market").model_dump(mode="json")["payload"]
+
+
+def _corrupt_market_extension(snapshot, extension, field, value):
+    payload = _mutable_market_payload(snapshot)
+    payload[extension][field] = value
+    return _replace_market_payload(snapshot, payload)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("extension", ("analysis", "stocks"))
+async def test_analysis_routes_reject_extension_trade_date_mismatch(extension):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _corrupt_market_extension(
+        _published_analysis_snapshot(),
+        extension,
+        "trade_date",
+        "1999-01-01",
+    )
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "DATA_UNAVAILABLE",
+        "message": "Data unavailable",
+    }
+
+
+@pytest.mark.anyio
+async def test_analysis_routes_reject_non_object_stocks_extension():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    payload["stocks"] = []
+    snapshot = _replace_market_payload(snapshot, payload)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/stock/A",
+            params={"snapshot_id": str(snapshot.id)},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "DATA_UNAVAILABLE",
+        "message": "Data unavailable",
+    }
+
+
+@pytest.mark.anyio
+async def test_analysis_routes_reject_bad_published_session_date():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    payload["analysis"]["windows"]["20"]["sessions"][0] = "not-a-date"
+    snapshot = _replace_market_payload(snapshot, payload)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "DATA_UNAVAILABLE",
+        "message": "Data unavailable",
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", ("not-a-decimal", ["bad-row"]))
+async def test_analysis_routes_reject_bad_published_ranking_decimal(value):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    ranking = payload["analysis"]["windows"]["20"]["adjustments"]["raw"]["ranking"]
+    if isinstance(value, list):
+        ranking[0] = value
+    else:
+        ranking[0]["return_ratio"] = value
+    snapshot = _replace_market_payload(snapshot, payload)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "DATA_UNAVAILABLE",
+        "message": "Data unavailable",
+    }
