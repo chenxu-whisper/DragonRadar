@@ -1301,7 +1301,7 @@ def test_comparison_projection_validator_returns_exact_partition():
                 "points": [
                     {
                         "trade_date": day.isoformat(),
-                        "normalized": Decimal("1"),
+                        "normalized": Decimal("100"),
                         "drawdown": Decimal("0"),
                     }
                     for day in sessions
@@ -1351,6 +1351,51 @@ async def test_precomputed_compare_rejects_malformed_projection(corruption):
         )
 
     assert response.status_code == 503
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("corruption", "point_index", "field", "value"),
+    (
+        ("null_baseline", 0, "both", None),
+        ("wrong_normalized_baseline", 0, "normalized", Decimal("99")),
+        ("wrong_drawdown_baseline", 0, "drawdown", Decimal("0.1")),
+        ("nonpositive_normalized", 1, "normalized", Decimal("0")),
+        ("negative_drawdown", 1, "drawdown", Decimal("-0.1")),
+    ),
+)
+async def test_precomputed_compare_rejects_invalid_curve_baseline_and_values(
+    corruption, point_index, field, value
+):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    payload = _mutable_market_payload(snapshot)
+    curve = payload["analysis"]["windows"]["20"]["adjustments"]["raw"]["curves"]["A"]
+    if field == "both":
+        curve["normalized"][point_index] = None
+        curve["drawdown"][point_index] = None
+    else:
+        curve[field][point_index] = value
+    snapshot = _replace_market_payload(snapshot, payload)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/compare/curves",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+                "symbols": "A",
+            },
+        )
+
+    assert response.status_code == 503, corruption
 
 
 @pytest.mark.anyio

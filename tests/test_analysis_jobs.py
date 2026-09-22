@@ -1320,6 +1320,51 @@ async def test_cached_compare_requires_exact_requested_partition(job_setup):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("corruption", "point_index", "field", "value"),
+    (
+        ("null_baseline", 0, "both", None),
+        ("wrong_normalized_baseline", 0, "normalized", Decimal("99")),
+        ("wrong_drawdown_baseline", 0, "drawdown", Decimal("0.1")),
+        ("nonpositive_normalized", 1, "normalized", Decimal("0")),
+        ("negative_drawdown", 1, "drawdown", Decimal("-0.1")),
+    ),
+)
+async def test_cached_compare_rejects_invalid_curve_baseline_and_values(
+    job_setup, corruption, point_index, field, value
+):
+    from dragon_radar.analysis_jobs.worker import materialize_custom_analysis
+
+    jobs, _owners, session, publication = job_setup
+    command = _command(publication.id, symbols=("A",))
+    jobs.submit(session.token, session.csrf, command, key=f"curve-{corruption}")
+    snapshot = jobs.publications.get_snapshot(publication.id)
+    result = materialize_custom_analysis(snapshot, command)
+    point = result["curves"][0]["points"][point_index]
+    if field == "both":
+        point["normalized"] = None
+        point["drawdown"] = None
+    else:
+        point[field] = value
+    params = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "adj": "raw",
+        "symbols": "A",
+    }
+
+    response = await _request_cached_result(
+        jobs,
+        result,
+        "/api/compare/curves",
+        params,
+    )
+
+    assert response.status_code == 503, corruption
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("corruption", ("ranking", "curve_sessions"))
 async def test_cached_result_deeply_validates_nested_rows(job_setup, corruption):
     from dragon_radar.analysis_jobs.worker import materialize_custom_analysis

@@ -76,7 +76,6 @@ def validate_comparison_projection(
         ):
             raise ValueError("invalid comparison curve")
         point_dates = []
-        has_value = False
         for point in row["points"]:
             if (
                 not isinstance(point, dict)
@@ -85,11 +84,22 @@ def validate_comparison_projection(
                 or not _decimal(point["normalized"])
                 or not _decimal(point["drawdown"])
                 or (point["normalized"] is None) != (point["drawdown"] is None)
+                or (
+                    point["normalized"] is not None
+                    and (
+                        point["normalized"] <= Decimal(0)
+                        or point["drawdown"] < Decimal(0)
+                    )
+                )
             ):
                 raise ValueError("invalid comparison point")
             point_dates.append(point["trade_date"])
-            has_value = has_value or point["normalized"] is not None
-        if point_dates != expected_dates or not has_value:
+        first_point = row["points"][0]
+        if (
+            point_dates != expected_dates
+            or first_point["normalized"] != Decimal(100)
+            or first_point["drawdown"] != Decimal(0)
+        ):
             raise ValueError("invalid comparison series")
         curve_ids.append(row["security_id"])
     curves_partition = _identifier_set(curve_ids)
