@@ -532,6 +532,28 @@ def test_stock_quote_rejects_unusable_previous_session_observation(
     assert expected_reason in quote["reasons"]
 
 
+def test_stock_quote_reports_missing_baseline_on_first_calendar_session():
+    from dragon_radar.readmodels.stock import materialize_stocks
+
+    source = _analysis_batch()
+    source = source.model_copy(
+        update={
+            "calendar": source.calendar.model_copy(
+                update={"sessions": (source.trade_date,)}
+            ),
+            "bars": tuple(
+                item for item in source.bars if item.trade_date == source.trade_date
+            ),
+        }
+    )
+
+    quote = materialize_stocks(source)["stocks"]["A"]["quote"]
+
+    assert quote["previous_close"] is None
+    assert quote["change_ratio"] is None
+    assert "missing_previous_close" in quote["reasons"]
+
+
 def test_market_projection_caches_security_scoped_batches_and_observations():
     from dragon_radar.readmodels.projection import MarketProjection
 

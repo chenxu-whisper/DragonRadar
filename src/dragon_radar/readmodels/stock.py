@@ -67,6 +67,8 @@ def _quote(
                 reasons.add("unit_mismatch")
             elif previous is not None:
                 previous_close = previous.close
+        else:
+            reasons.add("missing_previous_close")
     change = None
     if current is not None and previous_close is not None and not reasons:
         change = interval_return((previous_close, current.close))
