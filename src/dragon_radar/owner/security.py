@@ -218,6 +218,13 @@ class OwnerGate:
         except (*OWNER_ERRORS, BoundaryError) as exc:
             if started:
                 raise
+            if (
+                scope["path"] == "/api/analysis/jobs"
+                and scope["method"] == "POST"
+                and isinstance(exc, BoundaryError)
+                and exc.code == "invalid_request"
+            ):
+                exc = BoundaryError(400, "INVALID_PARAM", "Invalid request")
             await JSONResponse(
                 {"code": exc.code, "message": exc.message}, status_code=exc.status_code
             )(scope, receive, no_store)

@@ -979,7 +979,10 @@ async def test_owner_analysis_http_submit_get_idempotency_and_isolation(job_setu
             headers=_owner_headers(session),
         )
         assert conflict.status_code == 409
-        assert conflict.json() == {"code": "conflict", "message": "Conflict"}
+        assert conflict.json() == {
+            "code": "VERSION_CONFLICT",
+            "message": "Version conflict",
+        }
 
         fetched = await client.get(
             f"/api/analysis/jobs/{created.json()['job_id']}",
@@ -1045,14 +1048,94 @@ async def test_owner_analysis_http_submit_get_idempotency_and_isolation(job_setu
             headers=_owner_headers(other),
         )
         assert isolated.status_code == 404
+        assert isolated.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
 
     with jobs.database.engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM analysis_jobs")) == 1
 
 
 @pytest.mark.anyio
-async def test_owner_analysis_http_strict_body_and_revoked_source(job_setup):
+async def test_owner_analysis_http_result_emits_declared_decimals_as_json_numbers(
+    job_setup,
+):
     from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+
+    jobs, owners, session, publication = job_setup
+    submitted = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id),
+        key="decimal-http-job",
+    )
+    lease = jobs.claim("decimal-http-worker")
+    precise = Decimal("9007199254740993.01")
+    jobs.succeed(
+        lease,
+        {
+            "snapshot_id": "9007199254740993.01",
+            "requested_start": "9007199254740993.01",
+            "benchmark_return_ratio": precise,
+            "ranking": [
+                {
+                    "security_id": "9007199254740993.01",
+                    "return_ratio": precise,
+                }
+            ],
+            "curves": [
+                {
+                    "points": [
+                        {
+                            "trade_date": "9007199254740993.01",
+                            "normalized": precise,
+                            "drawdown": Decimal("0.01"),
+                        }
+                    ]
+                }
+            ],
+        },
+    )
+    app = create_owner_app(
+        repository=jobs.publications.market,
+        owner_repository=owners,
+        publication_repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://localhost:8030",
+    ) as client:
+        response = await client.get(
+            f"/api/analysis/jobs/{submitted.id}",
+            headers=_owner_headers(session),
+        )
+
+    assert response.status_code == 200
+    assert b'"return_ratio":9007199254740993.01' in response.content
+    assert b'"normalized":9007199254740993.01' in response.content
+    assert b'"benchmark_return_ratio":9007199254740993.01' in response.content
+    parsed = json.loads(response.content, parse_float=Decimal)
+    assert parsed["result"]["ranking"][0]["return_ratio"] == precise
+    assert parsed["result"]["curves"][0]["points"][0]["normalized"] == precise
+    assert parsed["result"]["snapshot_id"] == "9007199254740993.01"
+    assert parsed["result"]["requested_start"] == "9007199254740993.01"
+    assert parsed["result"]["ranking"][0]["security_id"] == "9007199254740993.01"
+    assert parsed["result"]["curves"][0]["points"][0]["trade_date"] == (
+        "9007199254740993.01"
+    )
+
+
+@pytest.mark.anyio
+async def test_owner_analysis_http_strict_body_and_revoked_source(
+    job_setup, monkeypatch
+):
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy.exc import SQLAlchemyError
 
     from dragon_radar.owner.app import create_owner_app
 
@@ -1078,6 +1161,7 @@ async def test_owner_analysis_http_strict_body_and_revoked_source(job_setup):
             {**body, "unknown": True},
             {**body, "snapshot_id": None},
             {**body, "symbols": ["A", "B", "C", "D", "E", "F"]},
+            {**body, "symbols": ["A", "A"]},
             {**body, "start": DAYS[-1].isoformat(), "end": DAYS[0].isoformat()},
         ):
             response = await client.post(
@@ -1085,29 +1169,87 @@ async def test_owner_analysis_http_strict_body_and_revoked_source(job_setup):
                 json=invalid,
                 headers=_owner_headers(session),
             )
-            assert response.status_code == 422
+            assert response.status_code == 400
             assert response.json() == {
-                "code": "invalid_request",
+                "code": "INVALID_PARAM",
                 "message": "Invalid request",
             }
+            assert "A,A" not in response.text
+        malformed = await client.post(
+            "/api/analysis/jobs",
+            content=b"{",
+            headers={
+                **_owner_headers(session),
+                "Content-Type": "application/json",
+            },
+        )
+        assert malformed.status_code == 400
+        assert malformed.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
         query = await client.post(
             "/api/analysis/jobs?unexpected=1",
             json=body,
             headers=_owner_headers(session),
         )
-        assert query.status_code == 422
+        assert query.status_code == 400
+        assert query.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+        invalid_job_id = await client.get(
+            "/api/analysis/jobs/not-a-uuid",
+            headers=_owner_headers(session),
+        )
+        assert invalid_job_id.status_code == 400
+        assert invalid_job_id.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+        missing = await client.get(
+            f"/api/analysis/jobs/{uuid4()}",
+            headers=_owner_headers(session),
+        )
+        assert missing.status_code == 404
+        assert missing.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
 
         created = await client.post(
             "/api/analysis/jobs",
             json=body,
             headers=_owner_headers(session),
         )
+
+        def unavailable(token, job_id):
+            raise SQLAlchemyError("secret-marker")
+
+        original_get = jobs.get
+        monkeypatch.setattr(jobs, "get", unavailable)
+        unavailable_response = await client.get(
+            f"/api/analysis/jobs/{created.json()['job_id']}",
+            headers=_owner_headers(session),
+        )
+        assert unavailable_response.status_code == 503
+        assert unavailable_response.json() == {
+            "code": "STORAGE_UNAVAILABLE",
+            "message": "Storage unavailable",
+        }
+        assert "secret-marker" not in unavailable_response.text
+        monkeypatch.setattr(jobs, "get", original_get)
+
         jobs.publications.market.revoke_source("synthetic")
         denied = await client.get(
             f"/api/analysis/jobs/{created.json()['job_id']}",
             headers=_owner_headers(session),
         )
         assert denied.status_code == 403
+        assert denied.json() == {
+            "code": "FORBIDDEN",
+            "message": "Source access denied",
+        }
 
 
 @pytest.mark.anyio

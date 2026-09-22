@@ -1,8 +1,6 @@
 """Published market read-model routes."""
 
-from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
-from typing import Any
+from decimal import Decimal
 
 from fastapi import APIRouter, Request
 
@@ -20,6 +18,7 @@ from dragon_radar.http.selection import (
     select_snapshot,
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.http.serialization import restore_decimal_fields as _restore_decimals
 from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.readmodels.market import (
     MARKET_READ_MODEL_SCHEMA,
@@ -42,34 +41,6 @@ _MATERIALIZED_VIEW_FIELDS = {
     "heatmap",
     "search",
 }
-_DECIMAL_FIELDS = {
-    "amount",
-    "amount_change_ratio",
-    "baseline_mean",
-    "benchmark_return_ratio",
-    "change_ratio",
-    "close",
-    "close_over_ma20",
-    "close_over_ma60",
-    "drawdown",
-    "excess_return_ratio",
-    "high",
-    "last",
-    "low",
-    "max_drawdown_ratio",
-    "median_return",
-    "net_inflow",
-    "normalized",
-    "open",
-    "previous_close",
-    "return_ratio",
-    "seal_amount",
-    "today_total",
-    "value",
-    "volume",
-    "volatility_20",
-    "yesterday_limit_up_median_return",
-}
 
 
 def _repository(request: Request):
@@ -77,22 +48,6 @@ def _repository(request: Request):
     if repository is None:
         raise StorageUnavailable
     return repository
-
-
-def _restore_decimals(value: Any, key: str | None = None) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            item_key: _restore_decimals(item, item_key)
-            for item_key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_restore_decimals(item, key) for item in value]
-    if key in _DECIMAL_FIELDS and isinstance(value, str):
-        try:
-            return Decimal(value)
-        except InvalidOperation:
-            raise DataUnavailable from None
-    return value
 
 
 def _selection(request: Request, extra: set[str] | None = None):

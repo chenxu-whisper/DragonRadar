@@ -9,7 +9,6 @@ from fastapi import APIRouter, Request
 from dragon_radar.analysis_jobs.models import AnalysisJobCommand
 from dragon_radar.http.contracts import coverage_view, empty_envelope
 from dragon_radar.http.errors import DataUnavailable
-from dragon_radar.http.routes.market import _restore_decimals
 from dragon_radar.http.routes.stock import (
     _adjust_window,
     _market_extensions,
@@ -19,6 +18,7 @@ from dragon_radar.http.routes.stock import (
 )
 from dragon_radar.http.selection import query_date, query_values
 from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.http.serialization import restore_decimal_fields as _restore_decimals
 from dragon_radar.readmodels.analysis_validation import (
     classify_analysis_coverage,
     validate_comparison_projection,
