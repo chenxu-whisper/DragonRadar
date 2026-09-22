@@ -147,9 +147,19 @@ thead .identity { background: #f5f7f9; z-index: 2; }
 .compare-shortcut { position: sticky; bottom: 0; z-index: 9; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px 16px; padding: 10px 20px; background: #f1f6fc; border-top: 1px solid #b8c9e0; }
 .compare-shortcut > span { margin-right: auto; font-size: 13px; color: #243e60; }
 .interval-form { padding: 16px 0; border-block: 1px solid var(--line); margin-bottom: 20px; }
+.interval-form .toolbar { align-items: end; }
+.interval-form .toolbar > label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.interval-form .toolbar select, .interval-form .toolbar input { color: #202b3b; }
 .analysis-context { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-block: 16px; }
 .analysis-context strong { color: #173d71; }
 .analysis-context span { font-size: 13px; }
+.analysis-ranking { min-width: 920px; }
+.segmented { display: inline-flex; margin-bottom: 14px; border: 1px solid #b9c3d0; border-radius: 6px; overflow: hidden; }
+.segmented label { position: relative; min-height: 36px; padding: 7px 14px; cursor: pointer; }
+.segmented label + label { border-left: 1px solid #b9c3d0; }
+.segmented label:has(input:checked) { color: #fff; background: var(--blue); }
+.segmented input { position: absolute; opacity: 0; }
+.security-drawer pre { max-width: 100%; overflow-x: auto; }
 .security-drawer { position: fixed; inset: 0 0 0 auto; width: 400px; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: 0 20px 28px; border: 0; border-left: 1px solid #cbd4df; color: #202b3b; overflow-y: auto; }
 .security-drawer::backdrop { background: rgb(20 30 44 / 32%); }
 body:has(dialog[open]) { overflow: hidden; }
@@ -277,6 +287,8 @@ body:has(dialog[open]) { overflow: hidden; }
   .search-label input { width: 100%; }
   .toolbar { align-items: flex-end; }
   .toolbar label { flex-wrap: wrap; }
+  .interval-form .toolbar > label { flex: 1 1 140px; min-width: 0; }
+  .interval-form .toolbar select, .interval-form .toolbar input { width: 100%; min-width: 0; max-width: none; }
   .pager { justify-content: flex-start; gap: 8px; }
   .pager > span { flex-basis: 100%; }
   .metadata-grid { grid-template-columns: 90px minmax(0, 1fr); padding: 12px; }

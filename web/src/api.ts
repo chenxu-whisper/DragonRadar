@@ -49,7 +49,7 @@ function validateSecurityResponse(data: unknown, id: string): void {
 }
 
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|stock\/[^/?#]+|search)(?:[?#]|$)/i.test(path);
+  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|search)(?:[?#]|$)/i.test(path);
   if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
@@ -87,13 +87,35 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
     if (options.snapshot && (!data || typeof data !== 'object' || !('snapshot_id' in data) || data.snapshot_id !== options.snapshot)) {
       throw new ApiError(409, '响应快照与当前选择不匹配，已丢弃该响应。');
     }
+    const query = new URLSearchParams(path.split('?', 2)[1] ?? '');
+    const analysisPath = path.match(/^\/api\/(rank\/range|compare\/curves)(?:[?#]|$)/);
+    const klinePath = path.match(/^\/api\/stock\/([^/?#]+)\/kline(?:[?#]|$)/);
+    if (analysisPath || klinePath) {
+      const { validateCurvesResponse, validateKlineResponse, validateRankResponse } =
+        await import('./features/analysis/validation');
+      let failure;
+      if (analysisPath?.[1] === 'rank/range') failure = validateRankResponse(data, query);
+      else if (analysisPath) failure = validateCurvesResponse(data, query);
+      else {
+        let requested: string;
+        try { requested = decodeURIComponent(klinePath![1]); }
+        catch { throw new ApiError(400, '证券标识无效，请返回研究列表重新选择。'); }
+        failure = validateKlineResponse(data, requested, query);
+      }
+      if (failure === 'date_mismatch') throw new ApiError(409, '响应日期与当前请求不匹配，已丢弃该响应。');
+      if (failure === 'security_mismatch') throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
+      if (failure) {
+        const name = analysisPath?.[1] === 'rank/range' ? '涨幅排行' :
+          analysisPath ? '比较曲线' : '证券行情';
+        throw new ApiError(502, `${name}响应格式无效，已丢弃该响应。`, 'malformed_response');
+      }
+    }
     if (securityId !== undefined) validateSecurityResponse(data, securityId);
     const resetStockPath = path.match(/^\/api\/stock\/([^/?#]+)\/?(?:[?#]|$)/);
     if (resetStockPath) {
       let requested: string;
       try { requested = decodeURIComponent(resetStockPath[1]); }
       catch { throw new ApiError(400, '证券标识无效，请返回研究列表重新选择。'); }
-      const query = new URLSearchParams(path.split('?', 2)[1] ?? '');
       const { validateResetStockResponse } = await import('./stock-validation');
       const failure = validateResetStockResponse(data, requested, query.get('date'));
       if (failure === 'date_mismatch') throw new ApiError(409, '响应日期与当前请求不匹配，已丢弃该响应。');

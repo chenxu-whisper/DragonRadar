@@ -1,50 +1,32 @@
-import { useEffect, useMemo, useState, type ComponentType } from 'react';
+import { lazy, Suspense, useMemo, type ComponentType } from 'react';
 import { compareDecimal, label } from '../format';
 import { intervalQuery, type ResearchState } from '../state';
 import { useResource } from '../hooks/useResource';
-import type { Envelope, Interval, IntervalItem } from '../types';
+import type { Envelope, Interval, IntervalItem, Snapshot } from '../types';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
+import { IntervalForm } from '../components/IntervalForm';
+import { LazyLoadBoundary } from '../components/LazyLoadBoundary';
+import type { ResetAnalysisProps } from '../features/analysis/ResetAnalysis';
 
-export function IntervalForm({ state, patch }: { state: ResearchState; patch: Patch }) {
-  const [custom, setCustom] = useState(Boolean(state.start || state.end));
-  const [n, setN] = useState(String(state.n));
-  const [start, setStart] = useState(state.start), [end, setEnd] = useState(state.end);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    setCustom(Boolean(state.start || state.end)); setN(String(state.n)); setStart(state.start); setEnd(state.end); setError('');
-  }, [state.n, state.start, state.end]);
-  return <form className="interval-form" noValidate onSubmit={event => {
-    event.preventDefault();
-    const next = { n: n.trim() ? Number(n) : 0, start: custom ? start : '', end: custom ? end : '' };
-    try {
-      if (custom && (!start || !end)) throw new Error('请输入完整的起止日期。');
-      intervalQuery(next);
-      if (patch({ ...next, page: 1 })) setError('');
-    } catch (failure) { setError((failure as Error).message); }
-  }}>
-    <div className="toolbar">
-      <label>区间方式<select value={custom ? 'custom' : 'n'} onChange={e => setCustom(e.target.value === 'custom')}><option value="n">最近交易日间隔</option><option value="custom">自定义起止日期</option></select></label>
-      {custom ? <>
-        <label>起始日期<input type="date" value={start} onChange={e => setStart(e.target.value)} aria-describedby={error ? 'interval-error' : undefined} /></label>
-        <label>结束日期<input type="date" value={end} onChange={e => setEnd(e.target.value)} aria-describedby={error ? 'interval-error' : undefined} /></label>
-      </> : <label>交易日间隔<input type="number" min="1" max="250" step="1" value={n} onChange={e => setN(e.target.value)} aria-describedby="interval-help" aria-invalid={Boolean(error)} /></label>}
-      <button className="primary" type="submit">应用区间</button>
-      <button type="button" onClick={() => {
-        if (patch({ n: 20, start: '', end: '', page: 1 })) {
-          setCustom(false); setN('20'); setStart(''); setEnd(''); setError('');
-        }
-      }}>重置区间</button>
-    </div>
-    <p id="interval-help" className="muted">间隔 20 需要 21 个交易日价格；自定义日期按快照交易日历对齐。样本不足不会自动缩短。</p>
-    {error && <p role="alert" id="interval-error" className="notice error">{error}</p>}
-  </form>;
-}
+const ResetAnalysis = lazy(async () => ({
+  default: (await import('../features/analysis/ResetAnalysis')).ResetAnalysis as ComponentType<ResetAnalysisProps>,
+}));
 
-export function Analysis({ state, patch, refreshToken, open, compare, ReviewActions }: {
+export interface AnalysisProps {
   state: ResearchState; patch: Patch; refreshToken: number;
   open: (id: string, sector: string | undefined, trigger: HTMLElement) => void; compare: (id: string) => void;
+  snapshot?: Snapshot; reset?: boolean;
   ReviewActions?: ComponentType<{ snapshot: string; security: string }>;
-}) {
+}
+
+export function Analysis(props: AnalysisProps) {
+  if (props.reset) return <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载涨幅分析…</p>}>
+    <ResetAnalysis {...props} />
+  </Suspense></LazyLoadBoundary>;
+  return <LegacyAnalysis {...props} />;
+}
+
+function LegacyAnalysis({ state, patch, refreshToken, open, compare, ReviewActions }: AnalysisProps) {
   let query = '', error = '';
   try { query = intervalQuery(state); } catch (failure) { error = (failure as Error).message; }
   const resource = useResource<Envelope<Interval>>(query ? `/api/v1/snapshots/${state.snapshot}/interval?${query}` : null, state.snapshot, refreshToken);

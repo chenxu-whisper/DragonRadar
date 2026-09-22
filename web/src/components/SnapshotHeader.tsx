@@ -32,7 +32,11 @@ export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, re
       units: { currency: item.basis.currency ? [item.basis.currency] : [], price_unit: [], volume_unit: [], amount_unit: [] },
       quality_flags: item.quality_flags, rule_version: item.rule_version, basis: 'published_market',
       manifest: { rule_version: item.rule_version }, provenance: 'contemporaneous',
-      result: { ...item.data, calendar_sessions: [], earliest_date: item.trade_date },
+      result: {
+        ...item.data,
+        calendar_sessions: item.data.calendar_sessions || [],
+        earliest_date: item.data.earliest_date || null,
+      },
     }))
     : [];
   const includeCurrent = snapshot && !options.some(item => item.snapshot_id === snapshot.snapshot_id);

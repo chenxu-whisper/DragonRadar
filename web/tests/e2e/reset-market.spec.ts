@@ -27,6 +27,8 @@ function summary(snapshotId: string, tradeDate: string) {
     supersedes: null,
     published_at: `${tradeDate}T10:05:00Z`,
     security_count: 5,
+    calendar_sessions: [tradeDate],
+    earliest_date: tradeDate,
   });
 }
 

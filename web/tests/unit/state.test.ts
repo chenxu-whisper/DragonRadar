@@ -11,6 +11,11 @@ describe('URL research state', () => {
     expect(parseState(stateSearch(state)).state).toEqual(state);
     expect(state.start).toBe('2024-02-01');
   });
+  it('does not add reset-only analysis parameters to legacy URLs', () => {
+    const search = new URLSearchParams(stateSearch(parseState('').state));
+    expect(search.has('benchmark')).toBe(false);
+    expect(search.has('adj')).toBe(false);
+  });
   it('sanitizes malformed selectors and reports the changes', () => {
     const result = parseState('?view=bad&snapshot=oops&date=2024-02-30&page=-1&page_size=7&n=251&sort=bad');
     expect(result.state).toMatchObject({ view: 'overview', snapshot: '', date: '', page: 1, page_size: 50, n: 20 });

@@ -66,6 +66,24 @@ describe('explicit reset URL state', () => {
     expect(parseState('?view=analysis', false, false, '/stock/TEST001').state.view).toBe('analysis');
   });
 
+  it('defaults and round trips strict benchmark and adjustment parameters', () => {
+    const defaults = parseState('?view=analysis', false, true);
+    expect(defaults.state).toMatchObject({ benchmark: 'B000300', adj: 'raw' });
+
+    const parsed = parseState('?view=analysis&benchmark=B000905&adj=hfq', false, true);
+    expect(parsed.notices).toEqual([]);
+    expect(parsed.state).toMatchObject({ benchmark: 'B000905', adj: 'hfq' });
+    const query = new URLSearchParams(stateSearch(parsed.state, false, true));
+    expect(query.get('benchmark')).toBe('B000905');
+    expect(query.get('adj')).toBe('hfq');
+  });
+
+  it.each(['forward', 'RAW', '', 'null'])('rejects invalid adjustment %s without retaining it', adj => {
+    const parsed = parseState(`?view=analysis&adj=${encodeURIComponent(adj)}`, false, true);
+    expect(parsed.state.adj).toBe('raw');
+    expect(parsed.notices).toHaveLength(1);
+  });
+
   it.each(['/stock/%E0%A4%A', '/stock/%2E%2E', '/stock/' + 'A'.repeat(201)])('rejects invalid standalone ID: %s', path => {
     const parsed = parseState('', false, true, path);
     expect(parsed.state.security).toBe('');

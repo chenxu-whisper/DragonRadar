@@ -3,7 +3,8 @@ import { ArrowLeft, ExternalLink, X } from 'lucide-react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
 import { stateSearch, type ResearchState } from '../state';
-import type { Detail, Envelope } from '../types';
+import { klineRange } from '../features/analysis/query';
+import type { Detail, Envelope, ResetKlineData, ResetStock, Snapshot, WorkbenchEnvelope } from '../types';
 import { Chart } from '../components/Chart';
 import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch } from '../components/Common';
 import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/labels';
@@ -13,34 +14,37 @@ const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const EvidencePanel = resetEnabled
   ? lazy(async () => ({ default: (await import('../features/roles/EvidencePanel')).EvidencePanel }))
   : null;
-interface ResetStock {
-  security_id: string;
-  name: string | null;
-  quote: { last: number | null; change_ratio: number | null; amount: number | null };
-  roles: { role_type: string; evidence_status: string; sector_id: string }[];
-  seal: {
-    first_seal_time: string | null; last_seal_time: string | null;
-    break_count: number | null; seal_amount: number | null; reason?: string | null;
-  };
-  regulation: { active_events: number };
-}
-interface ResetStockEnvelope {
-  snapshot_id: string;
-  trade_date: string;
-  data: ResetStock;
-}
+const displayNumber = (value: number | null) =>
+  value === null ? '—' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value);
+const yesNo = (value: boolean | null) => value === null ? '—' : value ? '是' : '否';
 
-function DetailContent({ state, id, evidenceSector, refreshToken, ReviewActions }: {
-  state: ResearchState; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent;
+function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, ReviewActions }: {
+  state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent;
 }) {
-  const modern = useResource<ResetStockEnvelope>(resetEnabled
+  const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
     ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
+    : null, state.snapshot, refreshToken);
+  const modernData = modern.data?.data;
+  let rawQuery = '';
+  try {
+    if (resetEnabled && snapshot && modernData) {
+      const range = klineRange(state, snapshot.result.calendar_sessions);
+      rawQuery = new URLSearchParams({
+        snapshot_id: state.snapshot,
+        start: range.start,
+        end: range.end,
+        adj: 'raw',
+      }).toString();
+    }
+  } catch { /* The analysis form owns invalid custom-window feedback. */ }
+  const rawKline = useResource<WorkbenchEnvelope<ResetKlineData | null>>(resetEnabled && rawQuery
+    ? `/api/stock/${encodeURIComponent(id)}/kline?${rawQuery}`
     : null, state.snapshot, refreshToken);
   const resource = useResource<Envelope<Detail>>(!resetEnabled
     ? `/api/v1/snapshots/${state.snapshot}/securities/${encodeURIComponent(id)}`
     : null, state.snapshot, refreshToken);
   const data = resource.data?.result;
-  const modernData = modern.data?.data;
+  const rawData = rawKline.data?.data;
   const pricedHistory = data?.history.filter(point => point.close !== null) || [];
   const firstPrice = pricedHistory[0];
   const inconsistentUnits = pricedHistory.some(point =>
@@ -63,9 +67,35 @@ function DetailContent({ state, id, evidenceSector, refreshToken, ReviewActions 
       lineStyle: { color: '#1759ad', width: 2 },
     }],
   }), [data]);
+  const canDrawCandles = rawData?.chart_type === 'candlestick' && rawData.points.length > 0 &&
+    rawData.points.every(point => [point.open, point.high, point.low, point.close]
+      .every(value => typeof value === 'number' && Number.isFinite(value)));
+  const rawOption = useMemo(() => ({
+    tooltip: { trigger: 'axis', renderMode: 'richText' },
+    grid: { left: 52, right: 16, top: 28, bottom: 70 },
+    xAxis: { type: 'category', data: rawData?.points.map(point => point.trade_date) || [] },
+    yAxis: { type: 'value', scale: true },
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }],
+    series: canDrawCandles ? [{
+      type: 'candlestick',
+      name: '未复权价格',
+      data: rawData!.points.map(point => [point.open, point.close, point.low, point.high]),
+      itemStyle: { color: '#b42332', color0: '#087347', borderColor: '#b42332', borderColor0: '#087347' },
+    }] : [{
+      type: 'line',
+      name: '未复权收盘价',
+      connectNulls: false,
+      showSymbol: false,
+      data: rawData?.points.map(point => point.close) || [],
+      lineStyle: { color: '#1759ad', width: 2 },
+    }],
+  }), [canDrawCandles, rawData]);
   return <>
     {resetEnabled
-      ? <ResourceStatus resource={modern} name="证券详情" />
+      ? <>
+        <ResourceStatus resource={modern} name="证券详情" />
+        <ResourceStatus resource={rawKline} name="证券行情" />
+      </>
       : <ResourceStatus resource={resource} name="证券详情" />}
     {modernData && <>
       <div className="detail-heading"><h2>{modernData.name || '名称未知'}</h2><span>{modernData.security_id}</span></div>
@@ -73,15 +103,39 @@ function DetailContent({ state, id, evidenceSector, refreshToken, ReviewActions 
       <dl className="quote">
         <div><dt>最新价</dt><dd>{modernData.quote.last ?? '—'}</dd></div>
         <div><dt>日涨跌幅</dt><dd><Percent value={modernData.quote.change_ratio === null ? null : String(modernData.quote.change_ratio)} /></dd></div>
-        <div><dt>成交额</dt><dd>{modernData.quote.amount ?? '—'}</dd></div>
-        <div><dt>正式监管事件</dt><dd>{modernData.regulation.active_events}</dd></div>
+        <div><dt>成交额</dt><dd>{displayNumber(modernData.quote.amount)}</dd></div>
+        <div><dt>正式监管事件</dt><dd>{modernData.regulation.active_events === null ? '不可用' : modernData.regulation.active_events}</dd></div>
       </dl>
-      <p className="detail-reasons">{modernData.seal.reason ? reasonLabel(modernData.seal.reason) : '封板字段按已发布数据展示'}</p>
+      <p className="detail-reasons">正式监管事件：{modernData.regulation.active_events === null ? '不可用' : modernData.regulation.active_events}
+        {modernData.regulation.reason ? ` · ${reasonLabel(modernData.regulation.reason)}` : ''}</p>
+      <p className="detail-reasons">收盘涨停 {yesNo(modernData.seal.is_limit_up)} · 盘中触及 {yesNo(modernData.seal.touched_limit)}</p>
+      <p className="detail-reasons">首封 {modernData.seal.first_seal_time || '—'} · 末封 {modernData.seal.last_seal_time || '—'} · 开板 {modernData.seal.break_count ?? '—'} · 封单 {displayNumber(modernData.seal.seal_amount)} {modernData.seal.seal_amount_unit ? label(modernData.seal.seal_amount_unit) : '—'} · 连板 {modernData.seal.continuous_boards ?? '—'}
+        {modernData.seal.reason ? ` · ${reasonLabel(modernData.seal.reason)}` : ''}</p>
       <p className="detail-reasons">{modernData.roles.length
         ? modernData.roles.map(role => `${roleLabel(role.role_type)}：${evidenceStatusLabel(role.evidence_status)}`).join('；')
         : '暂无角色证据'}</p>
+      {modernData.role_reason && <p className="detail-reasons">角色状态：{reasonLabel(modernData.role_reason)}</p>}
+      {rawData && <>
+        <p className="muted">未复权价格 · 实际区间 {rawData.adjusted_start} 至 {rawData.adjusted_end} · 缺失处不连线</p>
+        <Chart
+          option={rawOption}
+          description={`${modernData.security_id} ${canDrawCandles ? '历史日线图' : '历史收盘价线图'}，未复权价格，缺失处断开。`}
+        />
+        <details className="evidence"><summary>查看完整行情数据（{rawData.points.length} 个交易日）</summary>
+          <TableScroll label="完整行情数据">
+            <table aria-label="完整行情数据" className="responsive-record-table"><thead><tr>
+              <th>交易日期</th><th>开盘</th><th>最高</th><th>最低</th><th>收盘</th><th>成交量</th><th>成交额</th>
+            </tr></thead><tbody>{rawData.points.map(point => <tr key={point.trade_date}>
+              <th data-label="交易日期">{point.trade_date}</th>
+              <td data-label="开盘">{displayNumber(point.open)}</td><td data-label="最高">{displayNumber(point.high)}</td>
+              <td data-label="最低">{displayNumber(point.low)}</td><td data-label="收盘">{displayNumber(point.close)}</td>
+              <td data-label="成交量">{displayNumber(point.volume)}</td><td data-label="成交额">{displayNumber(point.amount)}</td>
+            </tr>)}</tbody></table>
+          </TableScroll>
+        </details>
+      </>}
       <details className="evidence"><summary>证券原始证据</summary>
-        <pre>{JSON.stringify({ roles: modernData.roles, seal: modernData.seal }, null, 2)}</pre>
+        <pre>{JSON.stringify({ roles: modernData.roles, role_reason: modernData.role_reason, seal: modernData.seal, regulation: modernData.regulation }, null, 2)}</pre>
       </details>
     </>}
     {data && <>
@@ -123,9 +177,9 @@ function DetailContent({ state, id, evidenceSector, refreshToken, ReviewActions 
 }
 export interface SecurityDrawerProps {
   state: ResearchState; id: string; sector?: string; trigger: HTMLElement; close: () => void; patch: Patch; refreshToken: number;
-  allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
+  snapshot?: Snapshot; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
 }
-export function SecurityDrawer({ state, id, sector, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityDrawerProps) {
+export function SecurityDrawer({ state, snapshot, id, sector, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityDrawerProps) {
   const dialog = useRef<HTMLDialogElement>(null), closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     dialog.current?.showModal(); closeButton.current?.focus();
@@ -140,17 +194,17 @@ export function SecurityDrawer({ state, id, sector, trigger, close, patch, refre
   return <dialog ref={dialog} className="security-drawer" aria-labelledby="drawer-title" onCancel={e => { e.preventDefault(); close(); }}>
     <div className="drawer-toolbar"><h2 id="drawer-title">证券详情 · 只读</h2><button ref={closeButton} onClick={close} aria-label="关闭详情" title="关闭详情（退出键）"><X size={20} /></button></div>
     <a className="fullpage-link" href={stateSearch(next, allowPrivate, resetEnabled)} onClick={e => { if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(next)) close(); } }}><ExternalLink size={16} />打开完整详情</a>
-    <DetailContent state={state} id={id} evidenceSector={sector} refreshToken={refreshToken} ReviewActions={ReviewActions} />
+    <DetailContent state={state} snapshot={snapshot} id={id} evidenceSector={sector} refreshToken={refreshToken} ReviewActions={ReviewActions} />
   </dialog>;
 }
 export interface SecurityPageProps {
-  state: ResearchState; patch: Patch; refreshToken: number; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
+  state: ResearchState; snapshot?: Snapshot; patch: Patch; refreshToken: number; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
 }
-export function SecurityPage({ state, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityPageProps) {
+export function SecurityPage({ state, snapshot, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityPageProps) {
   const back = { ...state, view: state.return_view, security: '' };
   return <>
     <a className="back-link" href={stateSearch(back, allowPrivate, resetEnabled)} onClick={event => { if (shouldHandleSpaClick(event)) { event.preventDefault(); patch(back); } }}><ArrowLeft size={18} />返回研究列表</a>
     <h1>证券详情</h1>
-    {state.security ? <DetailContent state={state} id={state.security} evidenceSector={state.sector || undefined} refreshToken={refreshToken} ReviewActions={ReviewActions} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
+    {state.security ? <DetailContent state={state} snapshot={snapshot} id={state.security} evidenceSector={state.sector || undefined} refreshToken={refreshToken} ReviewActions={ReviewActions} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
   </>;
 }

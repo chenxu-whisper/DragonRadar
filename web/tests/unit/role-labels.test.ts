@@ -38,6 +38,15 @@ describe('role presentation labels', () => {
     expect(evidenceStatusLabel('future_status')).toBe('未识别状态');
     expect(reasonLabel('future_reason_code')).toBe('未识别状态');
   });
+
+  it.each([
+    ['role_disabled', '角色域未发布'],
+    ['role_partial', '部分可用'],
+    ['seal_event_missing', '无已发布封板事件'],
+    ['regulation_not_implemented', '监管数据不可用'],
+  ])('labels reset stock reason %s', (reason, expected) => {
+    expect(reasonLabel(reason)).toBe(expected);
+  });
 });
 
 describe('all-topic role status aggregation', () => {

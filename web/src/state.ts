@@ -1,11 +1,13 @@
 import { ROLE_NAMES, type RoleName } from './features/roles/types';
 
 export type View = 'overview' | 'analysis' | 'stock' | 'review' | 'news' | 'leaders' | 'regulation';
-export type Sort = 'security_id' | 'name' | 'close' | 'change' | 'amount' | 'interval_return' | 'maximum_drawdown';
+export type Sort = 'security_id' | 'name' | 'close' | 'change' | 'amount' | 'interval_return' | 'excess_return' | 'maximum_drawdown' | 'amount_change';
+export type Adjustment = 'raw' | 'qfq' | 'hfq';
 export interface ResearchState {
   view: View; snapshot: string; date: string; q: string; sort: Sort;
   order: 'asc' | 'desc'; page: number; page_size: number; n: number;
   start: string; end: string; compare: string[]; security: string;
+  benchmark: string; adj: Adjustment;
   return_view: 'overview' | 'analysis' | 'leaders'; note: string;
   market_filter: '' | 'up' | 'down' | 'flat' | 'limit_up' | 'limit_down';
   sector: string; role: RoleName;
@@ -62,10 +64,12 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   }
   let note = allowPrivate ? p.get('note') || '' : '';
   if (note && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(note)) { invalid(); note = ''; }
-  let sort = choice<Sort>('sort', ['security_id', 'name', 'close', 'change', 'amount', 'interval_return', 'maximum_drawdown'], 'security_id');
-  if (view === 'overview' && ['interval_return', 'maximum_drawdown'].includes(sort)) { invalid(); sort = 'security_id'; }
+  let sort = choice<Sort>('sort', ['security_id', 'name', 'close', 'change', 'amount', 'interval_return', 'excess_return', 'maximum_drawdown', 'amount_change'], 'security_id');
+  if (view === 'overview' && ['interval_return', 'excess_return', 'maximum_drawdown', 'amount_change'].includes(sort)) { invalid(); sort = 'security_id'; }
   const q = p.get('q') || '';
   if (q.length > 100) invalid();
+  let benchmark = p.get('benchmark') || 'B000300';
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(benchmark)) { invalid(); benchmark = 'B000300'; }
   let security = pathSecurity ?? (p.get('security') || '');
   if (security.length > 200 || security === '.' || security === '..') { invalid(); security = ''; }
   let sector = p.get('sector') || '';
@@ -75,6 +79,7 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
     order: choice('order', ['asc', 'desc'], 'asc'), page: integer('page', 1, 100000),
     page_size: [20, 50, 100].includes(page_size) ? page_size : 50,
     n: integer('n', 20, 250), start: date('start'), end: date('end'), compare, security,
+    benchmark, adj: choice<Adjustment>('adj', ['raw', 'qfq', 'hfq'], 'raw'),
     return_view: choice('return_view', reset ? ['overview', 'analysis', 'leaders'] : ['overview', 'analysis'], 'overview'),
     market_filter: choice('market_filter', ['', 'up', 'down', 'flat', 'limit_up', 'limit_down'], ''),
     sector, role: choice('role', ROLE_NAMES, 'trend_leader'),
@@ -85,7 +90,11 @@ export function stateSearch(state: ResearchState, allowPrivate = false, reset = 
   const allowed = reset || ['overview', 'analysis', 'stock'].includes(state.view) || (allowPrivate && state.view === 'review');
   const normalized = { ...state, view: allowed ? state.view : 'overview', note: allowPrivate ? state.note : '' };
   const p = new URLSearchParams();
-  const keys: (keyof ResearchState)[] = ['view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end', 'compare', 'security', 'return_view', 'note', 'market_filter', 'sector', 'role'];
+  const keys: (keyof ResearchState)[] = [
+    'view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end',
+    ...(reset ? ['benchmark', 'adj'] as const : []),
+    'compare', 'security', 'return_view', 'note', 'market_filter', 'sector', 'role',
+  ];
   for (const key of keys) {
     const value = normalized[key];
     if (key === 'compare') { if (normalized.compare.length) p.set(key, normalized.compare.join(',')); }

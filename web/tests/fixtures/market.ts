@@ -50,6 +50,8 @@ export function resetSummary(value: Snapshot = snapshot) {
       supersedes: value.result.supersedes,
       published_at: value.result.published_at,
       security_count: value.result.security_count,
+      calendar_sessions: value.result.calendar_sessions,
+      earliest_date: value.result.earliest_date,
     },
   };
 }
@@ -159,10 +161,12 @@ export async function mockMarket(page: Page, state: MockState = {}) {
         quote: { last: Number(security.close), change_ratio: Number(security.change), amount: Number(security.amount) },
         roles: [],
         seal: {
+          is_limit_up: null, touched_limit: null,
           first_seal_time: null, last_seal_time: null, break_count: null, seal_amount: null,
+          seal_amount_unit: null, continuous_boards: null,
           reason: 'intraday_seal_fields_unavailable',
         },
-        regulation: { active_events: 0 },
+        regulation: { active_events: 0, reason: null },
       },
     } });
   });
@@ -367,10 +371,12 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
       quote: { last: Number(security.close), change_ratio: Number(security.change), amount: Number(security.amount) },
       roles: [{ role_type: 'trend_leader', evidence_status: 'candidate', sector_id: 'SEC001' }],
       seal: {
+        is_limit_up: null, touched_limit: null,
         first_seal_time: null, last_seal_time: null, break_count: null, seal_amount: null,
+        seal_amount_unit: null, continuous_boards: null,
         reason: 'intraday_seal_fields_unavailable',
       },
-      regulation: { active_events: 0 },
+      regulation: { active_events: 0, reason: null },
     }) });
   });
 }

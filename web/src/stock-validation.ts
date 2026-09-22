@@ -17,6 +17,10 @@ function nullableNonnegativeInteger(value: unknown): boolean {
   return value === null || (Number.isSafeInteger(value) && (value as number) >= 0);
 }
 
+function nullableBoolean(value: unknown): boolean {
+  return value === null || typeof value === 'boolean';
+}
+
 export function validateResetStockResponse(
   data: unknown,
   id: string,
@@ -45,6 +49,10 @@ export function validateResetStockResponse(
   const quote = payload.quote;
   const seal = payload.seal;
   const regulation = payload.regulation;
+  const sealFields = [
+    'is_limit_up', 'touched_limit', 'first_seal_time', 'last_seal_time',
+    'break_count', 'seal_amount', 'seal_amount_unit', 'continuous_boards',
+  ];
   if (
     typeof payload.security_id !== 'string' ||
     (payload.name !== null && typeof payload.name !== 'string') ||
@@ -54,12 +62,18 @@ export function validateResetStockResponse(
       typeof item.role_type === 'string' &&
       typeof item.evidence_status === 'string' &&
       typeof item.sector_id === 'string') ||
+    (payload.role_reason !== undefined && typeof payload.role_reason !== 'string') ||
+    !nullableBoolean(seal.is_limit_up) ||
+    !nullableBoolean(seal.touched_limit) ||
     !nullableStrings(seal, ['first_seal_time', 'last_seal_time']) ||
     !nullableNonnegativeInteger(seal.break_count) ||
     !nullableFiniteNumber(seal.seal_amount) ||
-    (seal.reason !== undefined && seal.reason !== null && typeof seal.reason !== 'string') ||
-    !Number.isSafeInteger(regulation.active_events) ||
-    (regulation.active_events as number) < 0
+    (seal.seal_amount_unit !== null && typeof seal.seal_amount_unit !== 'string') ||
+    !nullableNonnegativeInteger(seal.continuous_boards) ||
+    (seal.reason !== null && typeof seal.reason !== 'string') ||
+    (typeof seal.reason === 'string' && sealFields.some(key => seal[key] !== null)) ||
+    !nullableNonnegativeInteger(regulation.active_events) ||
+    (regulation.reason !== null && typeof regulation.reason !== 'string')
   ) return 'malformed';
   return payload.security_id === id ? null : 'security_mismatch';
 }

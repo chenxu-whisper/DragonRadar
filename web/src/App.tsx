@@ -6,12 +6,13 @@ import { parseState, stateSearch, toggleCompare, type ResearchState } from './st
 import type { ResetSnapshotData, Snapshot, WorkbenchEnvelope } from './types';
 import { ResourceStatus, shouldHandleSpaClick, SnapshotEvidence } from './components/Common';
 import { SnapshotHeader } from './components/SnapshotHeader';
-import { Comparison } from './components/Comparison';
 import { CompareMembership } from './components/CompareMembership';
 import { LazyLoadBoundary } from './components/LazyLoadBoundary';
+import type { ComparisonProps } from './components/Comparison';
 import type { Patch } from './components/Common';
+import { IntervalForm } from './components/IntervalForm';
 import { Overview } from './pages/Overview';
-import { Analysis, IntervalForm } from './pages/Analysis';
+import { Analysis } from './pages/Analysis';
 import { News } from './pages/News';
 import { Regulation } from './pages/Regulation';
 import { verifiedSnapshotTradeDate } from './features/local-review/note-command';
@@ -31,7 +32,11 @@ function legacySnapshot(value: ResetSnapshot): Snapshot {
     units: { currency: value.basis.currency ? [value.basis.currency] : [], price_unit: [], volume_unit: [], amount_unit: [] },
     quality_flags: value.quality_flags, rule_version: value.rule_version, basis: 'published_market',
     manifest: { rule_version: value.rule_version }, provenance: 'contemporaneous',
-    result: { ...value.data, calendar_sessions: [], earliest_date: value.trade_date },
+    result: {
+      ...value.data,
+      calendar_sessions: value.data.calendar_sessions || [],
+      earliest_date: value.data.earliest_date || null,
+    },
   };
 }
 const LocalReview = import.meta.env.VITE_RESET_WORKBENCH === '1'
@@ -48,6 +53,9 @@ const SecurityDrawer = lazy(async () => ({
 }));
 const SecurityPage = lazy(async () => ({
   default: (await import('./pages/SecurityDetail')).SecurityPage as ComponentType<SecurityPageProps>,
+}));
+const Comparison = lazy(async () => ({
+  default: (await import('./components/Comparison')).Comparison as ComponentType<ComparisonProps>,
 }));
 
 function ResetReviewActions(props: { snapshot: string; security: string }) {
@@ -198,22 +206,24 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             : <ResourceStatus resource={summary} name="快照" />}
           {!state.snapshot && availableSnapshots.length === 0 && !list.loading && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
           {snapshot && <>
-            <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />
+            {!resetEnabled && <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />}
             {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled} />}
-            {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} />}
+            {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} snapshot={snapshot} reset={resetEnabled} ReviewActions={ActiveReviewActions} />}
             {Leaders && state.view === 'leaders' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载梯队…</p>}>
               <Leaders state={state} patch={patch} open={open} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}
             {state.view === 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载证券详情…</p>}>
-              <SecurityPage state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
+              <SecurityPage state={state} snapshot={snapshot} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}
             {['overview', 'analysis'].includes(state.view) && <>
-              {state.view === 'overview' && state.compare.length > 0 && <IntervalForm state={state} patch={patch} />}
-              <Comparison state={state} patch={patch} refreshToken={refreshToken} />
+              {state.view === 'overview' && state.compare.length > 0 && <IntervalForm state={state} patch={patch} reset={resetEnabled} />}
+              <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载比较…</p>}>
+                <Comparison state={state} patch={patch} refreshToken={refreshToken} snapshot={snapshot} reset={resetEnabled} />
+              </Suspense></LazyLoadBoundary>
             </>}
             <SnapshotEvidence snapshot={snapshot} />
             {drawer && drawer.context === context && state.view !== 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载证券详情…</p>}>
-              <SecurityDrawer state={state} id={drawer.id} sector={drawer.sector} trigger={drawer.trigger} close={() => setDrawer(null)}
+              <SecurityDrawer state={state} snapshot={snapshot} id={drawer.id} sector={drawer.sector} trigger={drawer.trigger} close={() => setDrawer(null)}
                 patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}
           </>}
