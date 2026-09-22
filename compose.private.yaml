@@ -1,4 +1,15 @@
 services:
+  analysis-worker:
+    build: .
+    command: ["analysis-worker", "--worker-id", "analysis-worker-1"]
+    environment:
+      DRAGON_DATABASE_URL: postgresql+psycopg://dragon_radar:${DRAGON_DB_PASSWORD:?Set a strong database password}@db:5432/dragon_radar
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+    restart: unless-stopped
+
   api:
     command: ["serve-owner", "--host", "0.0.0.0", "--port", "8000", "--origin", "https://localhost:${DRAGON_PRIVATE_PORT:-8030}"]
     environment:

@@ -2,9 +2,11 @@
 
 import argparse
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
+from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
 from dragon_radar.owner.files import output_path, secure_output
 from dragon_radar.owner.repository import (
     DEFAULT_ORIGIN,
@@ -12,9 +14,11 @@ from dragon_radar.owner.repository import (
     OwnerRepository,
 )
 from dragon_radar.owner.security import validate_origin
-from dragon_radar.storage.repository import Repository
+from dragon_radar.publication.repository import PublicationRepository
+from dragon_radar.storage.repository import Repository, _identifier
 
 COMMANDS = {
+    "analysis-worker",
     "owner-export",
     "owner-init",
     "owner-pair",
@@ -23,7 +27,59 @@ COMMANDS = {
 }
 
 
+def _worker_identifier(value: str) -> str:
+    try:
+        return _identifier(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid worker identifier") from None
+
+
+def _poll_seconds(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("poll seconds must be a number") from None
+    if not 0.1 <= parsed <= 60:
+        raise argparse.ArgumentTypeError("poll seconds must be between 0.1 and 60")
+    return parsed
+
+
+def _bounded_integer(value: str, *, minimum: int, maximum: int, label: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{label} must be an integer") from None
+    if not minimum <= parsed <= maximum:
+        raise argparse.ArgumentTypeError(
+            f"{label} must be between {minimum} and {maximum}"
+        )
+    return parsed
+
+
 def add_commands(commands: argparse._SubParsersAction) -> None:
+    worker = commands.add_parser(
+        "analysis-worker", help="Run queued custom analysis jobs"
+    )
+    worker.add_argument(
+        "--worker-id",
+        type=_worker_identifier,
+        default="analysis-worker-1",
+    )
+    worker.add_argument("--poll-seconds", type=_poll_seconds, default=1.0)
+    worker.add_argument(
+        "--lease-seconds",
+        type=lambda value: _bounded_integer(
+            value, minimum=1, maximum=3600, label="lease seconds"
+        ),
+        default=30,
+    )
+    worker.add_argument(
+        "--max-attempts",
+        type=lambda value: _bounded_integer(
+            value, minimum=1, maximum=10, label="max attempts"
+        ),
+        default=3,
+    )
     commands.add_parser("owner-init", help="Initialize the local owner explicitly")
     commands.add_parser(
         "owner-revoke", help="Revoke all owner sessions and pairing codes"
@@ -87,6 +143,16 @@ def issue_pairing_file(
 
 def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
     owners = OwnerRepository(repository.database)
+    if args.command == "analysis-worker":
+        publications = PublicationRepository(repository.database, repository)
+        jobs = AnalysisJobRepository(repository.database, owners, publications)
+        AnalysisJobWorker(
+            jobs,
+            worker_id=args.worker_id,
+            lease_for=timedelta(seconds=args.lease_seconds),
+            max_attempts=args.max_attempts,
+        ).run_forever(poll_seconds=args.poll_seconds)
+        return None
     if args.command == "owner-init":
         return {"owner_id": str(owners.initialize())}
     if args.command == "owner-export":

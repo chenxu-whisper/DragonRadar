@@ -1,11 +1,15 @@
 """Versioned owner-only analysis jobs on real PostgreSQL."""
 
+import argparse
 import hashlib
 import json
+import os
 import secrets
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -120,6 +124,122 @@ def test_analysis_jobs_package_exports_http_and_repository_surface():
     assert AnalysisJobWorker
     assert install_analysis_job_routes
     assert materialize_custom_analysis
+
+
+def test_analysis_worker_command_parser_accepts_bounded_options():
+    from dragon_radar.owner.cli import add_commands
+
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    add_commands(commands)
+
+    defaults = parser.parse_args(["analysis-worker"])
+    configured = parser.parse_args(
+        [
+            "analysis-worker",
+            "--worker-id",
+            "worker.prod:1",
+            "--poll-seconds",
+            "0.1",
+            "--lease-seconds",
+            "3600",
+            "--max-attempts",
+            "10",
+        ]
+    )
+
+    assert defaults.worker_id == "analysis-worker-1"
+    assert 0.1 <= defaults.poll_seconds <= 60
+    assert 1 <= defaults.lease_seconds <= 3600
+    assert 1 <= defaults.max_attempts <= 10
+    assert vars(configured) == {
+        "command": "analysis-worker",
+        "worker_id": "worker.prod:1",
+        "poll_seconds": 0.1,
+        "lease_seconds": 3600,
+        "max_attempts": 10,
+    }
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    (
+        ("--worker-id", "not valid"),
+        ("--poll-seconds", "0.09"),
+        ("--poll-seconds", "60.1"),
+        ("--lease-seconds", "0"),
+        ("--lease-seconds", "3601"),
+        ("--max-attempts", "0"),
+        ("--max-attempts", "11"),
+    ),
+)
+def test_analysis_worker_command_parser_rejects_invalid_options(option, value, capsys):
+    from dragon_radar.owner.cli import add_commands
+
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    add_commands(commands)
+
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(["analysis-worker", option, value])
+
+    assert caught.value.code == 2
+    assert option in capsys.readouterr().err
+
+
+def test_analysis_worker_command_constructs_dependencies_and_runs(monkeypatch):
+    from dragon_radar.owner import cli as owner_cli
+
+    database = object()
+    market = SimpleNamespace(database=database)
+    calls = []
+
+    class FakeOwners:
+        def __init__(self, actual_database):
+            assert actual_database is database
+            calls.append(("owners",))
+
+    class FakePublications:
+        def __init__(self, actual_database, actual_market):
+            assert actual_database is database
+            assert actual_market is market
+            calls.append(("publications",))
+
+    class FakeJobs:
+        def __init__(self, actual_database, owners, publications):
+            assert actual_database is database
+            assert isinstance(owners, FakeOwners)
+            assert isinstance(publications, FakePublications)
+            calls.append(("jobs",))
+
+    class FakeWorker:
+        def __init__(self, jobs, *, worker_id, lease_for, max_attempts):
+            assert isinstance(jobs, FakeJobs)
+            calls.append(("worker", worker_id, lease_for.total_seconds(), max_attempts))
+
+        def run_forever(self, *, poll_seconds):
+            calls.append(("run", poll_seconds))
+
+    monkeypatch.setattr(owner_cli, "OwnerRepository", FakeOwners)
+    monkeypatch.setattr(owner_cli, "PublicationRepository", FakePublications)
+    monkeypatch.setattr(owner_cli, "AnalysisJobRepository", FakeJobs)
+    monkeypatch.setattr(owner_cli, "AnalysisJobWorker", FakeWorker)
+    args = SimpleNamespace(
+        command="analysis-worker",
+        worker_id="worker-7",
+        poll_seconds=2.5,
+        lease_seconds=45,
+        max_attempts=4,
+    )
+
+    assert owner_cli.execute(args, market) is None
+    assert calls == [
+        ("owners",),
+        ("publications",),
+        ("jobs",),
+        ("worker", "worker-7", 45, 4),
+        ("run", 2.5),
+    ]
 
 
 def test_0007c_migration_creates_analysis_schema_and_readiness(database):
@@ -838,21 +958,121 @@ class _WorkerRepository:
         self.succeed_error = succeed_error
         self.fail_error = fail_error
         self.fail_calls = 0
+        self.claim_calls = []
 
-    def claim(self, worker_id, *, lease_for):
+    def claim(self, worker_id, *, lease_for, max_attempts):
+        self.claim_calls.append((worker_id, lease_for, max_attempts))
         return self.lease
 
     def load_input(self, lease):
         return object()
 
     def succeed(self, lease, result):
-        raise self.succeed_error
+        if self.succeed_error is not None:
+            raise self.succeed_error
+        return result
 
     def fail(self, lease, failure):
         self.fail_calls += 1
         if self.fail_error is not None:
             raise self.fail_error
         return failure
+
+
+def test_worker_run_once_forwards_claim_policy():
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    repository = _WorkerRepository()
+    worker = AnalysisJobWorker(
+        repository,
+        worker_id="policy-worker",
+        lease_for=timedelta(seconds=45),
+        max_attempts=4,
+        compute=lambda snapshot, command: {"ok": True},
+    )
+
+    worker.run_once()
+
+    assert repository.claim_calls == [("policy-worker", timedelta(seconds=45), 4)]
+
+
+def test_worker_run_forever_only_sleeps_when_idle(monkeypatch):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    worker = AnalysisJobWorker(_WorkerRepository(), worker_id="loop-worker")
+    results = iter((object(), None, object()))
+    sleeps = []
+    monkeypatch.setattr(worker, "run_once", lambda: next(results))
+
+    worker.run_forever(
+        poll_seconds=0.25,
+        sleep=sleeps.append,
+        max_iterations=3,
+    )
+
+    assert sleeps == [0.25]
+
+
+def test_worker_run_forever_honors_stop_without_polling(monkeypatch):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    worker = AnalysisJobWorker(_WorkerRepository(), worker_id="stop-worker")
+    calls = []
+    monkeypatch.setattr(worker, "run_once", lambda: calls.append("run"))
+
+    worker.run_forever(stop=lambda: True)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "interrupt_at",
+    ("run", "sleep"),
+)
+def test_worker_run_forever_returns_cleanly_on_keyboard_interrupt(
+    monkeypatch, interrupt_at
+):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    worker = AnalysisJobWorker(_WorkerRepository(), worker_id="interrupt-worker")
+
+    def interrupt(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        worker,
+        "run_once",
+        interrupt if interrupt_at == "run" else lambda: None,
+    )
+
+    worker.run_forever(
+        sleep=interrupt if interrupt_at == "sleep" else lambda seconds: None,
+    )
+
+
+@pytest.mark.parametrize("error_kind", ("database", "conflict"))
+def test_worker_run_forever_propagates_database_and_conflict_errors(
+    monkeypatch, error_kind
+):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.storage.repository import Conflict
+
+    error = (
+        RuntimeError("private database details")
+        if error_kind == "database"
+        else Conflict("private lease details")
+    )
+    worker = AnalysisJobWorker(_WorkerRepository(), worker_id="error-worker")
+
+    def fail():
+        raise error
+
+    monkeypatch.setattr(worker, "run_once", fail)
+
+    with pytest.raises(type(error)) as caught:
+        worker.run_forever()
+
+    assert caught.value is error
 
 
 @pytest.mark.parametrize(
@@ -1636,6 +1856,42 @@ def test_readonly_analysis_repository_fails_closed_for_owner_methods(job_setup):
         )
     with pytest.raises(Forbidden):
         readonly.get(session.token, uuid4())
+
+
+def test_private_compose_defines_isolated_analysis_worker():
+    root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["DRAGON_DB_PASSWORD"] = "compose-validation-only"
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(root / "compose.yaml"),
+            "-f",
+            str(root / "compose.private.yaml"),
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    worker = json.loads(result.stdout)["services"]["analysis-worker"]
+
+    assert worker["command"] == [
+        "analysis-worker",
+        "--worker-id",
+        "analysis-worker-1",
+    ]
+    assert worker["restart"] == "unless-stopped"
+    assert worker["depends_on"]["db"]["condition"] == "service_healthy"
+    assert set(worker["networks"]) == {"backend"}
+    assert "ports" not in worker
 
 
 @pytest.mark.anyio

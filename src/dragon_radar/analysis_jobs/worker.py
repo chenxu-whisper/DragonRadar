@@ -1,5 +1,6 @@
 """Lease-based execution of custom analysis against published inputs."""
 
+import time
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -133,6 +134,7 @@ class AnalysisJobWorker:
         *,
         worker_id: str,
         lease_for: timedelta = timedelta(seconds=30),
+        max_attempts: int = 3,
         compute: Callable[
             [PublishedSnapshot, AnalysisJobCommand], dict[str, Any]
         ] = materialize_custom_analysis,
@@ -140,10 +142,15 @@ class AnalysisJobWorker:
         self.repository = repository
         self.worker_id = worker_id
         self.lease_for = lease_for
+        self.max_attempts = max_attempts
         self.compute = compute
 
     def run_once(self) -> AnalysisJobRecord | None:
-        lease = self.repository.claim(self.worker_id, lease_for=self.lease_for)
+        lease = self.repository.claim(
+            self.worker_id,
+            lease_for=self.lease_for,
+            max_attempts=self.max_attempts,
+        )
         if lease is None:
             return None
         try:
@@ -162,6 +169,26 @@ class AnalysisJobWorker:
                 },
             )
         return self.repository.succeed(lease, result)
+
+    def run_forever(
+        self,
+        *,
+        poll_seconds: float = 1.0,
+        sleep: Callable[[float], object] = time.sleep,
+        stop: Callable[[], bool] = lambda: False,
+        max_iterations: int | None = None,
+    ) -> None:
+        iterations = 0
+        try:
+            while not stop():
+                if max_iterations is not None and iterations >= max_iterations:
+                    return
+                completed = self.run_once()
+                iterations += 1
+                if completed is None:
+                    sleep(poll_seconds)
+        except KeyboardInterrupt:
+            return
 
 
 __all__ = ["AnalysisJobWorker", "materialize_custom_analysis"]
