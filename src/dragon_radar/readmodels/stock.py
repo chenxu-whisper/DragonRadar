@@ -3,9 +3,9 @@
 from datetime import date
 from typing import Any
 
-from dragon_radar.analytics.metrics import _index, _observation, interval_return
-from dragon_radar.domain.models import DailyBar, MarketBatch
-from dragon_radar.domain.quality import state_at
+from dragon_radar.analytics.metrics import interval_return
+from dragon_radar.domain.models import MarketBatch
+from dragon_radar.readmodels.projection import MarketProjection
 
 STOCK_SCHEMA = "dragon-radar.stocks"
 STOCK_SCHEMA_VERSION = 1
@@ -13,13 +13,12 @@ STOCK_RULE_VERSION = "stocks-v1-raw"
 
 
 def _history_point(
-    batch: MarketBatch,
-    index: dict[tuple[str, date], list[DailyBar]],
+    projection: MarketProjection,
     security_id: str,
     day: date,
 ) -> dict[str, Any]:
-    state = state_at(batch, security_id, day)
-    observation, reasons = _observation(batch, index, security_id, day)
+    state = projection.state(security_id, day)
+    observation, reasons = projection.observation(security_id, day)
     return {
         "trade_date": day.isoformat(),
         "open": observation.open if observation is not None else None,
@@ -34,26 +33,38 @@ def _history_point(
 
 
 def _quote(
-    batch: MarketBatch,
-    index: dict[tuple[str, date], list[DailyBar]],
+    projection: MarketProjection,
     security_id: str,
 ) -> dict[str, Any]:
-    state = state_at(batch, security_id, batch.trade_date)
-    current, reasons = _observation(
-        batch, index, security_id, batch.trade_date
+    batch = projection.batch
+    state = projection.state(security_id, batch.trade_date)
+    current, observation_reasons = projection.observation(
+        security_id,
+        batch.trade_date,
     )
+    reasons = set(observation_reasons)
     previous_close = current.previous_close if current is not None else None
     if current is not None and previous_close is None:
         sessions = batch.calendar.sessions
         position = sessions.index(batch.trade_date)
         if position:
-            previous, previous_reasons = _observation(
-                batch, index, security_id, sessions[position - 1]
+            previous, previous_reasons = projection.observation(
+                security_id,
+                sessions[position - 1],
             )
-            if previous is not None and not previous_reasons:
+            reasons.update(previous_reasons)
+            if previous is not None and (
+                previous.currency,
+                previous.price_unit,
+            ) != (
+                current.currency,
+                current.price_unit,
+            ):
+                reasons.add("unit_mismatch")
+            elif previous is not None:
                 previous_close = previous.close
     change = None
-    if current is not None and previous_close is not None:
+    if current is not None and previous_close is not None and not reasons:
         change = interval_return((previous_close, current.close))
     return {
         "security_id": security_id,
@@ -66,26 +77,24 @@ def _quote(
         "volume": current.volume if current is not None else None,
         "amount": current.amount if current is not None else None,
         "suspended": state.suspended if state is not None else None,
-        "reasons": list(reasons),
+        "reasons": sorted(reasons),
     }
 
 
 def materialize_stocks(batch: MarketBatch) -> dict[str, Any]:
     """Build raw quotes and supplied history without synthesizing OHLC values."""
-    index = _index(batch)
+    projection = MarketProjection(batch)
     sessions = tuple(day for day in batch.calendar.sessions if day <= batch.trade_date)
     stocks = {}
     for security_id in dict.fromkeys(batch.expected_security_ids):
-        history = [
-            _history_point(batch, index, security_id, day) for day in sessions
-        ]
+        history = [_history_point(projection, security_id, day) for day in sessions]
         observations = [point for point in history if point["close"] is not None]
         has_complete_ohlc = bool(observations) and all(
             all(point[field] is not None for field in ("open", "high", "low"))
             for point in observations
         )
         stocks[security_id] = {
-            "quote": _quote(batch, index, security_id),
+            "quote": _quote(projection, security_id),
             "history": history,
             "chart_type": "candlestick" if has_complete_ohlc else "line",
             "price_basis": "raw_close",

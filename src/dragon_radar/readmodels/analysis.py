@@ -10,8 +10,6 @@ from dragon_radar.analytics.calendar import TradingCalendar
 from dragon_radar.analytics.metrics import (
     _batch_reasons,
     _decimal_context,
-    _index,
-    _observation,
     drawdown_curve,
     excess_return,
     interval_return,
@@ -19,21 +17,20 @@ from dragon_radar.analytics.metrics import (
     normalized_curve,
 )
 from dragon_radar.domain.models import DailyBar, MarketBatch
-from dragon_radar.domain.quality import state_at
+from dragon_radar.readmodels.projection import MarketProjection
 from dragon_radar.topics.models import TopicBatch
 
 ANALYSIS_SCHEMA = "dragon-radar.analysis"
 ANALYSIS_SCHEMA_VERSION = 1
 ANALYSIS_RULE_VERSION = "analysis-v1-decimal34"
 Adjustment = Literal["raw", "adjusted"]
-BarIndex = dict[tuple[str, date], list[DailyBar]]
 
 
 def _topic_memberships(
     batch: MarketBatch, topic_batch: TopicBatch | None
-) -> dict[str, list[dict[str, str]]]:
+) -> tuple[dict[str, list[dict[str, str]]], tuple[str, ...]]:
     if topic_batch is None:
-        return {}
+        return {}, ()
     cutoff = min(batch.as_of, topic_batch.as_of)
     definitions = {
         topic.topic_id: topic
@@ -43,23 +40,43 @@ def _topic_memberships(
         and (topic.effective_to is None or batch.trade_date < topic.effective_to)
     }
     memberships: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for membership in topic_batch.memberships:
-        topic = definitions.get(membership.topic_id)
-        if (
-            topic is not None
+    coverage_unavailable = False
+    for topic_id, topic in definitions.items():
+        visible_members = {
+            membership.security_id
+            for membership in topic_batch.memberships
+            if membership.topic_id == topic_id
             and membership.available_at <= cutoff
             and membership.effective_from <= batch.trade_date
             and (
                 membership.effective_to is None
                 or batch.trade_date < membership.effective_to
             )
-        ):
-            memberships[membership.security_id].append(
+        }
+        cells = [
+            cell
+            for cell in topic_batch.coverage_cells
+            if cell.topic_id == topic_id
+            and cell.trade_date == batch.trade_date
+            and cell.complete_as_of <= cutoff
+        ]
+        coverage_ready = (
+            len(cells) == 1
+            and cells[0].status == "complete"
+            and cells[0].received_member_count == cells[0].expected_member_count
+            and len(visible_members) == cells[0].received_member_count
+        )
+        if not coverage_ready:
+            coverage_unavailable = True
+            continue
+        for security_id in visible_members:
+            memberships[security_id].append(
                 {"topic_id": topic.topic_id, "name": topic.name}
             )
     for values in memberships.values():
         values.sort(key=lambda item: item["topic_id"])
-    return dict(memberships)
+    reasons = ("topic_coverage_unavailable",) if coverage_unavailable else ()
+    return dict(memberships), reasons
 
 
 def _price(bar: DailyBar, adjustment: Adjustment) -> Decimal:
@@ -86,16 +103,16 @@ def _amount_change(bars: Sequence[DailyBar]) -> tuple[Decimal | None, str | None
 
 
 def _series(
-    batch: MarketBatch,
-    index: BarIndex,
+    projection: MarketProjection,
     security_id: str,
     sessions: tuple[date, ...],
     adjustment: Adjustment,
 ) -> dict[str, Any]:
+    batch = projection.batch
     reasons = set(_batch_reasons(batch))
     bars = []
     for day in sessions:
-        observation, errors = _observation(batch, index, security_id, day)
+        observation, errors = projection.observation(security_id, day)
         reasons.update(errors)
         if observation is not None:
             bars.append(observation)
@@ -104,7 +121,7 @@ def _series(
 
     amount_bars = []
     for day in sessions[-6:]:
-        records = index.get((security_id, day), [])
+        records = projection.bars.get((security_id, day), [])
         if len(records) != 1:
             amount_bars = []
             break
@@ -138,16 +155,24 @@ def _series(
 
 
 def _window(
-    batch: MarketBatch,
+    projection: MarketProjection,
     topic_batch: TopicBatch | None,
     sessions: tuple[date, ...],
     benchmark_id: str,
 ) -> dict[str, Any]:
-    index = _index(batch)
-    stock_ids = tuple(dict.fromkeys(batch.expected_security_ids))
-    topics = _topic_memberships(batch, topic_batch)
+    batch = projection.batch
+    stock_ids = tuple(
+        security_id
+        for security_id in dict.fromkeys(batch.expected_security_ids)
+        if security_id != benchmark_id
+        and (
+            (current_state := projection.state(security_id, batch.trade_date)) is None
+            or current_state.security_type != "index"
+        )
+    )
+    topics, topic_reasons = _topic_memberships(batch, topic_batch)
     identities = {
-        security_id: state_at(batch, security_id, batch.trade_date)
+        security_id: projection.state(security_id, batch.trade_date)
         for security_id in stock_ids
     }
     result: dict[str, Any] = {
@@ -160,10 +185,10 @@ def _window(
     }
     for adjustment in ("raw", "adjusted"):
         stock_series = {
-            security_id: _series(batch, index, security_id, sessions, adjustment)
+            security_id: _series(projection, security_id, sessions, adjustment)
             for security_id in stock_ids
         }
-        benchmark = _series(batch, index, benchmark_id, sessions, adjustment)
+        benchmark = _series(projection, benchmark_id, sessions, adjustment)
         benchmark_return = benchmark["return_ratio"]
         rows = []
         curves = {}
@@ -183,6 +208,7 @@ def _window(
                     "security_id": security_id,
                     "name": identity.name if identity is not None else None,
                     "topics": topics.get(security_id, []),
+                    "topic_reasons": list(topic_reasons),
                     "return_ratio": value,
                     "excess_return_ratio": relative,
                     "max_drawdown_ratio": current["max_drawdown_ratio"],
@@ -235,6 +261,7 @@ def materialize_analysis(
 ) -> dict[str, Any]:
     """Build fixed N-offset windows from exactly N+1 supplied sessions."""
     calendar = TradingCalendar(batch.calendar)
+    projection = MarketProjection(batch)
     materialized = {}
     for size in windows:
         try:
@@ -248,7 +275,12 @@ def materialize_analysis(
                 "reason": "insufficient_calendar_history",
             }
             continue
-        materialized[str(size)] = _window(batch, topic_batch, sessions, benchmark_id)
+        materialized[str(size)] = _window(
+            projection,
+            topic_batch,
+            sessions,
+            benchmark_id,
+        )
     return {
         "schema": ANALYSIS_SCHEMA,
         "schema_version": ANALYSIS_SCHEMA_VERSION,

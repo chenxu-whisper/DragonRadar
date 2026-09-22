@@ -203,6 +203,124 @@ def test_analysis_gives_equal_returns_equal_ranks_with_stable_security_order():
     assert [row["rank"] for row in rows] == [1, 1, 3, None]
 
 
+def test_analysis_ranking_excludes_effective_indexes_and_benchmark():
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    source = _analysis_batch()
+    index_state = state(
+        "INDEX",
+        security_type="index",
+        effective_from=_sessions()[0],
+        available_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    index_bars = tuple(
+        bar("INDEX", trade_date=day, close=Decimal("100")) for day in _sessions()
+    )
+    source = source.model_copy(
+        update={
+            "expected_security_ids": (
+                *source.expected_security_ids,
+                "INDEX",
+                "B000300",
+            ),
+            "security_states": (*source.security_states, index_state),
+            "bars": (*source.bars, *index_bars),
+        }
+    )
+
+    result = materialize_analysis(source, windows=(20,))
+
+    for adjustment in ("raw", "adjusted"):
+        ranking = result["windows"]["20"]["adjustments"][adjustment]["ranking"]
+        assert {row["security_id"] for row in ranking} == {"A", "C", "D", "E"}
+
+
+@pytest.mark.parametrize(
+    "coverage_change",
+    ("missing", "duplicate", "unavailable", "count_mismatch", "member_mismatch"),
+)
+def test_analysis_hides_topic_memberships_without_exact_complete_coverage(
+    coverage_change,
+):
+    from topic_factories import topic_batch, topic_membership
+
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    topics = topic_batch()
+    current_cells = tuple(
+        cell for cell in topics.coverage_cells if cell.trade_date == topics.trade_date
+    )
+    if coverage_change == "missing":
+        cells = tuple(
+            cell
+            for cell in topics.coverage_cells
+            if cell.trade_date != topics.trade_date
+        )
+    elif coverage_change == "duplicate":
+        cells = (*topics.coverage_cells, current_cells[0])
+    elif coverage_change == "unavailable":
+        cells = tuple(
+            cell.model_copy(
+                update={
+                    "status": "unavailable",
+                    "received_member_count": 0,
+                    "reason": "provider_gap",
+                }
+            )
+            if cell.trade_date == topics.trade_date
+            else cell
+            for cell in topics.coverage_cells
+        )
+    elif coverage_change == "count_mismatch":
+        cells = tuple(
+            cell.model_copy(update={"expected_member_count": 2})
+            if cell.trade_date == topics.trade_date
+            else cell
+            for cell in topics.coverage_cells
+        )
+    else:
+        cells = topics.coverage_cells
+        topics = topics.model_copy(
+            update={
+                "memberships": (
+                    *topics.memberships,
+                    type(topics.memberships[0]).model_validate(
+                        topic_membership(security_id="C")
+                    ),
+                )
+            }
+        )
+    topics = topics.model_copy(update={"coverage_cells": cells})
+
+    result = materialize_analysis(_analysis_batch(), topics, windows=(20,))
+    rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
+
+    assert all(row["topics"] == [] for row in rows)
+    assert all(row["topic_reasons"] == ["topic_coverage_unavailable"] for row in rows)
+    stock_a = next(row for row in rows if row["security_id"] == "A")
+    assert stock_a["return_ratio"] == Decimal("0.1")
+    assert "topic_coverage_unavailable" not in stock_a["reasons"]
+
+
+def test_analysis_projects_memberships_only_with_exact_complete_coverage():
+    from topic_factories import topic_batch
+
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    result = materialize_analysis(
+        _analysis_batch(),
+        topic_batch(),
+        windows=(20,),
+    )
+    rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
+    by_id = {row["security_id"]: row for row in rows}
+
+    assert by_id["A"]["topics"] == [
+        {"topic_id": "topic-a", "name": "Synthetic Topic A"}
+    ]
+    assert all(row["topic_reasons"] == [] for row in rows)
+
+
 def test_analysis_default_windows_report_short_history_independently():
     from dragon_radar.readmodels.analysis import materialize_analysis
 
@@ -285,3 +403,51 @@ def test_stock_materialization_preserves_real_ohlc_and_selects_chart_type():
     assert close_only["history"][-1]["high"] is None
     assert close_only["history"][-1]["low"] is None
     json.dumps(result, default=str, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    ("previous_change", "expected_reason"),
+    (
+        (None, "missing_price"),
+        ({"source_id": "other"}, "source_mismatch"),
+        ({"currency": "USD"}, "unit_mismatch"),
+    ),
+)
+def test_stock_quote_rejects_unusable_previous_session_observation(
+    previous_change,
+    expected_reason,
+):
+    from dragon_radar.readmodels.stock import materialize_stocks
+
+    source = _analysis_batch()
+    previous_day = _sessions()[-2]
+    bars = []
+    for item in source.bars:
+        if item.security_id != "A" or item.trade_date != previous_day:
+            bars.append(item)
+        elif previous_change is not None:
+            bars.append(item.model_copy(update=previous_change))
+    source = source.model_copy(update={"bars": tuple(bars)})
+
+    quote = materialize_stocks(source)["stocks"]["A"]["quote"]
+
+    assert quote["previous_close"] is None
+    assert quote["change_ratio"] is None
+    assert expected_reason in quote["reasons"]
+
+
+def test_market_projection_caches_security_scoped_batches_and_observations():
+    from dragon_radar.readmodels.projection import MarketProjection
+
+    source = _analysis_batch()
+    projection = MarketProjection(source)
+
+    first_batch = projection.security_batch("A")
+    second_batch = projection.security_batch("A")
+    first_observation = projection.observation("A", source.trade_date)
+    second_observation = projection.observation("A", source.trade_date)
+
+    assert first_batch is second_batch
+    assert {item.security_id for item in first_batch.security_states} == {"A"}
+    assert len(first_batch.security_states) < len(source.security_states)
+    assert first_observation is second_observation
