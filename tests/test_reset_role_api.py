@@ -280,6 +280,13 @@ def role_publication(database, repository):
     market_payload["overview"]["sentiment"]["yesterday_limit_up_median_return"] = (
         "0.0120"
     )
+    market_payload["overview"]["sentiment"]["yesterday_limit_up_return_coverage"] = {
+        "expected": 2,
+        "valid": 2,
+        "excluded": 0,
+        "missing": 0,
+    }
+    market_payload["overview"]["sentiment"]["yesterday_limit_up_return_reason"] = None
     market_payload["heatmap"] = {
         "columns": [1, 2],
         "cells": [
@@ -630,18 +637,307 @@ async def test_continuity_reuses_decimal_materialization(role_publication):
             "tradable": 2,
             "rate": Decimal("0.5000"),
         },
+        "promote_rate_quality": {
+            "coverage": {
+                "expected": 5,
+                "valid": 2,
+                "excluded": 1,
+                "missing": 2,
+            },
+            "reasons": [],
+        },
         "yesterday_limit_up_median_return": Decimal("0.0120"),
+        "yesterday_limit_up_feedback": {
+            "status": "available",
+            "coverage": {
+                "expected": 2,
+                "valid": 2,
+                "excluded": 0,
+                "missing": 0,
+            },
+            "reasons": [],
+        },
         "tradable_count": 2,
     }
     assert (
         body["data"]["promote_rate"]["rate"].as_tuple() == Decimal("0.5000").as_tuple()
     )
     assert body["coverage"] == {
-        "expected": 5,
-        "valid": 2,
+        "expected": 7,
+        "valid": 4,
         "excluded": 1,
         "missing": 2,
     }
+    assert body["data"]["promote_rate_quality"] == {
+        "coverage": {
+            "expected": 5,
+            "valid": 2,
+            "excluded": 1,
+            "missing": 2,
+        },
+        "reasons": [],
+    }
+    assert body["data"]["yesterday_limit_up_feedback"] == {
+        "status": "available",
+        "coverage": {
+            "expected": 2,
+            "valid": 2,
+            "excluded": 0,
+            "missing": 0,
+        },
+        "reasons": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("promote_missing", "feedback_missing"),
+    [(0, 2), (2, 0)],
+)
+async def test_continuity_keeps_promotion_and_feedback_quality_independent(
+    role_publication,
+    database,
+    promote_missing,
+    feedback_missing,
+):
+    publication, persisted, _repository = role_publication
+
+    def set_independent_quality(payload):
+        sentiment = payload["overview"]["sentiment"]
+        sentiment["promote_rate"].update(
+            denominator=2 - promote_missing,
+            value=None if promote_missing else "0.5000",
+            missing=promote_missing,
+            reason=("promotion_observation_missing" if promote_missing else None),
+        )
+        sentiment["yesterday_limit_up_median_return"] = (
+            None if feedback_missing else "0.0120"
+        )
+        sentiment["yesterday_limit_up_return_coverage"] = {
+            "expected": 2,
+            "valid": 2 - feedback_missing,
+            "excluded": 0,
+            "missing": feedback_missing,
+        }
+        sentiment["yesterday_limit_up_return_reason"] = (
+            "no_valid_returns_for_yesterday_limit_up_members"
+            if feedback_missing
+            else None
+        )
+
+    _update_domain_payload(
+        database,
+        publication,
+        "market",
+        set_independent_quality,
+    )
+    async with await _client(persisted) as client:
+        response = await client.get(
+            "/api/limit-up/continuity",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    promotion = body["data"]["promote_rate_quality"]
+    feedback = body["data"]["yesterday_limit_up_feedback"]
+    assert promotion["coverage"]["missing"] == promote_missing
+    assert feedback["coverage"]["missing"] == feedback_missing
+    assert feedback["status"] == ("missing" if feedback_missing else "available")
+    assert promotion["reasons"] == (
+        ["promotion_observation_missing"] if promote_missing else []
+    )
+    assert feedback["reasons"] == (
+        ["no_valid_returns_for_yesterday_limit_up_members"] if feedback_missing else []
+    )
+    assert body["coverage"]["missing"] == promote_missing + feedback_missing
+    assert body["coverage"]["expected"] == sum(
+        body["coverage"][key] for key in ("valid", "excluded", "missing")
+    )
+
+
+async def test_candidates_project_persisted_changes_without_recomputation(
+    role_publication, database, monkeypatch
+):
+    publication, persisted, _repository = role_publication
+
+    def add_changes(payload):
+        topic = payload["topics"][0]
+        topic["change_summaries"] = [
+            {
+                "role": "trend",
+                "previous_role_run_id": "previous-run",
+                "comparison_status": "not_comparable",
+                "membership_changed": True,
+                "reasons": [
+                    "rule_version_changed",
+                    "calculation_basis_changed",
+                    "topic_membership_changed",
+                ],
+            },
+            {
+                "role": "core",
+                "previous_role_run_id": "previous-run",
+                "comparison_status": "comparable",
+                "membership_changed": False,
+                "reasons": [],
+            },
+        ]
+        topic["role_changes"] = [
+            {
+                "id": "change-tied",
+                "security_id": "A",
+                "role": "trend",
+                "comparison_status": "comparable",
+                "change_type": "tie_changed",
+                "membership_changed": False,
+                "reasons": [],
+            },
+            {
+                "id": "change-added",
+                "security_id": "B",
+                "role": "trend",
+                "comparison_status": "comparable",
+                "change_type": "added",
+                "membership_changed": False,
+                "reasons": [],
+            },
+            {
+                "id": "change-exited",
+                "security_id": "C",
+                "role": "trend",
+                "comparison_status": "comparable",
+                "change_type": "exited",
+                "membership_changed": False,
+                "reasons": [],
+            },
+            {
+                "id": "other-role",
+                "security_id": "A",
+                "role": "core",
+                "comparison_status": "comparable",
+                "change_type": "unchanged",
+                "membership_changed": False,
+                "reasons": [],
+            },
+        ]
+
+    _update_domain_payload(database, publication, "role", add_changes)
+    monkeypatch.setattr(
+        "dragon_radar.http.routes.roles.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    async with await _client(persisted) as client:
+        response = await client.get(
+            "/api/role/candidates",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+                "role": "trend_leader",
+                "sector": "topic-a",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["change_summaries"] == [
+        {
+            "sector_id": "topic-a",
+            "role": "trend",
+            "previous_role_run_id": "previous-run",
+            "comparison_status": "not_comparable",
+            "membership_changed": True,
+            "reasons": [
+                "rule_version_changed",
+                "calculation_basis_changed",
+                "topic_membership_changed",
+            ],
+        }
+    ]
+    assert [item["change_type"] for item in data["role_changes"]] == [
+        "tie_changed",
+        "added",
+        "exited",
+    ]
+    assert [item["id"] for item in data["role_changes"]] == [
+        "change-tied",
+        "change-added",
+        "change-exited",
+    ]
+
+
+async def test_candidates_build_ladder_lookup_once_per_topic(
+    role_publication, monkeypatch
+):
+    publication, persisted, _repository = role_publication
+
+    class CountingLadder(list):
+        iterations = 0
+
+        def __iter__(self):
+            type(self).iterations += 1
+            return super().__iter__()
+
+    size = 300
+    topic = {
+        "topic_id": "large-topic",
+        "member_ids": [f"S{index:04}" for index in range(size)],
+        "statuses": [
+            {
+                "role": "trend",
+                "capability": "ready",
+                "status": "ready",
+                "expected": size,
+                "valid": size,
+                "legal_excluded": 0,
+                "missing": 0,
+                "reasons": [],
+            }
+        ],
+        "results": [
+            {
+                "security_id": f"S{index:04}",
+                "role": "trend",
+                "internal_status": "candidate",
+                "tie_rank": index + 1,
+                "factors": [],
+                "reasons": [],
+            }
+            for index in range(size)
+        ],
+        "ladder": CountingLadder(
+            {
+                "security_id": f"S{index:04}",
+                "closing_limit_streak": index % 5,
+            }
+            for index in range(size)
+        ),
+        "change_summaries": [],
+        "role_changes": [],
+    }
+    monkeypatch.setattr(
+        "dragon_radar.http.routes.roles._selected_topics",
+        lambda _payload, _sector: [topic],
+    )
+    monkeypatch.setattr(
+        "dragon_radar.http.routes.roles.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    async with await _client(persisted) as client:
+        response = await client.get(
+            "/api/role/candidates",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+                "role": "trend_leader",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["total"] == size
+    assert CountingLadder.iterations == 1
 
 
 async def test_candidates_preserve_ties_filter_coverage_and_fail_closed(
@@ -765,6 +1061,36 @@ async def test_evidence_is_traceable_and_missing_entity_is_404(
     }
     assert response.json()["basis"]["price_type"] == "adjusted"
     assert missing.status_code == 404
+
+
+async def test_evidence_fail_closed_reasons_are_missing_not_opposing(
+    role_publication,
+):
+    publication, persisted, _repository = role_publication
+    async with await _client(persisted) as client:
+        response = await client.get(
+            "/api/role/evidence",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+                "security_id": "A",
+                "sector": "topic-a",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    role = next(
+        item
+        for item in response.json()["data"]["roles"]
+        if item["role_type"] == "trend_leader"
+    )
+    assert role["evidence_status"] == "insufficient"
+    assert role["supporting_evidence"] == ["persisted_support_a"]
+    assert role["opposing_evidence"] == []
+    assert role["missing_evidence"] == [
+        "rule_version_not_approved",
+        "historical_research_only",
+    ]
 
 
 async def test_evidence_source_time_survives_materialization_and_publication(

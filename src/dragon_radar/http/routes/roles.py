@@ -31,6 +31,14 @@ router = APIRouter()
 _EXTERNAL_ROLES = frozenset(ROLE_NAMES.values())
 _INTERNAL_ROLE = {external: internal for internal, external in ROLE_NAMES.items()}
 _ROLE_ORDER = {role: position for position, role in enumerate(ROLE_NAMES.values())}
+_ADAPTER_MISSING_REASONS = frozenset(
+    {
+        "rule_version_not_approved",
+        "historical_research_only",
+        "capability_not_formal_candidate",
+        "pending_validation",
+    }
+)
 
 
 def _repository(request: Request):
@@ -243,6 +251,50 @@ def _promote_coverage(market_payload):
         raise DataUnavailable from None
 
 
+def _quality_reasons(reason):
+    if reason is None:
+        return []
+    if not isinstance(reason, str) or not reason:
+        raise DataUnavailable
+    return [reason]
+
+
+def _feedback_quality(market_payload, median):
+    try:
+        sentiment = market_payload["overview"]["sentiment"]
+        stored = sentiment["yesterday_limit_up_return_coverage"]
+        coverage = coverage_view(
+            stored["expected"],
+            stored["valid"],
+            stored["excluded"],
+            stored["missing"],
+        )
+        reasons = _quality_reasons(sentiment["yesterday_limit_up_return_reason"])
+    except (KeyError, TypeError, ValueError):
+        raise DataUnavailable from None
+    return {
+        "status": (
+            "missing" if median is None else "degraded" if reasons else "available"
+        ),
+        "coverage": coverage,
+        "reasons": reasons,
+    }
+
+
+def _combined_coverage(*coverages):
+    return coverage_view(
+        *(
+            sum(coverage[key] for coverage in coverages)
+            for key in (
+                "expected",
+                "valid",
+                "excluded",
+                "missing",
+            )
+        )
+    )
+
+
 @router.get("/api/limit-up/ladder")
 def ladder(request: Request):
     query, trade_date, snapshot_id = _selection(request, set(), {"sector"})
@@ -370,14 +422,21 @@ def continuity(request: Request):
         raise DataUnavailable
     promote = _promote_rate(market_payload)
     try:
-        median = market_payload["overview"]["sentiment"][
-            "yesterday_limit_up_median_return"
-        ]
+        sentiment = market_payload["overview"]["sentiment"]
+        median = sentiment["yesterday_limit_up_median_return"]
     except (KeyError, TypeError):
         raise DataUnavailable from None
+    promote_coverage = _promote_coverage(market_payload)
+    promote_quality = {
+        "coverage": promote_coverage,
+        "reasons": _quality_reasons(sentiment["promote_rate"].get("reason")),
+    }
+    feedback_quality = _feedback_quality(market_payload, median)
     data = {
         "promote_rate": promote,
+        "promote_rate_quality": promote_quality,
         "yesterday_limit_up_median_return": median,
+        "yesterday_limit_up_feedback": feedback_quality,
         "tradable_count": promote["tradable"],
     }
     return _response(
@@ -385,7 +444,7 @@ def continuity(request: Request):
         role_result,
         role_payload,
         data,
-        _promote_coverage(market_payload),
+        _combined_coverage(promote_coverage, feedback_quality["coverage"]),
         price_type="raw",
     )
 
@@ -412,11 +471,26 @@ def candidates(request: Request):
     coverage = {"expected": 0, "valid": 0, "excluded": 0, "missing": 0}
     output = []
     statuses = []
+    change_summaries = []
+    role_changes = []
     quality_flags = set()
     for topic in selected_topics:
         evaluation = _evaluation(topic, internal_role, role_payload["rule_version"])
         if evaluation is None:
             continue
+        ladder_by_security = {
+            row.get("security_id"): row for row in topic.get("ladder", ())
+        }
+        change_summaries.extend(
+            {"sector_id": topic["topic_id"], **item}
+            for item in topic.get("change_summaries", ())
+            if item.get("role") == internal_role
+        )
+        role_changes.extend(
+            {"sector_id": topic["topic_id"], **item}
+            for item in topic.get("role_changes", ())
+            if item.get("role") == internal_role
+        )
         status = evaluation.topic_status
         for target, source in (
             ("expected", "expected"),
@@ -452,14 +526,7 @@ def candidates(request: Request):
                 quality_flags.add("rule_version_not_approved")
             if evidence.status != "candidate" or evidence.security_id is None:
                 continue
-            ladder_row = next(
-                (
-                    row
-                    for row in topic.get("ladder", ())
-                    if row.get("security_id") == evidence.security_id
-                ),
-                None,
-            )
+            ladder_row = ladder_by_security.get(evidence.security_id)
             output.append(
                 {
                     "security_id": evidence.security_id,
@@ -483,6 +550,8 @@ def candidates(request: Request):
             "role": external_role,
             "statuses": statuses,
             "candidates": output,
+            "change_summaries": change_summaries,
+            "role_changes": role_changes,
             "total": len(output),
         },
         coverage,
@@ -513,23 +582,41 @@ def _factor_projection(item):
     }
 
 
-def _evidence_reasons(status, result, factors, evidence_status):
-    persisted = [
-        *status.get("reasons", ()),
-        *(result.get("reasons", ()) if result is not None else ()),
-    ]
-    factor_reasons = [
-        reason for factor in factors for reason in factor.get("reasons", ())
-    ]
-    missing = [
-        reason
-        for reason in (*persisted, *factor_reasons)
-        if any(
-            marker in reason for marker in ("missing", "unavailable", "insufficient")
+def _evidence_reasons(status, result, factors, adapted):
+    persisted = list(
+        dict.fromkeys(
+            [
+                *status.get("reasons", ()),
+                *(result.get("reasons", ()) if result is not None else ()),
+            ]
         )
-    ]
+    )
+    factor_reasons = list(
+        dict.fromkeys(
+            reason for factor in factors for reason in factor.get("reasons", ())
+        )
+    )
+    adapter_reasons = (
+        [reason for reason in adapted.reasons if reason in _ADAPTER_MISSING_REASONS]
+        if adapted is not None
+        else []
+    )
+    missing = list(
+        dict.fromkeys(
+            reason
+            for reason in (*persisted, *factor_reasons, *adapter_reasons)
+            if any(
+                marker in reason
+                for marker in ("missing", "unavailable", "insufficient")
+            )
+            or reason in adapter_reasons
+        )
+    )
     nonmissing = [reason for reason in persisted if reason not in missing]
-    if evidence_status in {"candidate", "waiting_verify"}:
+    if result is not None and result.get("internal_status") in {
+        "candidate",
+        "pending_validation",
+    }:
         return nonmissing, [], missing
     return [], nonmissing, missing
 
@@ -586,7 +673,7 @@ def evidence(request: Request):
         )
         selected = next(
             (item for item in adapted if item.security_id == query["security_id"]),
-            None,
+            next((item for item in adapted if item.security_id is None), None),
         )
         result = next(
             (
@@ -599,7 +686,7 @@ def evidence(request: Request):
         )
         evidence_status = selected.status if selected is not None else "insufficient"
         supporting, opposing, missing = _evidence_reasons(
-            status, result, factor_rows, evidence_status
+            status, result, factor_rows, selected
         )
         roles.append(
             {
