@@ -236,6 +236,36 @@ def test_analysis_ranking_excludes_effective_indexes_and_benchmark():
 
 
 @pytest.mark.parametrize(
+    ("topic_changes", "expected_reason"),
+    (
+        (None, "topic_batch_unavailable"),
+        ({"trade_date": _sessions()[-2]}, "topic_binding_mismatch"),
+        ({"exchange": "OTHER"}, "topic_binding_mismatch"),
+    ),
+)
+def test_analysis_marks_missing_or_mismatched_topic_batch_unavailable(
+    topic_changes,
+    expected_reason,
+):
+    from topic_factories import topic_batch
+
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    topics = (
+        None
+        if topic_changes is None
+        else topic_batch().model_copy(update=topic_changes)
+    )
+
+    result = materialize_analysis(_analysis_batch(), topics, windows=(20,))
+    rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
+
+    assert all(row["topics"] == [] for row in rows)
+    assert all(row["topic_status"] == "unavailable" for row in rows)
+    assert all(row["topic_reasons"] == [expected_reason] for row in rows)
+
+
+@pytest.mark.parametrize(
     "coverage_change",
     ("missing", "duplicate", "unavailable", "count_mismatch", "member_mismatch"),
 )
@@ -296,6 +326,7 @@ def test_analysis_hides_topic_memberships_without_exact_complete_coverage(
     rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
 
     assert all(row["topics"] == [] for row in rows)
+    assert all(row["topic_status"] == "unavailable" for row in rows)
     assert all(row["topic_reasons"] == ["topic_coverage_unavailable"] for row in rows)
     stock_a = next(row for row in rows if row["security_id"] == "A")
     assert stock_a["return_ratio"] == Decimal("0.1")
@@ -318,6 +349,7 @@ def test_analysis_projects_memberships_only_with_exact_complete_coverage():
     assert by_id["A"]["topics"] == [
         {"topic_id": "topic-a", "name": "Synthetic Topic A"}
     ]
+    assert all(row["topic_status"] == "available" for row in rows)
     assert all(row["topic_reasons"] == [] for row in rows)
 
 
@@ -348,7 +380,32 @@ def test_analysis_preserves_stock_return_when_benchmark_is_unavailable():
     rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
     assert rows[0]["return_ratio"] is not None
     assert rows[0]["excess_return_ratio"] is None
-    assert "benchmark_unavailable" in rows[0]["reasons"]
+    assert "benchmark_identity_invalid" in rows[0]["reasons"]
+
+
+def test_analysis_keeps_common_stock_benchmark_in_ranking_but_rejects_its_identity():
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    result = materialize_analysis(
+        _analysis_batch(),
+        windows=(20,),
+        benchmark_id="A",
+    )
+
+    for adjustment in ("raw", "adjusted"):
+        projected = result["windows"]["20"]["adjustments"][adjustment]
+        assert {row["security_id"] for row in projected["ranking"]} == {
+            "A",
+            "C",
+            "D",
+            "E",
+        }
+        assert projected["benchmark_return_ratio"] is None
+        assert projected["benchmark_reasons"] == ["benchmark_identity_invalid"]
+        assert all(
+            "benchmark_identity_invalid" in row["reasons"]
+            for row in projected["ranking"]
+        )
 
 
 def test_analysis_exposes_only_supported_adjustment_semantics_and_is_storable():
@@ -403,6 +460,45 @@ def test_stock_materialization_preserves_real_ohlc_and_selects_chart_type():
     assert close_only["history"][-1]["high"] is None
     assert close_only["history"][-1]["low"] is None
     json.dumps(result, default=str, allow_nan=False)
+
+
+def test_stock_materialization_preserves_per_bar_units_and_nulls_missing_bar_units():
+    from dragon_radar.readmodels.stock import materialize_stocks
+
+    source = _analysis_batch()
+    changed_day = _sessions()[-2]
+    bars = tuple(
+        item.model_copy(update={"currency": "USD", "volume_unit": "lot"})
+        if item.security_id == "A" and item.trade_date == changed_day
+        else item
+        for item in source.bars
+        if not (item.security_id == "D" and item.trade_date == changed_day)
+    )
+
+    stocks = materialize_stocks(source.model_copy(update={"bars": bars}))["stocks"]
+
+    assert {
+        key: stocks["A"]["history"][-2][key]
+        for key in ("currency", "price_unit", "volume_unit", "amount_unit")
+    } == {
+        "currency": "USD",
+        "price_unit": "currency/share",
+        "volume_unit": "lot",
+        "amount_unit": "currency",
+    }
+    assert {
+        key: stocks["A"]["quote"][key]
+        for key in ("currency", "price_unit", "volume_unit", "amount_unit")
+    } == {
+        "currency": "CNY",
+        "price_unit": "currency/share",
+        "volume_unit": "share",
+        "amount_unit": "currency",
+    }
+    assert all(
+        stocks["D"]["history"][-2][key] is None
+        for key in ("currency", "price_unit", "volume_unit", "amount_unit")
+    )
 
 
 @pytest.mark.parametrize(
