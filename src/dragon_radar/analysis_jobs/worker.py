@@ -135,7 +135,6 @@ class AnalysisJobWorker:
         try:
             snapshot = self.repository.load_input(lease)
             result = self.compute(snapshot, lease.job.command)
-            return self.repository.succeed(lease, result)
         except Forbidden:
             return self.repository.fail(lease, {"code": "input_forbidden"})
         except NotFound:
@@ -148,6 +147,7 @@ class AnalysisJobWorker:
                     "error_type": type(error).__name__,
                 },
             )
+        return self.repository.succeed(lease, result)
 
 
 __all__ = ["AnalysisJobWorker", "materialize_custom_analysis"]

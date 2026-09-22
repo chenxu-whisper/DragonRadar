@@ -6,6 +6,7 @@ import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -343,6 +344,27 @@ def test_get_cache_reauthorizes_publication_and_source(job_setup):
         jobs.get_cache(command)
 
 
+def test_succeed_preserves_high_precision_decimal_in_job_and_cache(job_setup):
+    jobs, _owners, session, publication = job_setup
+    command = _command(publication.id)
+    submitted = jobs.submit(
+        session.token,
+        session.csrf,
+        command,
+        key="decimal-cache",
+    )
+    lease = jobs.claim("decimal-worker")
+    precise = Decimal("9007199254740993.01")
+
+    completed = jobs.succeed(lease, {"value": precise})
+
+    assert completed.id == submitted.id
+    assert jobs.get(session.token, submitted.id).result["value"] == (
+        "9007199254740993.01"
+    )
+    assert jobs.get_cache(command)["value"] == "9007199254740993.01"
+
+
 def test_get_reauthorizes_session_and_input(job_setup):
     from dragon_radar.owner import SessionUnauthorized
     from dragon_radar.storage.repository import Forbidden
@@ -598,3 +620,76 @@ def test_worker_rechecks_source_authorization_after_submit(job_setup):
     assert failed.status == "failed"
     assert failed.failure == {"code": "input_forbidden"}
     assert failed.result is None
+
+
+class _WorkerRepository:
+    def __init__(self, *, succeed_error=None, fail_error=None):
+        self.lease = SimpleNamespace(job=SimpleNamespace(command=object()))
+        self.succeed_error = succeed_error
+        self.fail_error = fail_error
+        self.fail_calls = 0
+
+    def claim(self, worker_id, *, lease_for):
+        return self.lease
+
+    def load_input(self, lease):
+        return object()
+
+    def succeed(self, lease, result):
+        raise self.succeed_error
+
+    def fail(self, lease, failure):
+        self.fail_calls += 1
+        if self.fail_error is not None:
+            raise self.fail_error
+        return failure
+
+
+@pytest.mark.parametrize(
+    "error_kind",
+    [
+        pytest.param("database", id="database-error"),
+        pytest.param("lease", id="lease-conflict"),
+    ],
+)
+def test_worker_propagates_succeed_error_without_failing_job(error_kind):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.storage.repository import Conflict
+
+    error = (
+        RuntimeError("database unavailable")
+        if error_kind == "database"
+        else Conflict("Analysis job lease is no longer active")
+    )
+    repository = _WorkerRepository(succeed_error=error)
+
+    with pytest.raises(type(error)) as caught:
+        AnalysisJobWorker(
+            repository,
+            worker_id="worker",
+            compute=lambda snapshot, command: {"value": "computed"},
+        ).run_once()
+
+    assert caught.value is error
+    assert repository.fail_calls == 0
+
+
+def test_worker_propagates_fail_conflict_without_retrying_fail():
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.storage.repository import Conflict
+
+    conflict = Conflict("Analysis job lease is no longer active")
+    repository = _WorkerRepository(fail_error=conflict)
+
+    def fail_compute(snapshot, command):
+        raise ValueError("invalid analysis")
+
+    with pytest.raises(Conflict) as caught:
+        AnalysisJobWorker(
+            repository,
+            worker_id="worker",
+            compute=fail_compute,
+        ).run_once()
+
+    assert caught.value is conflict
+    assert repository.fail_calls == 1
