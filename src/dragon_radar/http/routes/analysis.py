@@ -662,11 +662,10 @@ def compare_curves(request: Request):
                 "curves": result["curves"],
                 "exclusions": result["exclusions"],
             },
-            coverage_view(
+            _analysis_coverage(
                 len(symbols),
                 len(result["curves"]),
-                0,
-                len(result["exclusions"]),
+                result["exclusions"],
             ),
             adjustment=values["adjustment"],
             benchmark=values["benchmark"],
@@ -720,11 +719,10 @@ def compare_curves(request: Request):
             "curves": curves,
             "exclusions": exclusions,
         },
-        coverage_view(
+        _analysis_coverage(
             len(symbols),
             len(curves),
-            0,
-            len(symbols) - len(curves),
+            exclusions,
         ),
         adjustment=values["adjustment"],
         benchmark=values["benchmark"],

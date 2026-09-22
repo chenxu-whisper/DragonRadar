@@ -1163,6 +1163,117 @@ async def test_precomputed_rank_counts_suspension_as_legal_exclusion():
 
 
 @pytest.mark.anyio
+async def test_precomputed_compare_counts_suspension_as_legal_exclusion():
+    from dragon_radar.http.app import create_workbench_app
+
+    source = _analysis_batch()
+    source = source.model_copy(
+        update={
+            "security_states": tuple(
+                item.model_copy(update={"suspended": True})
+                if item.security_id == "C"
+                else item
+                for item in source.security_states
+            )
+        }
+    )
+    snapshot = _published_analysis_snapshot(source=source)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/compare/curves",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "adj": "raw",
+                "symbols": "C,A",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["exclusions"] == [
+        {"security_id": "C", "reasons": ["suspension"]}
+    ]
+    assert response.json()["coverage"] == {
+        "expected": 2,
+        "valid": 1,
+        "excluded": 1,
+        "missing": 0,
+    }
+
+
+@pytest.mark.anyio
+async def test_cached_compare_counts_suspension_as_legal_exclusion():
+    from dragon_radar.analysis_jobs.models import AnalysisJobCommand
+    from dragon_radar.analysis_jobs.worker import materialize_custom_analysis
+    from dragon_radar.http.app import create_workbench_app
+
+    source = _analysis_batch()
+    source = source.model_copy(
+        update={
+            "security_states": tuple(
+                item.model_copy(update={"suspended": True})
+                if item.security_id == "C"
+                else item
+                for item in source.security_states
+            )
+        }
+    )
+    snapshot = _published_analysis_snapshot(source=source)
+    sessions = _sessions()[1:]
+    command = AnalysisJobCommand(
+        snapshot_id=snapshot.id,
+        start=sessions[0],
+        end=sessions[-1],
+        benchmark="B000300",
+        adjustment="raw",
+        symbols=("C", "A"),
+    )
+    result = materialize_custom_analysis(snapshot, command)
+
+    class Cache:
+        @staticmethod
+        def get_cache(requested):
+            assert requested == command
+            return result
+
+    app = create_workbench_app(
+        repository=_PublishedRepository(snapshot),
+        analysis_repository=Cache(),
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/compare/curves",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(sessions[0]),
+                "end": str(sessions[-1]),
+                "adj": "raw",
+                "symbols": "C,A",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["exclusions"] == [
+        {"security_id": "C", "reasons": ["suspension"]}
+    ]
+    assert response.json()["coverage"] == {
+        "expected": 2,
+        "valid": 1,
+        "excluded": 1,
+        "missing": 0,
+    }
+
+
+@pytest.mark.anyio
 async def test_rank_keeps_return_valid_rows_with_null_sort_value_last():
     from dragon_radar.http.app import create_workbench_app
 
