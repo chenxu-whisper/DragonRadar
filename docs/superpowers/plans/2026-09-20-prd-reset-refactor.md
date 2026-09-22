@@ -403,12 +403,12 @@ ROLE_NAMES = {
 
 **文件：** 新建 `roles/{tables,repository,materialize}.py`、迁移 `0007_role_readmodels.py`、`tests/test_reset_role_publication.py`；修改 `publication/service.py`、`storage/database.py`、`cli.py`。
 
-- [ ] 写失败用例：一题材无候选仍有status行；失败事务不留可见结果；同日规则/来源/成员变化标不可比；未来新数据不改旧验证。
-- [ ] 运行 `uv run pytest tests/test_reset_role_publication.py -q` 确认失败。
-- [ ] 持久化角色运行、各题材角色状态、候选、因子证据、阶梯、角色变化与接力验证引用；使用完整证券×题材×观察时点×角色×规则键。
-- [ ] 复用build_limit_ladder/compare_runs/validate_relay，明确验证未成熟与成熟但输入不足。不能为满足“五个ID”约束造运行ID；如果旧模型拒绝真实缺窗诊断，只修改该已复现契约并添加回归。
-- [ ] 原始计算结果不可被人工审核覆盖；验证更正追加记录，不原地更新收益。按当前操作时点查来源许可，权限错误不变成零收益。
-- [ ] 跑新持久化、角色历史与迁移回归；提交 `feat: persist role and ladder evidence`。
+- [x] 写失败用例：一题材无候选仍有status行；失败事务不留可见结果；同日规则/来源/成员变化标不可比；未来新数据不改旧验证。
+- [x] 运行 `uv run pytest tests/test_reset_role_publication.py -q` 确认失败。
+- [x] 持久化角色运行、各题材角色状态、候选、因子证据、阶梯、角色变化与接力验证引用；使用完整证券×题材×观察时点×角色×规则键。
+- [x] 复用build_limit_ladder/compare_runs/validate_relay，明确验证未成熟与成熟但输入不足。不能为满足“五个ID”约束造运行ID；如果旧模型拒绝真实缺窗诊断，只修改该已复现契约并添加回归。
+- [x] 原始计算结果不可被人工审核覆盖；验证更正追加记录，不原地更新收益。按当前操作时点查来源许可，权限错误不变成零收益。
+- [x] 跑新持久化、角色历史与迁移回归；提交 `feat: persist role and ladder evidence`。
 
 **完成条件：** 给定发布ID能从数据库读取同一版本证据，不在GET重新跑角色算法。
 
