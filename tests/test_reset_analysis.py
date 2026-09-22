@@ -95,9 +95,11 @@ def test_decimal34_analysis_primitives_cover_frozen_examples():
         (Decimal("100"), Decimal("120"), Decimal("90"))
     ) == Decimal("0.25")
     assert metrics.interval_return((Decimal("100"),)) == Decimal("0")
-    assert metrics.drawdown_curve(
-        (Decimal("100"), Decimal("120"), Decimal("90"))
-    ) == (Decimal("0"), Decimal("0"), Decimal("0.25"))
+    assert metrics.drawdown_curve((Decimal("100"), Decimal("120"), Decimal("90"))) == (
+        Decimal("0"),
+        Decimal("0"),
+        Decimal("0.25"),
+    )
     assert metrics.excess_return(Decimal("0.1"), Decimal("0.02")) == Decimal("0.08")
 
     with localcontext() as context:
@@ -117,17 +119,40 @@ def test_analysis_uses_exact_n_plus_one_positions_and_never_shifts_gaps():
     window = result["windows"]["20"]
     assert len(window["sessions"]) == 21
     assert window["sessions"][0] == _sessions()[0].isoformat()
-    qfq = window["adjustments"]["qfq"]
-    rows = {item["security_id"]: item for item in qfq["ranking"]}
+    adjusted = window["adjustments"]["adjusted"]
+    rows = {item["security_id"]: item for item in adjusted["ranking"]}
     assert rows["A"]["return_ratio"] == Decimal("0.1")
     assert rows["A"]["excess_return_ratio"] == Decimal("0.08")
     assert rows["D"]["max_drawdown_ratio"] == Decimal("0.25")
     assert rows["A"]["amount_change_ratio"] == Decimal("0.2")
     assert rows["C"]["return_ratio"] is None
     assert "missing_price" in rows["C"]["reasons"]
-    assert qfq["curves"]["C"]["normalized"] == [None] * 21
-    assert [row["security_id"] for row in qfq["ranking"]] == ["E", "A", "D", "C"]
-    assert [row["rank"] for row in qfq["ranking"]] == [1, 2, 3, None]
+    assert adjusted["curves"]["C"]["normalized"] == [None] * 21
+    assert [row["security_id"] for row in adjusted["ranking"]] == [
+        "E",
+        "A",
+        "D",
+        "C",
+    ]
+    assert [row["rank"] for row in adjusted["ranking"]] == [1, 2, 3, None]
+
+
+def test_analysis_default_windows_report_short_history_independently():
+    from dragon_radar.readmodels.analysis import materialize_analysis
+
+    result = materialize_analysis(_analysis_batch())
+
+    assert result["windows"]["20"]["available"] is True
+    assert result["windows"]["20"]["reason"] is None
+    assert result["windows"]["20"]["sessions"] == [
+        day.isoformat() for day in _sessions()
+    ]
+    for offsets in (60, 120):
+        assert result["windows"][str(offsets)] == {
+            "requested_offsets": offsets,
+            "available": False,
+            "reason": "insufficient_calendar_history",
+        }
 
 
 def test_analysis_preserves_stock_return_when_benchmark_is_unavailable():
@@ -150,20 +175,26 @@ def test_analysis_exposes_only_supported_adjustment_semantics_and_is_storable():
     assert result["schema_version"] == 1
     assert result["adjustments"] == {
         "raw": {"available": True, "price_basis": "raw_close", "reason": None},
-        "qfq": {
+        "adjusted": {
             "available": True,
             "price_basis": "close_times_adjustment_factor",
             "reason": None,
         },
+        "qfq": {
+            "available": False,
+            "price_basis": None,
+            "reason": "qfq_semantics_unproven_from_generic_adjustment_factor",
+        },
         "hfq": {
             "available": False,
             "price_basis": None,
-            "reason": "hfq_unavailable_from_single_adjustment_factor",
+            "reason": "hfq_semantics_unproven_from_generic_adjustment_factor",
         },
     }
     window = result["windows"]["20"]["adjustments"]
     assert window["raw"]["ranking"][0]["security_id"] == "A"
-    assert window["qfq"]["ranking"][0]["security_id"] == "E"
+    assert window["adjusted"]["ranking"][0]["security_id"] == "E"
+    assert "qfq" not in window
     assert "hfq" not in window
     json.dumps(result, default=str, allow_nan=False)
 

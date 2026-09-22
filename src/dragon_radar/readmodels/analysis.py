@@ -25,7 +25,7 @@ from dragon_radar.topics.models import TopicBatch
 ANALYSIS_SCHEMA = "dragon-radar.analysis"
 ANALYSIS_SCHEMA_VERSION = 1
 ANALYSIS_RULE_VERSION = "analysis-v1-decimal34"
-Adjustment = Literal["raw", "qfq"]
+Adjustment = Literal["raw", "adjusted"]
 BarIndex = dict[tuple[str, date], list[DailyBar]]
 
 
@@ -139,16 +139,16 @@ def _window(
         for security_id in stock_ids
     }
     result: dict[str, Any] = {
+        "available": True,
+        "reason": None,
         "offsets": len(sessions) - 1,
         "sessions": [day.isoformat() for day in sessions],
         "benchmark_id": benchmark_id,
         "adjustments": {},
     }
-    for adjustment in ("raw", "qfq"):
+    for adjustment in ("raw", "adjusted"):
         stock_series = {
-            security_id: _series(
-                batch, index, security_id, sessions, adjustment
-            )
+            security_id: _series(batch, index, security_id, sessions, adjustment)
             for security_id in stock_ids
         }
         benchmark = _series(batch, index, benchmark_id, sessions, adjustment)
@@ -220,10 +220,18 @@ def materialize_analysis(
     calendar = TradingCalendar(batch.calendar)
     materialized = {}
     for size in windows:
-        sessions = calendar.n_day_window(batch.trade_date, size)
-        materialized[str(size)] = _window(
-            batch, topic_batch, sessions, benchmark_id
-        )
+        try:
+            sessions = calendar.n_day_window(batch.trade_date, size)
+        except ValueError as error:
+            if str(error) != "insufficient calendar history for requested window":
+                raise
+            materialized[str(size)] = {
+                "requested_offsets": size,
+                "available": False,
+                "reason": "insufficient_calendar_history",
+            }
+            continue
+        materialized[str(size)] = _window(batch, topic_batch, sessions, benchmark_id)
     return {
         "schema": ANALYSIS_SCHEMA,
         "schema_version": ANALYSIS_SCHEMA_VERSION,
@@ -236,15 +244,20 @@ def materialize_analysis(
                 "price_basis": "raw_close",
                 "reason": None,
             },
-            "qfq": {
+            "adjusted": {
                 "available": True,
                 "price_basis": "close_times_adjustment_factor",
                 "reason": None,
             },
+            "qfq": {
+                "available": False,
+                "price_basis": None,
+                "reason": "qfq_semantics_unproven_from_generic_adjustment_factor",
+            },
             "hfq": {
                 "available": False,
                 "price_basis": None,
-                "reason": "hfq_unavailable_from_single_adjustment_factor",
+                "reason": "hfq_semantics_unproven_from_generic_adjustment_factor",
             },
         },
         "windows": materialized,
