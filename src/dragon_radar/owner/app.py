@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 
+from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
+from dragon_radar.analysis_jobs.routes import install_analysis_job_routes
 from dragon_radar.api import StorageUnavailable, create_app
 from dragon_radar.owner.repository import (
     DEFAULT_ORIGIN,
@@ -31,6 +33,7 @@ from dragon_radar.owner.security import (
     storage_unavailable,
     validate_origin,
 )
+from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.review.routes import install_review_routes
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
@@ -47,15 +50,36 @@ def create_owner_app(
     *,
     repository: Repository | None = None,
     owner_repository: OwnerRepository | None = None,
+    publication_repository: PublicationRepository | None = None,
+    analysis_repository: AnalysisJobRepository | None = None,
     origin: str = DEFAULT_ORIGIN,
 ) -> FastAPI:
     """No implicit migration, initialization, dotenv, proxy trust or public routes."""
     validate_origin(origin)
-    owned = repository is None and owner_repository is None
+    owned = all(
+        dependency is None
+        for dependency in (
+            repository,
+            owner_repository,
+            publication_repository,
+            analysis_repository,
+        )
+    )
+    if analysis_repository is not None:
+        publication_repository = (
+            publication_repository or analysis_repository.publications
+        )
+        owner_repository = owner_repository or analysis_repository.owners
+    if publication_repository is not None:
+        repository = repository or publication_repository.market
     value = database_url or os.environ.get("DRAGON_DATABASE_URL")
     database = (
         repository.database
         if repository is not None
+        else publication_repository.database
+        if publication_repository is not None
+        else analysis_repository.database
+        if analysis_repository is not None
         else owner_repository.database
         if owner_repository is not None
         else Database(value)
@@ -66,6 +90,14 @@ def create_owner_app(
         repository = Repository(database)
     if owner_repository is None and database is not None:
         owner_repository = OwnerRepository(database)
+    if publication_repository is None and database is not None:
+        publication_repository = PublicationRepository(database, repository)
+    if analysis_repository is None and database is not None:
+        analysis_repository = AnalysisJobRepository(
+            database,
+            owner_repository,
+            publication_repository,
+        )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -85,6 +117,8 @@ def create_owner_app(
     )
     app.state.repository = repository
     app.state.owner_repository = owner_repository
+    app.state.publication_repository = publication_repository
+    app.state.analysis_repository = analysis_repository
     app.state.owner_origin = origin
     # Copy only explicit market routes. Do not mount a second application whose
     # lifecycle, exception handlers or request.app state could bypass this gate.
@@ -174,5 +208,6 @@ def create_owner_app(
         return response
 
     install_review_routes(app)
+    install_analysis_job_routes(app)
     app.add_middleware(OwnerGate, origin=origin, owner_repository=owner_repository)
     return app

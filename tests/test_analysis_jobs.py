@@ -99,6 +99,29 @@ def test_analysis_job_command_is_strict_canonical_and_versioned():
         _command(command.snapshot_id, algorithm_version="future")
 
 
+def test_analysis_job_command_allows_empty_symbols_for_market_ranking():
+    from dragon_radar.analysis_jobs.models import AnalysisJobCommand
+
+    command = _command(uuid4(), symbols=())
+
+    assert command.symbols == ()
+    assert AnalysisJobCommand.model_validate(command.model_dump()) == command
+
+
+def test_analysis_jobs_package_exports_http_and_repository_surface():
+    from dragon_radar.analysis_jobs import (
+        AnalysisJobRepository,
+        AnalysisJobWorker,
+        install_analysis_job_routes,
+        materialize_custom_analysis,
+    )
+
+    assert AnalysisJobRepository
+    assert AnalysisJobWorker
+    assert install_analysis_job_routes
+    assert materialize_custom_analysis
+
+
 def test_0007c_migration_creates_analysis_schema_and_readiness(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
@@ -561,6 +584,46 @@ def test_worker_limits_rankings_exclusions_and_curves_to_requested_symbols(job_s
     assert completed.result["benchmark"] == "INDEX"
 
 
+def test_worker_empty_symbols_returns_full_market_ranking_without_curves(job_setup):
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+
+    jobs, _owners, session, _publication = job_setup
+    publication = _publish(
+        jobs.database,
+        jobs.publications.market,
+        batch(
+            expected_security_ids=("A", "B", "C"),
+            security_states=tuple(
+                state(security_id) for security_id in ("A", "B", "C")
+            ),
+            bars=tuple(
+                bar(
+                    security_id,
+                    trade_date=day,
+                    close=Decimal("10"),
+                )
+                for security_id in ("A", "B", "C")
+                for day in DAYS
+                if not (security_id == "C" and day == DAYS[0])
+            ),
+        ),
+        suffix="-market-ranking",
+    )
+    submitted = jobs.submit(
+        session.token,
+        session.csrf,
+        _command(publication.id, symbols=()),
+        key="market-ranking",
+    )
+
+    completed = AnalysisJobWorker(jobs, worker_id="ranking-worker").run_once()
+
+    assert completed.id == submitted.id
+    assert [row["security_id"] for row in completed.result["ranking"]] == ["A", "B"]
+    assert [row["security_id"] for row in completed.result["exclusions"]] == ["C"]
+    assert not completed.result["curves"]
+
+
 def test_worker_rejects_index_in_expected_security_ids_as_analysis_symbol(job_setup):
     from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
 
@@ -693,3 +756,384 @@ def test_worker_propagates_fail_conflict_without_retrying_fail():
 
     assert caught.value is conflict
     assert repository.fail_calls == 1
+
+
+def _owner_headers(session):
+    return {
+        "Origin": "https://localhost:8030",
+        "X-CSRF-Token": session.csrf,
+        "Cookie": (
+            f"__Host-dragon-private-session={session.token}; "
+            f"__Host-dragon-private-csrf={session.csrf}"
+        ),
+    }
+
+
+@pytest.mark.anyio
+async def test_owner_analysis_http_submit_get_idempotency_and_isolation(job_setup):
+    import secrets
+
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import insert, text
+
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.owner.app import create_owner_app
+    from dragon_radar.owner.models import owner_principals, owner_sessions
+    from dragon_radar.owner.repository import _hash
+
+    jobs, owners, session, publication = job_setup
+    app = create_owner_app(
+        repository=jobs.publications.market,
+        owner_repository=owners,
+        publication_repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+    body = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "idempotency_key": "http-job",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://localhost:8030",
+    ) as client:
+        missing_csrf = await client.post(
+            "/api/analysis/jobs",
+            json=body,
+            headers={
+                "Origin": "https://localhost:8030",
+                "Cookie": (
+                    f"__Host-dragon-private-session={session.token}; "
+                    f"__Host-dragon-private-csrf={session.csrf}"
+                ),
+            },
+        )
+        assert missing_csrf.status_code == 403
+
+        created = await client.post(
+            "/api/analysis/jobs",
+            json=body,
+            headers=_owner_headers(session),
+        )
+        assert created.status_code == 200
+        assert set(created.json()) == {"job_id", "status"}
+        assert created.json()["status"] == "queued"
+
+        replay = await client.post(
+            "/api/analysis/jobs",
+            json=body,
+            headers=_owner_headers(session),
+        )
+        assert replay.status_code == 200
+        assert replay.json() == created.json()
+
+        conflict = await client.post(
+            "/api/analysis/jobs",
+            json={**body, "benchmark": "OTHER"},
+            headers=_owner_headers(session),
+        )
+        assert conflict.status_code == 409
+        assert conflict.json() == {"code": "conflict", "message": "Conflict"}
+
+        fetched = await client.get(
+            f"/api/analysis/jobs/{created.json()['job_id']}",
+            headers=_owner_headers(session),
+        )
+        assert fetched.status_code == 200
+        assert fetched.json() == {
+            "job_id": created.json()["job_id"],
+            "status": "queued",
+            "result": None,
+            "failure": None,
+            "input": {
+                "snapshot_id": str(publication.id),
+                "start": DAYS[0].isoformat(),
+                "end": DAYS[-1].isoformat(),
+                "benchmark": "B000300",
+                "adj": "raw",
+                "symbols": [],
+            },
+        }
+        assert all(
+            secret not in fetched.text
+            for secret in (str(session.owner_id), session.token, session.csrf, "lease")
+        )
+
+        completed = AnalysisJobWorker(jobs, worker_id="http-worker").run_once()
+        assert completed.status == "succeeded"
+        succeeded = await client.get(
+            f"/api/analysis/jobs/{created.json()['job_id']}",
+            headers=_owner_headers(session),
+        )
+        assert succeeded.status_code == 200
+        assert succeeded.json()["status"] == "succeeded"
+        assert succeeded.json()["result"]["schema"] == "dragon-radar.custom-analysis"
+        assert succeeded.json()["failure"] is None
+        assert "lease" not in succeeded.text
+
+        other_owner_id = uuid4()
+        other_token = secrets.token_urlsafe(32)
+        other_csrf = secrets.token_urlsafe(32)
+        with jobs.database.engine.begin() as connection:
+            connection.execute(
+                insert(owner_principals).values(
+                    id=other_owner_id,
+                    local_key=None,
+                    created_at=NOW,
+                )
+            )
+            connection.execute(
+                insert(owner_sessions).values(
+                    id=uuid4(),
+                    owner_id=other_owner_id,
+                    token_hash=_hash(other_token),
+                    csrf_hash=_hash(other_csrf),
+                    origin="https://localhost:8030",
+                    created_at=NOW,
+                    expires_at=NOW + timedelta(hours=1),
+                )
+            )
+        other = SimpleNamespace(token=other_token, csrf=other_csrf)
+        isolated = await client.get(
+            f"/api/analysis/jobs/{created.json()['job_id']}",
+            headers=_owner_headers(other),
+        )
+        assert isolated.status_code == 404
+
+    with jobs.database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM analysis_jobs")) == 1
+
+
+@pytest.mark.anyio
+async def test_owner_analysis_http_strict_body_and_revoked_source(job_setup):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+
+    jobs, owners, session, publication = job_setup
+    app = create_owner_app(
+        repository=jobs.publications.market,
+        owner_repository=owners,
+        publication_repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+    body = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "symbols": ["A"],
+        "idempotency_key": "strict-http-job",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://localhost:8030",
+    ) as client:
+        for invalid in (
+            {**body, "unknown": True},
+            {**body, "snapshot_id": None},
+            {**body, "symbols": ["A", "B", "C", "D", "E", "F"]},
+            {**body, "start": DAYS[-1].isoformat(), "end": DAYS[0].isoformat()},
+        ):
+            response = await client.post(
+                "/api/analysis/jobs",
+                json=invalid,
+                headers=_owner_headers(session),
+            )
+            assert response.status_code == 422
+            assert response.json() == {
+                "code": "invalid_request",
+                "message": "Invalid request",
+            }
+        query = await client.post(
+            "/api/analysis/jobs?unexpected=1",
+            json=body,
+            headers=_owner_headers(session),
+        )
+        assert query.status_code == 422
+
+        created = await client.post(
+            "/api/analysis/jobs",
+            json=body,
+            headers=_owner_headers(session),
+        )
+        jobs.publications.market.revoke_source("synthetic")
+        denied = await client.get(
+            f"/api/analysis/jobs/{created.json()['job_id']}",
+            headers=_owner_headers(session),
+        )
+        assert denied.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_public_analysis_gets_use_cache_without_writes(job_setup):
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import text
+
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.http.app import create_workbench_app
+
+    jobs, _owners, session, publication = job_setup
+    rank_command = _command(publication.id, symbols=())
+    compare_command = _command(publication.id, symbols=("A",))
+    jobs.submit(session.token, session.csrf, rank_command, key="public-rank-cache")
+    jobs.submit(session.token, session.csrf, compare_command, key="public-curve-cache")
+    worker = AnalysisJobWorker(jobs, worker_id="public-cache-worker")
+    assert worker.run_once().status == "succeeded"
+    assert worker.run_once().status == "succeeded"
+    with jobs.database.engine.connect() as connection:
+        before = connection.scalar(text("SELECT count(*) FROM analysis_jobs"))
+        cache_before = connection.scalar(
+            text("SELECT count(*) FROM analysis_job_cache")
+        )
+
+    app = create_workbench_app(
+        repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+    assert app.state.analysis_repository is jobs
+    common = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "adj": "raw",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        rank = await client.get("/api/rank/range", params=common)
+        curves = await client.get(
+            "/api/compare/curves",
+            params={**common, "symbols": "A"},
+        )
+        miss = await client.get(
+            "/api/rank/range",
+            params={**common, "benchmark": "OTHER"},
+        )
+        public_post = await client.post("/api/analysis/jobs", json={})
+
+    assert (
+        rank.status_code,
+        curves.status_code,
+        miss.status_code,
+    ) == (200, 200, 200), (rank.json(), curves.json(), miss.json())
+    assert rank.json()["data"]["ranking"]
+    assert curves.json()["data"]["curves"][0]["security_id"] == "A"
+    assert miss.json()["data"] is None
+    assert miss.json()["reason"] == "analysis_not_precomputed"
+    assert public_post.status_code == 403
+    assert not any(
+        getattr(route, "path", None) == "/api/analysis/jobs"
+        and "POST" in (getattr(route, "methods", None) or ())
+        for route in app.routes
+    )
+    with jobs.database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM analysis_jobs")) == before
+        assert (
+            connection.scalar(text("SELECT count(*) FROM analysis_job_cache"))
+            == cache_before
+        )
+
+
+@pytest.mark.anyio
+async def test_public_cache_reauthorizes_and_rejects_mismatched_result(
+    job_setup, monkeypatch
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.http.app import create_workbench_app
+
+    jobs, _owners, session, publication = job_setup
+    command = _command(publication.id, symbols=())
+    jobs.submit(session.token, session.csrf, command, key="public-validation")
+    assert (
+        AnalysisJobWorker(jobs, worker_id="public-validation-worker").run_once().status
+        == "succeeded"
+    )
+    original_get_cache = jobs.get_cache
+
+    def mismatched(command):
+        result = dict(original_get_cache(command))
+        result["snapshot_id"] = str(uuid4())
+        return result
+
+    monkeypatch.setattr(jobs, "get_cache", mismatched)
+    app = create_workbench_app(
+        repository=jobs.publications,
+        analysis_repository=jobs,
+    )
+    params = {
+        "snapshot_id": str(publication.id),
+        "start": DAYS[0].isoformat(),
+        "end": DAYS[-1].isoformat(),
+        "adj": "raw",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        invalid = await client.get("/api/rank/range", params=params)
+    assert invalid.status_code == 503
+
+    def revoke_then_get(command):
+        jobs.publications.market.revoke_source("synthetic")
+        return original_get_cache(command)
+
+    monkeypatch.setattr(jobs, "get_cache", revoke_then_get)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        denied = await client.get("/api/rank/range", params=params)
+    assert denied.status_code == 403
+
+
+def test_readonly_analysis_repository_fails_closed_for_owner_methods(job_setup):
+    from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
+    from dragon_radar.storage.repository import Forbidden
+
+    jobs, _owners, session, publication = job_setup
+    readonly = AnalysisJobRepository(
+        jobs.database,
+        None,
+        jobs.publications,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(Forbidden):
+        readonly.submit(
+            session.token,
+            session.csrf,
+            _command(publication.id),
+            key="forbidden-owner-write",
+        )
+    with pytest.raises(Forbidden):
+        readonly.get(session.token, uuid4())
+
+
+@pytest.mark.anyio
+async def test_app_factories_construct_analysis_repositories(database_url):
+    from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
+    from dragon_radar.http.app import create_workbench_app
+    from dragon_radar.owner.app import create_owner_app
+    from dragon_radar.publication.repository import PublicationRepository
+
+    public = create_workbench_app(database_url=database_url)
+    assert isinstance(public.state.repository, PublicationRepository)
+    assert isinstance(public.state.analysis_repository, AnalysisJobRepository)
+    assert public.state.analysis_repository.owners is None
+    async with public.router.lifespan_context(public):
+        pass
+
+    owner = create_owner_app(database_url=database_url)
+    assert isinstance(owner.state.publication_repository, PublicationRepository)
+    assert isinstance(owner.state.analysis_repository, AnalysisJobRepository)
+    assert owner.state.analysis_repository.owners is owner.state.owner_repository
+    assert not any(
+        getattr(route, "path", None) in {"/api/rank/range", "/api/compare/curves"}
+        for route in owner.routes
+    )
+    async with owner.router.lifespan_context(owner):
+        pass

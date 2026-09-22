@@ -125,6 +125,8 @@ class AnalysisJobRepository:
         key: str,
     ) -> AnalysisJobRecord:
         """Authorize token and CSRF, then submit in that same transaction."""
+        if self.owners is None:
+            raise Forbidden("Owner access is unavailable")
         if not isinstance(csrf, str) or not csrf:
             from dragon_radar.owner import CsrfForbidden
 
@@ -242,6 +244,8 @@ class AnalysisJobRepository:
             )
 
     def get(self, token: str, job_id: UUID | str) -> AnalysisJobRecord:
+        if self.owners is None:
+            raise Forbidden("Owner access is unavailable")
         try:
             job_id = UUID(str(job_id))
         except (TypeError, ValueError, AttributeError):

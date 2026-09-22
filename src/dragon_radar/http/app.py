@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Request
 
+from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
 from dragon_radar.analytics.metrics import market_breadth  # noqa: F401
 from dragon_radar.http.contracts import empty_envelope, snapshot_summary
 from dragon_radar.http.errors import (
@@ -36,7 +37,10 @@ def get_repository(request: Request) -> Repository:
 
 
 def create_workbench_app(
-    database_url: str | None = None, *, repository: Repository | None = None
+    database_url: str | None = None,
+    *,
+    repository: Repository | None = None,
+    analysis_repository: AnalysisJobRepository | None = None,
 ) -> FastAPI:
     """No implicit migrations, ingestion, environment files, or private routers."""
     owned = repository is None
@@ -54,6 +58,12 @@ def create_workbench_app(
             if database is not None
             else None
         )
+    if (
+        analysis_repository is None
+        and database is not None
+        and isinstance(repository, PublicationRepository)
+    ):
+        analysis_repository = AnalysisJobRepository(database, None, repository)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -71,6 +81,7 @@ def create_workbench_app(
         lifespan=lifespan,
     )
     app.state.repository = repository
+    app.state.analysis_repository = analysis_repository
     register_error_handlers(app)
 
     @app.middleware("http")

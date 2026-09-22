@@ -53,7 +53,7 @@ class AnalysisJobCommand(_StrictFrozenModel):
     end: date
     benchmark: SafeIdentifier = "B000300"
     adjustment: Adjustment = "raw"
-    symbols: Annotated[tuple[SafeIdentifier, ...], Field(min_length=1, max_length=5)]
+    symbols: Annotated[tuple[SafeIdentifier, ...], Field(max_length=5)]
     algorithm_version: Literal["analysis-custom-v1-decimal34"] = (
         ANALYSIS_ALGORITHM_VERSION
     )

@@ -65,7 +65,9 @@ def materialize_custom_analysis(
     stored_curves = projected["curves"]
     requested = set(command.symbols)
     ranking = [
-        dict(row) for row in projected["ranking"] if row["security_id"] in requested
+        dict(row)
+        for row in projected["ranking"]
+        if not requested or row["security_id"] in requested
     ]
     previous_return = None
     current_rank = 0
@@ -104,7 +106,9 @@ def materialize_custom_analysis(
         "reason": None,
         "ranking": ranking,
         "exclusions": [
-            row for row in projected["exclusions"] if row["security_id"] in requested
+            row
+            for row in projected["exclusions"]
+            if not requested or row["security_id"] in requested
         ],
         "benchmark_return_ratio": projected["benchmark_return_ratio"],
         "benchmark_reasons": projected["benchmark_reasons"],

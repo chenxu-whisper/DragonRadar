@@ -5,8 +5,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Request
 
+from dragon_radar.analysis_jobs.models import AnalysisJobCommand
 from dragon_radar.http.contracts import coverage_view, empty_envelope
 from dragon_radar.http.errors import DataUnavailable
+from dragon_radar.http.routes.market import _restore_decimals
 from dragon_radar.http.routes.stock import (
     _adjust_window,
     _market_extensions,
@@ -217,6 +219,51 @@ def _sorted_ranking(rows, sort: str):
     return ranked
 
 
+def _cached_result(request: Request, snapshot, values, symbols):
+    repository = request.app.state.analysis_repository
+    if repository is None:
+        return None
+    command = AnalysisJobCommand(
+        snapshot_id=snapshot.id,
+        start=values["start"],
+        end=values["end"],
+        benchmark=values["benchmark"],
+        adjustment=values["adjustment"],
+        symbols=symbols,
+    )
+    result = repository.get_cache(command)
+    if result is None:
+        return None
+    result = _restore_decimals(result)
+    try:
+        if (
+            not isinstance(result, dict)
+            or result.get("schema") != "dragon-radar.custom-analysis"
+            or result.get("schema_version") != 1
+            or result.get("algorithm_version") != command.algorithm_version
+            or result.get("snapshot_id") != str(command.snapshot_id)
+            or result.get("requested_start") != command.start.isoformat()
+            or result.get("requested_end") != command.end.isoformat()
+            or result.get("benchmark") != command.benchmark
+            or result.get("adjustment") != command.adjustment
+            or type(result.get("available")) is not bool
+            or not isinstance(result.get("ranking"), list)
+            or not isinstance(result.get("exclusions"), list)
+            or not isinstance(result.get("curves"), list)
+        ):
+            raise DataUnavailable
+        adjusted_start = date.fromisoformat(result["adjusted_start"])
+        adjusted_end = date.fromisoformat(result["adjusted_end"])
+        if result["available"]:
+            if result.get("reason") is not None:
+                raise DataUnavailable
+        elif not isinstance(result.get("reason"), str) or not result["reason"]:
+            raise DataUnavailable
+    except (KeyError, TypeError, ValueError):
+        raise DataUnavailable from None
+    return result, adjusted_start, adjusted_end
+
+
 @router.get("/api/rank/range")
 def rank_range(request: Request):
     values = _query(request, comparison=False)
@@ -243,13 +290,28 @@ def rank_range(request: Request):
         )
     window_days, window = _window(analysis, sessions, values["benchmark"])
     if window is None or window_days is None:
-        return _unavailable(
-            snapshot,
-            "analysis_not_precomputed",
-            values["adjustment"],
-            benchmark=values["benchmark"],
-            rule_version=analysis.get("rule_version"),
-        )
+        cached = _cached_result(request, snapshot, values, ())
+        if cached is None:
+            return _unavailable(
+                snapshot,
+                "analysis_not_precomputed",
+                values["adjustment"],
+                benchmark=values["benchmark"],
+                rule_version=analysis.get("rule_version"),
+            )
+        result, adjusted_start, adjusted_end = cached
+        if not result["available"]:
+            return _unavailable(
+                snapshot,
+                result["reason"],
+                values["adjustment"],
+                benchmark=values["benchmark"],
+                rule_version=analysis.get("rule_version"),
+            )
+        if adjusted_start != sessions[0] or adjusted_end != sessions[-1]:
+            raise DataUnavailable
+        window_days = len(sessions)
+        window = {"adjustments": {values["adjustment"]: result}}
     try:
         projected = window["adjustments"][values["adjustment"]]
         rows = _sorted_ranking(projected["ranking"], values["sort"])
@@ -306,10 +368,44 @@ def compare_curves(request: Request):
         )
     _window_days, window = _window(analysis, sessions, values["benchmark"])
     if window is None:
-        return _unavailable(
+        symbols = values["symbols"]
+        assert symbols is not None
+        cached = _cached_result(request, snapshot, values, symbols)
+        if cached is None:
+            return _unavailable(
+                snapshot,
+                "analysis_not_precomputed",
+                values["adjustment"],
+                benchmark=values["benchmark"],
+                rule_version=analysis.get("rule_version"),
+            )
+        result, adjusted_start, adjusted_end = cached
+        if not result["available"]:
+            return _unavailable(
+                snapshot,
+                result["reason"],
+                values["adjustment"],
+                benchmark=values["benchmark"],
+                rule_version=analysis.get("rule_version"),
+            )
+        if adjusted_start != sessions[0] or adjusted_end != sessions[-1]:
+            raise DataUnavailable
+        return _response(
             snapshot,
-            "analysis_not_precomputed",
-            values["adjustment"],
+            {
+                "adjusted_start": adjusted_start,
+                "adjusted_end": adjusted_end,
+                "benchmark": values["benchmark"],
+                "curves": result["curves"],
+                "exclusions": result["exclusions"],
+            },
+            coverage_view(
+                len(symbols),
+                len(result["curves"]),
+                0,
+                len(symbols) - len(result["curves"]),
+            ),
+            adjustment=values["adjustment"],
             benchmark=values["benchmark"],
             rule_version=analysis.get("rule_version"),
         )
