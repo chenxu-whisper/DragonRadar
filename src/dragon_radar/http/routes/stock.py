@@ -11,13 +11,17 @@ from dragon_radar.http.routes.market import _published_payload
 from dragon_radar.http.selection import query_date, query_values, select_snapshot
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.publication.models import PublishedSnapshot
-from dragon_radar.roles.rules import ROLE_NAMES
+from dragon_radar.roles.adapters import adapt_role_evaluation
+from dragon_radar.roles.models import RankedCandidate, RoleEvaluation, RoleTopicStatus
+from dragon_radar.roles.rules import RESET_APPROVED_RULE_VERSIONS, ROLE_NAMES
 from dragon_radar.storage.repository import NotFound
 
 router = APIRouter()
 
 _ADJUSTMENTS = frozenset({"raw", "qfq", "hfq"})
 _SEAL_FIELDS = (
+    "is_limit_up",
+    "touched_limit",
     "first_seal_time",
     "last_seal_time",
     "break_count",
@@ -163,21 +167,60 @@ def _roles(snapshot: PublishedSnapshot, security_id: str):
         items = []
         for topic in topics:
             topic_id = topic["topic_id"]
-            for row in topic.get("results", ()):
-                if row.get("security_id") != security_id:
+            for internal_role, external_role in ROLE_NAMES.items():
+                status = next(
+                    (
+                        item
+                        for item in topic.get("statuses", ())
+                        if item.get("role") == internal_role
+                    ),
+                    None,
+                )
+                if status is None:
                     continue
-                external_role = ROLE_NAMES.get(row.get("role"))
-                if external_role is not None:
+                evaluation = RoleEvaluation(
+                    topic_status=RoleTopicStatus(
+                        topic_id=topic_id,
+                        role=internal_role,
+                        capability=status["capability"],
+                        status=status["status"],
+                        expected=status["expected"],
+                        valid=status["valid"],
+                        legal_excluded=status["legal_excluded"],
+                        missing=status["missing"],
+                        reasons=tuple(status.get("reasons", ())),
+                    ),
+                    candidates=tuple(
+                        RankedCandidate(
+                            topic_id=topic_id,
+                            security_id=row["security_id"],
+                            role=internal_role,
+                            status=row["internal_status"],
+                            factors=(),
+                            reasons=tuple(row.get("reasons", ())),
+                            tie_rank=row["tie_rank"],
+                        )
+                        for row in topic.get("results", ())
+                        if row.get("role") == internal_role
+                    ),
+                )
+                for evidence in adapt_role_evaluation(
+                    evaluation,
+                    rule_version=result.payload["rule_version"],
+                    approved_rule_versions=RESET_APPROVED_RULE_VERSIONS,
+                ):
+                    if evidence.security_id != security_id:
+                        continue
                     items.append(
                         {
-                            "role": external_role,
+                            "role_type": external_role,
+                            "evidence_status": evidence.status,
                             "sector_id": topic_id,
-                            "status": row.get("internal_status"),
                         }
                     )
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, ValueError):
         raise DataUnavailable from None
-    items.sort(key=lambda item: (item["role"], item["sector_id"]))
+    items.sort(key=lambda item: (item["role_type"], item["sector_id"]))
     unique_items = list(dict.fromkeys(tuple(item.items()) for item in items))
     projected_items = [dict(item) for item in unique_items]
     return {"items": projected_items, "reason": None}

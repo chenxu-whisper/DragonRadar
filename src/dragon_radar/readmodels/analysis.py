@@ -243,6 +243,7 @@ def _window(
         )
         benchmark_return = benchmark["return_ratio"]
         rows = []
+        exclusions = []
         curves = {}
         for security_id in stock_ids:
             current = stock_series[security_id]
@@ -258,34 +259,41 @@ def _window(
             elif value is not None:
                 relative = excess_return(value, benchmark_return)
             identity = identities[security_id]
-            rows.append(
-                {
-                    "rank": None,
-                    "security_id": security_id,
-                    "name": identity.name if identity is not None else None,
-                    "topics": topics.get(security_id, []),
-                    "topic_status": topic_status,
-                    "topic_reasons": list(topic_reasons),
-                    "return_ratio": value,
-                    "excess_return_ratio": relative,
-                    "max_drawdown_ratio": current["max_drawdown_ratio"],
-                    "amount_change_ratio": current["amount_change_ratio"],
-                    "reasons": sorted(set(reasons)),
-                }
-            )
+            row_reasons = sorted(set(reasons))
+            if value is None:
+                exclusions.append(
+                    {
+                        "security_id": security_id,
+                        "reasons": row_reasons,
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "rank": None,
+                        "security_id": security_id,
+                        "name": identity.name if identity is not None else None,
+                        "topics": topics.get(security_id, []),
+                        "topic_status": topic_status,
+                        "topic_reasons": list(topic_reasons),
+                        "return_ratio": value,
+                        "excess_return_ratio": relative,
+                        "max_drawdown_ratio": current["max_drawdown_ratio"],
+                        "amount_change_ratio": current["amount_change_ratio"],
+                        "reasons": row_reasons,
+                    }
+                )
             curves[security_id] = {
                 "normalized": current["normalized"],
                 "drawdown": current["drawdown"],
                 "reasons": current["reasons"],
             }
         rows.sort(key=lambda item: item["security_id"])
-        present = sorted(
-            (item for item in rows if item["return_ratio"] is not None),
+        rows = sorted(
+            rows,
             key=lambda item: item["return_ratio"],
             reverse=True,
         )
-        missing = [item for item in rows if item["return_ratio"] is None]
-        rows = present + missing
         previous_return = None
         current_rank = 0
         for position, row in enumerate(rows, start=1):
@@ -306,6 +314,7 @@ def _window(
         )
         result["adjustments"][adjustment] = {
             "ranking": rows,
+            "exclusions": exclusions,
             "curves": curves,
             "benchmark_return_ratio": benchmark_return,
             "benchmark_reasons": benchmark["reasons"],

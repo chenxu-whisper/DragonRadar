@@ -163,11 +163,13 @@ def test_analysis_marks_invalid_required_amount_unavailable(invalid_amount):
         source.model_copy(update={"bars": bars}),
         windows=(20,),
     )
-    rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
-    row = next(item for item in rows if item["security_id"] == "A")
+    projected = result["windows"]["20"]["adjustments"]["raw"]
+    exclusion = next(
+        item for item in projected["exclusions"] if item["security_id"] == "A"
+    )
 
-    assert row["amount_change_ratio"] is None
-    assert "amount_change_unavailable" in row["reasons"]
+    assert all(item["security_id"] != "A" for item in projected["ranking"])
+    assert "amount_change_unavailable" in exclusion["reasons"]
 
 
 def test_analysis_uses_exact_n_plus_one_positions_and_never_shifts_gaps():
@@ -183,17 +185,14 @@ def test_analysis_uses_exact_n_plus_one_positions_and_never_shifts_gaps():
     assert rows["A"]["excess_return_ratio"] == Decimal("0.08")
     assert rows["D"]["max_drawdown_ratio"] == Decimal("0.25")
     assert rows["A"]["amount_change_ratio"] == Decimal("0.2")
-    assert rows["C"]["return_ratio"] is None
-    assert "missing_price" in rows["C"]["reasons"]
+    assert "C" not in rows
+    assert adjusted["exclusions"] == [
+        {"security_id": "C", "reasons": ["missing_price"]}
+    ]
     assert adjusted["curves"]["C"]["normalized"] == [None] * 21
     assert adjusted["curves"]["C"]["drawdown"] == [None] * 21
-    assert [row["security_id"] for row in adjusted["ranking"]] == [
-        "E",
-        "A",
-        "D",
-        "C",
-    ]
-    assert [row["rank"] for row in adjusted["ranking"]] == [1, 2, 3, None]
+    assert [row["security_id"] for row in adjusted["ranking"]] == ["E", "A", "D"]
+    assert [row["rank"] for row in adjusted["ranking"]] == [1, 2, 3]
 
 
 def test_analysis_keeps_fixed_baseline_curves_across_middle_gap():
@@ -214,12 +213,10 @@ def test_analysis_keeps_fixed_baseline_curves_across_middle_gap():
     projected = materialize_analysis(source, windows=(20,))["windows"]["20"][
         "adjustments"
     ]["raw"]
-    row = next(item for item in projected["ranking"] if item["security_id"] == "D")
     curve = projected["curves"]["D"]
 
-    assert row["return_ratio"] is None
-    assert row["max_drawdown_ratio"] is None
-    assert "missing_price" in row["reasons"]
+    assert all(item["security_id"] != "D" for item in projected["ranking"])
+    assert {"security_id": "D", "reasons": ["missing_price"]} in projected["exclusions"]
     assert curve["normalized"][:4] == [
         Decimal("100"),
         Decimal("120"),
@@ -241,8 +238,8 @@ def test_analysis_gives_equal_returns_equal_ranks_with_stable_security_order():
     result = materialize_analysis(_analysis_batch(), windows=(20,))
     rows = result["windows"]["20"]["adjustments"]["raw"]["ranking"]
 
-    assert [row["security_id"] for row in rows] == ["A", "E", "D", "C"]
-    assert [row["rank"] for row in rows] == [1, 1, 3, None]
+    assert [row["security_id"] for row in rows] == ["A", "E", "D"]
+    assert [row["rank"] for row in rows] == [1, 1, 3]
 
 
 def test_analysis_ranking_excludes_effective_indexes_and_benchmark():
@@ -273,8 +270,13 @@ def test_analysis_ranking_excludes_effective_indexes_and_benchmark():
     result = materialize_analysis(source, windows=(20,))
 
     for adjustment in ("raw", "adjusted"):
-        ranking = result["windows"]["20"]["adjustments"][adjustment]["ranking"]
-        assert {row["security_id"] for row in ranking} == {"A", "C", "D", "E"}
+        projected = result["windows"]["20"]["adjustments"][adjustment]
+        assert {row["security_id"] for row in projected["ranking"]} == {
+            "A",
+            "D",
+            "E",
+        }
+        assert [item["security_id"] for item in projected["exclusions"]] == ["C"]
 
 
 @pytest.mark.parametrize(
@@ -438,10 +440,10 @@ def test_analysis_keeps_common_stock_benchmark_in_ranking_but_rejects_its_identi
         projected = result["windows"]["20"]["adjustments"][adjustment]
         assert {row["security_id"] for row in projected["ranking"]} == {
             "A",
-            "C",
             "D",
             "E",
         }
+        assert [item["security_id"] for item in projected["exclusions"]] == ["C"]
         assert projected["benchmark_return_ratio"] is None
         assert projected["benchmark_reasons"] == ["benchmark_identity_invalid"]
         assert all(
@@ -530,9 +532,15 @@ def test_stock_materialization_projects_unique_current_trusted_seal():
     from dragon_radar.readmodels.stock import materialize_stocks
 
     source = _analysis_batch()
-    source = source.model_copy(update={"limit_up_events": (_limit_up_event(source),)})
+    source = source.model_copy(
+        update={
+            "limit_up_events": (_limit_up_event(source, touched_limit=True),),
+        }
+    )
 
     assert materialize_stocks(source)["stocks"]["A"]["seal"] == {
+        "is_limit_up": True,
+        "touched_limit": True,
         "first_seal_time": "09:35:00",
         "last_seal_time": "14:55:00",
         "break_count": 2,
@@ -566,6 +574,8 @@ def test_stock_materialization_nulls_untrusted_or_conflicting_seal(kind):
     assert all(
         seal[field] is None
         for field in (
+            "is_limit_up",
+            "touched_limit",
             "first_seal_time",
             "last_seal_time",
             "break_count",
@@ -715,7 +725,18 @@ def _published_analysis_snapshot(*, role_ready: bool = False, source=None):
             {
                 "topic_id": "topic-a",
                 "member_ids": ["A"],
-                "statuses": [],
+                "statuses": [
+                    {
+                        "role": "trend",
+                        "capability": "ready",
+                        "status": "ready",
+                        "expected": 1,
+                        "valid": 1,
+                        "legal_excluded": 0,
+                        "missing": 0,
+                        "reasons": [],
+                    }
+                ],
                 "results": [
                     {
                         "security_id": "A",
@@ -874,6 +895,10 @@ def test_publication_market_payload_adds_versioned_analysis_and_stocks():
 async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
     from dragon_radar.http.app import create_workbench_app
 
+    monkeypatch.setattr(
+        "dragon_radar.http.routes.stock.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
     snapshot = _published_analysis_snapshot(role_ready=True)
     repository = _PublishedRepository(snapshot)
 
@@ -954,9 +979,20 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
     assert stock["security_id"] == "A"
     assert stock["name"] == "Synthetic A"
     assert stock["roles"]["items"] == [
-        {"role": "trend_leader", "sector_id": "topic-a", "status": "candidate"}
+        {
+            "role_type": "trend_leader",
+            "evidence_status": "candidate",
+            "sector_id": "topic-a",
+        }
     ]
+    assert set(stock["roles"]["items"][0]) == {
+        "role_type",
+        "evidence_status",
+        "sector_id",
+    }
     assert stock["seal"] == {
+        "is_limit_up": None,
+        "touched_limit": None,
         "first_seal_time": None,
         "last_seal_time": None,
         "break_count": None,
@@ -991,6 +1027,15 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
     assert rank_body["data"]["benchmark_return"] == Decimal("0.02")
     assert rank_body["basis"]["benchmark"] == "B000300"
     assert rank_body["rule_version"] == "analysis-v1-decimal34"
+    assert rank_body["data"]["exclusions"] == [
+        {"security_id": "C", "reasons": ["missing_price"]}
+    ]
+    assert rank_body["coverage"] == {
+        "expected": 4,
+        "valid": 3,
+        "excluded": 0,
+        "missing": 1,
+    }
     by_id = {item["security_id"]: item for item in rank_body["data"]["ranking"]}
     assert by_id["A"]["return_ratio"] == Decimal("0.1")
     assert by_id["A"]["excess_return_ratio"] == Decimal("0.08")
@@ -1027,6 +1072,85 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
     assert unpinned_adjusted.status_code == 200
     assert unpinned_adjusted.json()["snapshot_id"] == str(snapshot.id)
     assert unpinned_adjusted.json()["data"]["adjusted_end"] == str(end)
+
+
+@pytest.mark.anyio
+async def test_rank_keeps_return_valid_rows_with_null_sort_value_last():
+    from dragon_radar.http.app import create_workbench_app
+
+    source = _analysis_batch()
+    current_day = source.trade_date
+    source = source.model_copy(
+        update={
+            "bars": tuple(
+                item.model_copy(update={"amount": None})
+                if item.security_id == "A" and item.trade_date == current_day
+                else item
+                for item in source.bars
+            )
+        }
+    )
+    snapshot = _published_analysis_snapshot(source=source)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/rank/range",
+            params={
+                "snapshot_id": str(snapshot.id),
+                "start": str(_sessions()[0]),
+                "end": str(_sessions()[-1]),
+                "benchmark": "B000300",
+                "sort": "amount_change",
+                "adj": "raw",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["security_id"] for item in body["data"]["ranking"]] == [
+        "D",
+        "E",
+        "A",
+    ]
+    assert body["data"]["ranking"][-1]["return_ratio"] == 0.1
+    assert body["data"]["ranking"][-1]["amount_change_ratio"] is None
+    assert body["data"]["exclusions"] == [
+        {"security_id": "C", "reasons": ["missing_price"]}
+    ]
+    assert body["coverage"] == {
+        "expected": 4,
+        "valid": 2,
+        "excluded": 0,
+        "missing": 2,
+    }
+
+
+@pytest.mark.anyio
+async def test_stock_roles_fail_closed_without_leaking_internal_fields():
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot(role_ready=True)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/stock/A",
+            params={"snapshot_id": str(snapshot.id)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["roles"]["items"] == [
+        {
+            "role_type": "trend_leader",
+            "evidence_status": "insufficient",
+            "sector_id": "topic-a",
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -1187,7 +1311,11 @@ async def test_stock_detail_prefers_complete_published_stock_seal():
     from dragon_radar.http.app import create_workbench_app
 
     source = _analysis_batch()
-    source = source.model_copy(update={"limit_up_events": (_limit_up_event(source),)})
+    source = source.model_copy(
+        update={
+            "limit_up_events": (_limit_up_event(source, touched_limit=True),),
+        }
+    )
     snapshot = _published_analysis_snapshot(role_ready=True, source=source)
     app = create_workbench_app(repository=_PublishedRepository(snapshot))
 
@@ -1201,6 +1329,8 @@ async def test_stock_detail_prefers_complete_published_stock_seal():
 
     assert response.status_code == 200
     assert response.json()["data"]["seal"] == {
+        "is_limit_up": True,
+        "touched_limit": True,
         "first_seal_time": "09:35:00",
         "last_seal_time": "14:55:00",
         "break_count": 2,
@@ -1266,6 +1396,8 @@ async def test_analysis_routes_validate_before_storage_and_bind_snapshot_date():
             "reason": "role_disabled",
         }
         assert missing_roles.json()["data"]["seal"] == {
+            "is_limit_up": None,
+            "touched_limit": None,
             "first_seal_time": None,
             "last_seal_time": None,
             "break_count": None,

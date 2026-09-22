@@ -11,6 +11,8 @@ STOCK_SCHEMA = "dragon-radar.stocks"
 STOCK_SCHEMA_VERSION = 1
 STOCK_RULE_VERSION = "stocks-v1-raw"
 _SEAL_FIELDS = (
+    "is_limit_up",
+    "touched_limit",
     "first_seal_time",
     "last_seal_time",
     "break_count",
@@ -40,6 +42,8 @@ def _seal(batch: MarketBatch, security_id: str) -> dict[str, Any]:
         )
     event = events[0]
     return {
+        "is_limit_up": event.is_limit_up,
+        "touched_limit": event.touched_limit,
         "first_seal_time": (
             event.first_seal_time.isoformat()
             if event.first_seal_time is not None

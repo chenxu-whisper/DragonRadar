@@ -242,11 +242,15 @@ def rank_range(request: Request):
     try:
         projected = window["adjustments"][values["adjustment"]]
         rows = _sorted_ranking(projected["ranking"], values["sort"])
+        exclusions = projected["exclusions"]
         benchmark_return = projected["benchmark_return_ratio"]
     except (KeyError, TypeError):
         raise DataUnavailable from None
+    if not isinstance(exclusions, list):
+        raise DataUnavailable
     field = _SORT_FIELDS[values["sort"]][0]
     valid = sum(row.get(field) is not None for row in rows)
+    expected = len(rows) + len(exclusions)
     response = _response(
         snapshot,
         {
@@ -255,8 +259,9 @@ def rank_range(request: Request):
             "adjusted_end": sessions[-1],
             "benchmark_return": benchmark_return,
             "ranking": rows,
+            "exclusions": exclusions,
         },
-        coverage_view(len(rows), valid, 0, len(rows) - valid),
+        coverage_view(expected, valid, 0, expected - valid),
         adjustment=values["adjustment"],
         benchmark=values["benchmark"],
         rule_version=analysis.get("rule_version"),
