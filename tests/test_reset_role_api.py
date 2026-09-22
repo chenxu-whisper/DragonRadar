@@ -510,11 +510,37 @@ async def test_ladder_deduplicates_multisector_stocks_and_matches_heatmap(
     role_publication, database, monkeypatch
 ):
     publication, persisted, _repository = role_publication
+
+    def add_excluded_and_missing_members(payload):
+        topic = payload["topics"][0]
+        topic["member_ids"].extend(["C", "D"])
+        topic["ladder"].extend(
+            [
+                {
+                    "security_id": "C",
+                    "trade_date": str(publication.trade_date),
+                    "closing_limit_streak": 0,
+                    "limit_hits_10": 0,
+                    "broken_board": False,
+                    "touched_not_sealed": False,
+                    "reasons": [],
+                },
+                {
+                    "security_id": "D",
+                    "trade_date": str(publication.trade_date),
+                    "limit_hits_10": 0,
+                    "broken_board": False,
+                    "touched_not_sealed": False,
+                    "reasons": ["closing_observation_missing"],
+                },
+            ]
+        )
+
     _update_domain_payload(
         database,
         publication,
         "role",
-        lambda payload: payload["topics"][0]["member_ids"].append("C"),
+        add_excluded_and_missing_members,
     )
     monkeypatch.setattr(
         "dragon_radar.http.routes.roles.RESET_APPROVED_RULE_VERSIONS",
@@ -530,6 +556,9 @@ async def test_ladder_deduplicates_multisector_stocks_and_matches_heatmap(
         overview = await client.get("/api/market/overview", params=params)
         sector = await client.get(
             "/api/limit-up/ladder", params={**params, "sector": "topic-a"}
+        )
+        other_sector = await client.get(
+            "/api/limit-up/ladder", params={**params, "sector": "topic-b"}
         )
         empty = await client.get(
             "/api/limit-up/ladder", params={**params, "sector": "topic-empty"}
@@ -552,16 +581,22 @@ async def test_ladder_deduplicates_multisector_stocks_and_matches_heatmap(
     assert empty.json()["data"]["cells"] == []
     assert empty.json()["data"]["total"] == 0
     assert ladder.json()["coverage"] == {
-        "expected": 3,
+        "expected": 4,
         "valid": 2,
-        "excluded": 0,
+        "excluded": 1,
         "missing": 1,
     }
     assert sector.json()["coverage"] == {
-        "expected": 3,
+        "expected": 4,
         "valid": 2,
-        "excluded": 0,
+        "excluded": 1,
         "missing": 1,
+    }
+    assert other_sector.json()["coverage"] == {
+        "expected": 1,
+        "valid": 1,
+        "excluded": 0,
+        "missing": 0,
     }
     assert empty.json()["coverage"] == {
         "expected": 0,
@@ -569,6 +604,11 @@ async def test_ladder_deduplicates_multisector_stocks_and_matches_heatmap(
         "excluded": 0,
         "missing": 0,
     }
+    for response in (ladder, sector, other_sector, empty):
+        coverage = response.json()["coverage"]
+        assert coverage["expected"] == sum(
+            coverage[key] for key in ("valid", "excluded", "missing")
+        )
 
 
 async def test_continuity_reuses_decimal_materialization(role_publication):
@@ -715,7 +755,7 @@ async def test_evidence_is_traceable_and_missing_entity_is_404(
     assert factor["knowledge_cutoff"] == NOW.isoformat()
     assert "available_at" not in factor
     observed = next(item for item in role["factors"] if item["factor_id"] == "FAC-C01")
-    assert observed["source_time"] == datetime(2026, 9, 8, 15, tzinfo=UTC).isoformat()
+    assert observed["source_time"] is None
     assert observed["knowledge_cutoff"] == NOW.isoformat()
     assert response.json()["coverage"] == {
         "expected": 1,
@@ -725,6 +765,68 @@ async def test_evidence_is_traceable_and_missing_entity_is_404(
     }
     assert response.json()["basis"]["price_type"] == "adjusted"
     assert missing.status_code == 404
+
+
+async def test_evidence_source_time_survives_materialization_and_publication(
+    database, repository
+):
+    source_time = datetime(2026, 9, 8, 15, tzinfo=UTC)
+    topics = topic_batch()
+    market = batch(
+        trade_date=topics.trade_date,
+        calendar=topics.calendar,
+        calendar_version=topics.calendar_version,
+        source_time=source_time,
+    )
+    market_snapshot = repository.publish(
+        repository.import_batch(market, key="task12-source-time-market").id
+    )
+    topic_repository = TopicRepository(database, clock=lambda: NOW)
+    topic_snapshot = topic_repository.publish(
+        topic_repository.import_batch(
+            topics,
+            key="task12-source-time-topic",
+        ).id
+    )
+    run = RoleMaterializer(database, repository, clock=lambda: NOW).materialize(
+        market_snapshot_id=market_snapshot.id,
+        topic_snapshot_id=topic_snapshot.id,
+        rule_version="role-test-v1",
+        benchmark_id="CSI300",
+        key="task12-source-time-role",
+    )
+    publication = PublicationService(
+        database,
+        repository,
+        clock=lambda: NOW,
+    ).publish(
+        PublicationCommand(
+            trade_date=market.trade_date,
+            market_snapshot_id=market_snapshot.id,
+            topic_snapshot_id=topic_snapshot.id,
+            role_input_id=run.id,
+            disabled_domains=("news", "regulation"),
+        ),
+        key="task12-source-time-publication",
+    )
+    persisted = PublicationRepository(database, repository)
+
+    async with await _client(persisted) as client:
+        response = await client.get(
+            "/api/role/evidence",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+                "security_id": "A",
+                "sector": "topic-a",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    factors = response.json()["data"]["roles"][0]["factors"]
+    assert factors
+    assert {factor["source_time"] for factor in factors} == {source_time.isoformat()}
+    assert {factor["knowledge_cutoff"] for factor in factors} == {NOW.isoformat()}
 
 
 async def test_evidence_coverage_classifies_excluded_and_missing_security(

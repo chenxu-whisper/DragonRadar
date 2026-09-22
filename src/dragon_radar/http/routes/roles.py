@@ -259,6 +259,7 @@ def ladder(request: Request):
     sector = query.get("sector")
     names = _names(market_payload)
     by_security = {}
+    zero_streak_members = set()
     selected_topics = _selected_topics(role_payload, sector)
     member_ids = {
         security_id
@@ -281,10 +282,14 @@ def ladder(request: Request):
             if (
                 row.get("trade_date") != snapshot.trade_date.isoformat()
                 or type(boards) is not int
-                or boards < 1
+                or boards < 0
                 or security_id not in topic_members
-                or security_id not in names
             ):
+                continue
+            if boards == 0:
+                zero_streak_members.add(security_id)
+                continue
+            if security_id not in names:
                 continue
             existing = by_security.get(security_id)
             if existing is not None and existing["boards"] != boards:
@@ -338,8 +343,8 @@ def ladder(request: Request):
     coverage = coverage_view(
         len(member_ids),
         total,
-        0,
-        len(member_ids) - total,
+        len(zero_streak_members - by_security.keys()),
+        len(member_ids) - total - len(zero_streak_members - by_security.keys()),
     )
     return _response(
         snapshot,
@@ -488,14 +493,6 @@ def candidates(request: Request):
 def _factor_projection(item):
     reasons = list(item.get("reasons", ()))
     metadata = item.get("metadata") or {}
-    source_time = next(
-        (
-            value
-            for key in ("observation_at", "source_time", "available_at")
-            if (value := item.get(key, metadata.get(key))) is not None
-        ),
-        None,
-    )
     return {
         "factor_id": item["factor_id"],
         "metric": item.get("metric"),
@@ -509,7 +506,7 @@ def _factor_projection(item):
         "window": item.get("window"),
         "coverage": dict(item.get("coverage") or {}),
         "reasons": reasons,
-        "source_time": source_time,
+        "source_time": metadata.get("source_time"),
         "knowledge_cutoff": item.get(
             "knowledge_cutoff", metadata.get("knowledge_cutoff")
         ),

@@ -207,6 +207,8 @@ def _metadata(
         "trade_date": market.trade_date.isoformat(),
         "knowledge_cutoff": cutoff.isoformat(),
     }
+    if market.source_time is not None:
+        result["source_time"] = market.source_time.isoformat()
     if topic is not None:
         result.update(
             {
