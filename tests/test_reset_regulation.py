@@ -11,6 +11,15 @@ import pytest
 from factories import DAYS, NOW, bar, batch, state
 from pydantic import ValidationError
 
+HTTPS_URL_CASES = (
+    ("https://exchange.example.test/rule", True),
+    ("HTTPS://exchange.example.test/rule", True),
+    ("https://#x", False),
+    ("https://?x", False),
+    ("https://user:secret@example.test/rule", False),
+    ("http://exchange.example.test/rule", False),
+)
+
 
 def _review_record():
     from dragon_radar.regulation.models import RegulationReviewRecord
@@ -294,11 +303,31 @@ def test_formal_event_has_only_prd_table_8_facts_and_is_not_calculation_output()
     assert not hasattr(calculation, "event_type")
 
 
-def test_event_and_rule_urls_must_be_absolute_https():
-    with pytest.raises(ValidationError):
-        _rule(official_source_url="http://exchange.example.test/rule")
-    with pytest.raises(ValidationError):
-        _event(announcement_url="https://user:secret@example.test/notice")
+@pytest.mark.parametrize(("url", "accepted"), HTTPS_URL_CASES)
+def test_regulation_urls_follow_the_https_authority_contract(url, accepted):
+    expectation = nullcontext() if accepted else pytest.raises(ValidationError)
+
+    with expectation:
+        _rule(official_source_url=url)
+
+
+@pytest.mark.parametrize(("url", "accepted"), HTTPS_URL_CASES)
+def test_postgres_direct_insert_enforces_the_https_authority_contract(
+    database, url, accepted
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import regulation_rules
+
+    values = _rule().model_dump(mode="json")
+    values["id"] = uuid4()
+    values["official_source_url"] = url
+    values["created_at"] = NOW
+    expectation = nullcontext() if accepted else pytest.raises(DBAPIError)
+
+    with expectation, database.engine.begin() as connection:
+        connection.execute(insert(regulation_rules).values(**values))
 
 
 def test_frozen_regression_examples_pass_before_activation():

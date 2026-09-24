@@ -226,8 +226,8 @@ def upgrade():
         BEGIN
             RETURN COALESCE(
                rule_row.review_switch = 'approved'
-               AND rule_row.official_source_url ~ '^https://[^/@]+'
-               AND rule_row.official_source_url !~ '^https://[^/]*@'
+               AND rule_row.official_source_url
+                   ~* '^https://[^/?#@]+($|[/?#])'
                AND rule_row.review_record IS NOT NULL
                AND rule_row.review_record ?& ARRAY[
                    'prepared_by',
