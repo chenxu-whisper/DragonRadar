@@ -1,0 +1,852 @@
+"""Transactional append-only persistence for regulation evidence."""
+
+import hashlib
+import json
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
+
+from sqlalchemy import insert, select
+
+from dragon_radar.domain.models import MarketBatch
+from dragon_radar.regulation.engine import evaluate_rule, run_regression_cases
+from dragon_radar.regulation.models import (
+    RegulationCalculation,
+    RegulationEvent,
+    RegulationObservation,
+    RegulationReviewRecord,
+    RegulationRule,
+    RegulationRuleStatus,
+    RegulationSnapshot,
+    RegulationTestCase,
+    event_is_effective,
+    production_gate_reasons,
+)
+from dragon_radar.regulation.tables import (
+    regulation_calculations,
+    regulation_commands,
+    regulation_events,
+    regulation_rule_statuses,
+    regulation_rules,
+    regulation_snapshot_events,
+    regulation_snapshot_inputs,
+    regulation_snapshot_rules,
+    regulation_snapshots,
+)
+from dragon_radar.storage.models import import_batches, snapshots
+from dragon_radar.storage.repository import (
+    Conflict,
+    NotFound,
+    Repository,
+    _identifier,
+    _uuid,
+)
+
+REGULATION_SCHEMA = "dragon-radar.regulation"
+REGULATION_SCHEMA_VERSION = 1
+
+
+def _canonical(value) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+        default=str,
+    )
+
+
+def _digest(value) -> str:
+    return hashlib.sha256(_canonical(value).encode("ascii")).hexdigest()
+
+
+def _rule(row: Mapping) -> RegulationRule:
+    return RegulationRule(
+        rule_id=row["rule_id"],
+        rule_version=row["rule_version"],
+        applicable_exchange=row["applicable_exchange"],
+        applicable_board=row["applicable_board"],
+        security_status=row["security_status"],
+        effective_from=row["effective_from"],
+        effective_to=row["effective_to"],
+        window_days=row["window_days"],
+        direction=row["direction"],
+        threshold=row["threshold"],
+        warning_threshold=row["warning_threshold"],
+        benchmark_index=row["benchmark_index"],
+        normal_anomaly_count_mode=row["normal_anomaly_count_mode"],
+        recompute_condition=row["recompute_condition"],
+        calculation_method=row["calculation_method"],
+        official_source_url=row["official_source_url"],
+        review_switch=row["review_switch"],
+        review_record=(
+            RegulationReviewRecord.model_validate(row["review_record"])
+            if row["review_record"] is not None
+            else None
+        ),
+        test_cases=tuple(
+            RegulationTestCase.model_validate(item) for item in row["test_cases"]
+        ),
+        regression_passed=row["regression_passed"],
+        active=row["active"],
+    )
+
+
+def _event(row: Mapping) -> RegulationEvent:
+    return RegulationEvent(
+        event_id=row["event_id"],
+        rule_id=row["rule_id"],
+        rule_version=row["rule_version"],
+        security_id=row["security_id"],
+        event_type=row["event_type"],
+        announcement_id=row["announcement_id"],
+        announcement_url=row["announcement_url"],
+        effective_from=row["effective_from"],
+        effective_to=row["effective_to"],
+    )
+
+
+def _snapshot(row: Mapping) -> RegulationSnapshot:
+    return RegulationSnapshot(
+        id=row["id"],
+        market_snapshot_id=row["market_snapshot_id"],
+        trade_date=row["trade_date"],
+        as_of=row["as_of"],
+        created_at=row["created_at"],
+    )
+
+
+def _security_status(state) -> str:
+    if state.suspended:
+        return "suspended"
+    if state.is_st:
+        return "st"
+    if state.is_delisting:
+        return "delisting"
+    return "regular"
+
+
+class RegulationRepository:
+    def __init__(
+        self,
+        database,
+        market_repository: Repository | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
+        self.database = database
+        self.clock = clock or (lambda: datetime.now(UTC))
+        self.market = market_repository or Repository(database, clock=self.clock)
+
+    def _now(self) -> datetime:
+        value = self.clock()
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Regulation clock must be timezone-aware")
+        return value.astimezone(UTC)
+
+    def _existing_command(self, connection, key: str, payload_hash: str):
+        existing = (
+            connection.execute(
+                select(regulation_commands).where(
+                    regulation_commands.c.idempotency_key == key
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if existing is not None and existing["payload_hash"] != payload_hash:
+            raise Conflict("Regulation key belongs to another payload")
+        return existing
+
+    def _record_command(
+        self,
+        connection,
+        *,
+        key: str,
+        payload_hash: str,
+        result_type: str,
+        result_id,
+        now: datetime,
+    ) -> None:
+        connection.execute(
+            insert(regulation_commands).values(
+                id=uuid4(),
+                idempotency_key=key,
+                payload_hash=payload_hash,
+                result_type=result_type,
+                result_id=str(result_id),
+                created_at=now,
+            )
+        )
+
+    @staticmethod
+    def _stored_rule(rule: RegulationRule, record_id: UUID, now: datetime) -> dict:
+        values = rule.model_dump(mode="json")
+        values["id"] = record_id
+        values["review_record"] = values["review_record"]
+        values["test_cases"] = values["test_cases"]
+        values["created_at"] = now
+        return values
+
+    def register_rule(self, rule: RegulationRule, *, key: str) -> RegulationRule:
+        _identifier(key)
+        rule = RegulationRule.model_validate(rule.model_dump())
+        regression_failures = run_regression_cases(rule)
+        if rule.active and (production_gate_reasons(rule) or regression_failures):
+            raise ValueError("Active regulation rule is not production eligible")
+        payload_hash = _digest(rule.model_dump(mode="json"))
+        now = self._now()
+        with self.database.engine.begin() as connection:
+            self.market._lock(connection, f"regulation-command:{key}")
+            self.market._lock(connection, "regulation-rules")
+            existing = self._existing_command(connection, key, payload_hash)
+            if existing is not None:
+                if existing["result_type"] != "rule":
+                    raise Conflict("Regulation key belongs to another operation")
+                row = (
+                    connection.execute(
+                        select(regulation_rules).where(
+                            regulation_rules.c.id == UUID(existing["result_id"])
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                return _rule(row)
+            if connection.scalar(
+                select(regulation_rules.c.id).where(
+                    regulation_rules.c.rule_id == rule.rule_id,
+                    regulation_rules.c.rule_version == rule.rule_version,
+                )
+            ):
+                raise Conflict("Regulation rule version already exists")
+            record_id = uuid4()
+            connection.execute(
+                insert(regulation_rules).values(
+                    **self._stored_rule(rule, record_id, now)
+                )
+            )
+            if rule.active:
+                connection.execute(
+                    insert(regulation_rule_statuses).values(
+                        id=uuid4(),
+                        rule_record_id=record_id,
+                        status="active",
+                        reason="initial_reviewed_release",
+                        recorded_at=now,
+                    )
+                )
+            self._record_command(
+                connection,
+                key=key,
+                payload_hash=payload_hash,
+                result_type="rule",
+                result_id=record_id,
+                now=now,
+            )
+        return rule
+
+    def _rule_row(self, connection, rule_id: str, rule_version: str):
+        row = (
+            connection.execute(
+                select(regulation_rules).where(
+                    regulation_rules.c.rule_id == rule_id,
+                    regulation_rules.c.rule_version == rule_version,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise NotFound("Regulation rule not found")
+        return row
+
+    def _latest_status(self, connection, record_id: UUID):
+        return (
+            connection.execute(
+                select(regulation_rule_statuses)
+                .where(regulation_rule_statuses.c.rule_record_id == record_id)
+                .order_by(regulation_rule_statuses.c.sequence.desc())
+                .limit(1)
+            )
+            .mappings()
+            .first()
+        )
+
+    def _append_status(
+        self,
+        rule_id: str,
+        rule_version: str,
+        *,
+        status: str,
+        reason: str,
+        key: str,
+    ) -> RegulationRuleStatus:
+        _identifier(rule_id)
+        _identifier(rule_version)
+        _identifier(reason)
+        _identifier(key)
+        payload = {
+            "rule_id": rule_id,
+            "rule_version": rule_version,
+            "status": status,
+            "reason": reason,
+        }
+        payload_hash = _digest(payload)
+        now = self._now()
+        with self.database.engine.begin() as connection:
+            self.market._lock(connection, f"regulation-command:{key}")
+            self.market._lock(connection, "regulation-rules")
+            existing = self._existing_command(connection, key, payload_hash)
+            if existing is not None:
+                if existing["result_type"] != "status":
+                    raise Conflict("Regulation key belongs to another operation")
+                row = (
+                    connection.execute(
+                        select(regulation_rule_statuses).where(
+                            regulation_rule_statuses.c.id == UUID(existing["result_id"])
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                return RegulationRuleStatus(
+                    id=row["id"],
+                    rule_id=rule_id,
+                    rule_version=rule_version,
+                    status=row["status"],
+                    reason=row["reason"],
+                    recorded_at=row["recorded_at"],
+                )
+            rule_row = self._rule_row(connection, rule_id, rule_version)
+            rule = _rule(rule_row)
+            if status == "active":
+                gate_reasons = tuple(
+                    reason
+                    for reason in production_gate_reasons(rule)
+                    if reason != "rule_inactive"
+                )
+                if gate_reasons or run_regression_cases(rule):
+                    raise ValueError("Regulation rule is not production eligible")
+            status_id = uuid4()
+            connection.execute(
+                insert(regulation_rule_statuses).values(
+                    id=status_id,
+                    rule_record_id=rule_row["id"],
+                    status=status,
+                    reason=reason,
+                    recorded_at=now,
+                )
+            )
+            self._record_command(
+                connection,
+                key=key,
+                payload_hash=payload_hash,
+                result_type="status",
+                result_id=status_id,
+                now=now,
+            )
+        return RegulationRuleStatus(
+            id=status_id,
+            rule_id=rule_id,
+            rule_version=rule_version,
+            status=status,
+            reason=reason,
+            recorded_at=now,
+        )
+
+    def activate_rule(
+        self,
+        rule_id: str,
+        rule_version: str,
+        *,
+        key: str,
+    ) -> RegulationRuleStatus:
+        return self._append_status(
+            rule_id,
+            rule_version,
+            status="active",
+            reason="reviewed_release",
+            key=key,
+        )
+
+    def withdraw_rule(
+        self,
+        rule_id: str,
+        rule_version: str,
+        *,
+        reason: str,
+        key: str,
+    ) -> RegulationRuleStatus:
+        return self._append_status(
+            rule_id,
+            rule_version,
+            status="withdrawn",
+            reason=reason,
+            key=key,
+        )
+
+    def append_event(self, event: RegulationEvent, *, key: str) -> RegulationEvent:
+        _identifier(key)
+        event = RegulationEvent.model_validate(event.model_dump())
+        payload_hash = _digest(event.model_dump(mode="json"))
+        now = self._now()
+        with self.database.engine.begin() as connection:
+            self.market._lock(connection, f"regulation-command:{key}")
+            self.market._lock(connection, "regulation-rules")
+            existing = self._existing_command(connection, key, payload_hash)
+            if existing is not None:
+                if (
+                    existing["result_type"] != "event"
+                    or existing["result_id"] != event.event_id
+                ):
+                    raise Conflict("Regulation key belongs to another operation")
+                row = (
+                    connection.execute(
+                        select(regulation_events).where(
+                            regulation_events.c.event_id == event.event_id
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                return _event(row)
+            self._rule_row(connection, event.rule_id, event.rule_version)
+            if connection.scalar(
+                select(regulation_events.c.event_id).where(
+                    regulation_events.c.event_id == event.event_id
+                )
+            ):
+                raise Conflict("Regulation event already exists")
+            connection.execute(
+                insert(regulation_events).values(
+                    **event.model_dump(mode="json"),
+                    created_at=now,
+                )
+            )
+            self._record_command(
+                connection,
+                key=key,
+                payload_hash=payload_hash,
+                result_type="event",
+                result_id=event.event_id,
+                now=now,
+            )
+        return event
+
+    def _market_context(self, connection, snapshot_id: UUID):
+        row = (
+            connection.execute(select(snapshots).where(snapshots.c.id == snapshot_id))
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise NotFound("Market snapshot not found")
+        archive = (
+            connection.execute(
+                select(import_batches).where(import_batches.c.id == row["batch_id"])
+            )
+            .mappings()
+            .one()
+        )
+        market = MarketBatch.model_validate_json(archive["canonical_json"])
+        current = self.market._source(connection, row["source_id"])
+        self.market._authorize(current, market)
+        return row, archive, market
+
+    @staticmethod
+    def _normalize_observation(
+        market: MarketBatch,
+        observation: RegulationObservation,
+    ) -> RegulationObservation:
+        if observation.trade_date != market.trade_date:
+            raise ValueError("Regulation observation date mismatch")
+        states = tuple(
+            state
+            for state in market.security_states
+            if state.security_id == observation.security_id
+            and state.available_at <= market.as_of
+            and state.effective_from <= market.trade_date
+            and (state.effective_to is None or market.trade_date < state.effective_to)
+        )
+        expected = observation.security_id in market.expected_security_ids
+        identity_matches = (
+            len(states) == 1
+            and states[0].exchange == observation.exchange
+            and states[0].board_category == observation.board
+            and _security_status(states[0]) == observation.security_status
+        )
+        if expected and identity_matches:
+            return observation
+        return RegulationObservation(
+            **observation.model_dump(exclude={"computed_value", "input_state"}),
+            computed_value=None,
+            input_state="conflict",
+        )
+
+    def materialize(
+        self,
+        *,
+        market_snapshot_id: UUID | str,
+        observations: tuple[RegulationObservation, ...],
+        key: str,
+    ) -> RegulationSnapshot:
+        market_snapshot_id = _uuid(market_snapshot_id)
+        _identifier(key)
+        observations = tuple(
+            RegulationObservation.model_validate(item.model_dump())
+            for item in observations
+        )
+        identities = tuple(item.security_id for item in observations)
+        if len(set(identities)) != len(identities):
+            raise ValueError("Regulation observations must have unique security IDs")
+        command = {
+            "market_snapshot_id": str(market_snapshot_id),
+            "observations": sorted(
+                (item.model_dump(mode="json") for item in observations),
+                key=lambda item: item["security_id"],
+            ),
+        }
+        payload_hash = _digest(command)
+        now = self._now()
+        with self.database.engine.begin() as connection:
+            self.market._lock(connection, f"regulation-command:{key}")
+            self.market._lock(connection, "regulation-rules")
+            existing = self._existing_command(connection, key, payload_hash)
+            if existing is not None:
+                if existing["result_type"] != "snapshot":
+                    raise Conflict("Regulation key belongs to another operation")
+                row = (
+                    connection.execute(
+                        select(regulation_snapshots).where(
+                            regulation_snapshots.c.id == UUID(existing["result_id"])
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                return _snapshot(row)
+            market_row, _archive, market = self._market_context(
+                connection, market_snapshot_id
+            )
+            normalized = tuple(
+                self._normalize_observation(market, item) for item in observations
+            )
+            rule_rows = (
+                connection.execute(
+                    select(regulation_rules)
+                    .where(regulation_rules.c.created_at <= market.as_of)
+                    .order_by(
+                        regulation_rules.c.rule_id,
+                        regulation_rules.c.rule_version,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            selected = []
+            for row in rule_rows:
+                latest_control = (
+                    connection.execute(
+                        select(regulation_rule_statuses)
+                        .where(
+                            regulation_rule_statuses.c.rule_record_id == row["id"],
+                        )
+                        .order_by(regulation_rule_statuses.c.sequence.desc())
+                        .limit(1)
+                    )
+                    .mappings()
+                    .first()
+                )
+                if (
+                    latest_control is not None
+                    and latest_control["status"] == "withdrawn"
+                ):
+                    continue
+                latest_at_cutoff = (
+                    connection.execute(
+                        select(regulation_rule_statuses)
+                        .where(
+                            regulation_rule_statuses.c.rule_record_id == row["id"],
+                            regulation_rule_statuses.c.recorded_at <= market.as_of,
+                        )
+                        .order_by(regulation_rule_statuses.c.sequence.desc())
+                        .limit(1)
+                    )
+                    .mappings()
+                    .first()
+                )
+                selected.append((row, latest_at_cutoff))
+            event_rows = (
+                connection.execute(
+                    select(regulation_events)
+                    .where(regulation_events.c.created_at <= market.as_of)
+                    .order_by(
+                        regulation_events.c.effective_from,
+                        regulation_events.c.event_id,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            effective_events = [
+                row
+                for row in event_rows
+                if event_is_effective(_event(row), market.trade_date)
+            ]
+            root = {
+                "id": uuid4(),
+                "idempotency_key": key,
+                "command_hash": payload_hash,
+                "market_snapshot_id": market_snapshot_id,
+                "trade_date": market.trade_date,
+                "as_of": market.as_of,
+                "created_at": now,
+            }
+            connection.execute(insert(regulation_snapshots).values(**root))
+            for observation in normalized:
+                connection.execute(
+                    insert(regulation_snapshot_inputs).values(
+                        snapshot_id=root["id"],
+                        **observation.model_dump(mode="json"),
+                    )
+                )
+            for position, (row, latest) in enumerate(selected):
+                active = (
+                    latest["status"] == "active"
+                    if latest is not None
+                    else row["active"]
+                )
+                connection.execute(
+                    insert(regulation_snapshot_rules).values(
+                        snapshot_id=root["id"],
+                        rule_record_id=row["id"],
+                        position=position,
+                        active=active,
+                    )
+                )
+                rule = _rule(row)
+                for observation in normalized:
+                    calculation = evaluate_rule(rule, observation, active=active)
+                    connection.execute(
+                        insert(regulation_calculations).values(
+                            id=uuid4(),
+                            snapshot_id=root["id"],
+                            rule_record_id=row["id"],
+                            security_id=observation.security_id,
+                            trade_date=observation.trade_date,
+                            computed_value=observation.computed_value,
+                            input_state=observation.input_state,
+                            state=calculation.state,
+                            reasons=list(calculation.reasons),
+                        )
+                    )
+            for position, row in enumerate(effective_events):
+                connection.execute(
+                    insert(regulation_snapshot_events).values(
+                        snapshot_id=root["id"],
+                        event_id=row["event_id"],
+                        position=position,
+                    )
+                )
+            self._record_command(
+                connection,
+                key=key,
+                payload_hash=payload_hash,
+                result_type="snapshot",
+                result_id=root["id"],
+                now=now,
+            )
+            root["market_source_id"] = market_row["source_id"]
+            root["market_batch_id"] = market_row["batch_id"]
+            return _snapshot(root)
+
+    def snapshot_context(self, snapshot_id: UUID | str) -> dict:
+        snapshot_id = _uuid(snapshot_id)
+        with self.database.engine.begin() as connection:
+            root = (
+                connection.execute(
+                    select(regulation_snapshots).where(
+                        regulation_snapshots.c.id == snapshot_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if root is None:
+                raise NotFound("Regulation snapshot not found")
+            market_row = (
+                connection.execute(
+                    select(snapshots).where(
+                        snapshots.c.id == root["market_snapshot_id"]
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            rule_bindings = (
+                connection.execute(
+                    select(regulation_snapshot_rules)
+                    .where(regulation_snapshot_rules.c.snapshot_id == snapshot_id)
+                    .order_by(regulation_snapshot_rules.c.position)
+                )
+                .mappings()
+                .all()
+            )
+            rule_rows = {
+                row["id"]: row
+                for row in connection.execute(
+                    select(regulation_rules).where(
+                        regulation_rules.c.id.in_(
+                            binding["rule_record_id"] for binding in rule_bindings
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            }
+            calculation_rows = (
+                connection.execute(
+                    select(regulation_calculations)
+                    .where(regulation_calculations.c.snapshot_id == snapshot_id)
+                    .order_by(
+                        regulation_calculations.c.security_id,
+                        regulation_calculations.c.rule_record_id,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            input_rows = (
+                connection.execute(
+                    select(regulation_snapshot_inputs)
+                    .where(regulation_snapshot_inputs.c.snapshot_id == snapshot_id)
+                    .order_by(regulation_snapshot_inputs.c.security_id)
+                )
+                .mappings()
+                .all()
+            )
+            calculations = []
+            for row in calculation_rows:
+                rule = _rule(rule_rows[row["rule_record_id"]])
+                calculations.append(
+                    RegulationCalculation(
+                        rule_id=rule.rule_id,
+                        rule_version=rule.rule_version,
+                        security_id=row["security_id"],
+                        trade_date=row["trade_date"],
+                        window_days=rule.window_days,
+                        direction=rule.direction,
+                        threshold=rule.threshold,
+                        warning_threshold=rule.warning_threshold,
+                        review_switch=rule.review_switch,
+                        benchmark_index=rule.benchmark_index,
+                        recompute_condition=rule.recompute_condition,
+                        computed_value=row["computed_value"],
+                        state=row["state"],
+                        reasons=tuple(row["reasons"]),
+                    )
+                )
+            event_rows = (
+                connection.execute(
+                    select(regulation_events)
+                    .join(
+                        regulation_snapshot_events,
+                        regulation_snapshot_events.c.event_id
+                        == regulation_events.c.event_id,
+                    )
+                    .where(regulation_snapshot_events.c.snapshot_id == snapshot_id)
+                    .order_by(regulation_snapshot_events.c.position)
+                )
+                .mappings()
+                .all()
+            )
+            return {
+                "snapshot": _snapshot(root),
+                "root": root,
+                "market_source_id": market_row["source_id"],
+                "market_batch_id": market_row["batch_id"],
+                "rule_bindings": tuple(rule_bindings),
+                "rules": tuple(
+                    _rule(rule_rows[binding["rule_record_id"]])
+                    for binding in rule_bindings
+                ),
+                "calculations": tuple(calculations),
+                "calculation_rows": tuple(calculation_rows),
+                "inputs": tuple(
+                    RegulationObservation(
+                        security_id=row["security_id"],
+                        trade_date=row["trade_date"],
+                        exchange=row["exchange"],
+                        board=row["board"],
+                        security_status=row["security_status"],
+                        computed_value=row["computed_value"],
+                        input_state=row["input_state"],
+                    )
+                    for row in input_rows
+                ),
+                "events": tuple(_event(row) for row in event_rows),
+            }
+
+    @staticmethod
+    def materialize_context(context: dict):
+        from dragon_radar.publication.models import DomainMaterialization
+
+        calculations = [
+            item.model_dump(mode="json") for item in context["calculations"]
+        ]
+        events = [item.model_dump(mode="json") for item in context["events"]]
+        expected = len(context["inputs"])
+        valid = sum(item.input_state == "complete" for item in context["inputs"])
+        completeness = {
+            "expected": expected,
+            "valid": valid,
+            "legal_excluded": 0,
+            "missing": expected - valid,
+        }
+        rules = []
+        for binding, rule in zip(
+            context["rule_bindings"], context["rules"], strict=True
+        ):
+            gate_reasons = list(production_gate_reasons(rule))
+            if binding["active"]:
+                gate_reasons = [
+                    reason for reason in gate_reasons if reason != "rule_inactive"
+                ]
+            rules.append(
+                {
+                    **rule.model_dump(mode="json"),
+                    "production_enabled": not gate_reasons,
+                    "production_gate_reasons": gate_reasons,
+                }
+            )
+        return DomainMaterialization(
+            payload={
+                "schema": REGULATION_SCHEMA,
+                "schema_version": REGULATION_SCHEMA_VERSION,
+                "snapshot_id": str(context["snapshot"].id),
+                "market_snapshot_id": str(context["snapshot"].market_snapshot_id),
+                "trade_date": context["snapshot"].trade_date.isoformat(),
+                "as_of": context["snapshot"].as_of.isoformat(),
+                "completeness": completeness,
+                "rules": rules,
+                "calculations": calculations,
+                "events": events,
+            },
+            coverage=completeness,
+            quality_flags=(
+                ("regulation_input_incomplete",) if completeness["missing"] else ()
+            ),
+        )
+
+    @staticmethod
+    def dependencies(context: dict) -> tuple[tuple[str, str, UUID, str], ...]:
+        return (
+            (
+                context["market_source_id"],
+                "market_import_batch",
+                context["market_batch_id"],
+                "regulation",
+            ),
+        )

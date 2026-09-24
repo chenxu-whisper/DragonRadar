@@ -33,6 +33,7 @@ from dragon_radar.publication.tables import (
 from dragon_radar.readmodels.analysis import materialize_analysis
 from dragon_radar.readmodels.market import materialize_market
 from dragon_radar.readmodels.stock import materialize_stocks
+from dragon_radar.regulation.repository import RegulationRepository
 from dragon_radar.roles.repository import RoleRepository
 from dragon_radar.roles.rules import validate_rule_definition
 from dragon_radar.storage.models import import_batches, snapshots
@@ -77,6 +78,7 @@ class PublicationService:
         self.market = market_repository or Repository(database, clock=self.clock)
         self.topics = TopicRepository(database, clock=self.clock)
         self.news = NewsRepository(database, self.market, clock=self.clock)
+        self.regulations = RegulationRepository(database, self.market, clock=self.clock)
         self.roles = RoleRepository(database, self.market, clock=self.clock)
         self.repository = PublicationRepository(database, self.market, clock=self.clock)
 
@@ -155,10 +157,23 @@ class PublicationService:
                 authorize=False,
             )
             dependencies.extend(NewsService.dependencies(news_context))
+        regulation_context = None
+        if command.regulation_input_id is not None:
+            regulation_context = self.regulations.snapshot_context(
+                command.regulation_input_id
+            )
+            if (
+                regulation_context["snapshot"].market_snapshot_id
+                != command.market_snapshot_id
+                or regulation_context["snapshot"].trade_date != command.trade_date
+            ):
+                raise Forbidden("Regulation snapshot does not match publication inputs")
+            dependencies.extend(RegulationRepository.dependencies(regulation_context))
         return (
             (market_row, market_archive, market_batch),
             topic_context,
             news_context,
+            regulation_context,
             dependencies,
         )
 
@@ -371,6 +386,7 @@ class PublicationService:
                         market_context,
                         topic_context,
                         news_context,
+                        regulation_context,
                         dependencies,
                     ) = self._prepare_inputs(connection, command)
                     overrides = dict(materializers or {})
@@ -414,6 +430,10 @@ class PublicationService:
                             result = NewsService.materialize_context(
                                 news_context,
                                 topic_context=topic_context,
+                            )
+                        elif domain == "regulation":
+                            result = RegulationRepository.materialize_context(
+                                regulation_context
                             )
                         elif domain == "role":
                             result, role_dependencies = self._role_materialization(

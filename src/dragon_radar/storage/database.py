@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0008_news"
+SCHEMA_REVISION = "0009_regulation"
 
 
 class Database:
@@ -106,6 +106,15 @@ class Database:
                     "news_review_audit_events",
                     "news_snapshots",
                     "news_snapshot_items",
+                    "regulation_rules",
+                    "regulation_rule_statuses",
+                    "regulation_events",
+                    "regulation_snapshots",
+                    "regulation_snapshot_rules",
+                    "regulation_snapshot_inputs",
+                    "regulation_calculations",
+                    "regulation_snapshot_events",
+                    "regulation_commands",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True

@@ -17,6 +17,12 @@ from dragon_radar.owner.cli import COMMANDS, add_commands, execute
 from dragon_radar.owner.security import OWNER_ERRORS
 from dragon_radar.publication.models import PublicationCommand
 from dragon_radar.publication.service import PublicationService
+from dragon_radar.regulation.models import (
+    RegulationEvent,
+    RegulationObservation,
+    RegulationRule,
+)
+from dragon_radar.regulation.repository import RegulationRepository
 from dragon_radar.roles.materialize import RoleMaterializer
 from dragon_radar.roles.repository import RoleRepository
 from dragon_radar.storage.database import Database
@@ -171,6 +177,40 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     role_validate_pending.add_argument("--key", required=True)
+    regulation_rule_register = commands.add_parser(
+        "regulation-rule-register",
+        help="Register an immutable reviewed regulation rule version",
+    )
+    regulation_rule_register.add_argument("path", type=Path)
+    regulation_rule_register.add_argument("--key", required=True)
+    regulation_rule_activate = commands.add_parser(
+        "regulation-rule-activate",
+        help="Append activation for an eligible regulation rule",
+    )
+    regulation_rule_activate.add_argument("rule_id")
+    regulation_rule_activate.add_argument("rule_version")
+    regulation_rule_activate.add_argument("--key", required=True)
+    regulation_rule_withdraw = commands.add_parser(
+        "regulation-rule-withdraw",
+        help="Append withdrawal for a regulation rule",
+    )
+    regulation_rule_withdraw.add_argument("rule_id")
+    regulation_rule_withdraw.add_argument("rule_version")
+    regulation_rule_withdraw.add_argument("--reason", required=True)
+    regulation_rule_withdraw.add_argument("--key", required=True)
+    regulation_event_add = commands.add_parser(
+        "regulation-event-add",
+        help="Append a formally disclosed regulation event",
+    )
+    regulation_event_add.add_argument("path", type=Path)
+    regulation_event_add.add_argument("--key", required=True)
+    regulation_materialize = commands.add_parser(
+        "regulation-materialize",
+        help="Materialize regulation calculations from reviewed local observations",
+    )
+    regulation_materialize.add_argument("path", type=Path)
+    regulation_materialize.add_argument("--market-snapshot", required=True)
+    regulation_materialize.add_argument("--key", required=True)
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
@@ -347,6 +387,73 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 "mature_count": validated.mature_count,
                 "immature_count": validated.immature_count,
+            }
+        elif args.command == "regulation-rule-register":
+            rule = RegulationRepository(
+                database,
+                repository,
+            ).register_rule(
+                RegulationRule.model_validate_json(
+                    args.path.read_text(encoding="utf-8")
+                ),
+                key=args.key,
+            )
+            result = {
+                "rule_id": rule.rule_id,
+                "rule_version": rule.rule_version,
+                "active": rule.active,
+            }
+        elif args.command == "regulation-rule-activate":
+            status = RegulationRepository(database, repository).activate_rule(
+                args.rule_id,
+                args.rule_version,
+                key=args.key,
+            )
+            result = {
+                "status_id": str(status.id),
+                "rule_id": status.rule_id,
+                "rule_version": status.rule_version,
+                "status": status.status,
+            }
+        elif args.command == "regulation-rule-withdraw":
+            status = RegulationRepository(database, repository).withdraw_rule(
+                args.rule_id,
+                args.rule_version,
+                reason=args.reason,
+                key=args.key,
+            )
+            result = {
+                "status_id": str(status.id),
+                "rule_id": status.rule_id,
+                "rule_version": status.rule_version,
+                "status": status.status,
+            }
+        elif args.command == "regulation-event-add":
+            event = RegulationRepository(database, repository).append_event(
+                RegulationEvent.model_validate_json(
+                    args.path.read_text(encoding="utf-8")
+                ),
+                key=args.key,
+            )
+            result = {"event_id": event.event_id, "status": "recorded"}
+        elif args.command == "regulation-materialize":
+            payload = json.loads(args.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, list):
+                raise ValueError("Regulation observations must be a JSON array")
+            regulation_snapshot = RegulationRepository(
+                database,
+                repository,
+            ).materialize(
+                market_snapshot_id=args.market_snapshot,
+                observations=tuple(
+                    RegulationObservation.model_validate(item) for item in payload
+                ),
+                key=args.key,
+            )
+            result = {
+                "regulation_snapshot_id": str(regulation_snapshot.id),
+                "market_snapshot_id": str(regulation_snapshot.market_snapshot_id),
+                "trade_date": regulation_snapshot.trade_date.isoformat(),
             }
         else:
             import uvicorn

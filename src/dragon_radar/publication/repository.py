@@ -27,6 +27,8 @@ from dragon_radar.publication.tables import (
     withdrawal_dependencies,
     withdrawal_records,
 )
+from dragon_radar.regulation.repository import RegulationRepository
+from dragon_radar.regulation.tables import regulation_snapshots
 from dragon_radar.roles.tables import role_runs
 from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
@@ -176,6 +178,11 @@ class PublicationRepository:
         self.database = database
         self.clock = clock or (lambda: datetime.now(UTC))
         self.market = market_repository or Repository(database, clock=self.clock)
+        self.regulations = RegulationRepository(
+            database,
+            self.market,
+            clock=self.clock,
+        )
 
     @staticmethod
     def _result(row: Mapping) -> PublicationResult:
@@ -209,6 +216,7 @@ class PublicationRepository:
         news_items_by_snapshot,
         news_revisions,
         news_event_links,
+        regulation_snapshot_rows,
         expected_role_dependencies,
         result_rows,
         active_withdrawal_sources,
@@ -364,6 +372,61 @@ class PublicationRepository:
         elif news_dependencies:
             raise Forbidden("Publication news lineage is invalid")
 
+        regulation_dependencies = [
+            row for row in dependencies if row["derived_type"] == "regulation"
+        ]
+        if record.regulation_input_id is not None:
+            regulation_root = regulation_snapshot_rows.get(record.regulation_input_id)
+            regulation_result = next(
+                (
+                    row
+                    for row in result_rows.get(record.id, ())
+                    if row["domain"] == "regulation"
+                ),
+                None,
+            )
+            try:
+                payload_snapshot_id = UUID(regulation_result["payload"]["snapshot_id"])
+                payload_market_id = UUID(
+                    regulation_result["payload"]["market_snapshot_id"]
+                )
+            except (KeyError, TypeError, ValueError):
+                raise Forbidden("Publication regulation lineage is invalid") from None
+            if (
+                regulation_root is None
+                or regulation_result is None
+                or regulation_result["status"] != "ready"
+                or regulation_result["input_id"] != record.regulation_input_id
+                or regulation_root["market_snapshot_id"] != record.market_snapshot_id
+                or regulation_root["trade_date"] != record.trade_date
+                or payload_snapshot_id != record.regulation_input_id
+                or payload_market_id != record.market_snapshot_id
+                or len(regulation_dependencies) != 1
+            ):
+                raise Forbidden("Publication regulation lineage is invalid")
+            expected = RegulationRepository.materialize_context(
+                self.regulations.snapshot_context(record.regulation_input_id)
+            )
+            if (
+                regulation_result["payload"]
+                != expected.model_dump(mode="json")["payload"]
+                or regulation_result["coverage"]
+                != expected.model_dump(mode="json")["coverage"]
+                or tuple(regulation_result["quality_flags"]) != expected.quality_flags
+            ):
+                raise Forbidden("Publication regulation payload is invalid")
+            dependency = regulation_dependencies[0]
+            if (
+                dependency["source_id"] != market_row["source_id"]
+                or dependency["archive_type"] != "market_import_batch"
+                or dependency["archive_id"] != market_row["batch_id"]
+                or dependency["derived_id"] != record.id
+                or dependency["publication_id"] != record.id
+            ):
+                raise Forbidden("Publication regulation lineage is invalid")
+        elif regulation_dependencies:
+            raise Forbidden("Publication regulation lineage is invalid")
+
         role_dependencies = [
             row for row in dependencies if row["derived_type"] == "role"
         ]
@@ -400,7 +463,7 @@ class PublicationRepository:
             else:
                 raise Forbidden("Publication role lineage is invalid")
         if any(
-            row["derived_type"] not in {"market", "topic", "news", "role"}
+            row["derived_type"] not in {"market", "topic", "news", "regulation", "role"}
             for row in dependencies
         ):
             raise Forbidden("Publication dependency type is invalid")
@@ -543,6 +606,20 @@ class PublicationRepository:
             for row in connection.execute(
                 select(news_event_articles).where(
                     news_event_articles.c.article_revision_id.in_(news_revision_ids)
+                )
+            )
+            .mappings()
+            .all()
+        }
+        regulation_snapshot_rows = {
+            row["id"]: row
+            for row in connection.execute(
+                select(regulation_snapshots).where(
+                    regulation_snapshots.c.id.in_(
+                        record.regulation_input_id
+                        for record in records
+                        if record.regulation_input_id is not None
+                    )
                 )
             )
             .mappings()
@@ -708,6 +785,7 @@ class PublicationRepository:
                     news_items_by_snapshot=news_items_by_snapshot,
                     news_revisions=news_revisions,
                     news_event_links=news_event_links,
+                    regulation_snapshot_rows=regulation_snapshot_rows,
                     expected_role_dependencies=expected_role_dependencies[record.id],
                     result_rows=result_rows,
                     active_withdrawal_sources=active_withdrawal_sources,
