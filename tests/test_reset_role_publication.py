@@ -518,9 +518,13 @@ def test_migration_upgrades_database_already_at_original_0007(database_url):
             assert (
                 connection.scalar(
                     text(
-                        "SELECT count(*) FROM pg_trigger "
-                        "WHERE tgname = 'role_validations_chain' "
-                        "AND NOT tgisinternal"
+                        "SELECT count(*) FROM pg_trigger trigger "
+                        "JOIN pg_class relation ON relation.oid = trigger.tgrelid "
+                        "JOIN pg_namespace namespace "
+                        "ON namespace.oid = relation.relnamespace "
+                        "WHERE trigger.tgname = 'role_validations_chain' "
+                        "AND NOT trigger.tgisinternal "
+                        "AND namespace.nspname = current_schema()"
                     )
                 )
                 == 1
@@ -547,9 +551,13 @@ def test_role_integrity_migration_roundtrips_from_clean_0006(database_url):
         with database.engine.connect() as connection:
             return connection.scalar(
                 text(
-                    "SELECT count(*) FROM pg_trigger "
-                    "WHERE tgname = 'role_validations_chain' "
-                    "AND NOT tgisinternal"
+                    "SELECT count(*) FROM pg_trigger trigger "
+                    "JOIN pg_class relation ON relation.oid = trigger.tgrelid "
+                    "JOIN pg_namespace namespace "
+                    "ON namespace.oid = relation.relnamespace "
+                    "WHERE trigger.tgname = 'role_validations_chain' "
+                    "AND NOT trigger.tgisinternal "
+                    "AND namespace.nspname = current_schema()"
                 )
             )
 
