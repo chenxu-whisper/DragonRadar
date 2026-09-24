@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, insert, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.engine import Connection
 
 from dragon_radar.domain.models import SourceGrant
@@ -26,6 +27,7 @@ from dragon_radar.news.tables import (
     news_associations,
     news_event_articles,
     news_events,
+    news_ingest_commands,
     news_review_audit_events,
     news_review_commands,
     news_snapshot_items,
@@ -50,6 +52,27 @@ def _canonical(value: Mapping) -> str:
         allow_nan=False,
         default=str,
     )
+
+
+def _ingest_command_hash(
+    revision: NewsArticleRevision,
+    event_evidence: NewsEventEvidence | None,
+    associations: tuple[NewsAssociation, ...],
+) -> str:
+    association_payloads = sorted(
+        (item.model_dump(mode="json") for item in associations),
+        key=_canonical,
+    )
+    payload = {
+        "revision": revision.model_dump(mode="json"),
+        "event": (
+            event_evidence.model_dump(mode="json")
+            if event_evidence is not None
+            else None
+        ),
+        "associations": association_payloads,
+    }
+    return hashlib.sha256(_canonical(payload).encode("ascii")).hexdigest()
 
 
 def _revision(row: Mapping) -> NewsArticleRevision:
@@ -139,12 +162,6 @@ class NewsRepository:
         values["ingested_at"] = ingested_at
         return values
 
-    @staticmethod
-    def _same_revision(row: Mapping, revision: NewsArticleRevision) -> bool:
-        return _canonical(_revision(row).model_dump(mode="json")) == _canonical(
-            revision.model_dump(mode="json")
-        )
-
     def ingest_revision(
         self,
         revision: NewsArticleRevision,
@@ -165,6 +182,7 @@ class NewsRepository:
         )
         if any(item.article_revision_id != revision.id for item in associations):
             raise ValueError("Association must bind the exact article revision")
+        command_hash = _ingest_command_hash(revision, event_evidence, associations)
         now = self._now()
         with self.database.engine.begin() as connection:
             self._authorize_grant(
@@ -173,7 +191,48 @@ class NewsRepository:
                 revision.grant,
                 storage=True,
             )
+            self.market._lock(connection, f"news-ingest-key:{key}")
+            self.market._lock(connection, f"news-revision:{revision.id}")
             self.market._lock(connection, f"news-article:{revision.article_id}")
+            command = (
+                connection.execute(
+                    select(news_ingest_commands).where(
+                        news_ingest_commands.c.idempotency_key == key
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if command is not None:
+                if (
+                    command["payload_hash"] != command_hash
+                    or command["article_revision_id"] != revision.id
+                ):
+                    raise Conflict("News ingest key belongs to another payload")
+                stored = (
+                    connection.execute(
+                        select(news_article_revisions).where(
+                            news_article_revisions.c.id
+                            == command["article_revision_id"]
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                return _revision(stored)
+            revision_command = (
+                connection.execute(
+                    select(news_ingest_commands).where(
+                        news_ingest_commands.c.article_revision_id == revision.id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if revision_command is not None:
+                if revision_command["payload_hash"] != command_hash:
+                    raise Conflict("Article revision belongs to another command")
+                raise Conflict("Article revision belongs to another ingest key")
             article = (
                 connection.execute(
                     select(news_articles).where(
@@ -208,9 +267,7 @@ class NewsRepository:
                 .first()
             )
             if existing is not None:
-                if not self._same_revision(existing, revision):
-                    raise Conflict("Revision ID belongs to another payload")
-                return _revision(existing)
+                raise Conflict("Revision ID exists without an ingest command")
             duplicate = (
                 connection.execute(
                     select(news_article_revisions).where(
@@ -222,9 +279,7 @@ class NewsRepository:
                 .first()
             )
             if duplicate is not None:
-                if not self._same_revision(duplicate, revision):
-                    raise Conflict("Article revision already exists")
-                return _revision(duplicate)
+                raise Conflict("Article revision already exists")
             connection.execute(
                 insert(news_article_revisions).values(
                     **self._stored_revision(revision, now)
@@ -240,24 +295,27 @@ class NewsRepository:
                 if event_evidence is not None
                 else str(revision.article_id)
             )
-            event = (
-                connection.execute(
-                    select(news_events).where(
+            event_id = connection.scalar(
+                postgresql_insert(news_events)
+                .values(
+                    id=uuid4(),
+                    evidence_kind=kind,
+                    evidence_value=value,
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        news_events.c.evidence_kind,
+                        news_events.c.evidence_value,
+                    ]
+                )
+                .returning(news_events.c.id)
+            )
+            if event_id is None:
+                event_id = connection.scalar(
+                    select(news_events.c.id).where(
                         news_events.c.evidence_kind == kind,
                         news_events.c.evidence_value == value,
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            event_id = event["id"] if event is not None else uuid4()
-            if event is None:
-                connection.execute(
-                    insert(news_events).values(
-                        id=event_id,
-                        evidence_kind=kind,
-                        evidence_value=value,
-                        created_at=now,
                     )
                 )
             connection.execute(
@@ -273,6 +331,15 @@ class NewsRepository:
                         **candidate.model_dump(mode="json")
                     )
                 )
+            connection.execute(
+                insert(news_ingest_commands).values(
+                    id=uuid4(),
+                    idempotency_key=key,
+                    payload_hash=command_hash,
+                    article_revision_id=revision.id,
+                    created_at=now,
+                )
+            )
         return revision
 
     def create_snapshot(self, *, as_of: datetime, key: str) -> NewsSnapshot:

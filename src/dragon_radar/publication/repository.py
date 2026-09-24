@@ -151,6 +151,10 @@ def _role_validation_input_ids(payload) -> set[UUID]:
         raise Forbidden("Publication role payload is invalid") from None
 
 
+def _news_items_by_revision(items) -> dict:
+    return {item["article_revision_id"]: item for item in items}
+
+
 class PublicationRepository:
     """Select publication IDs while preserving legacy market snapshot reads."""
 
@@ -268,6 +272,7 @@ class PublicationRepository:
         if record.news_input_id is not None:
             root = news_snapshot_rows.get(record.news_input_id)
             items = news_items_by_snapshot.get(record.news_input_id, ())
+            items_by_revision = _news_items_by_revision(items)
             expected = {
                 (
                     revision["source_id"],
@@ -330,14 +335,7 @@ class PublicationRepository:
                     or revision["available_at"] > root["as_of"]
                 ):
                     raise Forbidden("Publication news lineage is invalid")
-                item = next(
-                    (
-                        item
-                        for item in items
-                        if item["article_revision_id"] == revision["id"]
-                    ),
-                    None,
-                )
+                item = items_by_revision.get(revision["id"])
                 if (
                     item is None
                     or item["article_id"] != revision["article_id"]

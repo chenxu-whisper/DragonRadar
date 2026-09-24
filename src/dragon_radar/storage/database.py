@@ -100,6 +100,7 @@ class Database:
                     "news_events",
                     "news_event_articles",
                     "news_associations",
+                    "news_ingest_commands",
                     "news_association_reviews",
                     "news_review_commands",
                     "news_review_audit_events",

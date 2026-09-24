@@ -1,6 +1,8 @@
 """Point-in-time news, deterministic events, publication, and owner review."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -20,6 +22,7 @@ from news_factories import (
     second_article,
 )
 from pydantic import ValidationError
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import inspect, select, text
 
 pytestmark = pytest.mark.anyio
@@ -114,6 +117,77 @@ def _owner_id(database):
     from dragon_radar.owner.repository import OwnerRepository
 
     return OwnerRepository(database, clock=lambda: NOW).initialize()
+
+
+def test_ingest_command_hash_covers_revision_event_and_sorted_associations():
+    from dragon_radar.news.repository import _ingest_command_hash
+
+    revision = article_revision()
+    evidence = event_evidence()
+    associations = (
+        association(),
+        association(
+            id=ASSOCIATION_TOPIC,
+            target_type="topic",
+            target_id="topic-a",
+            method="ai",
+            status="unreviewed",
+        ),
+    )
+
+    digest = _ingest_command_hash(revision, evidence, associations)
+
+    assert digest == _ingest_command_hash(
+        revision, evidence, tuple(reversed(associations))
+    )
+    assert digest != _ingest_command_hash(
+        revision.model_copy(update={"title": "Changed title"}),
+        evidence,
+        associations,
+    )
+    assert digest != _ingest_command_hash(
+        revision,
+        event_evidence(value="synthetic:event:changed"),
+        associations,
+    )
+    assert digest != _ingest_command_hash(
+        revision,
+        evidence,
+        (
+            associations[0].model_copy(
+                update={"evidence_snippets": ("Changed association evidence.",)}
+            ),
+            associations[1],
+        ),
+    )
+
+
+def test_publication_news_items_build_one_revision_lookup():
+    from dragon_radar.publication.repository import _news_items_by_revision
+
+    class OnePassItems:
+        def __init__(self, rows):
+            self.rows = rows
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("news items must be indexed in one pass")
+            return iter(self.rows)
+
+    rows = OnePassItems(
+        [
+            {"article_revision_id": REVISION_A1, "position": 0},
+            {"article_revision_id": REVISION_A2, "position": 1},
+        ]
+    )
+
+    indexed = _news_items_by_revision(rows)
+
+    assert rows.iterations == 1
+    assert indexed[REVISION_A1]["position"] == 0
+    assert indexed[REVISION_A2]["position"] == 1
 
 
 def test_news_models_enforce_availability_content_and_deterministic_event_evidence():
@@ -392,11 +466,129 @@ def test_snapshot_cutoff_uses_available_at_and_pins_exact_revision(
         ["Order value remains subject to closing conditions."],
         2,
     )
-    round_trip = service.ingest_article(article_revision(), key="news-a1-replay")
+    round_trip = _ingest_base(service)
     assert round_trip.supporting_evidence == ("Synthetic filing reports a new order.",)
     assert round_trip.opposing_evidence == (
         "Order value remains subject to closing conditions.",
     )
+
+
+def test_ingest_command_replays_complete_payload_and_rejects_conflicts(
+    database, repository
+):
+    from dragon_radar.news.tables import news_ingest_commands
+    from dragon_radar.storage.repository import Conflict
+
+    service = _news_service(database, repository)
+    revision = article_revision()
+    evidence = event_evidence()
+    associations = (association(),)
+
+    first = service.ingest_article(
+        revision,
+        key="news-command",
+        event_evidence=evidence,
+        associations=associations,
+    )
+    replay = service.ingest_article(
+        revision,
+        key="news-command",
+        event_evidence=evidence,
+        associations=associations,
+    )
+
+    assert replay == first
+    with pytest.raises(Conflict):
+        service.ingest_article(
+            revision,
+            key="news-command",
+            event_evidence=event_evidence(value="synthetic:event:changed"),
+            associations=associations,
+        )
+    with pytest.raises(Conflict):
+        service.ingest_article(
+            revision,
+            key="news-command-for-same-revision",
+            event_evidence=evidence,
+            associations=(
+                association(
+                    evidence_snippets=("A different complete command.",),
+                ),
+            ),
+        )
+    with pytest.raises(Conflict):
+        service.ingest_article(
+            revision,
+            key="news-command-alias",
+            event_evidence=evidence,
+            associations=associations,
+        )
+    with database.engine.connect() as connection:
+        commands = connection.execute(select(news_ingest_commands)).mappings().all()
+    assert len(commands) == 1
+    assert commands[0]["idempotency_key"] == "news-command"
+    assert commands[0]["article_revision_id"] == REVISION_A1
+
+
+def test_concurrent_articles_with_same_event_share_event(database, repository):
+    from dragon_radar.news.tables import news_event_articles
+
+    second_grant = grant(source_id="synthetic-b")
+    repository.register_source(second_grant)
+    service = _news_service(database, repository)
+    rendezvous = Barrier(2)
+    shared_event = event_evidence(kind="canonical_url")
+
+    def synchronize_event_insert(
+        conn, cursor, statement, parameters, context, executemany
+    ):
+        if "INSERT INTO news_events" in statement:
+            rendezvous.wait(timeout=5)
+
+    sqlalchemy_event.listen(
+        database.engine,
+        "before_cursor_execute",
+        synchronize_event_insert,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = (
+                pool.submit(
+                    service.ingest_article,
+                    revision,
+                    key=key,
+                    event_evidence=shared_event,
+                )
+                for revision, key in (
+                    (article_revision(), "news-concurrent-a"),
+                    (
+                        second_article(source_id="synthetic-b", grant=second_grant),
+                        "news-concurrent-b",
+                    ),
+                )
+            )
+            results = [future.result(timeout=10) for future in futures]
+    finally:
+        sqlalchemy_event.remove(
+            database.engine,
+            "before_cursor_execute",
+            synchronize_event_insert,
+        )
+
+    with database.engine.connect() as connection:
+        links = (
+            connection.execute(
+                select(news_event_articles).where(
+                    news_event_articles.c.article_revision_id.in_(
+                        [result.id for result in results]
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert len(links) == 2
+    assert len({row["event_id"] for row in links}) == 1
 
 
 def test_early_published_at_never_bypasses_late_receipt_cutoff(database, repository):
@@ -728,6 +920,7 @@ def test_migration_adds_news_tables_fk_guards_and_readiness(database):
         "news_event_articles",
         "news_associations",
         "news_association_reviews",
+        "news_ingest_commands",
         "news_review_commands",
         "news_review_audit_events",
         "news_snapshots",
@@ -756,6 +949,12 @@ def test_migration_adds_news_tables_fk_guards_and_readiness(database):
         "supporting_evidence",
         "opposing_evidence",
     } <= revision_columns
+    command_uniques = {
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints("news_ingest_commands")
+    }
+    assert ("idempotency_key",) in command_uniques
+    assert ("article_revision_id",) in command_uniques
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))

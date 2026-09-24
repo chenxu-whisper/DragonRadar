@@ -138,6 +138,22 @@ news_associations = Table(
     Index("news_associations_target", "target_type", "target_id"),
 )
 
+news_ingest_commands = Table(
+    "news_ingest_commands",
+    metadata,
+    Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column("idempotency_key", String(200), nullable=False, unique=True),
+    Column("payload_hash", String(64), nullable=False),
+    Column(
+        "article_revision_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("news_article_revisions.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
 news_association_reviews = Table(
     "news_association_reviews",
     metadata,
