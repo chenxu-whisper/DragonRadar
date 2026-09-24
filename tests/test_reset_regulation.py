@@ -866,6 +866,186 @@ def test_publication_automatically_materializes_stable_regulation_payload(
     )
 
 
+def test_regulated_publication_list_prefetches_contexts_with_fixed_query_budget(
+    database,
+    repository,
+):
+    from sqlalchemy import event as sqlalchemy_event
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="regulation-list-rule")
+    regulations.append_event(_event(), key="regulation-list-event")
+    service = PublicationService(database, repository, clock=lambda: NOW)
+    selection = PublicationRepository(database, repository, clock=lambda: NOW)
+
+    def publish(index):
+        market = repository.publish(
+            repository.import_batch(
+                batch(),
+                key=f"regulation-list-market-{index}",
+            ).id
+        )
+        regulation = regulations.materialize(
+            market_snapshot_id=market.id,
+            observations=(_observation(),),
+            key=f"regulation-list-snapshot-{index}",
+        )
+        return service.publish(
+            PublicationCommand(
+                trade_date=DAYS[-1],
+                market_snapshot_id=market.id,
+                regulation_input_id=regulation.id,
+                disabled_domains=("topic", "news", "role"),
+            ),
+            key=f"regulation-list-publication-{index}",
+        )
+
+    def measured_list(limit):
+        statements = []
+
+        def record_statement(
+            connection,
+            cursor,
+            statement,
+            parameters,
+            context,
+            executemany,
+        ):
+            statements.append(statement)
+
+        sqlalchemy_event.listen(
+            database.engine,
+            "before_cursor_execute",
+            record_statement,
+        )
+        try:
+            listed = selection.list_snapshots(limit=limit)
+        finally:
+            sqlalchemy_event.remove(
+                database.engine,
+                "before_cursor_execute",
+                record_statement,
+            )
+        return listed, len(statements)
+
+    publish(0)
+    one, one_count = measured_list(1)
+    expected_ids = {one[0].id}
+    for index in range(1, 4):
+        expected_ids.add(publish(index).id)
+    many, many_count = measured_list(4)
+
+    assert {item.id for item in many} == expected_ids
+    for item in many:
+        result = item.result("regulation")
+        assert result.payload["snapshot_id"] == str(result.input_id)
+        assert result.payload["market_snapshot_id"] == str(
+            item.publication.market_snapshot_id
+        )
+        assert result.payload["calculations"][0]["state"] == "approaching_alert"
+    assert one_count == many_count
+    assert many_count <= 22
+
+
+def test_prefetched_regulation_publications_still_recheck_payload_and_lineage(
+    database,
+    repository,
+    monkeypatch,
+):
+    from sqlalchemy import insert, select
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.publication.tables import source_dependencies
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.storage.repository import Forbidden
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="regulation-prefetch-review-market",
+        ).id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="regulation-prefetch-review-rule")
+    regulation = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        key="regulation-prefetch-review-snapshot",
+    )
+    publication = PublicationService(
+        database,
+        repository,
+        clock=lambda: NOW,
+    ).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            regulation_input_id=regulation.id,
+            disabled_domains=("topic", "news", "role"),
+        ),
+        key="regulation-prefetch-review-publication",
+    )
+    selection = PublicationRepository(database, repository, clock=lambda: NOW)
+    materialize_context = RegulationRepository.materialize_context
+
+    def forged_materialization(context):
+        expected = materialize_context(context)
+        return expected.model_copy(
+            update={
+                "payload": {
+                    **expected.payload,
+                    "snapshot_id": str(uuid4()),
+                }
+            }
+        )
+
+    monkeypatch.setattr(
+        RegulationRepository,
+        "materialize_context",
+        staticmethod(forged_materialization),
+    )
+    with pytest.raises(Forbidden, match="regulation payload"):
+        selection.get_snapshot(publication.id)
+    monkeypatch.setattr(
+        RegulationRepository,
+        "materialize_context",
+        staticmethod(materialize_context),
+    )
+    other_market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="regulation-prefetch-review-other-market",
+        ).id
+    )
+
+    with database.engine.begin() as connection:
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == publication.id,
+                    source_dependencies.c.derived_type == "regulation",
+                )
+            )
+            .mappings()
+            .one()
+        )
+        duplicate = dict(dependency)
+        duplicate.pop("dependency_sequence")
+        duplicate["id"] = uuid4()
+        duplicate["archive_id"] = other_market.batch_id
+        connection.execute(insert(source_dependencies).values(**duplicate))
+
+    with pytest.raises(Forbidden, match="regulation lineage"):
+        selection.get_snapshot(publication.id)
+
+
 def _stored_rule_values(**changes):
     values = _rule(
         active=False,

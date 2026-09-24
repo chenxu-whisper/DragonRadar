@@ -28,7 +28,6 @@ from dragon_radar.publication.tables import (
     withdrawal_records,
 )
 from dragon_radar.regulation.repository import RegulationRepository
-from dragon_radar.regulation.tables import regulation_snapshots
 from dragon_radar.roles.tables import role_runs
 from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
@@ -217,6 +216,7 @@ class PublicationRepository:
         news_revisions,
         news_event_links,
         regulation_snapshot_rows,
+        regulation_contexts,
         expected_role_dependencies,
         result_rows,
         active_withdrawal_sources,
@@ -405,7 +405,7 @@ class PublicationRepository:
             ):
                 raise Forbidden("Publication regulation lineage is invalid")
             expected = RegulationRepository.materialize_context(
-                self.regulations.snapshot_context(record.regulation_input_id)
+                regulation_contexts[record.regulation_input_id]
             )
             if (
                 regulation_result["payload"]
@@ -554,20 +554,25 @@ class PublicationRepository:
             .mappings()
             .all()
         }
-        news_snapshot_rows = {
-            row["id"]: row
-            for row in connection.execute(
-                select(news_snapshots).where(
-                    news_snapshots.c.id.in_(
-                        record.news_input_id
-                        for record in records
-                        if record.news_input_id is not None
+        news_snapshot_ids = {
+            record.news_input_id
+            for record in records
+            if record.news_input_id is not None
+        }
+        news_snapshot_rows = (
+            {
+                row["id"]: row
+                for row in connection.execute(
+                    select(news_snapshots).where(
+                        news_snapshots.c.id.in_(news_snapshot_ids)
                     )
                 )
-            )
-            .mappings()
-            .all()
-        }
+                .mappings()
+                .all()
+            }
+            if news_snapshot_ids
+            else {}
+        )
         news_items = (
             connection.execute(
                 select(news_snapshot_items).where(
@@ -591,39 +596,50 @@ class PublicationRepository:
                 if row["archive_type"] == "news_article_revision"
             ),
         }
-        news_revisions = {
-            row["id"]: row
-            for row in connection.execute(
-                select(news_article_revisions).where(
-                    news_article_revisions.c.id.in_(news_revision_ids)
-                )
-            )
-            .mappings()
-            .all()
-        }
-        news_event_links = {
-            row["article_revision_id"]: row["event_id"]
-            for row in connection.execute(
-                select(news_event_articles).where(
-                    news_event_articles.c.article_revision_id.in_(news_revision_ids)
-                )
-            )
-            .mappings()
-            .all()
-        }
-        regulation_snapshot_rows = {
-            row["id"]: row
-            for row in connection.execute(
-                select(regulation_snapshots).where(
-                    regulation_snapshots.c.id.in_(
-                        record.regulation_input_id
-                        for record in records
-                        if record.regulation_input_id is not None
+        news_revisions = (
+            {
+                row["id"]: row
+                for row in connection.execute(
+                    select(news_article_revisions).where(
+                        news_article_revisions.c.id.in_(news_revision_ids)
                     )
                 )
+                .mappings()
+                .all()
+            }
+            if news_revision_ids
+            else {}
+        )
+        news_event_links = (
+            {
+                row["article_revision_id"]: row["event_id"]
+                for row in connection.execute(
+                    select(news_event_articles).where(
+                        news_event_articles.c.article_revision_id.in_(news_revision_ids)
+                    )
+                )
+                .mappings()
+                .all()
+            }
+            if news_revision_ids
+            else {}
+        )
+        regulation_snapshot_ids = {
+            record.regulation_input_id
+            for record in records
+            if record.regulation_input_id is not None
+        }
+        regulation_contexts = (
+            self.regulations.snapshot_contexts(
+                connection,
+                regulation_snapshot_ids,
             )
-            .mappings()
-            .all()
+            if regulation_snapshot_ids
+            else {}
+        )
+        regulation_snapshot_rows = {
+            snapshot_id: context["root"]
+            for snapshot_id, context in regulation_contexts.items()
         }
         source_ids = {
             *(row["source_id"] for row in dependencies),
@@ -649,12 +665,9 @@ class PublicationRepository:
             if publication_ids
             else []
         )
-        result_rows = {
-            publication_id: [
-                row for row in results if row["publication_id"] == publication_id
-            ]
-            for publication_id in publication_ids
-        }
+        result_rows = {publication_id: [] for publication_id in publication_ids}
+        for row in results:
+            result_rows[row["publication_id"]].append(row)
         role_input_ids_by_publication = {}
         all_role_input_ids = set()
         for publication_id, rows_for_publication in result_rows.items():
@@ -671,41 +684,63 @@ class PublicationRepository:
                 input_ids = _role_validation_input_ids(role_result["payload"])
             role_input_ids_by_publication[publication_id] = input_ids
             all_role_input_ids.update(input_ids)
-        validation_input_runs = {
-            row["id"]: row
-            for row in connection.execute(
-                select(role_runs).where(role_runs.c.id.in_(all_role_input_ids))
-            )
-            .mappings()
-            .all()
-        }
+        validation_input_runs = (
+            {
+                row["id"]: row
+                for row in connection.execute(
+                    select(role_runs).where(role_runs.c.id.in_(all_role_input_ids))
+                )
+                .mappings()
+                .all()
+            }
+            if all_role_input_ids
+            else {}
+        )
         if set(validation_input_runs) != all_role_input_ids or any(
             row["status"] != "materialized" for row in validation_input_runs.values()
         ):
             raise Forbidden("Publication role lineage is invalid")
+        role_market_snapshot_ids = {
+            run["market_snapshot_id"] for run in validation_input_runs.values()
+        }
+        role_topic_snapshot_ids = {
+            run["topic_snapshot_id"] for run in validation_input_runs.values()
+        }
+        role_market_rows = (
+            {
+                row["id"]: row
+                for row in connection.execute(
+                    select(snapshots).where(
+                        snapshots.c.id.in_(role_market_snapshot_ids)
+                    )
+                )
+                .mappings()
+                .all()
+            }
+            if role_market_snapshot_ids
+            else {}
+        )
+        role_topic_rows = (
+            {
+                row["id"]: row
+                for row in connection.execute(
+                    select(topic_snapshots).where(
+                        topic_snapshots.c.id.in_(role_topic_snapshot_ids)
+                    )
+                )
+                .mappings()
+                .all()
+            }
+            if role_topic_snapshot_ids
+            else {}
+        )
         expected_role_dependencies = {}
         for publication_id, input_ids in role_input_ids_by_publication.items():
             expected = set()
             for run_id in input_ids:
                 run = validation_input_runs[run_id]
-                market_row = (
-                    connection.execute(
-                        select(snapshots).where(
-                            snapshots.c.id == run["market_snapshot_id"]
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-                topic_row = (
-                    connection.execute(
-                        select(topic_snapshots).where(
-                            topic_snapshots.c.id == run["topic_snapshot_id"]
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
+                market_row = role_market_rows.get(run["market_snapshot_id"])
+                topic_row = role_topic_rows.get(run["topic_snapshot_id"])
                 if market_row is None or topic_row is None:
                     raise Forbidden("Publication role lineage is invalid")
                 expected.add(
@@ -764,12 +799,9 @@ class PublicationRepository:
                 .distinct()
             ).scalars()
         )
-        by_publication = {
-            publication_id: [
-                row for row in dependencies if row["publication_id"] == publication_id
-            ]
-            for publication_id in publication_ids
-        }
+        by_publication = {publication_id: [] for publication_id in publication_ids}
+        for row in dependencies:
+            by_publication[row["publication_id"]].append(row)
         authorized = []
         for record in records:
             try:
@@ -786,6 +818,7 @@ class PublicationRepository:
                     news_revisions=news_revisions,
                     news_event_links=news_event_links,
                     regulation_snapshot_rows=regulation_snapshot_rows,
+                    regulation_contexts=regulation_contexts,
                     expected_role_dependencies=expected_role_dependencies[record.id],
                     result_rows=result_rows,
                     active_withdrawal_sources=active_withdrawal_sources,

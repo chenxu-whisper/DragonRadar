@@ -800,166 +800,193 @@ class RegulationRepository:
             root["market_batch_id"] = market_row["batch_id"]
             return _snapshot(root)
 
-    def snapshot_context(self, snapshot_id: UUID | str) -> dict:
-        snapshot_id = _uuid(snapshot_id)
-        with self.database.engine.begin() as connection:
-            root = (
-                connection.execute(
-                    select(regulation_snapshots).where(
-                        regulation_snapshots.c.id == snapshot_id
-                    )
+    def snapshot_contexts(self, connection, snapshot_ids) -> dict[UUID, dict]:
+        snapshot_ids = {_uuid(snapshot_id) for snapshot_id in snapshot_ids}
+        if not snapshot_ids:
+            return {}
+        roots = {
+            row["id"]: row
+            for row in connection.execute(
+                select(regulation_snapshots).where(
+                    regulation_snapshots.c.id.in_(snapshot_ids)
                 )
-                .mappings()
-                .first()
             )
-            if root is None:
-                raise NotFound("Regulation snapshot not found")
-            market_row = (
-                connection.execute(
-                    select(snapshots).where(
-                        snapshots.c.id == root["market_snapshot_id"]
-                    )
+            .mappings()
+            .all()
+        }
+        if set(roots) != snapshot_ids:
+            raise NotFound("Regulation snapshot not found")
+
+        market_snapshot_ids = {row["market_snapshot_id"] for row in roots.values()}
+        market_rows = {
+            row["id"]: row
+            for row in connection.execute(
+                select(snapshots).where(snapshots.c.id.in_(market_snapshot_ids))
+            )
+            .mappings()
+            .all()
+        }
+        market_batch_ids = {row["batch_id"] for row in market_rows.values()}
+        market_archives = {
+            row["id"]: row
+            for row in connection.execute(
+                select(import_batches).where(import_batches.c.id.in_(market_batch_ids))
+            )
+            .mappings()
+            .all()
+        }
+        rule_bindings = (
+            connection.execute(
+                select(regulation_snapshot_rules)
+                .where(regulation_snapshot_rules.c.snapshot_id.in_(snapshot_ids))
+                .order_by(
+                    regulation_snapshot_rules.c.snapshot_id,
+                    regulation_snapshot_rules.c.position,
                 )
-                .mappings()
-                .one()
             )
-            market_archive = (
-                connection.execute(
-                    select(import_batches).where(
-                        import_batches.c.id == market_row["batch_id"]
-                    )
+            .mappings()
+            .all()
+        )
+        calculation_rows = (
+            connection.execute(
+                select(regulation_calculations)
+                .where(regulation_calculations.c.snapshot_id.in_(snapshot_ids))
+                .order_by(
+                    regulation_calculations.c.snapshot_id,
+                    regulation_calculations.c.security_id,
+                    regulation_calculations.c.rule_record_id,
                 )
-                .mappings()
-                .one()
             )
-            market = MarketBatch.model_validate_json(market_archive["canonical_json"])
-            rule_bindings = (
-                connection.execute(
-                    select(regulation_snapshot_rules)
-                    .where(regulation_snapshot_rules.c.snapshot_id == snapshot_id)
-                    .order_by(regulation_snapshot_rules.c.position)
+            .mappings()
+            .all()
+        )
+        input_rows = (
+            connection.execute(
+                select(regulation_snapshot_inputs)
+                .where(regulation_snapshot_inputs.c.snapshot_id.in_(snapshot_ids))
+                .order_by(
+                    regulation_snapshot_inputs.c.snapshot_id,
+                    regulation_snapshot_inputs.c.security_id,
+                    regulation_snapshot_inputs.c.rule_record_id,
                 )
-                .mappings()
-                .all()
             )
-            rule_rows = {
+            .mappings()
+            .all()
+        )
+        rule_record_ids = {
+            *(row["rule_record_id"] for row in rule_bindings),
+            *(row["rule_record_id"] for row in calculation_rows),
+            *(row["rule_record_id"] for row in input_rows),
+        }
+        rule_rows = (
+            {
                 row["id"]: row
                 for row in connection.execute(
                     select(regulation_rules).where(
-                        regulation_rules.c.id.in_(
-                            binding["rule_record_id"] for binding in rule_bindings
-                        )
+                        regulation_rules.c.id.in_(rule_record_ids)
                     )
                 )
                 .mappings()
                 .all()
             }
-            calculation_rows = (
-                connection.execute(
-                    select(regulation_calculations)
-                    .where(regulation_calculations.c.snapshot_id == snapshot_id)
-                    .order_by(
-                        regulation_calculations.c.security_id,
-                        regulation_calculations.c.rule_record_id,
-                    )
+            if rule_record_ids
+            else {}
+        )
+        rules = {record_id: _rule(row) for record_id, row in rule_rows.items()}
+        event_rows = (
+            connection.execute(
+                select(
+                    regulation_snapshot_events.c.snapshot_id,
+                    regulation_events,
                 )
-                .mappings()
-                .all()
+                .join(
+                    regulation_events,
+                    regulation_events.c.event_id
+                    == regulation_snapshot_events.c.event_id,
+                )
+                .where(regulation_snapshot_events.c.snapshot_id.in_(snapshot_ids))
+                .order_by(
+                    regulation_snapshot_events.c.snapshot_id,
+                    regulation_snapshot_events.c.position,
+                )
             )
-            input_rows = (
-                connection.execute(
-                    select(regulation_snapshot_inputs)
-                    .where(regulation_snapshot_inputs.c.snapshot_id == snapshot_id)
-                    .order_by(
-                        regulation_snapshot_inputs.c.security_id,
-                        regulation_snapshot_inputs.c.rule_record_id,
-                    )
+            .mappings()
+            .all()
+        )
+
+        bindings_by_snapshot = defaultdict(list)
+        calculations_by_snapshot = defaultdict(list)
+        calculation_rows_by_snapshot = defaultdict(list)
+        inputs_by_snapshot = defaultdict(list)
+        events_by_snapshot = defaultdict(list)
+        for row in rule_bindings:
+            bindings_by_snapshot[row["snapshot_id"]].append(row)
+        for row in calculation_rows:
+            rule = rules[row["rule_record_id"]]
+            calculation_rows_by_snapshot[row["snapshot_id"]].append(row)
+            calculations_by_snapshot[row["snapshot_id"]].append(
+                RegulationCalculation(
+                    rule_id=rule.rule_id,
+                    rule_version=rule.rule_version,
+                    security_id=row["security_id"],
+                    trade_date=row["trade_date"],
+                    window_days=rule.window_days,
+                    direction=rule.direction,
+                    threshold=rule.threshold,
+                    warning_threshold=rule.warning_threshold,
+                    review_switch=rule.review_switch,
+                    benchmark_index=rule.benchmark_index,
+                    recompute_condition=rule.recompute_condition,
+                    computed_value=row["computed_value"],
+                    state=row["state"],
+                    reasons=tuple(row["reasons"]),
                 )
-                .mappings()
-                .all()
             )
-            missing_rule_record_ids = {
-                row["rule_record_id"] for row in input_rows
-            } - set(rule_rows)
-            if missing_rule_record_ids:
-                rule_rows.update(
-                    {
-                        row["id"]: row
-                        for row in connection.execute(
-                            select(regulation_rules).where(
-                                regulation_rules.c.id.in_(missing_rule_record_ids)
-                            )
-                        )
-                        .mappings()
-                        .all()
-                    }
+        for row in input_rows:
+            rule = rules[row["rule_record_id"]]
+            inputs_by_snapshot[row["snapshot_id"]].append(
+                RegulationObservation(
+                    rule_id=rule.rule_id,
+                    rule_version=rule.rule_version,
+                    security_id=row["security_id"],
+                    trade_date=row["trade_date"],
+                    exchange=row["exchange"],
+                    board=row["board"],
+                    security_status=row["security_status"],
+                    computed_value=row["computed_value"],
+                    input_state=row["input_state"],
                 )
-            calculations = []
-            for row in calculation_rows:
-                rule = _rule(rule_rows[row["rule_record_id"]])
-                calculations.append(
-                    RegulationCalculation(
-                        rule_id=rule.rule_id,
-                        rule_version=rule.rule_version,
-                        security_id=row["security_id"],
-                        trade_date=row["trade_date"],
-                        window_days=rule.window_days,
-                        direction=rule.direction,
-                        threshold=rule.threshold,
-                        warning_threshold=rule.warning_threshold,
-                        review_switch=rule.review_switch,
-                        benchmark_index=rule.benchmark_index,
-                        recompute_condition=rule.recompute_condition,
-                        computed_value=row["computed_value"],
-                        state=row["state"],
-                        reasons=tuple(row["reasons"]),
-                    )
-                )
-            event_rows = (
-                connection.execute(
-                    select(regulation_events)
-                    .join(
-                        regulation_snapshot_events,
-                        regulation_snapshot_events.c.event_id
-                        == regulation_events.c.event_id,
-                    )
-                    .where(regulation_snapshot_events.c.snapshot_id == snapshot_id)
-                    .order_by(regulation_snapshot_events.c.position)
-                )
-                .mappings()
-                .all()
             )
-            return {
+        for row in event_rows:
+            events_by_snapshot[row["snapshot_id"]].append(_event(row))
+
+        contexts = {}
+        for snapshot_id, root in roots.items():
+            market_row = market_rows[root["market_snapshot_id"]]
+            market_archive = market_archives[market_row["batch_id"]]
+            market = MarketBatch.model_validate_json(market_archive["canonical_json"])
+            bindings = tuple(bindings_by_snapshot[snapshot_id])
+            contexts[snapshot_id] = {
                 "snapshot": _snapshot(root),
                 "root": root,
                 "market_source_id": market_row["source_id"],
                 "market_batch_id": market_row["batch_id"],
                 "expected_security_ids": market.expected_security_ids,
-                "rule_bindings": tuple(rule_bindings),
+                "rule_bindings": bindings,
                 "rules": tuple(
-                    _rule(rule_rows[binding["rule_record_id"]])
-                    for binding in rule_bindings
+                    rules[binding["rule_record_id"]] for binding in bindings
                 ),
-                "calculations": tuple(calculations),
-                "calculation_rows": tuple(calculation_rows),
-                "inputs": tuple(
-                    RegulationObservation(
-                        rule_id=_rule(rule_rows[row["rule_record_id"]]).rule_id,
-                        rule_version=_rule(
-                            rule_rows[row["rule_record_id"]]
-                        ).rule_version,
-                        security_id=row["security_id"],
-                        trade_date=row["trade_date"],
-                        exchange=row["exchange"],
-                        board=row["board"],
-                        security_status=row["security_status"],
-                        computed_value=row["computed_value"],
-                        input_state=row["input_state"],
-                    )
-                    for row in input_rows
-                ),
-                "events": tuple(_event(row) for row in event_rows),
+                "calculations": tuple(calculations_by_snapshot[snapshot_id]),
+                "calculation_rows": tuple(calculation_rows_by_snapshot[snapshot_id]),
+                "inputs": tuple(inputs_by_snapshot[snapshot_id]),
+                "events": tuple(events_by_snapshot[snapshot_id]),
             }
+        return contexts
+
+    def snapshot_context(self, snapshot_id: UUID | str) -> dict:
+        snapshot_id = _uuid(snapshot_id)
+        with self.database.engine.begin() as connection:
+            return self.snapshot_contexts(connection, (snapshot_id,))[snapshot_id]
 
     @staticmethod
     def materialize_context(context: dict):
