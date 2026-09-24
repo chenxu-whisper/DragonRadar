@@ -92,7 +92,11 @@ export interface ResetStock {
     break_count: number | null; seal_amount: number | null; seal_amount_unit: string | null;
     continuous_boards: number | null; reason: string | null;
   };
-  regulation: { active_events: number | null; reason: string | null };
+  regulation: {
+    formal_event_count: number | null;
+    event_source_completeness: 'complete' | 'unknown';
+    reason: string | null;
+  };
 }
 export interface ResetRatio {
   numerator: number; denominator: number; value: number | null; reason: string | null;

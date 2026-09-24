@@ -120,9 +120,10 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         <div><dt>最新价</dt><dd>{modernData.quote.last ?? '—'}</dd></div>
         <div><dt>日涨跌幅</dt><dd><Percent value={modernData.quote.change_ratio === null ? null : String(modernData.quote.change_ratio)} /></dd></div>
         <div><dt>成交额</dt><dd>{displayNumber(modernData.quote.amount)}</dd></div>
-        <div><dt>正式监管事件</dt><dd>{modernData.regulation.active_events === null ? '不可用' : modernData.regulation.active_events}</dd></div>
+        <div><dt>正式监管事件</dt><dd>{modernData.regulation.formal_event_count === null ? '未知' : modernData.regulation.formal_event_count}</dd></div>
       </dl>
-      <p className="detail-reasons">正式监管事件：{modernData.regulation.active_events === null ? '不可用' : modernData.regulation.active_events}
+      <p className="detail-reasons">正式监管事件：{modernData.regulation.formal_event_count === null ? '未知' : modernData.regulation.formal_event_count}</p>
+      <p className="detail-reasons">事件来源完整性：{modernData.regulation.event_source_completeness === 'complete' ? '完整' : '未知'}
         {modernData.regulation.reason ? ` · ${reasonLabel(modernData.regulation.reason)}` : ''}</p>
       <p className="detail-reasons">收盘涨停 {yesNo(modernData.seal.is_limit_up)} · 盘中触及 {yesNo(modernData.seal.touched_limit)}</p>
       <p className="detail-reasons">首封 {modernData.seal.first_seal_time || '—'} · 末封 {modernData.seal.last_seal_time || '—'} · 开板 {modernData.seal.break_count ?? '—'} · 封单 {displayNumber(modernData.seal.seal_amount)} {modernData.seal.seal_amount_unit ? label(modernData.seal.seal_amount_unit) : '—'} · 连板 {modernData.seal.continuous_boards ?? '—'}

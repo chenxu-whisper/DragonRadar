@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from dragon_radar.http.contracts import coverage_view, empty_envelope, snapshot_envelope
 from dragon_radar.http.errors import DataUnavailable, StorageUnavailable
 from dragon_radar.http.routes.market import _published_payload
+from dragon_radar.http.routes.regulation import _regulation_payload
 from dragon_radar.http.selection import query_date, query_values, select_snapshot
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.publication.models import PublishedSnapshot
@@ -266,15 +267,21 @@ def _published_stock(stocks: dict, security_id: str) -> dict:
     return stock
 
 
-def _regulation(snapshot: PublishedSnapshot):
-    result = snapshot.result("regulation")
+def _regulation(snapshot: PublishedSnapshot, security_id: str):
+    payload, result = _regulation_payload(snapshot)
+    if payload is not None:
+        count = sum(
+            event.security_id == security_id for event in payload["events"]
+        )
+        return {
+            "formal_event_count": count,
+            "event_source_completeness": "complete",
+            "reason": None,
+        }
     return {
-        "active_events": None,
-        "reason": (
-            "regulation_not_implemented"
-            if result.status == "ready"
-            else f"regulation_{result.status}"
-        ),
+        "formal_event_count": None,
+        "event_source_completeness": "unknown",
+        "reason": f"regulation_{result.status}",
     }
 
 
@@ -302,7 +309,7 @@ def stock_detail(security_id: str, request: Request):
         "quote": quote,
         "roles": roles,
         "seal": _seal(stock),
-        "regulation": _regulation(snapshot),
+        "regulation": _regulation(snapshot, security_id),
     }
     if role_reason is not None:
         data["role_reason"] = role_reason

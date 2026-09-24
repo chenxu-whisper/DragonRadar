@@ -17,6 +17,7 @@ from dragon_radar.http.errors import (
 from dragon_radar.http.routes.analysis import router as analysis_router
 from dragon_radar.http.routes.market import router as market_router
 from dragon_radar.http.routes.news import router as news_router
+from dragon_radar.http.routes.regulation import router as regulation_router
 from dragon_radar.http.routes.roles import router as roles_router
 from dragon_radar.http.routes.stock import router as stock_router
 from dragon_radar.http.selection import (
@@ -127,6 +128,7 @@ def create_workbench_app(
 
     app.include_router(market_router)
     app.include_router(news_router)
+    app.include_router(regulation_router)
     app.include_router(roles_router)
     app.include_router(stock_router)
     app.include_router(analysis_router)
