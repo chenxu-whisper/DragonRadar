@@ -105,7 +105,11 @@ function stockData(securityId: string) {
       continuous_boards: 2,
       reason: null,
     },
-    regulation: { active_events: null, reason: 'regulation_not_implemented' },
+    regulation: {
+      formal_event_count: null,
+      event_source_completeness: 'unknown',
+      reason: 'regulation_missing',
+    },
   };
 }
 

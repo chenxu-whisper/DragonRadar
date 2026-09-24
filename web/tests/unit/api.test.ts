@@ -179,6 +179,33 @@ describe('read-only request boundary', () => {
   });
 
   it.each([
+    ['/api/regulation/status?date=2026-09-10&snapshot_id=snapshot-a', {
+      region1_completeness: {
+        status: 'complete', coverage_ratio: 1, missing_count: 0, source_check: 'pass',
+        expected: 1, valid: 1, excluded: 0, missing: 0,
+      },
+      region2_calc_state: [],
+      region3_events: 'private dirty payload',
+    }],
+    ['/api/regulation/events?date=2026-09-10&snapshot_id=snapshot-a', {
+      events: [], total: 1, source_check: 'pass',
+    }],
+  ])('rejects malformed regulation response %s after allowing the request', async (path, data) => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ...resetEnvelope(data), rule_version: null })),
+    );
+    vi.stubGlobal('fetch', fetcher);
+
+    const failure = request(path, { snapshot: 'snapshot-a' });
+    await expect(failure).rejects.toMatchObject({
+      status: 502,
+      code: 'malformed_response',
+    });
+    await expect(failure).rejects.not.toThrow('private dirty payload');
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each([
     ['envelope', { source_version: 3 }],
     ['quote', { data: { quote: { last: '11.2', change_ratio: 0.1, amount: 100 } } }],
     ['roles', { data: { roles: {} } }],
@@ -189,7 +216,21 @@ describe('read-only request boundary', () => {
       seal_amount: null, seal_amount_unit: null, continuous_boards: null,
       reason: 'seal_event_missing',
     } } }],
-    ['regulation', { data: { regulation: { active_events: '0' } } }],
+    ['regulation', { data: { regulation: {
+      formal_event_count: '0',
+      event_source_completeness: 'complete',
+      reason: null,
+    } } }],
+    ['regulation complete without count', { data: { regulation: {
+      formal_event_count: null,
+      event_source_completeness: 'complete',
+      reason: null,
+    } } }],
+    ['regulation unknown with count', { data: { regulation: {
+      formal_event_count: 0,
+      event_source_completeness: 'unknown',
+      reason: 'regulation_event_source_unknown',
+    } } }],
   ])('rejects a malformed reset stock %s with a sanitized 502', async (_field, patch) => {
     const valid = {
       trade_date: '2026-09-10',
@@ -211,7 +252,11 @@ describe('read-only request boundary', () => {
           first_seal_time: null, last_seal_time: null, break_count: 0,
           seal_amount: null, seal_amount_unit: null, continuous_boards: null, reason: null,
         },
-        regulation: { active_events: 0, reason: null },
+        regulation: {
+          formal_event_count: 0,
+          event_source_completeness: 'complete',
+          reason: null,
+        },
       },
     };
     const malformed = {
@@ -230,7 +275,7 @@ describe('read-only request boundary', () => {
     });
   });
 
-  it('accepts nullable regulation events and complete seal fields', async () => {
+  it('accepts unknown regulation event source and complete seal fields', async () => {
     const valid = {
       ...resetEnvelope({
         security_id: 'TEST001',
@@ -244,7 +289,11 @@ describe('read-only request boundary', () => {
           break_count: 0, seal_amount: 200, seal_amount_unit: 'currency',
           continuous_boards: 2, reason: null,
         },
-        regulation: { active_events: null, reason: 'regulation_not_implemented' },
+        regulation: {
+          formal_event_count: null,
+          event_source_completeness: 'unknown',
+          reason: 'regulation_missing',
+        },
       }),
       basis: { unit: 'currency/share', currency: 'CNY', price_type: 'raw', benchmark: null },
     };
@@ -252,7 +301,14 @@ describe('read-only request boundary', () => {
 
     await expect(request('/api/stock/TEST001?date=2026-09-10&snapshot_id=snapshot-a', {
       snapshot: 'snapshot-a',
-    })).resolves.toMatchObject({ data: { regulation: { active_events: null } } });
+    })).resolves.toMatchObject({
+      data: {
+        regulation: {
+          formal_event_count: null,
+          event_source_completeness: 'unknown',
+        },
+      },
+    });
   });
 
   it('accepts a published stock unavailable envelope', async () => {

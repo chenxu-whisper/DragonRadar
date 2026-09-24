@@ -9,6 +9,8 @@ export const REGULATION_DATE = '2026-09-10';
 const coverage = { expected: 4, valid: 3, excluded: 0, missing: 1 };
 const rule = {
   rule_version: 'synthetic-v1',
+  security_id: 'TEST001',
+  trade_date: REGULATION_DATE,
   window_days: 10,
   direction: 'upper',
   threshold: 0.7,
@@ -81,12 +83,12 @@ const events = [
   event('event-restriction', 'restriction', 'restricted'),
 ];
 
-function regulationEnvelope(data: unknown) {
+function regulationEnvelope(data: unknown, selectedCoverage = coverage) {
   return {
     ...resetSummary(),
     source: 'regulation_materialization',
     source_version: '1',
-    coverage,
+    coverage: selectedCoverage,
     rule_version: null,
     basis: {
       unit: 'ratio',
@@ -100,6 +102,7 @@ function regulationEnvelope(data: unknown) {
 
 export interface RegulationMockState {
   unknownEvents?: boolean;
+  completeInputs?: boolean;
 }
 
 export async function mockRegulation(
@@ -107,28 +110,31 @@ export async function mockRegulation(
   state: RegulationMockState = {},
 ) {
   await mockMarket(page);
+  const selectedCoverage = state.completeInputs
+    ? { expected: 4, valid: 4, excluded: 0, missing: 0 }
+    : coverage;
   await page.route('**/api/regulation/**', async (route: Route) => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/regulation/status') {
       return route.fulfill({
         json: regulationEnvelope({
           region1_completeness: {
-            status: 'partial',
-            coverage_ratio: 0.75,
-            missing_count: 1,
+            status: state.completeInputs ? 'complete' : 'partial',
+            coverage_ratio: state.completeInputs ? 1 : 0.75,
+            missing_count: state.completeInputs ? 0 : 1,
             source_check: 'pass',
-            ...coverage,
+            ...selectedCoverage,
           },
           region2_calc_state: calculations,
           region3_events: events,
-        }),
+        }, selectedCoverage),
       });
     }
     if (url.pathname === '/api/regulation/events') {
       return route.fulfill({
         json: regulationEnvelope(state.unknownEvents
           ? { events: null, total: null, source_check: 'unknown' }
-          : { events, total: events.length, source_check: 'pass' }),
+          : { events, total: events.length, source_check: 'pass' }, selectedCoverage),
       });
     }
     return route.fulfill({ status: 404, json: {} });

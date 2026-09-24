@@ -86,6 +86,6 @@ export function SnapshotEvidence({ snapshot }: { snapshot: Snapshot }) {
       <dt>历史起点</dt><dd>{snapshot.result.earliest_date}</dd>
       <dt>替代版本标识</dt><dd>{snapshot.result.supersedes || '无'}</dd>
     </dl>
-    {snapshot.quality_flags.length > 0 && <p>存在质量报告记录，请结合各证券缺失原因判断；未知不代表无风险。</p>}
+    {snapshot.quality_flags.length > 0 && <p>存在质量报告，请审慎核验。</p>}
   </details>;
 }

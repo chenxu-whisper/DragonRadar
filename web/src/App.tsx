@@ -13,7 +13,6 @@ import type { Patch } from './components/Common';
 import { IntervalForm } from './components/IntervalForm';
 import { Overview } from './pages/Overview';
 import { Analysis } from './pages/Analysis';
-import { Regulation } from './pages/Regulation';
 import { verifiedSnapshotTradeDate } from './features/local-review/note-command';
 import type { LeadersProps } from './pages/Leaders';
 import type { SecurityDrawerProps, SecurityPageProps } from './pages/SecurityDetail';
@@ -49,6 +48,9 @@ const Leaders = import.meta.env.VITE_RESET_WORKBENCH === '1'
   : null;
 const News = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(async () => ({ default: (await import('./pages/News')).News }))
+  : null;
+const Regulation = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(async () => ({ default: (await import('./pages/Regulation')).Regulation }))
   : null;
 const SecurityDrawer = lazy(async () => ({
   default: (await import('./pages/SecurityDetail')).SecurityDrawer as ComponentType<SecurityDrawerProps>,
@@ -86,7 +88,6 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const [refreshToken, setRefreshToken] = useState(0);
   const [drawer, setDrawer] = useState<{ id: string; sector?: string; trigger: HTMLElement; context: string } | null>(null);
   const context = stateSearch(state, privateEnabled, resetEnabled);
-  const PendingPage = resetEnabled ? ({ regulation: Regulation } as Partial<Record<ResearchState['view'], ComponentType>>)[state.view] : undefined;
   const list = useResource<Snapshot[] | ResetSnapshotList>(resetEnabled
     ? `/api/snapshots/list?${new URLSearchParams({ ...(state.date ? { date: state.date } : {}), limit: '100', offset: '0' })}`
     : !state.snapshot ? `/api/v1/snapshots?${new URLSearchParams({
@@ -201,7 +202,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
           </section>
           : PrivateWorkspace && state.view === 'review'
           ? <PrivateWorkspace state={state} snapshot={denied ? undefined : snapshot} patch={patch} />
-          : denied ? <div className="empty access-denied" role="alert"><h1>来源访问已被拒绝</h1><p>已清除所有受保护内容与内存中的来源数据。恢复授权后可重新请求。</p><button className="primary" onClick={retry}>重新检查访问权限</button></div> : PendingPage ? <PendingPage /> : <>
+          : denied ? <div className="empty access-denied" role="alert"><h1>来源访问已被拒绝</h1><p>已清除所有受保护内容与内存中的来源数据。恢复授权后可重新请求。</p><button className="primary" onClick={retry}>重新检查访问权限</button></div> : <>
           <ResourceStatus resource={list} name="快照列表" />
           {resetEnabled
             ? <ResourceStatus resource={resetSummary} name="快照" />
@@ -217,6 +218,10 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             {Leaders && state.view === 'leaders' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载梯队…</p>}>
               <Leaders state={state} patch={patch} open={open} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}
+            {Regulation && state.view === 'regulation' &&
+              <Suspense fallback={null}>
+                <Regulation state={state} refreshToken={refreshToken} />
+              </Suspense>}
             {state.view === 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载证券详情…</p>}>
               <SecurityPage state={state} snapshot={snapshot} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}

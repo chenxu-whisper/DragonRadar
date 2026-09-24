@@ -155,10 +155,34 @@ async def _client(repository):
     )
 
 
+def _with_complete_event_source(publications, publication):
+    snapshot = publications.get_snapshot(publication.id)
+    regulation = snapshot.result("regulation")
+    complete = regulation.model_copy(
+        update={
+            "payload": {
+                **regulation.payload,
+                "event_source_completeness": "complete",
+            }
+        }
+    )
+    return _SnapshotRepository(
+        PublishedSnapshot(
+            snapshot.publication,
+            snapshot.market_snapshot,
+            tuple(
+                complete if result.domain == "regulation" else result
+                for result in snapshot.results
+            ),
+        )
+    )
+
+
 async def test_status_keeps_completeness_calculations_and_formal_events_separate(
     regulation_publication,
 ):
     publication, publications = regulation_publication
+    publications = _with_complete_event_source(publications, publication)
     params = {
         "date": str(publication.trade_date),
         "snapshot_id": str(publication.id),
@@ -225,6 +249,7 @@ async def test_events_known_empty_is_zero_and_filter_does_not_infer_from_calcula
     regulation_publication,
 ):
     publication, publications = regulation_publication
+    publications = _with_complete_event_source(publications, publication)
     common = {
         "date": str(publication.trade_date),
         "snapshot_id": str(publication.id),
@@ -316,10 +341,65 @@ async def test_missing_event_source_is_unknown_not_zero(regulation_publication):
     assert "regulation_missing" in response.json()["quality_flags"]
 
 
+async def test_ready_regulation_without_event_source_evidence_remains_unknown(
+    regulation_publication,
+):
+    publication, publications = regulation_publication
+
+    async with await _client(publications) as client:
+        events = await client.get(
+            "/api/regulation/events",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+            },
+        )
+        stock = await client.get(
+            "/api/stock/A",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+            },
+        )
+
+    assert events.json()["data"] == {
+        "events": None,
+        "total": None,
+        "source_check": "unknown",
+    }
+    assert stock.json()["data"]["regulation"] == {
+        "formal_event_count": None,
+        "event_source_completeness": "unknown",
+        "reason": "regulation_event_source_unknown",
+    }
+
+
+async def test_explicit_complete_event_source_can_report_zero(regulation_publication):
+    publication, publications = regulation_publication
+    publications = _with_complete_event_source(publications, publication)
+
+    async with await _client(publications) as client:
+        response = await client.get(
+            "/api/regulation/events",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+                "security_id": "NO-FORMAL-EVENT",
+            },
+        )
+
+    assert response.json()["data"] == {
+        "events": [],
+        "total": 0,
+        "source_check": "pass",
+    }
+
+
 async def test_stock_detail_reports_formal_count_and_event_source_completeness(
     regulation_publication,
 ):
     publication, publications = regulation_publication
+    publications = _with_complete_event_source(publications, publication)
 
     async with await _client(publications) as client:
         response = await client.get(

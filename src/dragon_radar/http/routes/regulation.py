@@ -94,6 +94,8 @@ def _regulation_payload(snapshot: PublishedSnapshot):
         or payload.get("schema_version") != REGULATION_SCHEMA_VERSION
         or payload.get("snapshot_id") != str(result.input_id)
         or payload.get("trade_date") != snapshot.trade_date.isoformat()
+        or payload.get("event_source_completeness", "unknown")
+        not in {"complete", "unknown"}
         or not isinstance(payload.get("completeness"), Mapping)
     ):
         raise DataUnavailable
@@ -119,6 +121,9 @@ def _regulation_payload(snapshot: PublishedSnapshot):
         "rules": rules,
         "calculations": calculations,
         "events": events,
+        "event_source_completeness": payload.get(
+            "event_source_completeness", "unknown"
+        ),
         "stored_rules": tuple(payload["rules"]),
     }, result
 
@@ -243,13 +248,14 @@ def regulation_status(request: Request):
         )
     )
     events = [_event(item) for item in payload["events"]]
+    event_source_complete = payload["event_source_completeness"] == "complete"
     return _response(
         snapshot,
         result,
         {
             "region1_completeness": _completeness(payload["coverage"], "pass"),
             "region2_calc_state": calculations,
-            "region3_events": events,
+            "region3_events": events if event_source_complete else None,
         },
         payload["coverage"],
     )
@@ -267,6 +273,14 @@ def regulation_events(request: Request):
     payload, result = _regulation_payload(snapshot)
     if payload is None:
         return _unknown_response(snapshot, result, status=False)
+    if payload["event_source_completeness"] != "complete":
+        return _response(
+            snapshot,
+            result,
+            {"events": None, "total": None, "source_check": "unknown"},
+            payload["coverage"],
+            reason="regulation_event_source_unknown",
+        )
     events = [
         _event(item)
         for item in payload["events"]

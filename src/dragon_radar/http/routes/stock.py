@@ -269,7 +269,10 @@ def _published_stock(stocks: dict, security_id: str) -> dict:
 
 def _regulation(snapshot: PublishedSnapshot, security_id: str):
     payload, result = _regulation_payload(snapshot)
-    if payload is not None:
+    if (
+        payload is not None
+        and payload["event_source_completeness"] == "complete"
+    ):
         count = sum(
             event.security_id == security_id for event in payload["events"]
         )
@@ -281,7 +284,11 @@ def _regulation(snapshot: PublishedSnapshot, security_id: str):
     return {
         "formal_event_count": None,
         "event_source_completeness": "unknown",
-        "reason": f"regulation_{result.status}",
+        "reason": (
+            f"regulation_{result.status}"
+            if payload is None
+            else "regulation_event_source_unknown"
+        ),
     }
 
 

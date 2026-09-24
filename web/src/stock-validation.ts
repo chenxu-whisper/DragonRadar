@@ -76,7 +76,12 @@ export function validateResetStockResponse(
     !nullableNonnegativeInteger(seal.continuous_boards) ||
     (seal.reason !== null && typeof seal.reason !== 'string') ||
     (typeof seal.reason === 'string' && sealFields.some(key => seal[key] !== null)) ||
-    !nullableNonnegativeInteger(regulation.active_events) ||
+    !nullableNonnegativeInteger(regulation.formal_event_count) ||
+    !['complete', 'unknown'].includes(String(regulation.event_source_completeness)) ||
+    (regulation.event_source_completeness === 'complete' &&
+      regulation.formal_event_count === null) ||
+    (regulation.event_source_completeness === 'unknown' &&
+      regulation.formal_event_count !== null) ||
     (regulation.reason !== null && typeof regulation.reason !== 'string')
   ) return 'malformed';
   return payload.security_id === id ? null : 'security_mismatch';

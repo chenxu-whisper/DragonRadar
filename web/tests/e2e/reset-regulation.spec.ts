@@ -60,6 +60,19 @@ test('unknown event source is not rendered as zero formal events', async ({ page
   await expect(events).not.toContainText('0 条正式记录');
 });
 
+test('complete numerical inputs do not activate a pending rule', async ({ page }) => {
+  await mockRegulation(page, { completeInputs: true });
+  await page.goto(regulationUrl);
+
+  const completeness = page.getByRole('region', { name: '数据完整性' });
+  const calculations = page.getByRole('region', { name: '数值计算状态' });
+  await expect(completeness).toContainText('完整');
+  const pending = calculations.getByRole('row', { name: /synthetic-pending/ });
+  await expect(pending).toContainText('待核验');
+  await expect(pending).toContainText('待评审');
+  await expect(pending).toContainText('未启用');
+});
+
 test('security detail reports formal event count and event-source completeness', async ({ page }) => {
   await mockRegulation(page);
   await page.goto(

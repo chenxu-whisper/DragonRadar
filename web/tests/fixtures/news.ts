@@ -166,7 +166,11 @@ export async function mockNews(page: Page, state: NewsMockState = {}) {
           last_seal_time: null, break_count: null, seal_amount: null,
           seal_amount_unit: null, continuous_boards: null, reason: 'seal_event_missing',
         },
-        regulation: { active_events: 0, reason: null },
+        regulation: {
+          formal_event_count: 0,
+          event_source_completeness: 'complete',
+          reason: null,
+        },
       }));
     }
     return respond({}, 404);

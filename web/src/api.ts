@@ -51,7 +51,7 @@ function validateSecurityResponse(data: unknown, id: string): void {
 }
 
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|search)(?:[?#]|$)/i.test(path);
+  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|regulation\/(?:status|events)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|search)(?:[?#]|$)/i.test(path);
   if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
@@ -123,6 +123,20 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       if (failure === 'date_mismatch') throw new ApiError(409, '响应日期与当前请求不匹配，已丢弃该响应。');
       if (failure === 'security_mismatch') throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
       if (failure) throw new ApiError(502, '证券详情加载失败：数据格式不完整。', 'malformed_response');
+    }
+    const regulationPath = path.match(/^\/api\/regulation\/(status|events)(?:[?#]|$)/);
+    if (regulationPath) {
+      const { validateRegulationResponse } = await import('./features/regulation/api');
+      const failure = validateRegulationResponse(data, regulationPath[1], {
+        date: query.get('date') || '',
+        snapshot: query.get('snapshot_id') || '',
+      });
+      if (failure === 'selection_mismatch') {
+        throw new ApiError(409, '监管响应与当前选择不匹配，已丢弃该响应。');
+      }
+      if (failure) {
+        throw new ApiError(502, '监管响应格式无效，已丢弃该响应。', 'malformed_response');
+      }
     }
     if (import.meta.env.VITE_RESET_WORKBENCH === '1') {
       const newsPath = path.match(/^\/api\/news(?:\/([^/?#]+))?(?:[?#]|$)/);

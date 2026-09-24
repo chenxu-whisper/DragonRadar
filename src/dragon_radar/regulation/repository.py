@@ -1065,6 +1065,9 @@ class RegulationRepository:
                 "market_snapshot_id": str(context["snapshot"].market_snapshot_id),
                 "trade_date": context["snapshot"].trade_date.isoformat(),
                 "as_of": context["snapshot"].as_of.isoformat(),
+                "event_source_completeness": context.get(
+                    "event_source_completeness", "unknown"
+                ),
                 "completeness": completeness,
                 "rules": rules,
                 "calculations": calculations,

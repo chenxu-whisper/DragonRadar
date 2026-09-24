@@ -580,6 +580,7 @@ def test_materialization_fills_missing_expected_security_for_each_applicable_rul
         "legal_excluded": 0,
         "missing": 1,
     }
+    assert payload.payload["event_source_completeness"] == "unknown"
 
 
 def test_each_rule_version_consumes_only_its_own_observation(database, repository):

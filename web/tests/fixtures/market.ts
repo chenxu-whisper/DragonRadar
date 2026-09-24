@@ -166,7 +166,11 @@ export async function mockMarket(page: Page, state: MockState = {}) {
           seal_amount_unit: null, continuous_boards: null,
           reason: 'intraday_seal_fields_unavailable',
         },
-        regulation: { active_events: 0, reason: null },
+        regulation: {
+          formal_event_count: 0,
+          event_source_completeness: 'complete',
+          reason: null,
+        },
       },
     } });
   });
@@ -363,7 +367,11 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
       quote: { last: 'broken', change_ratio: 0.1, amount: 100 },
       roles: {},
       seal: null,
-      regulation: { active_events: 'zero' },
+      regulation: {
+        formal_event_count: 'zero',
+        event_source_completeness: 'complete',
+        reason: null,
+      },
     }) });
     return route.fulfill({ json: roleEnvelope({
       security_id: securityId,
@@ -376,7 +384,11 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
         seal_amount_unit: null, continuous_boards: null,
         reason: 'intraday_seal_fields_unavailable',
       },
-      regulation: { active_events: 0, reason: null },
+      regulation: {
+        formal_event_count: 0,
+        event_source_completeness: 'complete',
+        reason: null,
+      },
     }) });
   });
 }
