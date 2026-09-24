@@ -816,6 +816,8 @@ def test_complete_attestation_binds_only_exact_source_and_version_events(
     database,
     repository,
 ):
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
     from dragon_radar.regulation.repository import RegulationRepository
 
     _register_event_source(repository, "synthetic-event-a")
@@ -866,6 +868,20 @@ def test_complete_attestation_binds_only_exact_source_and_version_events(
     assert [
         event.event_id for event in regulations.snapshot_context(snapshot.id)["events"]
     ] == ["event-source-a-v1"]
+    publication = PublicationService(
+        database,
+        repository,
+        clock=lambda: NOW,
+    ).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            regulation_input_id=snapshot.id,
+            disabled_domains=("topic", "news", "role"),
+        ),
+        key="event-provenance-complete-publication",
+    )
+    assert publication.regulation_input_id == snapshot.id
 
 
 def test_complete_empty_source_dependency_blocks_publication_and_read_after_revocation(
@@ -1301,6 +1317,221 @@ def test_publication_automatically_materializes_stable_regulation_payload(
             "source_version": "fixture-v1",
         },
     )
+
+
+def test_database_rejects_complete_snapshot_omitting_attested_effective_event(
+    database,
+    repository,
+):
+    from sqlalchemy import insert, select, update
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.publication.tables import (
+        publication_results,
+        publications,
+        source_dependencies,
+    )
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import (
+        regulation_calculations,
+        regulation_snapshot_inputs,
+        regulation_snapshot_rules,
+        regulation_snapshots,
+    )
+
+    source_id = "synthetic-complete-set"
+    _register_event_source(repository, source_id)
+    market = repository.publish(
+        repository.import_batch(batch(), key="complete-set-market").id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="complete-set-rule")
+    regulations.append_event(
+        _event(source_id=source_id, source_version="v1"),
+        key="complete-set-event",
+    )
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        event_source_completeness="complete",
+        event_source_id=source_id,
+        event_source_version="v1",
+        key="complete-set-snapshot",
+    )
+    publication = PublicationService(
+        database,
+        repository,
+        clock=lambda: NOW,
+    ).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            regulation_input_id=snapshot.id,
+            disabled_domains=("topic", "news", "role"),
+        ),
+        key="complete-set-publication",
+    )
+
+    clone_snapshot_id = uuid4()
+    clone_publication_id = uuid4()
+    with (
+        pytest.raises(DBAPIError, match="complete regulation event set"),
+        database.engine.begin() as connection,
+    ):
+        root = (
+            connection.execute(
+                select(regulation_snapshots).where(
+                    regulation_snapshots.c.id == snapshot.id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            insert(regulation_snapshots).values(
+                **(
+                    dict(root)
+                    | {
+                        "id": clone_snapshot_id,
+                        "idempotency_key": "complete-set-omitted-clone",
+                    }
+                )
+            )
+        )
+        for table in (
+            regulation_snapshot_rules,
+            regulation_snapshot_inputs,
+            regulation_calculations,
+        ):
+            rows = (
+                connection.execute(
+                    select(table).where(table.c.snapshot_id == snapshot.id)
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                values = dict(row) | {"snapshot_id": clone_snapshot_id}
+                if table is regulation_calculations:
+                    values["id"] = uuid4()
+                connection.execute(insert(table).values(**values))
+
+        original = (
+            connection.execute(
+                select(publications).where(publications.c.id == publication.id)
+            )
+            .mappings()
+            .one()
+        )
+        publication_values = dict(original)
+        publication_values.pop("publication_sequence")
+        publication_values.update(
+            id=clone_publication_id,
+            version=publication.version + 1,
+            supersedes=publication.id,
+            status="draft",
+            regulation_input_id=clone_snapshot_id,
+            published_at=None,
+        )
+        connection.execute(insert(publications).values(**publication_values))
+
+        for result in (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == publication.id
+                )
+            )
+            .mappings()
+            .all()
+        ):
+            values = dict(result) | {"publication_id": clone_publication_id}
+            if result["domain"] == "regulation":
+                values["input_id"] = clone_snapshot_id
+            connection.execute(insert(publication_results).values(**values))
+
+        for dependency in (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == publication.id
+                )
+            )
+            .mappings()
+            .all()
+        ):
+            values = dict(dependency)
+            values.pop("dependency_sequence")
+            values.update(
+                id=uuid4(),
+                derived_id=clone_publication_id,
+                publication_id=clone_publication_id,
+            )
+            if dependency["archive_type"] == "regulation_event_snapshot":
+                values["archive_id"] = clone_snapshot_id
+            connection.execute(insert(source_dependencies).values(**values))
+
+        connection.execute(
+            update(publications)
+            .where(publications.c.id == clone_publication_id)
+            .values(status="published", published_at=NOW)
+        )
+
+
+def test_repository_rejects_complete_snapshot_omitting_attested_effective_event(
+    database,
+    repository,
+):
+    from sqlalchemy import insert, select
+
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import regulation_snapshots
+    from dragon_radar.storage.repository import Forbidden
+
+    source_id = "synthetic-complete-read-set"
+    _register_event_source(repository, source_id)
+    market = repository.publish(
+        repository.import_batch(batch(), key="complete-read-set-market").id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="complete-read-set-rule")
+    regulations.append_event(
+        _event(source_id=source_id, source_version="v1"),
+        key="complete-read-set-event",
+    )
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        event_source_completeness="complete",
+        event_source_id=source_id,
+        event_source_version="v1",
+        key="complete-read-set-snapshot",
+    )
+    clone_snapshot_id = uuid4()
+    with database.engine.begin() as connection:
+        root = (
+            connection.execute(
+                select(regulation_snapshots).where(
+                    regulation_snapshots.c.id == snapshot.id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            insert(regulation_snapshots).values(
+                **(
+                    dict(root)
+                    | {
+                        "id": clone_snapshot_id,
+                        "idempotency_key": "complete-read-set-omitted-clone",
+                    }
+                )
+            )
+        )
+
+    with pytest.raises(Forbidden, match="Complete regulation event attestation"):
+        regulations.snapshot_context(clone_snapshot_id)
 
 
 def test_regulated_publication_list_prefetches_contexts_with_fixed_query_budget(
@@ -2669,13 +2900,13 @@ def test_representative_regulation_table_families_reject_truncate(
         connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
-def test_regulation_schema_revision_is_0009c():
+def test_regulation_schema_revision_is_0009d():
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0009c_reg_event_provenance_required"
+    assert SCHEMA_REVISION == "0009d_reg_event_complete_set"
 
 
-def test_regulation_migration_head_is_0009c_and_reserves_0010_for_ai():
+def test_regulation_migration_head_is_0009d_and_reserves_0010_for_ai():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -2683,10 +2914,47 @@ def test_regulation_migration_head_is_0009c_and_reserves_0010_for_ai():
     config.set_main_option("script_location", "dragon_radar:migrations")
 
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0009c_reg_event_provenance_required"]
-    assert script.get_revision("0009c_reg_event_provenance_required").down_revision == (
-        "0009b_reg_event_provenance"
+    assert script.get_heads() == ["0009d_reg_event_complete_set"]
+    assert script.get_revision("0009d_reg_event_complete_set").down_revision == (
+        "0009c_reg_event_provenance_required"
     )
+
+
+def test_regulation_complete_set_migration_upgrades_existing_0009c_schema(database_url):
+    from alembic import command as alembic_command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            alembic_command.upgrade(
+                config,
+                "0009c_reg_event_provenance_required",
+            )
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0009c_reg_event_provenance_required"
+            )
+            alembic_command.upgrade(config, "0009d_reg_event_complete_set")
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0009d_reg_event_complete_set"
+            )
+            function_definition = connection.scalar(
+                text(
+                    "SELECT pg_get_functiondef("
+                    "'guard_publication_regulation_binding()'::regprocedure)"
+                )
+            )
+            assert "complete regulation event set" in function_definition
+    finally:
+        database.close()
 
 
 def test_regulation_event_provenance_required_migration_preserves_legacy_null_row(
@@ -2932,7 +3200,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0009c_reg_event_provenance_required"
+    assert SCHEMA_REVISION == "0009d_reg_event_complete_set"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {
@@ -2991,5 +3259,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0009c_reg_event_provenance_required"
+            == "0009d_reg_event_complete_set"
         )

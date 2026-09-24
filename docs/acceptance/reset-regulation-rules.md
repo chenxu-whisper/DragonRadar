@@ -20,7 +20,8 @@ Recorded: 2026-09-24
   additive event-source provenance migration `0009b_reg_event_provenance`
   after `0009a_reg_event_source`, followed by
   `0009c_reg_event_provenance_required` to reject new provenance-less events
-  without invalidating readable legacy rows.
+  without invalidating readable legacy rows, and
+  `0009d_reg_event_complete_set` to seal complete snapshots against omission.
 - Persisted `unknown`/`complete` event-source attestations with source identity
   and version required for `complete`; listed formal events remain visible and
   counted independently when source completeness is unknown.
@@ -31,7 +32,7 @@ Recorded: 2026-09-24
   child appends, and destructive mutation.
 - Set-based materialization and publication reads. Materialization remains at
   16 SQL statements for both 1x1 and 6x6 rule/security inputs; publication
-  reads use 13 statements without regulation and 21 with one or four
+  reads use 13 statements without regulation and 23 with one or four
   regulation publications.
 
 ## Verification
@@ -41,7 +42,7 @@ Recorded: 2026-09-24
 | Final PostgreSQL backend suite | 2268 passed, 10 skipped |
 | Skipped scope | live private TLS only; `DRAGON_TEST_PRIVATE_CA` unavailable |
 | Focused regulation/publication suite | 364 passed |
-| Migration head | `0009c_reg_event_provenance_required` |
+| Migration head | `0009d_reg_event_complete_set` |
 | Targeted Ruff lint and format | passed |
 | Python compileall | passed |
 | PRD contract checker | REQ=57, endpoints=29, examples=29, JSON=30 |
@@ -74,7 +75,7 @@ calculation state never creates a formal event.
 - `99e09be`: preserved the frozen `0009_regulation` migration head.
 
 Future AI migration `0010_ai_tasks` remains reserved and must use
-`0009c_reg_event_provenance_required` as its `down_revision`.
+`0009d_reg_event_complete_set` as its `down_revision`.
 - `507e9d0`: scoped migration trigger checks to isolated schemas.
 
 ## Workspace Note

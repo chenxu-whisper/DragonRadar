@@ -48,6 +48,12 @@ while retaining legacy null-provenance rows from earlier revisions. Those
 legacy events remain displayable only under unknown source completeness. A
 calculation result never creates, changes, or closes an event.
 
+For a snapshot attested as `complete`, migration
+`0009d_reg_event_complete_set` requires the bound event IDs at publication to
+equal every effective event for the attested source ID/version whose
+`created_at` is not later than the snapshot `as_of`. Unknown snapshots may
+remain partial.
+
 ## Controlled CLI
 
 All commands require `DRAGON_DATABASE_URL` after argument parsing:

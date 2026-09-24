@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0009c_reg_event_provenance_required"
+SCHEMA_REVISION = "0009d_reg_event_complete_set"
 
 
 class Database:

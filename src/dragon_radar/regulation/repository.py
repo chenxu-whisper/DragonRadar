@@ -907,7 +907,28 @@ class RegulationRepository:
         snapshot_ids = {_uuid(snapshot_id) for snapshot_id in snapshot_ids}
         if not snapshot_ids:
             return {}
-        root_query = select(regulation_snapshots).where(
+        expected_event_ids = (
+            select(func.array_agg(regulation_events.c.event_id))
+            .where(
+                regulation_snapshots.c.event_source_completeness == "complete",
+                regulation_events.c.source_id == regulation_snapshots.c.event_source_id,
+                regulation_events.c.source_version
+                == regulation_snapshots.c.event_source_version,
+                regulation_events.c.created_at <= regulation_snapshots.c.as_of,
+                regulation_events.c.effective_from <= regulation_snapshots.c.trade_date,
+                (
+                    regulation_events.c.effective_to.is_(None)
+                    | (
+                        regulation_snapshots.c.trade_date
+                        < regulation_events.c.effective_to
+                    )
+                ),
+            )
+            .correlate(regulation_snapshots)
+            .scalar_subquery()
+            .label("expected_event_ids")
+        )
+        root_query = select(regulation_snapshots, expected_event_ids).where(
             regulation_snapshots.c.id.in_(snapshot_ids)
         )
         if lock_snapshots:
@@ -1069,10 +1090,14 @@ class RegulationRepository:
             bindings = tuple(bindings_by_snapshot[snapshot_id])
             snapshot = _snapshot(root)
             events = tuple(events_by_snapshot[snapshot_id])
-            if snapshot.event_source_completeness == "complete" and any(
-                event.source_id != snapshot.event_source_id
-                or event.source_version != snapshot.event_source_version
-                for event in events
+            if snapshot.event_source_completeness == "complete" and (
+                {event.event_id for event in events}
+                != set(root["expected_event_ids"] or ())
+                or any(
+                    event.source_id != snapshot.event_source_id
+                    or event.source_version != snapshot.event_source_version
+                    for event in events
+                )
             ):
                 raise Forbidden("Complete regulation event attestation is inconsistent")
             contexts[snapshot_id] = {
