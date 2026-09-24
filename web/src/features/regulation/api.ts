@@ -9,7 +9,12 @@ type ObjectValue = Record<string, unknown>;
 
 const CALCULATION_STATES = ['pending', 'idle', 'approaching_alert', 'triggered'];
 const EVENT_TYPES = ['abnormal', 'serious_abnormal', 'monitoring', 'restriction'];
-const EVENT_STATES = ['disclosed', 'monitoring', 'restricted'];
+const EVENT_DISPLAY_STATES: Record<string, string> = {
+  abnormal: 'disclosed',
+  serious_abnormal: 'disclosed',
+  monitoring: 'monitoring',
+  restriction: 'restricted',
+};
 
 function record(value: unknown): value is ObjectValue {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -61,7 +66,7 @@ function event(value: unknown): value is RegulationEvent {
     key => typeof value[key] === 'string' && Boolean((value[key] as string).trim()),
   ) &&
     EVENT_TYPES.includes(String(value.event_type)) &&
-    EVENT_STATES.includes(String(value.display_state)) &&
+    value.display_state === EVENT_DISPLAY_STATES[String(value.event_type)] &&
     nullableText(value.announcement_id) &&
     (value.announcement_url === null ||
       (typeof value.announcement_url === 'string' &&
@@ -85,6 +90,8 @@ function calculation(value: unknown, selection: Selection): value is RegulationC
     nullableText(value.recompute_condition) &&
     (value.computed_value === null || finite(value.computed_value)) &&
     CALCULATION_STATES.includes(String(value.state)) &&
+    (value.state === 'pending' ||
+      (value.review_switch === 'approved' && value.production_enabled === true)) &&
     strings(value.reasons) &&
     (value.official_source_url === null ||
       (typeof value.official_source_url === 'string' &&

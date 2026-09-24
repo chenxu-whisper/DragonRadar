@@ -54,6 +54,26 @@ const calculation = {
   production_gate_reasons: ['rule_not_approved'],
 };
 
+const statusData = (
+  calculationPatch: Record<string, unknown> = {},
+  eventPatch: Record<string, unknown> = {},
+) => ({
+  region1_completeness: {
+    status: 'complete',
+    coverage_ratio: 1,
+    missing_count: 0,
+    source_check: 'pass',
+    ...coverage,
+  },
+  region2_calc_state: [{ ...calculation, ...calculationPatch }],
+  region3_events: [{ ...event, ...eventPatch }],
+});
+const failedCalculationGates: [string, Record<string, unknown>][] = [
+  ['pending review', { review_switch: 'pending', production_enabled: true }],
+  ['rejected review', { review_switch: 'rejected', production_enabled: true }],
+  ['disabled production', { review_switch: 'approved', production_enabled: false }],
+];
+
 describe('regulation response validation', () => {
   it('accepts complete status data while preserving a pending rule', () => {
     const response = envelope({
@@ -105,6 +125,76 @@ describe('regulation response validation', () => {
       envelope(null, { snapshot_id: 'snapshot-b' }),
       selection,
     )).toBe('selection_mismatch');
+  });
+
+  it.each(failedCalculationGates.flatMap(([gate, patch]) => (
+    ['idle', 'approaching_alert', 'triggered'].map(state => [
+      `${gate} with ${state}`,
+      { ...patch, state },
+    ] as const)
+  )))('rejects contradictory calculation state: %s', (_name, patch) => {
+    expect(validateRegulationStatusResponse(
+      envelope(statusData(patch)),
+      selection,
+    )).toBe('malformed_response');
+  });
+
+  it.each([
+    ['idle', { computed_value: 0.4, state: 'idle', reasons: [] }],
+    ['approaching', {
+      computed_value: 0.68,
+      state: 'approaching_alert',
+      reasons: [],
+    }],
+    ['triggered', { computed_value: 0.8, state: 'triggered', reasons: [] }],
+    ['pending for missing input', {
+      computed_value: null,
+      state: 'pending',
+      reasons: ['input_missing'],
+    }],
+  ])('accepts approved production calculation state: %s', (_name, patch) => {
+    expect(validateRegulationStatusResponse(
+      envelope(statusData({
+        review_switch: 'approved',
+        production_enabled: true,
+        production_gate_reasons: [],
+        ...patch,
+      })),
+      selection,
+    )).toBeNull();
+  });
+
+  it.each([
+    ['abnormal', 'disclosed'],
+    ['serious_abnormal', 'disclosed'],
+    ['monitoring', 'monitoring'],
+    ['restriction', 'restricted'],
+  ])('accepts exact event display mapping: %s -> %s', (eventType, displayState) => {
+    expect(validateRegulationStatusResponse(
+      envelope(statusData({}, {
+        event_type: eventType,
+        display_state: displayState,
+      })),
+      selection,
+    )).toBeNull();
+  });
+
+  it.each([
+    ['abnormal', 'monitoring'],
+    ['serious_abnormal', 'restricted'],
+    ['monitoring', 'disclosed'],
+    ['restriction', 'disclosed'],
+  ])('rejects contradictory event display mapping: %s -> %s', (
+    eventType,
+    displayState,
+  ) => {
+    expect(validateRegulationStatusResponse(
+      envelope(statusData({}, {
+        event_type: eventType,
+        display_state: displayState,
+      })),
+      selection,
+    )).toBe('malformed_response');
   });
 
   it('validates event totals and unknown-source nullability', () => {
