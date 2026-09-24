@@ -221,7 +221,7 @@ def _payload(snapshot: PublishedSnapshot):
     result = snapshot.result("news")
     if result.status != "ready":
         return None, archived_coverage(dict(result.coverage)), f"news_{result.status}"
-    value = result.payload
+    value = result.model_dump(mode="json")["payload"]
     if (
         not isinstance(value, dict)
         or value.get("schema") != NEWS_SCHEMA

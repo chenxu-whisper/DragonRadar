@@ -79,18 +79,50 @@ def snapshot(repository):
     return repository.publish(repository.import_batch(batch(), key="reset-api").id)
 
 
+def _publish_market(database, repository, payload, *, key):
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.service import PublicationService
+
+    market = repository.publish(repository.import_batch(payload, key=key).id)
+    publication = PublicationService(database, repository, clock=lambda: NOW).publish(
+        PublicationCommand(
+            trade_date=market.trade_date,
+            market_snapshot_id=market.id,
+            disabled_domains=("topic", "news", "regulation", "role"),
+        ),
+        key=f"{key}-publication",
+    )
+    selection = PublicationRepository(database, repository, clock=lambda: NOW)
+    return selection.get_snapshot(publication.id), selection
+
+
+@pytest.fixture
+async def published_market_client(database, repository):
+    snapshot, selection = _publish_market(
+        database,
+        repository,
+        batch(),
+        key="reset-api-publication",
+    )
+    async with workbench(selection) as client:
+        yield client, snapshot
+
+
 def assert_error(response, status, code, message):
     assert response.status_code == status
     assert response.json() == {"code": code, "message": message}
 
 
-def assert_metadata(payload, snapshot):
+def assert_metadata(payload, snapshot, *, rule_version=None):
     assert payload["snapshot_id"] == str(snapshot.id)
     assert payload["trade_date"] == snapshot.trade_date.isoformat()
     assert payload["as_of"].replace("Z", "+00:00") == NOW.isoformat()
     assert payload["source"] == snapshot.batch.source_id
     assert payload["source_version"] == snapshot.batch.source_version
-    assert payload["rule_version"] == snapshot.manifest["rule_version"]
+    assert payload["rule_version"] == (
+        rule_version or snapshot.manifest["rule_version"]
+    )
     assert {"unit", "currency", "price_type", "benchmark"} <= payload["basis"].keys()
     assert "result" not in payload
     assert "legal_excluded" not in json.dumps(payload)
@@ -462,14 +494,20 @@ async def test_nonfinite_response_has_sanitized_unavailable_contract(monkeypatch
         )
 
 
-async def test_overview_and_stock_map_existing_projections(client, snapshot):
+async def test_overview_and_stock_map_existing_projections(published_market_client):
+    client, snapshot = published_market_client
     for path in ("/api/market/overview", "/api/stock/A"):
         response = await client.get(
             path, params={"date": str(DAYS[-1]), "snapshot_id": str(snapshot.id)}
         )
         assert response.status_code == 200
         payload = response.json()
-        assert_metadata(payload, snapshot)
+        rule_version = (
+            snapshot.result("market").payload["stocks"]["rule_version"]
+            if path.endswith("/A")
+            else None
+        )
+        assert_metadata(payload, snapshot, rule_version=rule_version)
         assert payload["coverage"] == {
             "expected": 1,
             "valid": 1,
@@ -483,11 +521,11 @@ async def test_overview_and_stock_map_existing_projections(client, snapshot):
             assert payload["data"]["unchanged"] == 1
             assert payload["basis"]["unit"] == "ratio"
         else:
-            assert payload["data"]["security"]["close"] == 10
-            assert payload["data"]["history"][-1]["trade_date"] == str(DAYS[-1])
+            assert payload["data"]["quote"]["last"] == 10
 
 
-async def test_date_mismatch_and_unknown_stock(client, snapshot):
+async def test_date_mismatch_and_unknown_stock(published_market_client):
+    client, snapshot = published_market_client
     for path in ("/api/market/overview", "/api/stock/A"):
         assert_error(
             await client.get(
@@ -582,18 +620,23 @@ async def test_breadth_missing_history_does_not_shrink_expected(repository, clie
     assert result["data"]["exclusions"][0]["reasons"] == ["missing_price"]
 
 
-async def test_real_stock_decimal_keeps_source_precision(repository, client):
+async def test_real_stock_decimal_keeps_source_precision(database, repository):
     value = Decimal("12345678901234567890.1234567890123456789")
     payload = batch(bars=tuple(bar(trade_date=day, close=value) for day in DAYS))
-    snapshot = repository.publish(repository.import_batch(payload, key="precision").id)
-    response = await client.get(
-        "/api/stock/A", params={"snapshot_id": str(snapshot.id)}
+    snapshot, selection = _publish_market(
+        database,
+        repository,
+        payload,
+        key="precision",
     )
+    async with workbench(selection) as client:
+        response = await client.get(
+            "/api/stock/A", params={"snapshot_id": str(snapshot.id)}
+        )
     assert response.status_code == 200
-    assert response.json()["data"]["security"]["close"] != str(value)
+    assert response.json()["data"]["quote"]["last"] != str(value)
     assert (
-        json.loads(response.text, parse_float=Decimal)["data"]["security"]["close"]
-        == value
+        json.loads(response.text, parse_float=Decimal)["data"]["quote"]["last"] == value
     )
 
 

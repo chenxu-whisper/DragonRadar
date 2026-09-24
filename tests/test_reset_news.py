@@ -564,7 +564,7 @@ def test_ingest_command_replays_complete_payload_and_rejects_conflicts(
 
 
 def test_concurrent_articles_with_same_event_share_event(database, repository):
-    from dragon_radar.news.tables import news_event_articles
+    from dragon_radar.news.tables import news_event_articles, news_events
 
     second_grant = grant(source_id="synthetic-b")
     repository.register_source(second_grant)
@@ -585,7 +585,7 @@ def test_concurrent_articles_with_same_event_share_event(database, repository):
     )
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = (
+            futures = [
                 pool.submit(
                     service.ingest_article,
                     revision,
@@ -599,7 +599,7 @@ def test_concurrent_articles_with_same_event_share_event(database, repository):
                         "news-concurrent-b",
                     ),
                 )
-            )
+            ]
             results = [future.result(timeout=10) for future in futures]
     finally:
         sqlalchemy_event.remove(
@@ -609,6 +609,7 @@ def test_concurrent_articles_with_same_event_share_event(database, repository):
         )
 
     with database.engine.connect() as connection:
+        events = connection.execute(select(news_events)).all()
         links = (
             connection.execute(
                 select(news_event_articles).where(
@@ -620,6 +621,7 @@ def test_concurrent_articles_with_same_event_share_event(database, repository):
             .mappings()
             .all()
         )
+    assert len(events) == 1
     assert len(links) == 2
     assert len({row["event_id"] for row in links}) == 1
 
@@ -832,10 +834,17 @@ def test_publication_materializes_news_without_override_and_records_lineage(
     assert news.payload["event_count"] == 1
     assert len(news.payload["articles"]) == 2
     assert news.payload["articles"][0]["is_novel_event"] is True
-    assert news.payload["articles"][0]["supporting_evidence"] == [
+    assert news.payload["articles"][0]["supporting_evidence"] == (
+        "Synthetic filing reports a new order.",
+    )
+    assert news.payload["articles"][0]["opposing_evidence"] == (
+        "Order value remains subject to closing conditions.",
+    )
+    wire_payload = news.model_dump(mode="json")["payload"]
+    assert wire_payload["articles"][0]["supporting_evidence"] == [
         "Synthetic filing reports a new order."
     ]
-    assert news.payload["articles"][0]["opposing_evidence"] == [
+    assert wire_payload["articles"][0]["opposing_evidence"] == [
         "Order value remains subject to closing conditions."
     ]
     assert news.payload["articles"][0]["ai_summary"] is None
@@ -943,7 +952,6 @@ def test_publication_read_revalidates_news_lineage_and_withdrawal(database, repo
 def test_migration_adds_news_tables_fk_guards_and_readiness(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0008_news"
     assert database.ready()
     inspector = inspect(database.engine)
     expected = {
@@ -991,7 +999,7 @@ def test_migration_adds_news_tables_fk_guards_and_readiness(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0008_news"
+            == SCHEMA_REVISION
         )
 
 

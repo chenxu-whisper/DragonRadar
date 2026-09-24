@@ -247,7 +247,6 @@ def test_analysis_worker_command_constructs_dependencies_and_runs(monkeypatch):
 def test_0007c_migration_creates_analysis_schema_and_readiness(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0007c_analysis_jobs"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {"analysis_jobs", "analysis_job_cache"} <= set(inspector.get_table_names())

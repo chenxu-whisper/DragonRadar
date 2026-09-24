@@ -94,18 +94,19 @@ def late_revision(**changes):
 
 
 def second_article(**changes):
-    return article_revision(
-        id=REVISION_B1,
-        article_id=ARTICLE_B,
-        source_article_id="source-article-b",
-        title="Synthetic announcement",
-        url="https://example.test/news/b",
-        content="A second licensed report about the same event.",
-        content_digest=sha256(
+    values = {
+        "id": REVISION_B1,
+        "article_id": ARTICLE_B,
+        "source_article_id": "source-article-b",
+        "title": "Synthetic announcement",
+        "url": "https://example.test/news/b",
+        "content": "A second licensed report about the same event.",
+        "content_digest": sha256(
             b"A second licensed report about the same event."
         ).hexdigest(),
-        **changes,
-    )
+    }
+    values.update(changes)
+    return article_revision(**values)
 
 
 def aware(hour: int) -> datetime:

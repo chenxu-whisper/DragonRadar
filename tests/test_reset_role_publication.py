@@ -535,24 +535,48 @@ def test_role_integrity_migration_roundtrips_from_clean_0006(database_url):
     database = Database(database_url)
     config = Config()
     config.set_main_option("script_location", "dragon_radar:migrations")
+
+    def assert_revision(expected):
+        with database.engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == expected
+            )
+
+    def role_integrity_trigger_count():
+        with database.engine.connect() as connection:
+            return connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgname = 'role_validations_chain' "
+                    "AND NOT tgisinternal"
+                )
+            )
+
     try:
         with database.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.upgrade(config, "0006_market_readmodels")
-            command.upgrade(config, "head")
-        assert database.ready()
+            command.upgrade(config, "0007a_role_integrity")
+        assert_revision("0007a_role_integrity")
+        assert "role_validation_commands" in inspect(database.engine).get_table_names()
+        assert role_integrity_trigger_count() == 1
 
         with database.engine.begin() as connection:
             config.attributes["connection"] = connection
             command.downgrade(config, "0007_role_readmodels")
+        assert_revision("0007_role_readmodels")
         assert (
             "role_validation_commands" not in inspect(database.engine).get_table_names()
         )
+        assert role_integrity_trigger_count() == 0
 
-        database.migrate()
-
-        assert database.ready()
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0007a_role_integrity")
+        assert_revision("0007a_role_integrity")
         assert "role_validation_commands" in inspect(database.engine).get_table_names()
+        assert role_integrity_trigger_count() == 1
     finally:
         database.close()
 
