@@ -136,6 +136,34 @@ def _insert_legacy_event(database, event):
         )
 
 
+def _seed_migrated_legacy_event(database, event):
+    from sqlalchemy import insert, text
+
+    from dragon_radar.regulation.tables import regulation_events
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE regulation_events "
+                "DROP CONSTRAINT regulation_events_source_provenance_required"
+            )
+        )
+        connection.execute(
+            insert(regulation_events).values(
+                **event.model_dump(mode="json"),
+                created_at=NOW,
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE regulation_events "
+                "ADD CONSTRAINT regulation_events_source_provenance_required "
+                "CHECK (source_id IS NOT NULL AND source_version IS NOT NULL) "
+                "NOT VALID"
+            )
+        )
+
+
 def test_unreviewed_rule_stays_pending_even_near_warning_threshold():
     from dragon_radar.regulation.engine import evaluate_rule
 
@@ -818,7 +846,7 @@ def test_complete_attestation_binds_only_exact_source_and_version_events(
         ),
     ):
         regulations.append_event(event, key=f"append-{event.event_id}")
-    _insert_legacy_event(
+    _seed_migrated_legacy_event(
         database,
         _event(
             event_id="event-legacy",
@@ -945,7 +973,7 @@ def test_unknown_event_completeness_retains_authorized_and_legacy_disclosures(
     )
     for event in events:
         regulations.append_event(event, key=f"append-{event.event_id}")
-    _insert_legacy_event(
+    _seed_migrated_legacy_event(
         database,
         _event(
             event_id="unknown-legacy",
@@ -2035,6 +2063,8 @@ def test_published_regulation_snapshot_rejects_new_children(
         event_values = _event(
             event_id=event_id,
             announcement_id=f"notice-{uuid4().hex[:8]}",
+            source_id="synthetic",
+            source_version="fixture-v1",
         ).model_dump(mode="json")
         event_values["created_at"] = NOW
         connection.execute(insert(regulation_events).values(**event_values))
@@ -2117,6 +2147,8 @@ def test_publication_and_child_append_serialize_on_regulation_snapshot(
     event_values = _event(
         event_id=event_id,
         announcement_id=f"notice-{uuid4().hex[:8]}",
+        source_id="synthetic",
+        source_version="fixture-v1",
     ).model_dump(mode="json")
     event_values["created_at"] = NOW
     with database.engine.begin() as connection:
@@ -2637,13 +2669,13 @@ def test_representative_regulation_table_families_reject_truncate(
         connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
-def test_regulation_schema_revision_is_0009b():
+def test_regulation_schema_revision_is_0009c():
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0009b_reg_event_provenance"
+    assert SCHEMA_REVISION == "0009c_reg_event_provenance_required"
 
 
-def test_regulation_migration_head_is_0009b_and_reserves_0010_for_ai():
+def test_regulation_migration_head_is_0009c_and_reserves_0010_for_ai():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -2651,10 +2683,116 @@ def test_regulation_migration_head_is_0009b_and_reserves_0010_for_ai():
     config.set_main_option("script_location", "dragon_radar:migrations")
 
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0009b_reg_event_provenance"]
-    assert script.get_revision("0009b_reg_event_provenance").down_revision == (
-        "0009a_reg_event_source"
+    assert script.get_heads() == ["0009c_reg_event_provenance_required"]
+    assert script.get_revision("0009c_reg_event_provenance_required").down_revision == (
+        "0009b_reg_event_provenance"
     )
+
+
+def test_regulation_event_provenance_required_migration_preserves_legacy_null_row(
+    database_url,
+):
+    from alembic import command as alembic_command
+    from alembic.config import Config
+    from sqlalchemy import select, text
+
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import regulation_events
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            alembic_command.upgrade(config, "0009b_reg_event_provenance")
+        regulations = RegulationRepository(database, clock=lambda: NOW)
+        regulations.register_rule(_rule(), key="legacy-null-event-rule")
+        _insert_legacy_event(database, _event(event_id="legacy-null-event"))
+
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            alembic_command.upgrade(
+                config,
+                "0009c_reg_event_provenance_required",
+            )
+
+        with database.engine.connect() as connection:
+            row = connection.execute(
+                select(
+                    regulation_events.c.event_id,
+                    regulation_events.c.source_id,
+                    regulation_events.c.source_version,
+                ).where(regulation_events.c.event_id == "legacy-null-event")
+            ).one()
+            assert row._tuple() == ("legacy-null-event", None, None)
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0009c_reg_event_provenance_required"
+            )
+    finally:
+        database.close()
+
+
+def test_postgres_rejects_new_regulation_event_without_provenance(database):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import regulation_events
+
+    regulations = RegulationRepository(database, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="null-provenance-event-rule")
+
+    with (
+        pytest.raises(
+            DBAPIError,
+            match="regulation_events_source_provenance_required",
+        ),
+        database.engine.begin() as connection,
+    ):
+        connection.execute(
+            insert(regulation_events).values(
+                **_event(event_id="new-null-event").model_dump(mode="json"),
+                created_at=NOW,
+            )
+        )
+
+
+def test_postgres_accepts_new_regulation_event_with_provenance(
+    database,
+    repository,
+):
+    from sqlalchemy import insert, select
+
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import regulation_events
+
+    regulations = RegulationRepository(database, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="sourced-direct-event-rule")
+    event = _event(
+        event_id="new-sourced-event",
+        source_id="synthetic",
+        source_version="fixture-v1",
+    )
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(regulation_events).values(
+                **event.model_dump(mode="json"),
+                created_at=NOW,
+            )
+        )
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(regulation_events.c.event_id).where(
+                    regulation_events.c.event_id == event.event_id
+                )
+            )
+            == event.event_id
+        )
 
 
 def test_regulation_event_source_migration_upgrades_existing_0009_schema(database_url):
@@ -2794,7 +2932,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0009b_reg_event_provenance"
+    assert SCHEMA_REVISION == "0009c_reg_event_provenance_required"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {
@@ -2853,5 +2991,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0009b_reg_event_provenance"
+            == "0009c_reg_event_provenance_required"
         )

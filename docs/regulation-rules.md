@@ -42,9 +42,11 @@ events, snapshots, or published payloads.
 ## Formal Events
 
 Formal events are separate disclosed facts with the PRD table 8 fields plus
-nullable immutable `source_id` and `source_version` provenance. Legacy events
-without provenance remain displayable only under unknown source completeness.
-A calculation result never creates, changes, or closes an event.
+immutable `source_id` and `source_version` provenance. Migration
+`0009c_reg_event_provenance_required` rejects new rows without both values
+while retaining legacy null-provenance rows from earlier revisions. Those
+legacy events remain displayable only under unknown source completeness. A
+calculation result never creates, changes, or closes an event.
 
 ## Controlled CLI
 

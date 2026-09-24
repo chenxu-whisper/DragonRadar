@@ -18,7 +18,9 @@ Recorded: 2026-09-24
 - Publication-bound regulation snapshots with immutable lineage, source
   authorization, payload recomputation, concurrent publication sealing, and
   additive event-source provenance migration `0009b_reg_event_provenance`
-  after `0009a_reg_event_source`, preserving the unchanged `0009_regulation`.
+  after `0009a_reg_event_source`, followed by
+  `0009c_reg_event_provenance_required` to reject new provenance-less events
+  without invalidating readable legacy rows.
 - Persisted `unknown`/`complete` event-source attestations with source identity
   and version required for `complete`; listed formal events remain visible and
   counted independently when source completeness is unknown.
@@ -39,7 +41,7 @@ Recorded: 2026-09-24
 | Final PostgreSQL backend suite | 2268 passed, 10 skipped |
 | Skipped scope | live private TLS only; `DRAGON_TEST_PRIVATE_CA` unavailable |
 | Focused regulation/publication suite | 364 passed |
-| Migration head | `0009b_reg_event_provenance` |
+| Migration head | `0009c_reg_event_provenance_required` |
 | Targeted Ruff lint and format | passed |
 | Python compileall | passed |
 | PRD contract checker | REQ=57, endpoints=29, examples=29, JSON=30 |
@@ -71,8 +73,8 @@ calculation state never creates a formal event.
 - `4a8d083`: serialized publication sealing and indexed regulation bindings.
 - `99e09be`: preserved the frozen `0009_regulation` migration head.
 
-Future AI migration `0010_ai_tasks` must use `0009b_reg_event_provenance` as its
-`down_revision`.
+Future AI migration `0010_ai_tasks` remains reserved and must use
+`0009c_reg_event_provenance_required` as its `down_revision`.
 - `507e9d0`: scoped migration trigger checks to isolated schemas.
 
 ## Workspace Note
