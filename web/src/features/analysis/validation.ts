@@ -140,14 +140,16 @@ export function validateRankResponse(value: unknown, query: URLSearchParams): An
   }
   const [field, descending] = rankField;
   let previousValue: number | undefined;
+  let reachedNull = false;
   let valid = 0;
   for (const [index, item] of (data.ranking as ObjectValue[]).entries()) {
     const current = item[field];
     if (current === null) {
       if (item.rank !== null) return 'malformed';
+      reachedNull = true;
       continue;
     }
-    if (!finite(current) || item.rank === null) return 'malformed';
+    if (reachedNull || !finite(current) || item.rank === null) return 'malformed';
     valid += 1;
     if (previousValue !== undefined) {
       if ((descending && current > previousValue) || (!descending && current < previousValue)) {

@@ -208,6 +208,23 @@ describe('reset analysis response validation', () => {
     )).toBeNull();
   });
 
+  it('rejects a null sort value before a ranked value', () => {
+    const data = rankData();
+    data.ranking.unshift({
+      ...data.ranking[0],
+      rank: null as unknown as number,
+      security_id: 'TEST003',
+      amount_change_ratio: null as unknown as number,
+    });
+    data.ranking[1].rank = 2;
+    const amountQuery = new URLSearchParams(query);
+    amountQuery.set('sort', 'amount_change');
+    expect(validateRankResponse(
+      envelope(data, { expected: 3, valid: 1, excluded: 0, missing: 2 }),
+      amountQuery,
+    )).toBe('malformed');
+  });
+
   it.each([
     ['wrong rank order', (data: ReturnType<typeof rankData>) => {
       data.ranking.push({
