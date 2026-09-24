@@ -1,0 +1,714 @@
+"""Point-in-time news, deterministic events, publication, and owner review."""
+
+from datetime import timedelta
+from uuid import uuid4
+
+import pytest
+from factories import DAYS, NOW, batch, grant
+from httpx import ASGITransport, AsyncClient
+from news_factories import (
+    ARTICLE_A,
+    ARTICLE_B,
+    ASSOCIATION_SECURITY,
+    ASSOCIATION_TOPIC,
+    REVISION_A1,
+    REVISION_A2,
+    article_revision,
+    association,
+    event_evidence,
+    late_revision,
+    second_article,
+)
+from pydantic import ValidationError
+from sqlalchemy import inspect, select, text
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+def _news_service(database, repository, *, owners=None):
+    from dragon_radar.news.service import NewsService
+
+    return NewsService(
+        database,
+        repository,
+        owner_repository=owners,
+        clock=lambda: NOW,
+    )
+
+
+def _ingest_base(service):
+    return service.ingest_article(
+        article_revision(),
+        key="news-a1",
+        event_evidence=event_evidence(),
+        associations=(
+            association(),
+            association(
+                id=ASSOCIATION_TOPIC,
+                target_type="topic",
+                target_id="topic-a",
+                method="ai",
+                status="unreviewed",
+                evidence_snippets=("Synthetic topic phrase.",),
+            ),
+        ),
+    )
+
+
+def _publish_news(database, repository, news_snapshot):
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+
+    market = repository.publish(
+        repository.import_batch(batch(), key=f"news-market-{news_snapshot.id}").id
+    )
+    return PublicationService(database, repository, clock=lambda: NOW).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            news_input_id=news_snapshot.id,
+            disabled_domains=("topic", "regulation", "role"),
+        ),
+        key=f"news-publication-{news_snapshot.id}",
+    )
+
+
+def _owner_headers(session):
+    return {
+        "Origin": "https://localhost:8030",
+        "X-CSRF-Token": session.csrf,
+        "Cookie": (
+            f"__Host-dragon-private-session={session.token}; "
+            f"__Host-dragon-private-csrf={session.csrf}"
+        ),
+    }
+
+
+def _owner_id(database):
+    from dragon_radar.owner.repository import OwnerRepository
+
+    return OwnerRepository(database, clock=lambda: NOW).initialize()
+
+
+def test_news_models_enforce_availability_content_and_deterministic_event_evidence():
+    from dragon_radar.news.models import NewsArticleRevision, NewsEventEvidence
+
+    with pytest.raises(ValidationError):
+        article_revision(available_at=NOW - timedelta(hours=3))
+    with pytest.raises(ValidationError):
+        article_revision(content_scope="none", summary="not licensed", content=None)
+    with pytest.raises(ValidationError):
+        article_revision(content_scope="summary", content="not licensed")
+    with pytest.raises(ValidationError):
+        NewsEventEvidence(kind="title_similarity", value="same title")
+
+    assert (
+        NewsArticleRevision.model_validate(article_revision().model_dump()).revision
+        == 1
+    )
+    assert event_evidence(kind="canonical_url").kind == "canonical_url"
+    assert (
+        event_evidence(kind="content_digest", value="a" * 64).kind == "content_digest"
+    )
+    assert event_evidence(kind="manual_confirmation").kind == "manual_confirmation"
+
+
+def test_snapshot_cutoff_uses_available_at_and_pins_exact_revision(
+    database, repository
+):
+    service = _news_service(database, repository)
+    _ingest_base(service)
+    service.ingest_article(late_revision(), key="news-a2")
+
+    historical = service.create_snapshot(as_of=NOW, key="news-snapshot-historical")
+    current = service.create_snapshot(
+        as_of=NOW + timedelta(hours=2),
+        key="news-snapshot-current",
+    )
+
+    assert [
+        (item.article_id, item.article_revision_id, item.revision)
+        for item in historical.items
+    ] == [(ARTICLE_A, REVISION_A1, 1)]
+    assert [
+        (item.article_id, item.article_revision_id, item.revision)
+        for item in current.items
+    ] == [(ARTICLE_A, REVISION_A2, 2)]
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM news_article_revisions")) == 2
+        )
+
+
+def test_early_published_at_never_bypasses_late_receipt_cutoff(database, repository):
+    service = _news_service(database, repository)
+    service.ingest_article(
+        article_revision(
+            published_at=NOW - timedelta(days=7),
+            received_at=NOW + timedelta(minutes=1),
+            available_at=NOW + timedelta(minutes=1),
+        ),
+        key="news-late-arrival",
+    )
+
+    historical = service.create_snapshot(as_of=NOW, key="news-before-arrival")
+
+    assert historical.items == ()
+
+
+def test_events_keep_multiple_articles_and_never_merge_by_similar_title(
+    database, repository
+):
+    service = _news_service(database, repository)
+    _ingest_base(service)
+    service.ingest_article(
+        second_article(),
+        key="news-b1-same-event",
+        event_evidence=event_evidence(),
+    )
+    service.ingest_article(
+        second_article(
+            id=uuid4(),
+            article_id=uuid4(),
+            source_article_id="source-article-c",
+            url="https://example.test/news/c",
+        ),
+        key="news-c1-same-title-only",
+    )
+
+    snapshot = service.create_snapshot(as_of=NOW, key="news-event-snapshot")
+    events = {item.article_id: item.event_id for item in snapshot.items}
+
+    assert len(snapshot.items) == 3
+    assert events[ARTICLE_A] == events[ARTICLE_B]
+    assert len(set(events.values())) == 2
+
+
+def test_unreviewed_and_rejected_associations_do_not_change_topic_membership(
+    database, repository
+):
+    from topic_factories import topic_batch
+
+    from dragon_radar.topics.repository import TopicRepository
+
+    topics = TopicRepository(database, clock=lambda: NOW)
+    topic_snapshot = topics.publish(
+        topics.import_batch(topic_batch(), key="news-topic-before-review").id
+    )
+    before = topic_snapshot.batch.memberships
+    service = _news_service(database, repository)
+    _ingest_base(service)
+
+    rejected = service.review_for_owner(
+        owner_id=_owner_id(database),
+        article_id=ARTICLE_A,
+        association_id=ASSOCIATION_TOPIC,
+        decision="reject",
+        expected_revision=0,
+        key="reject-ai-topic",
+    )
+    after = topics.get_snapshot(topic_snapshot.id).batch.memberships
+
+    assert rejected.decision == "reject"
+    assert rejected.effective is False
+    assert rejected.pending_topic_publication is False
+    assert after == before
+
+
+def test_accept_is_append_only_pending_and_requires_new_topic_snapshot(
+    database, repository
+):
+    service = _news_service(database, repository)
+    _ingest_base(service)
+
+    accepted = service.review_for_owner(
+        owner_id=_owner_id(database),
+        article_id=ARTICLE_A,
+        association_id=ASSOCIATION_TOPIC,
+        decision="accept",
+        expected_revision=0,
+        key="accept-ai-topic",
+    )
+
+    assert accepted.revision == 1
+    assert accepted.effective is False
+    assert accepted.pending_topic_publication is True
+    with database.engine.connect() as connection:
+        review = connection.execute(
+            text(
+                "SELECT decision, expected_revision FROM news_association_reviews "
+                "WHERE association_id = :association_id"
+            ),
+            {"association_id": ASSOCIATION_TOPIC},
+        ).one()
+        audit = connection.execute(
+            text(
+                "SELECT action, details FROM news_review_audit_events "
+                "WHERE object_id = :association_id"
+            ),
+            {"association_id": str(ASSOCIATION_TOPIC)},
+        ).one()
+    assert review == ("accept", 0)
+    assert audit[0] == "news_association_reviewed"
+    assert audit[1]["effective"] is False
+
+
+def test_review_idempotency_conflict_revision_and_reauthorization(database, repository):
+    from dragon_radar.storage.repository import Conflict, Forbidden
+
+    service = _news_service(database, repository)
+    _ingest_base(service)
+    owner_id = _owner_id(database)
+    first = service.review_for_owner(
+        owner_id=owner_id,
+        article_id=ARTICLE_A,
+        association_id=ASSOCIATION_TOPIC,
+        decision="accept",
+        expected_revision=0,
+        key="review-idempotency",
+    )
+    assert (
+        service.review_for_owner(
+            owner_id=owner_id,
+            article_id=ARTICLE_A,
+            association_id=ASSOCIATION_TOPIC,
+            decision="accept",
+            expected_revision=0,
+            key="review-idempotency",
+        )
+        == first
+    )
+    with pytest.raises(Conflict):
+        service.review_for_owner(
+            owner_id=owner_id,
+            article_id=ARTICLE_A,
+            association_id=ASSOCIATION_TOPIC,
+            decision="reject",
+            expected_revision=0,
+            key="review-idempotency",
+        )
+    with pytest.raises(Conflict):
+        service.review_for_owner(
+            owner_id=owner_id,
+            article_id=ARTICLE_A,
+            association_id=ASSOCIATION_TOPIC,
+            decision="reject",
+            expected_revision=0,
+            key="stale-review",
+        )
+    repository.register_source(grant(local_display=False))
+    with pytest.raises(Forbidden):
+        service.review_for_owner(
+            owner_id=owner_id,
+            article_id=ARTICLE_A,
+            association_id=ASSOCIATION_TOPIC,
+            decision="reject",
+            expected_revision=1,
+            key="review-after-revoke",
+        )
+
+
+def test_publication_materializes_news_without_override_and_records_lineage(
+    database, repository
+):
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.tables import source_dependencies
+
+    service = _news_service(database, repository)
+    _ingest_base(service)
+    service.ingest_article(
+        second_article(),
+        key="news-b1-publication",
+        event_evidence=event_evidence(),
+    )
+    snapshot = service.create_snapshot(as_of=NOW, key="news-publication-input")
+
+    publication = _publish_news(database, repository, snapshot)
+    news = next(
+        item
+        for item in PublicationRepository(database, repository).list_results(
+            publication.id
+        )
+        if item.domain == "news"
+    )
+    with database.engine.connect() as connection:
+        dependencies = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == publication.id,
+                    source_dependencies.c.derived_type == "news",
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    assert news.status == "ready"
+    assert news.input_id == snapshot.id
+    assert news.payload["event_count"] == 1
+    assert len(news.payload["articles"]) == 2
+    assert {row["archive_type"] for row in dependencies} == {"news_article_revision"}
+    assert {row["archive_id"] for row in dependencies} == {
+        item.article_revision_id for item in snapshot.items
+    }
+
+
+def test_publication_read_revalidates_news_lineage_and_withdrawal(database, repository):
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.retention import RetentionService
+    from dragon_radar.storage.repository import Forbidden
+
+    service = _news_service(database, repository)
+    _ingest_base(service)
+    snapshot = service.create_snapshot(as_of=NOW, key="news-authorized-input")
+    publication = _publish_news(database, repository, snapshot)
+    published = PublicationRepository(database, repository, clock=lambda: NOW)
+    assert published.get_snapshot(publication.id).result("news").status == "ready"
+
+    RetentionService(database, repository, clock=lambda: NOW).withdraw_display(
+        "synthetic"
+    )
+    with pytest.raises(Forbidden):
+        published.get_snapshot(publication.id)
+
+
+def test_migration_adds_news_tables_fk_guards_and_readiness(database):
+    from dragon_radar.storage.database import SCHEMA_REVISION
+
+    assert SCHEMA_REVISION == "0008_news"
+    assert database.ready()
+    inspector = inspect(database.engine)
+    expected = {
+        "news_articles",
+        "news_article_revisions",
+        "news_events",
+        "news_event_articles",
+        "news_associations",
+        "news_association_reviews",
+        "news_review_commands",
+        "news_review_audit_events",
+        "news_snapshots",
+        "news_snapshot_items",
+    }
+    assert expected <= set(inspector.get_table_names())
+    assert any(
+        fk["referred_table"] == "news_snapshots"
+        and fk["constrained_columns"] == ["news_input_id"]
+        for fk in inspector.get_foreign_keys("publications")
+    )
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0008_news"
+        )
+
+
+@pytest.fixture
+def published_news(database, repository):
+    service = _news_service(database, repository)
+    _ingest_base(service)
+    service.ingest_article(
+        second_article(
+            news_type="industry",
+            content_scope="none",
+            summary=None,
+            content=None,
+        ),
+        key="news-b1-http",
+        event_evidence=event_evidence(),
+    )
+    snapshot = service.create_snapshot(as_of=NOW, key="news-http-input")
+    publication = _publish_news(database, repository, snapshot)
+    from dragon_radar.publication.repository import PublicationRepository
+
+    return publication, PublicationRepository(database, repository, clock=lambda: NOW)
+
+
+async def test_public_get_requires_date_filters_pages_and_reads_only_publication_result(
+    published_news, monkeypatch
+):
+    from dragon_radar.http.app import create_workbench_app
+
+    publication, publications = published_news
+    app = create_workbench_app(repository=publications)
+    monkeypatch.setattr(
+        "dragon_radar.news.repository.NewsRepository.get_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("latest news read")
+        ),
+    )
+    common = {"date": str(publication.trade_date), "snapshot_id": str(publication.id)}
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        missing_date = await client.get(
+            "/api/news", params={"snapshot_id": str(publication.id)}
+        )
+        listed = await client.get(
+            "/api/news",
+            params={
+                **common,
+                "type": "company",
+                "source": "synthetic",
+                "q": "announcement",
+                "security_id": "A",
+                "page": 1,
+                "size": 20,
+            },
+        )
+        detail = await client.get(f"/api/news/{ARTICLE_A}", params=common)
+
+    assert missing_date.status_code == 400
+    assert listed.status_code == 200
+    assert listed.json()["data"] == {
+        "items": [detail.json()["data"]],
+        "page": 1,
+        "size": 20,
+        "total": 1,
+        "sources": ["synthetic"],
+        "event_count": 1,
+    }
+    assert detail.status_code == 200
+    assert detail.json()["snapshot_id"] == str(publication.id)
+    assert detail.json()["data"]["article_id"] == str(ARTICLE_A)
+    assert detail.json()["data"]["content_scope"] == "full"
+    assert detail.json()["data"]["content"] == "Synthetic licensed article body."
+    assert detail.json()["data"]["securities"][0]["association_id"] == str(
+        ASSOCIATION_SECURITY
+    )
+    assert detail.json()["data"]["topics"][0]["status"] == "unreviewed"
+
+
+async def test_public_news_hides_unlicensed_content_and_stable_sort_is_snapshot_bound(
+    published_news,
+):
+    from dragon_radar.http.app import create_workbench_app
+
+    publication, publications = published_news
+    app = create_workbench_app(repository=publications)
+    common = {"date": str(publication.trade_date), "snapshot_id": str(publication.id)}
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        listed = await client.get("/api/news", params=common)
+        unlicensed = await client.get(f"/api/news/{ARTICLE_B}", params=common)
+        unknown = await client.get(f"/api/news/{uuid4()}", params=common)
+
+    items = listed.json()["data"]["items"]
+    assert [item["article_id"] for item in items] == sorted(
+        [item["article_id"] for item in items]
+    )
+    assert listed.json()["data"]["event_count"] == 1
+    assert unlicensed.status_code == 200
+    assert unlicensed.json()["data"]["content_scope"] == "none"
+    assert unlicensed.json()["data"]["summary"] is None
+    assert unlicensed.json()["data"]["content"] is None
+    assert unknown.status_code == 404
+
+
+async def test_public_app_has_no_review_route_and_readonly_middleware_returns_403(
+    published_news,
+):
+    from dragon_radar.http.app import create_workbench_app
+
+    publication, publications = published_news
+    app = create_workbench_app(repository=publications)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            f"/api/news/{ARTICLE_A}/associations/review",
+            json={},
+        )
+
+    assert response.status_code == 403
+    assert not any(
+        getattr(route, "path", None) == "/api/news/{article_id}/associations/review"
+        and "POST" in (getattr(route, "methods", None) or ())
+        for route in app.routes
+    )
+
+
+async def test_owner_review_requires_owner_write_csrf_and_maps_workbench_errors(
+    database, repository
+):
+    from dragon_radar.news.repository import NewsRepository
+    from dragon_radar.owner.app import create_owner_app
+    from dragon_radar.owner.repository import OwnerRepository
+    from dragon_radar.publication.repository import PublicationRepository
+
+    owners = OwnerRepository(database, clock=lambda: NOW)
+    owners.initialize()
+    session = owners.exchange_pairing(
+        owners.issue_pairing(),
+        "https://localhost:8030",
+    )
+    service = _news_service(database, repository, owners=owners)
+    _ingest_base(service)
+    news = NewsRepository(
+        database,
+        repository,
+        owner_repository=owners,
+        clock=lambda: NOW,
+    )
+    app = create_owner_app(
+        repository=repository,
+        owner_repository=owners,
+        publication_repository=PublicationRepository(database, repository),
+        news_repository=news,
+    )
+    body = {
+        "association_id": str(ASSOCIATION_TOPIC),
+        "decision": "accept",
+        "expected_revision": 0,
+        "idempotency_key": "owner-review",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://localhost:8030",
+    ) as client:
+        no_csrf = await client.post(
+            f"/api/news/{ARTICLE_A}/associations/review",
+            json=body,
+            headers={
+                "Origin": "https://localhost:8030",
+                "Cookie": (
+                    f"__Host-dragon-private-session={session.token}; "
+                    f"__Host-dragon-private-csrf={session.csrf}"
+                ),
+            },
+        )
+        accepted = await client.post(
+            f"/api/news/{ARTICLE_A}/associations/review",
+            json=body,
+            headers=_owner_headers(session),
+        )
+        replay = await client.post(
+            f"/api/news/{ARTICLE_A}/associations/review",
+            json=body,
+            headers=_owner_headers(session),
+        )
+        conflict = await client.post(
+            f"/api/news/{ARTICLE_A}/associations/review",
+            json={**body, "decision": "reject"},
+            headers=_owner_headers(session),
+        )
+        malformed = await client.post(
+            f"/api/news/{ARTICLE_A}/associations/review",
+            json={**body, "unexpected": True},
+            headers=_owner_headers(session),
+        )
+        missing = await client.post(
+            f"/api/news/{uuid4()}/associations/review",
+            json={**body, "idempotency_key": "missing-article"},
+            headers=_owner_headers(session),
+        )
+
+    assert no_csrf.status_code == 403
+    assert no_csrf.json()["code"] == "FORBIDDEN"
+    assert accepted.status_code == replay.status_code == 200
+    assert (
+        accepted.json()
+        == replay.json()
+        == {
+            "association_id": str(ASSOCIATION_TOPIC),
+            "decision": "accept",
+            "revision": 1,
+            "effective": False,
+            "pending_topic_publication": True,
+        }
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "VERSION_CONFLICT"
+    assert malformed.status_code == 400
+    assert malformed.json()["code"] == "INVALID_PARAM"
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "NOT_FOUND"
+
+
+async def test_owner_review_storage_error_is_sanitized(
+    database, repository, monkeypatch
+):
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from dragon_radar.news.repository import NewsRepository
+    from dragon_radar.owner.app import create_owner_app
+    from dragon_radar.owner.repository import OwnerRepository
+    from dragon_radar.publication.repository import PublicationRepository
+
+    owners = OwnerRepository(database, clock=lambda: NOW)
+    owners.initialize()
+    session = owners.exchange_pairing(
+        owners.issue_pairing(),
+        "https://localhost:8030",
+    )
+    news = NewsRepository(database, repository, owner_repository=owners)
+    monkeypatch.setattr(
+        news,
+        "review",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            SQLAlchemyError("secret-storage-detail")
+        ),
+    )
+    app = create_owner_app(
+        repository=repository,
+        owner_repository=owners,
+        publication_repository=PublicationRepository(database, repository),
+        news_repository=news,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://localhost:8030",
+    ) as client:
+        response = await client.post(
+            f"/api/news/{ARTICLE_A}/associations/review",
+            json={
+                "association_id": str(ASSOCIATION_TOPIC),
+                "decision": "accept",
+                "expected_revision": 0,
+                "idempotency_key": "storage-error",
+            },
+            headers=_owner_headers(session),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "STORAGE_UNAVAILABLE",
+        "message": "Storage unavailable",
+    }
+    assert "secret-storage-detail" not in response.text
+
+
+def test_news_tables_reject_mutation_and_snapshot_item_revision_mismatch(
+    database, repository
+):
+    from sqlalchemy import update
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.news.tables import news_article_revisions, news_snapshot_items
+
+    service = _news_service(database, repository)
+    _ingest_base(service)
+    snapshot = service.create_snapshot(as_of=NOW, key="news-db-guards")
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            update(news_article_revisions)
+            .where(news_article_revisions.c.id == REVISION_A1)
+            .values(title="mutated")
+        )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            news_snapshot_items.insert().values(
+                snapshot_id=snapshot.id,
+                article_id=ARTICLE_A,
+                article_revision_id=REVISION_A1,
+                revision=99,
+                event_id=uuid4(),
+                position=2,
+            )
+        )

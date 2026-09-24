@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from dragon_radar.news.tables import news_article_revisions
 from dragon_radar.publication.models import (
     DOMAIN_NAMES,
     RetentionPolicy,
@@ -168,6 +169,7 @@ class RetentionService:
         archive_tables = (
             ("market_import_batch", import_batches),
             ("topic_import_batch", topic_import_batches),
+            ("news_article_revision", news_article_revisions),
         )
         for archive_type, table in archive_tables:
             archive_ids = connection.execute(

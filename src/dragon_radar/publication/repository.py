@@ -6,7 +6,14 @@ from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
 
-from dragon_radar.domain.models import MarketBatch
+from dragon_radar.domain.models import MarketBatch, SourceGrant
+from dragon_radar.domain.quality import grant_allows_display
+from dragon_radar.news.tables import (
+    news_article_revisions,
+    news_event_articles,
+    news_snapshot_items,
+    news_snapshots,
+)
 from dragon_radar.publication.models import (
     Publication,
     PublicationResult,
@@ -186,6 +193,10 @@ class PublicationRepository:
         market_archives,
         topic_rows,
         topic_archives,
+        news_snapshot_rows,
+        news_items_by_snapshot,
+        news_revisions,
+        news_event_links,
         expected_role_dependencies,
         result_rows,
         active_withdrawal_sources,
@@ -251,6 +262,102 @@ class PublicationRepository:
         elif any(row["derived_type"] == "topic" for row in dependencies):
             raise Forbidden("Publication topic identity is invalid")
 
+        news_dependencies = [
+            row for row in dependencies if row["derived_type"] == "news"
+        ]
+        if record.news_input_id is not None:
+            root = news_snapshot_rows.get(record.news_input_id)
+            items = news_items_by_snapshot.get(record.news_input_id, ())
+            expected = {
+                (
+                    revision["source_id"],
+                    "news_article_revision",
+                    item["article_revision_id"],
+                )
+                for item in items
+                if (revision := news_revisions.get(item["article_revision_id"]))
+                is not None
+            }
+            actual = {
+                (row["source_id"], row["archive_type"], row["archive_id"])
+                for row in news_dependencies
+            }
+            news_result = next(
+                (
+                    row
+                    for row in result_rows.get(record.id, ())
+                    if row["domain"] == "news"
+                ),
+                None,
+            )
+            try:
+                payload_identity = {
+                    (
+                        UUID(article["article_id"]),
+                        UUID(article["revision_id"]),
+                        article["revision"],
+                        UUID(article["event_id"]),
+                    )
+                    for article in news_result["payload"]["articles"]
+                }
+            except (KeyError, TypeError, ValueError):
+                raise Forbidden("Publication news lineage is invalid") from None
+            item_identity = {
+                (
+                    item["article_id"],
+                    item["article_revision_id"],
+                    item["revision"],
+                    item["event_id"],
+                )
+                for item in items
+            }
+            if (
+                root is None
+                or news_result is None
+                or news_result["status"] != "ready"
+                or news_result["input_id"] != record.news_input_id
+                or len(expected) != len(items)
+                or actual != expected
+                or payload_identity != item_identity
+            ):
+                raise Forbidden("Publication news lineage is invalid")
+            for dependency in news_dependencies:
+                revision = news_revisions.get(dependency["archive_id"])
+                if (
+                    revision is None
+                    or dependency["derived_id"] != record.id
+                    or dependency["publication_id"] != record.id
+                    or revision["available_at"] > root["as_of"]
+                ):
+                    raise Forbidden("Publication news lineage is invalid")
+                item = next(
+                    (
+                        item
+                        for item in items
+                        if item["article_revision_id"] == revision["id"]
+                    ),
+                    None,
+                )
+                if (
+                    item is None
+                    or item["article_id"] != revision["article_id"]
+                    or item["revision"] != revision["revision"]
+                    or news_event_links.get(revision["id"]) != item["event_id"]
+                ):
+                    raise Forbidden("Publication news lineage is invalid")
+                embedded = SourceGrant.model_validate(revision["embedded_grant"])
+                if not all(
+                    grant_allows_display(
+                        grant,
+                        source_id=revision["source_id"],
+                        now=self.clock(),
+                    )
+                    for grant in (grants[revision["source_id"]], embedded)
+                ):
+                    raise Forbidden("Source is not locally authorized")
+        elif news_dependencies:
+            raise Forbidden("Publication news lineage is invalid")
+
         role_dependencies = [
             row for row in dependencies if row["derived_type"] == "role"
         ]
@@ -287,7 +394,7 @@ class PublicationRepository:
             else:
                 raise Forbidden("Publication role lineage is invalid")
         if any(
-            row["derived_type"] not in {"market", "topic", "role"}
+            row["derived_type"] not in {"market", "topic", "news", "role"}
             for row in dependencies
         ):
             raise Forbidden("Publication dependency type is invalid")
@@ -378,10 +485,70 @@ class PublicationRepository:
             .mappings()
             .all()
         }
+        news_snapshot_rows = {
+            row["id"]: row
+            for row in connection.execute(
+                select(news_snapshots).where(
+                    news_snapshots.c.id.in_(
+                        record.news_input_id
+                        for record in records
+                        if record.news_input_id is not None
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        }
+        news_items = (
+            connection.execute(
+                select(news_snapshot_items).where(
+                    news_snapshot_items.c.snapshot_id.in_(news_snapshot_rows)
+                )
+            )
+            .mappings()
+            .all()
+            if news_snapshot_rows
+            else []
+        )
+        news_items_by_snapshot = {
+            snapshot_id: [
+                row for row in news_items if row["snapshot_id"] == snapshot_id
+            ]
+            for snapshot_id in news_snapshot_rows
+        }
+        news_revision_ids = {
+            *(row["article_revision_id"] for row in news_items),
+            *(
+                row["archive_id"]
+                for row in dependencies
+                if row["archive_type"] == "news_article_revision"
+            ),
+        }
+        news_revisions = {
+            row["id"]: row
+            for row in connection.execute(
+                select(news_article_revisions).where(
+                    news_article_revisions.c.id.in_(news_revision_ids)
+                )
+            )
+            .mappings()
+            .all()
+        }
+        news_event_links = {
+            row["article_revision_id"]: row["event_id"]
+            for row in connection.execute(
+                select(news_event_articles).where(
+                    news_event_articles.c.article_revision_id.in_(news_revision_ids)
+                )
+            )
+            .mappings()
+            .all()
+        }
         source_ids = {
             *(row["source_id"] for row in dependencies),
             *(row["source_id"] for row in market_rows.values()),
             *(row["source_id"] for row in topic_rows.values()),
+            *(row["source_id"] for row in news_revisions.values()),
         }
         grants = self._lock_sources(
             connection,
@@ -533,6 +700,10 @@ class PublicationRepository:
                     market_archives=market_archives,
                     topic_rows=topic_rows,
                     topic_archives=topic_archives,
+                    news_snapshot_rows=news_snapshot_rows,
+                    news_items_by_snapshot=news_items_by_snapshot,
+                    news_revisions=news_revisions,
+                    news_event_links=news_event_links,
                     expected_role_dependencies=expected_role_dependencies[record.id],
                     result_rows=result_rows,
                     active_withdrawal_sources=active_withdrawal_sources,

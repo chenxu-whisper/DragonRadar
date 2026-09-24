@@ -25,6 +25,7 @@ SESSION_COOKIE = "__Host-dragon-private-session"
 CSRF_COOKIE = "__Host-dragon-private-csrf"
 MAX_BODY_BYTES = 131072
 ANALYSIS_JOBS_PATH = "/api/analysis/jobs"
+NEWS_PATH = "/api/news/"
 PAIR_PATH = "/api/owner/v1/pair"
 SESSION_PATH = "/api/owner/v1/session"
 OWNER_ERRORS = (CsrfForbidden, InvalidPairing, PairingRateLimited, SessionUnauthorized)
@@ -53,6 +54,10 @@ def storage_unavailable() -> BoundaryError:
 
 def _analysis_path(path: str) -> bool:
     return path == ANALYSIS_JOBS_PATH or path.startswith(ANALYSIS_JOBS_PATH + "/")
+
+
+def _news_review_path(path: str) -> bool:
+    return path.startswith(NEWS_PATH) and path.endswith("/associations/review")
 
 
 def _analysis_error(exc: Exception) -> BoundaryError:
@@ -236,7 +241,7 @@ class OwnerGate:
         except (*OWNER_ERRORS, BoundaryError) as exc:
             if started:
                 raise
-            if _analysis_path(scope["path"]):
+            if _analysis_path(scope["path"]) or _news_review_path(scope["path"]):
                 exc = _analysis_error(exc)
             await JSONResponse(
                 {"code": exc.code, "message": exc.message}, status_code=exc.status_code
@@ -246,7 +251,7 @@ class OwnerGate:
                 raise
             exc = (
                 _analysis_error(exc)
-                if _analysis_path(scope["path"])
+                if _analysis_path(scope["path"]) or _news_review_path(scope["path"])
                 else storage_unavailable()
             )
             await JSONResponse(

@@ -153,3 +153,10 @@ export interface ResetOverview {
 export interface ResetHeatmap {
   columns: number[]; cells: { trade_date: string; boards: number; count: number }[];
 }
+
+export type {
+  NewsArticle,
+  NewsDetailResponse,
+  NewsList,
+  NewsListResponse,
+} from './features/news/types';

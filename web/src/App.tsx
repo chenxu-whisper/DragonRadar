@@ -84,7 +84,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const [refreshToken, setRefreshToken] = useState(0);
   const [drawer, setDrawer] = useState<{ id: string; sector?: string; trigger: HTMLElement; context: string } | null>(null);
   const context = stateSearch(state, privateEnabled, resetEnabled);
-  const PendingPage = resetEnabled ? ({ news: News, regulation: Regulation } as Partial<Record<ResearchState['view'], ComponentType>>)[state.view] : undefined;
+  const PendingPage = resetEnabled ? ({ regulation: Regulation } as Partial<Record<ResearchState['view'], ComponentType>>)[state.view] : undefined;
   const list = useResource<Snapshot[] | ResetSnapshotList>(resetEnabled
     ? `/api/snapshots/list?${new URLSearchParams({ ...(state.date ? { date: state.date } : {}), limit: '100', offset: '0' })}`
     : !state.snapshot ? `/api/v1/snapshots?${new URLSearchParams({
@@ -113,7 +113,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
       patch({
         view: 'review',
         security: (event as CustomEvent<string>).detail,
-        return_view: state.view === 'leaders' ? 'leaders' : state.view === 'analysis' ? 'analysis' : 'overview',
+        return_view: state.view === 'leaders' ? 'leaders' : state.view === 'analysis' ? 'analysis' : state.view === 'news' ? 'news' : 'overview',
       });
     };
     window.addEventListener('local-open-review', openReview);
@@ -209,6 +209,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             {!resetEnabled && <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />}
             {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled} />}
             {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} snapshot={snapshot} reset={resetEnabled} ReviewActions={ActiveReviewActions} />}
+            {state.view === 'news' && <News state={state} patch={patch} refreshToken={refreshToken} open={open} />}
             {Leaders && state.view === 'leaders' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载梯队…</p>}>
               <Leaders state={state} patch={patch} open={open} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}

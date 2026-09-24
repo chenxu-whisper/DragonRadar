@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
+from dragon_radar.news import tables as _news_tables  # noqa: F401
 from dragon_radar.storage.models import metadata
 
 PUBLICATION_SEQUENCE_LOCK = "publication-sequence"
@@ -54,7 +55,11 @@ publications = Table(
         PGUUID(as_uuid=True),
         ForeignKey("topic_snapshots.id", ondelete="RESTRICT"),
     ),
-    Column("news_input_id", PGUUID(as_uuid=True)),
+    Column(
+        "news_input_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("news_snapshots.id", ondelete="RESTRICT"),
+    ),
     Column("regulation_input_id", PGUUID(as_uuid=True)),
     Column("role_input_id", PGUUID(as_uuid=True)),
     Column("domains", JSONB, nullable=False),

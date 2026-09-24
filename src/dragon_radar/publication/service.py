@@ -8,8 +8,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, update
 
-from dragon_radar.domain.models import MarketBatch
-from dragon_radar.domain.quality import validate_batch
+from dragon_radar.domain.models import MarketBatch, SourceGrant
+from dragon_radar.domain.quality import grant_allows_display, validate_batch
+from dragon_radar.news.repository import NewsRepository
+from dragon_radar.news.service import NewsService
 from dragon_radar.publication.models import (
     DOMAIN_NAMES,
     DomainMaterialization,
@@ -74,6 +76,7 @@ class PublicationService:
         self.clock = clock or (lambda: datetime.now(UTC))
         self.market = market_repository or Repository(database, clock=self.clock)
         self.topics = TopicRepository(database, clock=self.clock)
+        self.news = NewsRepository(database, self.market, clock=self.clock)
         self.roles = RoleRepository(database, self.market, clock=self.clock)
         self.repository = PublicationRepository(database, self.market, clock=self.clock)
 
@@ -144,13 +147,27 @@ class PublicationService:
                     "topic",
                 )
             )
-        return (market_row, market_archive, market_batch), topic_context, dependencies
+        news_context = None
+        if command.news_input_id is not None:
+            news_context = self.news.snapshot_context(
+                connection,
+                command.news_input_id,
+                authorize=False,
+            )
+            dependencies.extend(NewsService.dependencies(news_context))
+        return (
+            (market_row, market_archive, market_batch),
+            topic_context,
+            news_context,
+            dependencies,
+        )
 
     def _authorize_inputs(
         self,
         connection,
         market_context,
         topic_context,
+        news_context,
         grants,
     ) -> None:
         market_row, market_archive, market_batch = market_context
@@ -183,6 +200,30 @@ class PublicationService:
                 topic_row["batch_id"],
             ):
                 raise Forbidden("Topic archive was withdrawn")
+        if news_context is not None:
+            for row in news_context["rows"]:
+                embedded = row["embedded_grant"]
+                if not all(
+                    grant_allows_display(
+                        grant,
+                        source_id=row["source_id"],
+                        now=self.clock(),
+                    )
+                    for grant in (
+                        grants[row["source_id"]],
+                        SourceGrant.model_validate(embedded),
+                    )
+                ):
+                    raise Forbidden("News source is not locally authorized")
+                if source_has_active_withdrawal(
+                    connection, row["source_id"]
+                ) or archive_was_withdrawn(
+                    connection,
+                    row["source_id"],
+                    "news_article_revision",
+                    row["article_revision_id"],
+                ):
+                    raise Forbidden("News revision was withdrawn")
 
     @staticmethod
     def _market_materialization(context, topic_context=None) -> DomainMaterialization:
@@ -326,9 +367,12 @@ class PublicationService:
                         connection,
                         "publication-date:" + command.trade_date.isoformat(),
                     )
-                    market_context, topic_context, dependencies = self._prepare_inputs(
-                        connection, command
-                    )
+                    (
+                        market_context,
+                        topic_context,
+                        news_context,
+                        dependencies,
+                    ) = self._prepare_inputs(connection, command)
                     overrides = dict(materializers or {})
                     references = command.input_references()
                     source_ids = {dependency[0] for dependency in dependencies}
@@ -347,6 +391,7 @@ class PublicationService:
                         connection,
                         market_context,
                         topic_context,
+                        news_context,
                         grants,
                     )
                     results = {}
@@ -365,6 +410,8 @@ class PublicationService:
                             )
                         elif domain == "topic":
                             result = self._topic_materialization(topic_context)
+                        elif domain == "news":
+                            result = NewsService.materialize_context(news_context)
                         elif domain == "role":
                             result, role_dependencies = self._role_materialization(
                                 connection,

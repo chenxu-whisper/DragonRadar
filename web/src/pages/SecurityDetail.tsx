@@ -8,6 +8,8 @@ import type { Detail, Envelope, ResetKlineData, ResetStock, Snapshot, WorkbenchE
 import { Chart } from '../components/Chart';
 import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch } from '../components/Common';
 import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/labels';
+import { newsListPath } from '../features/news/api';
+import type { NewsListResponse } from '../features/news/types';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
@@ -18,9 +20,21 @@ const displayNumber = (value: number | null) =>
   value === null ? '—' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value);
 const yesNo = (value: boolean | null) => value === null ? '—' : value ? '是' : '否';
 
-function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, ReviewActions }: {
-  state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent;
+function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, ReviewActions, patch }: {
+  state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent; patch: Patch;
 }) {
+  const relatedNews = useResource<NewsListResponse>(resetEnabled
+    ? newsListPath({
+      date: state.date,
+      snapshot: state.snapshot,
+      type: '',
+      source: '',
+      q: '',
+      securityId: id,
+      page: 1,
+      size: 20,
+    })
+    : null, state.snapshot, refreshToken);
   const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
     ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
     : null, state.snapshot, refreshToken);
@@ -174,6 +188,23 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         refreshToken={refreshToken}
       />
     </Suspense>}
+    {resetEnabled && <section className="related-news" aria-label="关联消息">
+      <h3>关联消息</h3>
+      <ResourceStatus resource={relatedNews} name="关联消息" />
+      {relatedNews.data?.data?.items.length
+        ? <ul>{relatedNews.data.data.items.map(article => <li key={article.article_id}>
+          <a
+            href={stateSearch({ ...state, view: 'news', article: article.article_id, security: '' }, false, true)}
+            onClick={event => {
+              if (shouldHandleSpaClick(event)) {
+                event.preventDefault();
+                patch({ view: 'news', article: article.article_id, security: '' });
+              }
+            }}
+          >{article.title}</a>
+        </li>)}</ul>
+        : !relatedNews.loading && !relatedNews.error && <p className="muted">当前快照没有关联消息。</p>}
+    </section>}
   </>;
 }
 export interface SecurityDrawerProps {
@@ -190,12 +221,12 @@ export function SecurityDrawer({ state, snapshot, id, sector, trigger, close, pa
     ...state,
     view: 'stock' as const,
     security: id,
-    return_view: state.view === 'leaders' ? 'leaders' as const : state.view === 'analysis' ? 'analysis' as const : 'overview' as const,
+    return_view: state.view === 'leaders' ? 'leaders' as const : state.view === 'analysis' ? 'analysis' as const : state.view === 'news' ? 'news' as const : 'overview' as const,
   };
   return <dialog ref={dialog} className="security-drawer" aria-labelledby="drawer-title" onCancel={e => { e.preventDefault(); close(); }}>
     <div className="drawer-toolbar"><h2 id="drawer-title">证券详情 · 只读</h2><button ref={closeButton} onClick={close} aria-label="关闭详情" title="关闭详情（退出键）"><X size={20} /></button></div>
     <a className="fullpage-link" href={stateSearch(next, allowPrivate, resetEnabled)} onClick={e => { if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(next)) close(); } }}><ExternalLink size={16} />打开完整详情</a>
-    <DetailContent state={state} snapshot={snapshot} id={id} evidenceSector={sector} refreshToken={refreshToken} ReviewActions={ReviewActions} />
+    <DetailContent state={state} snapshot={snapshot} id={id} evidenceSector={sector} refreshToken={refreshToken} ReviewActions={ReviewActions} patch={patch} />
   </dialog>;
 }
 export interface SecurityPageProps {
@@ -206,6 +237,6 @@ export function SecurityPage({ state, snapshot, patch, refreshToken, allowPrivat
   return <>
     <a className="back-link" href={stateSearch(back, allowPrivate, resetEnabled)} onClick={event => { if (shouldHandleSpaClick(event)) { event.preventDefault(); patch(back); } }}><ArrowLeft size={18} />返回研究列表</a>
     <h1>证券详情</h1>
-    {state.security ? <DetailContent state={state} snapshot={snapshot} id={state.security} evidenceSector={state.sector || undefined} refreshToken={refreshToken} ReviewActions={ReviewActions} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
+    {state.security ? <DetailContent state={state} snapshot={snapshot} id={state.security} evidenceSector={state.sector || undefined} refreshToken={refreshToken} ReviewActions={ReviewActions} patch={patch} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
   </>;
 }

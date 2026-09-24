@@ -1,3 +1,6 @@
+import { validateNewsDetailResponse, validateNewsListResponse } from './features/news/api';
+import type { NewsType } from './features/news/types';
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message?: string, readonly code?: string) {
@@ -49,7 +52,7 @@ function validateSecurityResponse(data: unknown, id: string): void {
 }
 
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|search)(?:[?#]|$)/i.test(path);
+  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|search)(?:[?#]|$)/i.test(path);
   if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
@@ -121,6 +124,35 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       if (failure === 'date_mismatch') throw new ApiError(409, '响应日期与当前请求不匹配，已丢弃该响应。');
       if (failure === 'security_mismatch') throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
       if (failure) throw new ApiError(502, '证券详情加载失败：数据格式不完整。', 'malformed_response');
+    }
+    const newsPath = path.match(/^\/api\/news(?:\/([^/?#]+))?(?:[?#]|$)/);
+    if (newsPath) {
+      const expected = {
+        date: query.get('date') || '',
+        snapshot: query.get('snapshot_id') || '',
+      };
+      let failure;
+      if (newsPath[1]) {
+        let articleId: string;
+        try { articleId = decodeURIComponent(newsPath[1]); }
+        catch { throw new ApiError(400, '消息标识无效，请返回消息列表重新选择。'); }
+        failure = validateNewsDetailResponse(data, { ...expected, articleId });
+      } else {
+        failure = validateNewsListResponse(data, {
+          ...expected,
+          type: (query.get('type') || '') as NewsType,
+          source: query.get('source') || '',
+          q: query.get('q') || '',
+          securityId: query.get('security_id') || '',
+          page: Number(query.get('page') || 1),
+          size: Number(query.get('size') || 20),
+        });
+      }
+      if (failure === 'selection_mismatch') throw new ApiError(409, '响应快照或筛选与当前选择不匹配，已丢弃该响应。');
+      if (failure === 'article_mismatch') throw new ApiError(409, '响应消息与当前选择不匹配，已丢弃该响应。');
+      if (failure) {
+        throw new ApiError(502, `${newsPath[1] ? '消息详情' : '消息列表'}响应格式无效，已丢弃该响应。`, 'malformed_response');
+      }
     }
     return data as T;
   } catch (error) {

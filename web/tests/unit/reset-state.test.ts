@@ -36,6 +36,33 @@ describe('explicit reset URL state', () => {
     });
   });
 
+  it('round trips news article and filters and allows returning from stock to news', () => {
+    const query = `?view=stock&snapshot=${snapshot}&date=2026-09-10&return_view=news&article=${snapshot}&news_type=company&news_source=synthetic-wire&q=robot&page=3`;
+    const parsed = parseState(query, false, true, '/stock/TEST001');
+    expect(parsed.notices).toEqual([]);
+    expect(parsed.state).toMatchObject({
+      view: 'stock',
+      security: 'TEST001',
+      return_view: 'news',
+      article: snapshot,
+      news_type: 'company',
+      news_source: 'synthetic-wire',
+      q: 'robot',
+      page: 3,
+    });
+    expect(parseState(stateSearch(parsed.state, false, true), false, true).state).toEqual(parsed.state);
+  });
+
+  it.each([
+    'article=not-a-uuid',
+    `article=${snapshot}&news_type=unknown`,
+    `article=${snapshot}&news_source=${'s'.repeat(201)}`,
+  ])('rejects invalid news state without retaining it: %s', invalid => {
+    const parsed = parseState(`?view=news&${invalid}`, false, true);
+    expect(parsed.notices).toHaveLength(1);
+    expect(parsed.state).toMatchObject({ article: '', news_type: '', news_source: '' });
+  });
+
   it.each([
     'emotion_leader', 'trend_leader', 'zhongjun', 'genfeng', 'buZhang', 'jieli',
   ])('round trips the allowed role %s with leaders filters', role => {

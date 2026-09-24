@@ -3,14 +3,16 @@ import { ROLE_NAMES, type RoleName } from './features/roles/types';
 export type View = 'overview' | 'analysis' | 'stock' | 'review' | 'news' | 'leaders' | 'regulation';
 export type Sort = 'security_id' | 'name' | 'close' | 'change' | 'amount' | 'interval_return' | 'excess_return' | 'maximum_drawdown' | 'amount_change';
 export type Adjustment = 'raw' | 'qfq' | 'hfq';
+export type NewsType = '' | 'company' | 'industry' | 'regulation' | 'macro' | 'market';
 export interface ResearchState {
   view: View; snapshot: string; date: string; q: string; sort: Sort;
   order: 'asc' | 'desc'; page: number; page_size: number; n: number;
   start: string; end: string; compare: string[]; security: string;
   benchmark: string; adj: Adjustment;
-  return_view: 'overview' | 'analysis' | 'leaders'; note: string;
+  return_view: 'overview' | 'analysis' | 'leaders' | 'news'; note: string;
   market_filter: '' | 'up' | 'down' | 'flat' | 'limit_up' | 'limit_down';
   sector: string; role: RoleName;
+  article: string; news_type: NewsType; news_source: string;
 }
 
 export function validDate(value: string): boolean {
@@ -78,15 +80,26 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   if (security.length > 200 || security === '.' || security === '..') { invalid(); security = ''; }
   let sector = p.get('sector') || '';
   if (sector.length > 200 || sector === '.' || sector === '..') { invalid(); sector = ''; }
+  let article = p.get('article') || '';
+  let newsInvalid = false;
+  if (article && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(article)) newsInvalid = true;
+  let news_type = choice<NewsType>('news_type', ['', 'company', 'industry', 'regulation', 'macro', 'market'], '');
+  if (p.has('news_type') && !news_type) newsInvalid = true;
+  let news_source = p.get('news_source') || '';
+  if (news_source.length > 200 || news_source === '.' || news_source === '..') newsInvalid = true;
+  if (newsInvalid) {
+    invalid(); article = ''; news_type = ''; news_source = '';
+  }
   return { state: {
     view, snapshot, note: note.toLowerCase(), date: date('date'), q: q.slice(0, 100), sort,
     order: choice('order', ['asc', 'desc'], 'asc'), page: integer('page', 1, 100000),
     page_size: [20, 50, 100].includes(page_size) ? page_size : 50,
     n: integer('n', 20, 250), start: date('start'), end: date('end'), compare, security,
     benchmark, adj: choice<Adjustment>('adj', ['raw', 'qfq', 'hfq'], 'raw'),
-    return_view: choice('return_view', reset ? ['overview', 'analysis', 'leaders'] : ['overview', 'analysis'], 'overview'),
+    return_view: choice('return_view', reset ? ['overview', 'analysis', 'leaders', 'news'] : ['overview', 'analysis'], 'overview'),
     market_filter: choice('market_filter', ['', 'up', 'down', 'flat', 'limit_up', 'limit_down'], ''),
     sector, role: choice('role', ROLE_NAMES, 'trend_leader'),
+    article: article.toLowerCase(), news_type, news_source,
   }, notices };
 }
 
@@ -98,6 +111,7 @@ export function stateSearch(state: ResearchState, allowPrivate = false, reset = 
     'view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end',
     ...(reset ? ['benchmark', 'adj'] as const : []),
     'compare', 'security', 'return_view', 'note', 'market_filter', 'sector', 'role',
+    'article', 'news_type', 'news_source',
   ];
   for (const key of keys) {
     const value = normalized[key];
