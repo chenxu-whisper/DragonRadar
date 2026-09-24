@@ -23,7 +23,12 @@ const yesNo = (value: boolean | null) => value === null ? '—' : value ? '是' 
 function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, ReviewActions, patch }: {
   state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent; patch: Patch;
 }) {
-  const relatedNews = useResource<NewsListResponse>(resetEnabled
+  const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
+    ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
+    : null, state.snapshot, refreshToken);
+  const modernData = modern.data?.data;
+  const relatedNewsEnabled = resetEnabled && Boolean(modernData) && !modern.loading && !modern.error;
+  const relatedNews = useResource<NewsListResponse>(relatedNewsEnabled
     ? newsListPath({
       date: state.date,
       snapshot: state.snapshot,
@@ -34,11 +39,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       page: 1,
       size: 20,
     })
-    : null, state.snapshot, refreshToken);
-  const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
-    ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
-    : null, state.snapshot, refreshToken);
-  const modernData = modern.data?.data;
+    : null, state.snapshot);
   let rawQuery = '';
   try {
     if (resetEnabled && snapshot && modernData) {
@@ -188,7 +189,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         refreshToken={refreshToken}
       />
     </Suspense>}
-    {resetEnabled && <section className="related-news" aria-label="关联消息">
+    {relatedNewsEnabled && <section className="related-news" aria-label="关联消息">
       <h3>关联消息</h3>
       <ResourceStatus resource={relatedNews} name="关联消息" />
       {relatedNews.data?.data?.articles.length

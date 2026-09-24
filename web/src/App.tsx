@@ -13,7 +13,6 @@ import type { Patch } from './components/Common';
 import { IntervalForm } from './components/IntervalForm';
 import { Overview } from './pages/Overview';
 import { Analysis } from './pages/Analysis';
-import { News } from './pages/News';
 import { Regulation } from './pages/Regulation';
 import { verifiedSnapshotTradeDate } from './features/local-review/note-command';
 import type { LeadersProps } from './pages/Leaders';
@@ -47,6 +46,9 @@ const LocalReviewActions = import.meta.env.VITE_RESET_WORKBENCH === '1'
   : null;
 const Leaders = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(async () => ({ default: (await import('./pages/Leaders')).Leaders as ComponentType<LeadersProps> }))
+  : null;
+const News = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(async () => ({ default: (await import('./pages/News')).News }))
   : null;
 const SecurityDrawer = lazy(async () => ({
   default: (await import('./pages/SecurityDetail')).SecurityDrawer as ComponentType<SecurityDrawerProps>,
@@ -209,7 +211,9 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             {!resetEnabled && <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />}
             {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled} />}
             {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} snapshot={snapshot} reset={resetEnabled} ReviewActions={ActiveReviewActions} />}
-            {state.view === 'news' && <News state={state} patch={patch} refreshToken={refreshToken} open={open} />}
+            {News && state.view === 'news' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载消息…</p>}>
+              <News state={state} patch={patch} refreshToken={refreshToken} open={open} />
+            </Suspense></LazyLoadBoundary>}
             {Leaders && state.view === 'leaders' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载梯队…</p>}>
               <Leaders state={state} patch={patch} open={open} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}
