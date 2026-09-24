@@ -2216,6 +2216,22 @@ def test_representative_regulation_table_families_reject_truncate(
         connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
+def test_regulation_schema_revision_remains_at_0009():
+    from dragon_radar.storage.database import SCHEMA_REVISION
+
+    assert SCHEMA_REVISION == "0009_regulation"
+
+
+def test_regulation_migration_head_remains_at_0009():
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+
+    assert ScriptDirectory.from_config(config).get_heads() == ["0009_regulation"]
+
+
 def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     from sqlalchemy import insert, inspect, text, update
     from sqlalchemy.exc import DBAPIError
@@ -2227,7 +2243,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0010_regulation_publication_lock"
+    assert SCHEMA_REVISION == "0009_regulation"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {
@@ -2271,5 +2287,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0010_regulation_publication_lock"
+            == "0009_regulation"
         )

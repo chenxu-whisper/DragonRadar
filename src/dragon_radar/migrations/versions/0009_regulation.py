@@ -1,5 +1,6 @@
 """Add reviewed regulation rules, calculations, events, and snapshots."""
 
+import sqlalchemy as sa
 from alembic import op
 
 from dragon_radar.regulation.tables import (
@@ -203,6 +204,12 @@ def upgrade():
         ["regulation_input_id"],
         ["id"],
         ondelete="RESTRICT",
+    )
+    op.create_index(
+        "publications_regulation_input",
+        "publications",
+        ["regulation_input_id"],
+        postgresql_where=sa.text("regulation_input_id IS NOT NULL"),
     )
 
     for table in (
@@ -853,8 +860,8 @@ def upgrade():
         RETURNS trigger AS $$
         BEGIN
             PERFORM 1
-              FROM publications
-             WHERE regulation_input_id = NEW.snapshot_id
+              FROM regulation_snapshots
+             WHERE id = NEW.snapshot_id
                FOR UPDATE;
             IF EXISTS (
                 SELECT 1
