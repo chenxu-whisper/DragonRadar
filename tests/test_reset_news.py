@@ -190,6 +190,39 @@ def test_publication_news_items_build_one_revision_lookup():
     assert indexed[REVISION_A2]["position"] == 1
 
 
+def test_publication_news_items_group_snapshots_in_one_pass_and_preserve_order():
+    from dragon_radar.publication import repository
+
+    class OnePassItems:
+        def __init__(self, rows):
+            self.rows = rows
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("news items must be grouped in one pass")
+            return iter(self.rows)
+
+    first_snapshot = uuid4()
+    empty_snapshot = uuid4()
+    rows = OnePassItems(
+        [
+            {"snapshot_id": first_snapshot, "position": 2},
+            {"snapshot_id": uuid4(), "position": 0},
+            {"snapshot_id": first_snapshot, "position": 1},
+        ]
+    )
+    group_items = getattr(repository, "_news_items_by_snapshot", None)
+
+    assert group_items is not None
+    grouped = group_items((first_snapshot, empty_snapshot), rows)
+
+    assert rows.iterations == 1
+    assert [item["position"] for item in grouped[first_snapshot]] == [2, 1]
+    assert grouped[empty_snapshot] == []
+
+
 def test_news_models_enforce_availability_content_and_deterministic_event_evidence():
     from dragon_radar.news.models import NewsArticleRevision, NewsEventEvidence
 

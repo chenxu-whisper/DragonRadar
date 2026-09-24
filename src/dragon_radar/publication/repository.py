@@ -155,6 +155,14 @@ def _news_items_by_revision(items) -> dict:
     return {item["article_revision_id"]: item for item in items}
 
 
+def _news_items_by_snapshot(snapshot_ids, items) -> dict:
+    grouped = {snapshot_id: [] for snapshot_id in snapshot_ids}
+    for item in items:
+        if item["snapshot_id"] in grouped:
+            grouped[item["snapshot_id"]].append(item)
+    return grouped
+
+
 class PublicationRepository:
     """Select publication IDs while preserving legacy market snapshot reads."""
 
@@ -508,12 +516,10 @@ class PublicationRepository:
             if news_snapshot_rows
             else []
         )
-        news_items_by_snapshot = {
-            snapshot_id: [
-                row for row in news_items if row["snapshot_id"] == snapshot_id
-            ]
-            for snapshot_id in news_snapshot_rows
-        }
+        news_items_by_snapshot = _news_items_by_snapshot(
+            news_snapshot_rows,
+            news_items,
+        )
         news_revision_ids = {
             *(row["article_revision_id"] for row in news_items),
             *(
