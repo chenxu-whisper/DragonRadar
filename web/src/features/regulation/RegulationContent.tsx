@@ -66,7 +66,17 @@ export function RegulationContent({
     refreshToken,
   );
   const data = status.data?.data;
-  const eventData = eventResource.data?.data;
+  const statusEvents = data?.region3_events;
+  const eventData = eventResource.data?.data ?? (
+    eventResource.error && statusEvents !== undefined && statusEvents !== null
+      ? {
+        events: statusEvents,
+        listed_count: statusEvents.length,
+        total: null,
+        source_check: 'unknown' as const,
+      }
+      : undefined
+  );
 
   return <>
     <div className="page-heading">
@@ -83,8 +93,9 @@ export function RegulationContent({
     <ResourceStatus resource={status} name="监管状态" />
     <ResourceStatus resource={eventResource} name="正式监管事件" />
 
-    {data && <div className="regulation-regions">
-      <section className="regulation-region completeness-region" aria-label="数据完整性">
+    {(data || eventData) && <div className="regulation-regions">
+      {data && <>
+        <section className="regulation-region completeness-region" aria-label="数据完整性">
         <div className="regulation-region-heading">
           <div><span>区域 1</span><h2>数据完整性</h2></div>
           <strong className={`regulation-state state-${data.region1_completeness.status}`}>
@@ -105,9 +116,9 @@ export function RegulationContent({
             ? ''
             : ` · 已说明 ${(data.region1_completeness.coverage_ratio * 100).toFixed(1)}%`}
         </p>
-      </section>
+        </section>
 
-      <section className="regulation-region calculation-region" aria-label="数值计算状态">
+        <section className="regulation-region calculation-region" aria-label="数值计算状态">
         <div className="regulation-region-heading">
           <div><span>区域 2</span><h2>数值计算状态</h2></div>
           <p>提醒阈值与规则阈值分列；待评审规则保持待核验。</p>
@@ -149,7 +160,8 @@ export function RegulationContent({
             </table>
           </TableScroll>
           : <p className="empty">当前快照没有已发布的数值计算记录。</p>}
-      </section>
+        </section>
+      </>}
 
       <section className="regulation-region events-region" aria-label="已披露正式事件与限制">
         <div className="regulation-region-heading">

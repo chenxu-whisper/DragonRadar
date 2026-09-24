@@ -183,6 +183,10 @@ class RegulationEvent(FrozenModel):
     announcement_url: Annotated[StrictStr, Field(min_length=1, max_length=500)] | None
     effective_from: date
     effective_to: date | None = None
+    source_id: Annotated[StrictStr, Field(min_length=1, max_length=200)] | None = None
+    source_version: Annotated[StrictStr, Field(min_length=1, max_length=200)] | None = (
+        None
+    )
 
     _validated_announcement_url = field_validator("announcement_url")(_https_url)
 
@@ -190,6 +194,10 @@ class RegulationEvent(FrozenModel):
     def validate_effective_interval(self):
         if self.effective_to is not None and self.effective_to <= self.effective_from:
             raise ValueError("Event effective interval must be nonempty")
+        if (self.source_id is None) != (self.source_version is None):
+            raise ValueError(
+                "Event source identity and version must be provided together"
+            )
         return self
 
 

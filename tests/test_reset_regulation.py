@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from factories import DAYS, NOW, bar, batch, state
+from factories import DAYS, NOW, bar, batch, grant, state
 from pydantic import ValidationError
 
 HTTPS_URL_CASES = (
@@ -111,6 +111,15 @@ def _event(**changes):
         "effective_to": None,
     }
     return RegulationEvent(**(values | changes))
+
+
+def _register_event_source(repository, source_id):
+    repository.register_source(
+        grant(
+            source_id=source_id,
+            reference=f"{source_id}-synthetic-test-only",
+        )
+    )
 
 
 def test_unreviewed_rule_stays_pending_even_near_warning_threshold():
@@ -280,7 +289,7 @@ def test_regression_gate_is_explicit_not_inferred_from_nonempty_cases():
     assert "regression_cases_missing" in production_gate_reasons(_rule(test_cases=()))
 
 
-def test_formal_event_has_only_prd_table_8_facts_and_is_not_calculation_output():
+def test_formal_event_adds_only_source_provenance_to_prd_table_8_facts():
     from dragon_radar.regulation.engine import evaluate_rule
 
     event = _event()
@@ -299,6 +308,8 @@ def test_formal_event_has_only_prd_table_8_facts_and_is_not_calculation_output()
         "announcement_url",
         "effective_from",
         "effective_to",
+        "source_id",
+        "source_version",
     }
     assert calculation.state == "triggered"
     assert not hasattr(calculation, "event")
@@ -656,6 +667,7 @@ def test_materialization_persists_complete_event_source_evidence_and_hashes_it(
             key="event-source-evidence-market",
         ).id
     )
+    _register_event_source(repository, "synthetic-event-feed")
     regulations = RegulationRepository(database, repository, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="event-source-evidence-rule")
     snapshot = regulations.materialize(
@@ -689,6 +701,189 @@ def test_materialization_persists_complete_event_source_evidence_and_hashes_it(
             event_source_version="fixture-v2",
             key="event-source-evidence-snapshot",
         )
+
+
+def test_complete_attestation_binds_only_exact_source_and_version_events(
+    database,
+    repository,
+):
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    _register_event_source(repository, "synthetic-event-a")
+    _register_event_source(repository, "synthetic-event-b")
+    market = repository.publish(
+        repository.import_batch(batch(), key="event-provenance-market").id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="event-provenance-rule")
+    for event in (
+        _event(
+            event_id="event-source-a-v1",
+            announcement_id="notice-source-a-v1",
+            source_id="synthetic-event-a",
+            source_version="v1",
+        ),
+        _event(
+            event_id="event-source-a-v2",
+            announcement_id="notice-source-a-v2",
+            source_id="synthetic-event-a",
+            source_version="v2",
+        ),
+        _event(
+            event_id="event-source-b-v1",
+            announcement_id="notice-source-b-v1",
+            source_id="synthetic-event-b",
+            source_version="v1",
+        ),
+        _event(
+            event_id="event-legacy",
+            announcement_id="notice-legacy",
+        ),
+    ):
+        regulations.append_event(event, key=f"append-{event.event_id}")
+
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        event_source_completeness="complete",
+        event_source_id="synthetic-event-a",
+        event_source_version="v1",
+        key="event-provenance-complete",
+    )
+
+    assert [
+        event.event_id for event in regulations.snapshot_context(snapshot.id)["events"]
+    ] == ["event-source-a-v1"]
+
+
+def test_complete_empty_source_dependency_blocks_publication_and_read_after_revocation(
+    database,
+    repository,
+):
+    from sqlalchemy import select
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.retention import RetentionService
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.publication.tables import source_dependencies
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.storage.repository import Forbidden
+
+    event_source_id = "synthetic-empty-events"
+    _register_event_source(repository, event_source_id)
+    market = repository.publish(
+        repository.import_batch(batch(), key="empty-event-source-market").id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="empty-event-source-rule")
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        event_source_completeness="complete",
+        event_source_id=event_source_id,
+        event_source_version="v1",
+        key="empty-event-source-snapshot",
+    )
+    command = PublicationCommand(
+        trade_date=DAYS[-1],
+        market_snapshot_id=market.id,
+        regulation_input_id=snapshot.id,
+        disabled_domains=("topic", "news", "role"),
+    )
+    service = PublicationService(database, repository, clock=lambda: NOW)
+
+    repository.revoke_source(event_source_id)
+    with pytest.raises(Forbidden):
+        service.publish(command, key="empty-event-source-denied-publication")
+
+    _register_event_source(repository, event_source_id)
+    publication = service.publish(
+        command,
+        key="empty-event-source-publication",
+    )
+    with database.engine.connect() as connection:
+        event_dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == publication.id,
+                    source_dependencies.c.derived_type == "regulation",
+                    source_dependencies.c.archive_type == "regulation_event_snapshot",
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert event_dependency["source_id"] == event_source_id
+    assert event_dependency["archive_id"] == snapshot.id
+    assert (
+        PublicationRepository(database, repository, clock=lambda: NOW).get_snapshot(
+            publication.id
+        )
+        is not None
+    )
+
+    RetentionService(database, repository, clock=lambda: NOW).withdraw_display(
+        event_source_id
+    )
+    with pytest.raises(Forbidden):
+        PublicationRepository(database, repository, clock=lambda: NOW).get_snapshot(
+            publication.id
+        )
+
+
+def test_unknown_event_completeness_retains_authorized_and_legacy_disclosures(
+    database,
+    repository,
+):
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    _register_event_source(repository, "synthetic-unknown-a")
+    _register_event_source(repository, "synthetic-unknown-b")
+    market = repository.publish(
+        repository.import_batch(batch(), key="unknown-event-provenance-market").id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="unknown-event-provenance-rule")
+    events = (
+        _event(
+            event_id="unknown-source-a",
+            announcement_id="notice-unknown-a",
+            source_id="synthetic-unknown-a",
+            source_version="v1",
+        ),
+        _event(
+            event_id="unknown-source-b",
+            announcement_id="notice-unknown-b",
+            source_id="synthetic-unknown-b",
+            source_version="v4",
+        ),
+        _event(
+            event_id="unknown-legacy",
+            announcement_id="notice-unknown-legacy",
+        ),
+    )
+    for event in events:
+        regulations.append_event(event, key=f"append-{event.event_id}")
+
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        key="unknown-event-provenance-snapshot",
+    )
+    context = regulations.snapshot_context(snapshot.id)
+
+    assert context["snapshot"].event_source_completeness == "unknown"
+    assert {event.event_id for event in context["events"]} == {
+        "unknown-source-a",
+        "unknown-source-b",
+        "unknown-legacy",
+    }
+    assert {(event.source_id, event.source_version) for event in context["events"]} == {
+        ("synthetic-unknown-a", "v1"),
+        ("synthetic-unknown-b", "v4"),
+        (None, None),
+    }
 
 
 def test_each_rule_version_consumes_only_its_own_observation(database, repository):
@@ -930,7 +1125,14 @@ def test_publication_automatically_materializes_stable_regulation_payload(
     )
     regulations = RegulationRepository(database, repository, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-publication-rule")
-    regulations.append_event(_event(), key="regulation-publication-event")
+    _register_event_source(repository, "synthetic-event-feed")
+    regulations.append_event(
+        _event(
+            source_id="synthetic-event-feed",
+            source_version="fixture-v1",
+        ),
+        key="regulation-publication-event",
+    )
     regulation_snapshot = regulations.materialize(
         market_snapshot_id=market.id,
         observations=(_observation(),),
@@ -980,6 +1182,8 @@ def test_publication_automatically_materializes_stable_regulation_payload(
             "announcement_url": "https://exchange.example.test/notices/001",
             "effective_from": DAYS[-1].isoformat(),
             "effective_to": None,
+            "source_id": "synthetic-event-feed",
+            "source_version": "fixture-v1",
         },
     )
 
@@ -996,8 +1200,15 @@ def test_regulated_publication_list_prefetches_contexts_with_fixed_query_budget(
     from dragon_radar.regulation.repository import RegulationRepository
 
     regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    _register_event_source(repository, "synthetic-list-event-source")
     regulations.register_rule(_rule(), key="regulation-list-rule")
-    regulations.append_event(_event(), key="regulation-list-event")
+    regulations.append_event(
+        _event(
+            source_id="synthetic-list-event-source",
+            source_version="v1",
+        ),
+        key="regulation-list-event",
+    )
     service = PublicationService(database, repository, clock=lambda: NOW)
     selection = PublicationRepository(database, repository, clock=lambda: NOW)
 
@@ -1011,6 +1222,9 @@ def test_regulated_publication_list_prefetches_contexts_with_fixed_query_budget(
         regulation = regulations.materialize(
             market_snapshot_id=market.id,
             observations=(_observation(),),
+            event_source_completeness="complete",
+            event_source_id="synthetic-list-event-source",
+            event_source_version="v1",
             key=f"regulation-list-snapshot-{index}",
         )
         return service.publish(
@@ -1067,7 +1281,7 @@ def test_regulated_publication_list_prefetches_contexts_with_fixed_query_budget(
         )
         assert result.payload["calculations"][0]["state"] == "approaching_alert"
     assert one_count == many_count
-    assert many_count == 21
+    assert many_count == 23
 
 
 def test_market_only_publication_list_keeps_thirteen_query_budget(
@@ -2331,13 +2545,13 @@ def test_representative_regulation_table_families_reject_truncate(
         connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
-def test_regulation_schema_revision_is_0009a():
+def test_regulation_schema_revision_is_0009b():
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0009a_reg_event_source"
+    assert SCHEMA_REVISION == "0009b_reg_event_provenance"
 
 
-def test_regulation_migration_head_is_0009a_and_reserves_0010_for_ai():
+def test_regulation_migration_head_is_0009b_and_reserves_0010_for_ai():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -2345,9 +2559,9 @@ def test_regulation_migration_head_is_0009a_and_reserves_0010_for_ai():
     config.set_main_option("script_location", "dragon_radar:migrations")
 
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0009a_reg_event_source"]
-    assert script.get_revision("0009a_reg_event_source").down_revision == (
-        "0009_regulation"
+    assert script.get_heads() == ["0009b_reg_event_provenance"]
+    assert script.get_revision("0009b_reg_event_provenance").down_revision == (
+        "0009a_reg_event_source"
     )
 
 
@@ -2375,6 +2589,18 @@ def test_regulation_event_source_migration_upgrades_existing_0009_schema(databas
                     "DROP COLUMN IF EXISTS event_source_completeness"
                 )
             )
+            connection.execute(
+                text(
+                    "DROP INDEX IF EXISTS regulation_events_source; "
+                    "ALTER TABLE regulation_events "
+                    "DROP CONSTRAINT IF EXISTS "
+                    "regulation_events_source_provenance, "
+                    "DROP CONSTRAINT IF EXISTS "
+                    "regulation_events_source_id_fkey, "
+                    "DROP COLUMN IF EXISTS source_version, "
+                    "DROP COLUMN IF EXISTS source_id"
+                )
+            )
             assert {
                 column["name"]
                 for column in inspect(connection).get_columns("regulation_snapshots")
@@ -2385,6 +2611,10 @@ def test_regulation_event_source_migration_upgrades_existing_0009_schema(databas
                     "event_source_version",
                 }
             )
+            assert {
+                column["name"]
+                for column in inspect(connection).get_columns("regulation_events")
+            }.isdisjoint({"source_id", "source_version"})
         database.migrate()
         with database.engine.connect() as connection:
             columns = {
@@ -2472,7 +2702,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0009a_reg_event_source"
+    assert SCHEMA_REVISION == "0009b_reg_event_provenance"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {
@@ -2491,6 +2721,16 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
         for column in inspector.get_columns("regulation_snapshots")
     }
     assert snapshot_columns["event_source_completeness"]["nullable"] is False
+    event_columns = {
+        column["name"]: column for column in inspector.get_columns("regulation_events")
+    }
+    assert event_columns["source_id"]["nullable"] is True
+    assert event_columns["source_version"]["nullable"] is True
+    assert any(
+        fk["referred_table"] == "source_grants"
+        and fk["constrained_columns"] == ["source_id"]
+        for fk in inspector.get_foreign_keys("regulation_events")
+    )
     assert any(
         fk["referred_table"] == "regulation_snapshots"
         and fk["constrained_columns"] == ["regulation_input_id"]
@@ -2521,5 +2761,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0009a_reg_event_source"
+            == "0009b_reg_event_provenance"
         )

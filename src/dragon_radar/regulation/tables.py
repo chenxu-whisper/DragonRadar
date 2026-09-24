@@ -102,6 +102,12 @@ regulation_events = Table(
     Column("announcement_url", Text),
     Column("effective_from", Date, nullable=False),
     Column("effective_to", Date),
+    Column(
+        "source_id",
+        Text,
+        ForeignKey("source_grants.source_id", ondelete="RESTRICT"),
+    ),
+    Column("source_version", String(200)),
     Column("created_at", DateTime(timezone=True), nullable=False),
     ForeignKeyConstraint(
         ["rule_id", "rule_version"],
@@ -112,11 +118,19 @@ regulation_events = Table(
     CheckConstraint(
         "event_type IN ('abnormal', 'serious_abnormal', 'monitoring', 'restriction')"
     ),
+    CheckConstraint(
+        "(source_id IS NULL AND source_version IS NULL) OR "
+        "(source_id IS NOT NULL AND source_version IS NOT NULL "
+        "AND source_id ~ '^[A-Za-z0-9_.:-]{1,200}$' "
+        "AND source_version ~ '^[A-Za-z0-9_.:-]{1,200}$')",
+        name="regulation_events_source_provenance",
+    ),
     Index(
         "regulation_events_security_effective",
         "security_id",
         "effective_from",
     ),
+    Index("regulation_events_source", "source_id", "source_version"),
 )
 
 regulation_snapshots = Table(

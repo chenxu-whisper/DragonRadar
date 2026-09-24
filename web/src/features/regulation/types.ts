@@ -55,6 +55,8 @@ export interface RegulationEvent {
   announcement_url: string | null;
   effective_from: string;
   effective_to: string | null;
+  source_id?: string | null;
+  source_version?: string | null;
 }
 
 export interface RegulationStatus {

@@ -165,6 +165,85 @@ describe('regulation response validation', () => {
   });
 
   it.each([
+    ['upper idle above threshold', {
+      computed_value: 0.8,
+      state: 'idle',
+    }],
+    ['upper approaching at threshold', {
+      computed_value: 0.7,
+      state: 'approaching_alert',
+    }],
+    ['upper idle at warning threshold', {
+      computed_value: 0.65,
+      state: 'idle',
+    }],
+    ['upper triggered below warning threshold', {
+      computed_value: 0.6499999999999999,
+      state: 'triggered',
+    }],
+    ['lower idle below threshold', {
+      direction: 'lower',
+      threshold: 0.3,
+      warning_threshold: 0.35,
+      computed_value: 0.29,
+      state: 'idle',
+    }],
+    ['lower approaching at threshold', {
+      direction: 'lower',
+      threshold: 0.3,
+      warning_threshold: 0.35,
+      computed_value: 0.3,
+      state: 'approaching_alert',
+    }],
+    ['lower idle at warning threshold', {
+      direction: 'lower',
+      threshold: 0.3,
+      warning_threshold: 0.35,
+      computed_value: 0.35,
+      state: 'idle',
+    }],
+    ['lower triggered above warning threshold', {
+      direction: 'lower',
+      threshold: 0.3,
+      warning_threshold: 0.35,
+      computed_value: 0.3500000000000001,
+      state: 'triggered',
+    }],
+  ])('rejects threshold contradiction: %s', (_name, patch) => {
+    expect(validateRegulationStatusResponse(
+      envelope(statusData({
+        review_switch: 'approved',
+        production_enabled: true,
+        production_gate_reasons: [],
+        reasons: [],
+        ...patch,
+      })),
+      selection,
+    )).toBe('malformed_response');
+  });
+
+  it.each([
+    ['upper warning not below threshold', {
+      threshold: 0.7,
+      warning_threshold: 0.7,
+    }],
+    ['lower warning not above threshold', {
+      direction: 'lower',
+      threshold: 0.3,
+      warning_threshold: 0.3,
+    }],
+    ['pending without reason', {
+      state: 'pending',
+      reasons: [],
+    }],
+  ])('rejects invalid calculation guard: %s', (_name, patch) => {
+    expect(validateRegulationStatusResponse(
+      envelope(statusData(patch)),
+      selection,
+    )).toBe('malformed_response');
+  });
+
+  it.each([
     ['abnormal', 'disclosed'],
     ['serious_abnormal', 'disclosed'],
     ['monitoring', 'monitoring'],

@@ -401,12 +401,10 @@ class PublicationRepository:
                 or regulation_root["trade_date"] != record.trade_date
                 or payload_snapshot_id != record.regulation_input_id
                 or payload_market_id != record.market_snapshot_id
-                or len(regulation_dependencies) != 1
             ):
                 raise Forbidden("Publication regulation lineage is invalid")
-            expected = RegulationRepository.materialize_context(
-                regulation_contexts[record.regulation_input_id]
-            )
+            regulation_context = regulation_contexts[record.regulation_input_id]
+            expected = RegulationRepository.materialize_context(regulation_context)
             if (
                 regulation_result["payload"]
                 != expected.model_dump(mode="json")["payload"]
@@ -415,15 +413,35 @@ class PublicationRepository:
                 or tuple(regulation_result["quality_flags"]) != expected.quality_flags
             ):
                 raise Forbidden("Publication regulation payload is invalid")
-            dependency = regulation_dependencies[0]
-            if (
-                dependency["source_id"] != market_row["source_id"]
-                or dependency["archive_type"] != "market_import_batch"
-                or dependency["archive_id"] != market_row["batch_id"]
-                or dependency["derived_id"] != record.id
+            expected_dependencies = {
+                (source_id, archive_type, archive_id)
+                for source_id, archive_type, archive_id, _domain in (
+                    RegulationRepository.dependencies(regulation_context)
+                )
+            }
+            actual_dependencies = {
+                (
+                    dependency["source_id"],
+                    dependency["archive_type"],
+                    dependency["archive_id"],
+                )
+                for dependency in regulation_dependencies
+            }
+            if actual_dependencies != expected_dependencies or any(
+                dependency["derived_id"] != record.id
                 or dependency["publication_id"] != record.id
+                for dependency in regulation_dependencies
             ):
                 raise Forbidden("Publication regulation lineage is invalid")
+            for dependency in regulation_dependencies:
+                if dependency["archive_type"] != "regulation_event_snapshot":
+                    continue
+                if not grant_allows_display(
+                    grants[dependency["source_id"]],
+                    source_id=dependency["source_id"],
+                    now=self.clock(),
+                ):
+                    raise Forbidden("Regulation event source is not locally authorized")
         elif regulation_dependencies:
             raise Forbidden("Publication regulation lineage is invalid")
 

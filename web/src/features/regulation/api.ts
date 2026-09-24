@@ -1,3 +1,5 @@
+import Decimal from 'decimal.js';
+
 import type {
   RegulationCalculation,
   RegulationEvent,
@@ -62,6 +64,14 @@ function envelope(value: unknown, selection: Selection): Failure {
 
 function event(value: unknown): value is RegulationEvent {
   if (!record(value)) return false;
+  const hasLegacySource = (
+    (value.source_id === undefined || value.source_id === null) &&
+    (value.source_version === undefined || value.source_version === null)
+  );
+  const hasVersionedSource = (
+    typeof value.source_id === 'string' && Boolean(value.source_id.trim()) &&
+    typeof value.source_version === 'string' && Boolean(value.source_version.trim())
+  );
   return ['event_id', 'rule_id', 'rule_version', 'security_id'].every(
     key => typeof value[key] === 'string' && Boolean((value[key] as string).trim()),
   ) &&
@@ -72,7 +82,50 @@ function event(value: unknown): value is RegulationEvent {
       (typeof value.announcement_url === 'string' &&
         value.announcement_url.startsWith('https://'))) &&
     typeof value.effective_from === 'string' &&
-    nullableText(value.effective_to);
+    nullableText(value.effective_to) &&
+    (hasLegacySource || hasVersionedSource);
+}
+
+function calculationState(value: ObjectValue): boolean {
+  const direction = String(value.direction);
+  const threshold = new Decimal(value.threshold as number);
+  const warning = new Decimal(value.warning_threshold as number);
+  if (
+    (direction === 'upper' && !warning.lessThan(threshold)) ||
+    (direction === 'lower' && !warning.greaterThan(threshold))
+  ) return false;
+
+  const reasons = value.reasons as string[];
+  const gateReasons = value.production_gate_reasons as string[];
+  if (value.state === 'pending') {
+    return reasons.length > 0 && (
+      value.computed_value === null ||
+      value.review_switch !== 'approved' ||
+      value.production_enabled !== true ||
+      gateReasons.length > 0
+    );
+  }
+  if (
+    value.review_switch !== 'approved' ||
+    value.production_enabled !== true ||
+    gateReasons.length > 0 ||
+    reasons.length > 0 ||
+    value.computed_value === null
+  ) return false;
+
+  const computed = new Decimal(value.computed_value as number);
+  const expected = direction === 'upper'
+    ? computed.greaterThanOrEqualTo(threshold)
+      ? 'triggered'
+      : computed.greaterThanOrEqualTo(warning)
+        ? 'approaching_alert'
+        : 'idle'
+    : computed.lessThanOrEqualTo(threshold)
+      ? 'triggered'
+      : computed.lessThanOrEqualTo(warning)
+        ? 'approaching_alert'
+        : 'idle';
+  return value.state === expected;
 }
 
 function calculation(value: unknown, selection: Selection): value is RegulationCalculation {
@@ -90,8 +143,6 @@ function calculation(value: unknown, selection: Selection): value is RegulationC
     nullableText(value.recompute_condition) &&
     (value.computed_value === null || finite(value.computed_value)) &&
     CALCULATION_STATES.includes(String(value.state)) &&
-    (value.state === 'pending' ||
-      (value.review_switch === 'approved' && value.production_enabled === true)) &&
     strings(value.reasons) &&
     (value.official_source_url === null ||
       (typeof value.official_source_url === 'string' &&
@@ -99,7 +150,8 @@ function calculation(value: unknown, selection: Selection): value is RegulationC
     typeof value.effective_from === 'string' &&
     nullableText(value.effective_to) &&
     typeof value.production_enabled === 'boolean' &&
-    strings(value.production_gate_reasons);
+    strings(value.production_gate_reasons) &&
+    calculationState(value);
 }
 
 function completeness(value: unknown): boolean {

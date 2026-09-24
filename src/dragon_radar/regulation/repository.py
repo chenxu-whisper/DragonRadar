@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, insert, select
 
 from dragon_radar.domain.models import MarketBatch
+from dragon_radar.domain.quality import grant_allows_display
 from dragon_radar.regulation.engine import (
     evaluate_rule,
     rule_is_applicable,
@@ -42,6 +43,7 @@ from dragon_radar.regulation.tables import (
 from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import (
     Conflict,
+    Forbidden,
     NotFound,
     Repository,
     _identifier,
@@ -65,6 +67,14 @@ def _canonical(value) -> str:
 
 def _digest(value) -> str:
     return hashlib.sha256(_canonical(value).encode("ascii")).hexdigest()
+
+
+def _event_payload(event: RegulationEvent) -> dict:
+    payload = event.model_dump(mode="json")
+    if event.source_id is None:
+        payload.pop("source_id")
+        payload.pop("source_version")
+    return payload
 
 
 def _rule(row: Mapping) -> RegulationRule:
@@ -110,6 +120,8 @@ def _event(row: Mapping) -> RegulationEvent:
         announcement_url=row["announcement_url"],
         effective_from=row["effective_from"],
         effective_to=row["effective_to"],
+        source_id=row["source_id"],
+        source_version=row["source_version"],
     )
 
 
@@ -401,6 +413,9 @@ class RegulationRepository:
     def append_event(self, event: RegulationEvent, *, key: str) -> RegulationEvent:
         _identifier(key)
         event = RegulationEvent.model_validate(event.model_dump())
+        if event.source_id is not None:
+            _identifier(event.source_id)
+            _identifier(event.source_version)
         payload_hash = _digest(event.model_dump(mode="json"))
         with self.database.engine.begin() as connection:
             self.market._lock(connection, f"regulation-command:{key}")
@@ -724,6 +739,42 @@ class RegulationRepository:
                 for row in event_rows
                 if event_is_effective(_event(row), market.trade_date)
             ]
+            if event_source_completeness == "complete":
+                source = self.market._source(connection, event_source_id)
+                if not grant_allows_display(
+                    source,
+                    source_id=event_source_id,
+                    now=now,
+                ):
+                    raise Forbidden("Regulation event source is not locally authorized")
+                effective_events = [
+                    row
+                    for row in effective_events
+                    if row["source_id"] == event_source_id
+                    and row["source_version"] == event_source_version
+                ]
+            else:
+                authorized_sources = set()
+                for source_id in sorted(
+                    {
+                        row["source_id"]
+                        for row in effective_events
+                        if row["source_id"] is not None
+                    }
+                ):
+                    source = self.market._source(connection, source_id)
+                    if grant_allows_display(
+                        source,
+                        source_id=source_id,
+                        now=now,
+                    ):
+                        authorized_sources.add(source_id)
+                effective_events = [
+                    row
+                    for row in effective_events
+                    if row["source_id"] is None
+                    or row["source_id"] in authorized_sources
+                ]
             root = {
                 "id": uuid4(),
                 "idempotency_key": key,
@@ -1006,8 +1057,16 @@ class RegulationRepository:
             market_archive = market_archives[market_row["batch_id"]]
             market = MarketBatch.model_validate_json(market_archive["canonical_json"])
             bindings = tuple(bindings_by_snapshot[snapshot_id])
+            snapshot = _snapshot(root)
+            events = tuple(events_by_snapshot[snapshot_id])
+            if snapshot.event_source_completeness == "complete" and any(
+                event.source_id != snapshot.event_source_id
+                or event.source_version != snapshot.event_source_version
+                for event in events
+            ):
+                raise Forbidden("Complete regulation event attestation is inconsistent")
             contexts[snapshot_id] = {
-                "snapshot": _snapshot(root),
+                "snapshot": snapshot,
                 "root": root,
                 "market_source_id": market_row["source_id"],
                 "market_batch_id": market_row["batch_id"],
@@ -1019,7 +1078,7 @@ class RegulationRepository:
                 "calculations": tuple(calculations_by_snapshot[snapshot_id]),
                 "calculation_rows": tuple(calculation_rows_by_snapshot[snapshot_id]),
                 "inputs": tuple(inputs_by_snapshot[snapshot_id]),
-                "events": tuple(events_by_snapshot[snapshot_id]),
+                "events": events,
             }
         return contexts
 
@@ -1035,7 +1094,7 @@ class RegulationRepository:
         calculations = [
             item.model_dump(mode="json") for item in context["calculations"]
         ]
-        events = [item.model_dump(mode="json") for item in context["events"]]
+        events = [_event_payload(item) for item in context["events"]]
         expected_security_ids = tuple(context["expected_security_ids"])
         calculation_identities = {
             (item.security_id, item.rule_id, item.rule_version)
@@ -1110,11 +1169,27 @@ class RegulationRepository:
 
     @staticmethod
     def dependencies(context: dict) -> tuple[tuple[str, str, UUID, str], ...]:
+        event_source_ids = {
+            event.source_id
+            for event in context["events"]
+            if event.source_id is not None
+        }
+        if context["snapshot"].event_source_completeness == "complete":
+            event_source_ids.add(context["snapshot"].event_source_id)
         return (
             (
                 context["market_source_id"],
                 "market_import_batch",
                 context["market_batch_id"],
                 "regulation",
+            ),
+            *(
+                (
+                    source_id,
+                    "regulation_event_snapshot",
+                    context["snapshot"].id,
+                    "regulation",
+                )
+                for source_id in sorted(event_source_ids)
             ),
         )

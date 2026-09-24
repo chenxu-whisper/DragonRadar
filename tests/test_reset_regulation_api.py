@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from factories import DAYS, NOW, batch
+from factories import DAYS, NOW, batch, grant
 from httpx import ASGITransport, AsyncClient
 
 from dragon_radar.publication.models import (
@@ -99,6 +99,12 @@ def _build_regulation_publication(
     event_source_id=None,
     event_source_version=None,
 ):
+    repository.register_source(
+        grant(
+            source_id="synthetic-event-feed",
+            reference="synthetic-event-feed-test-only",
+        )
+    )
     market = repository.publish(
         repository.import_batch(batch(), key=f"task16-market-{suffix}").id
     )
@@ -124,6 +130,8 @@ def _build_regulation_publication(
             announcement_url="https://exchange.example.test/notices/001",
             effective_from=DAYS[-1],
             effective_to=None,
+            source_id="synthetic-event-feed",
+            source_version="fixture-v1",
         ),
         key=f"task16-event-{suffix}",
     )
@@ -244,6 +252,8 @@ async def test_status_keeps_completeness_calculations_and_formal_events_separate
             "announcement_url": "https://exchange.example.test/notices/001",
             "effective_from": DAYS[-1].isoformat(),
             "effective_to": None,
+            "source_id": "synthetic-event-feed",
+            "source_version": "fixture-v1",
         }
     ]
     assert len(body["data"]["region3_events"]) == 1
@@ -395,6 +405,8 @@ async def test_ready_regulation_without_event_source_evidence_remains_unknown(
                 "announcement_url": "https://exchange.example.test/notices/001",
                 "effective_from": DAYS[-1].isoformat(),
                 "effective_to": None,
+                "source_id": "synthetic-event-feed",
+                "source_version": "fixture-v1",
             }
         ],
         "listed_count": 1,

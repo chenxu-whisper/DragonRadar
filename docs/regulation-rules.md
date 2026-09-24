@@ -41,10 +41,10 @@ events, snapshots, or published payloads.
 
 ## Formal Events
 
-Formal events are separate disclosed facts with exactly the PRD table 8 fields:
-event and rule identity, security, event type, announcement identity/URL, and
-effective dates. A calculation result never creates, changes, or closes an
-event. Event-type display mapping belongs to Task 16.
+Formal events are separate disclosed facts with the PRD table 8 fields plus
+nullable immutable `source_id` and `source_version` provenance. Legacy events
+without provenance remain displayable only under unknown source completeness.
+A calculation result never creates, changes, or closes an event.
 
 ## Controlled CLI
 
@@ -71,12 +71,18 @@ full expected security pool.
 
 Event-source evidence defaults to `unknown`, with no source ID or version.
 `complete` is accepted only when both identifier flags are present and valid.
-The attestation is immutable, participates in the materialization command hash,
-and is copied into the published payload. Listed formal events remain visible
-when completeness is unknown, but a complete total is reported only for an
-explicitly complete source. No calculation state, readiness state, or listed
-event count upgrades completeness.
+The attestation is operator-sealed snapshot evidence, not a fabricated raw
+archive. It is immutable, participates in the materialization command hash,
+and is copied into the published payload. A complete snapshot selects only
+effective events whose source identity and version exactly match the
+attestation; an empty complete source still creates an event-source dependency.
+Unknown completeness retains authorized sourced events and legacy events but
+never reports a complete total. No calculation state, readiness state, or
+listed event count upgrades completeness.
 
 Publication binds the resulting snapshot through
 `PublicationCommand.regulation_input_id`; `PublicationService` materializes the
 stable completeness, rule, calculation, event, and event-source payload.
+Event-source lineage uses the regulation snapshot UUID as archive identity.
+Materialization, publication, and reads recheck display authorization, and a
+source withdrawal invalidates protected event display.

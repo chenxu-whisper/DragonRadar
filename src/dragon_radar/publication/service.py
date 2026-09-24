@@ -185,6 +185,7 @@ class PublicationService:
         market_context,
         topic_context,
         news_context,
+        regulation_context,
         grants,
     ) -> None:
         market_row, market_archive, market_batch = market_context
@@ -241,6 +242,30 @@ class PublicationService:
                     row["article_revision_id"],
                 ):
                     raise Forbidden("News revision was withdrawn")
+        if regulation_context is not None:
+            for (
+                source_id,
+                archive_type,
+                archive_id,
+                _domain,
+            ) in RegulationRepository.dependencies(regulation_context):
+                if archive_type != "regulation_event_snapshot":
+                    continue
+                if not grant_allows_display(
+                    grants[source_id],
+                    source_id=source_id,
+                    now=self.clock(),
+                ):
+                    raise Forbidden("Regulation event source is not locally authorized")
+                if source_has_active_withdrawal(
+                    connection, source_id
+                ) or archive_was_withdrawn(
+                    connection,
+                    source_id,
+                    archive_type,
+                    archive_id,
+                ):
+                    raise Forbidden("Regulation event evidence was withdrawn")
 
     @staticmethod
     def _market_materialization(context, topic_context=None) -> DomainMaterialization:
@@ -410,6 +435,7 @@ class PublicationService:
                         market_context,
                         topic_context,
                         news_context,
+                        regulation_context,
                         grants,
                     )
                     results = {}

@@ -69,6 +69,28 @@ test('unknown event source is not rendered as zero formal events', async ({ page
   await expect(page.getByText(/事件来源完整性：未知/)).toBeVisible();
 });
 
+test('formal events remain visible when regulation status is unavailable', async ({ page }) => {
+  await mockRegulation(page, { statusUnavailable: true });
+  await page.goto(regulationUrl);
+
+  await expect(page.getByRole('alert')).toContainText('数据服务暂不可用');
+  const events = page.getByRole('region', { name: '已披露正式事件与限制' });
+  await expect(events).toContainText('4 条正式记录');
+  await expect(events.getByRole('link', { name: '公告原文' })).toHaveCount(4);
+  await expect(page.getByRole('region', { name: '数据完整性' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '数值计算状态' })).toHaveCount(0);
+});
+
+test('validated status events are the fallback when the events request fails', async ({ page }) => {
+  await mockRegulation(page, { eventsUnavailable: true });
+  await page.goto(regulationUrl);
+
+  await expect(page.getByRole('alert')).toContainText('数据服务暂不可用');
+  const events = page.getByRole('region', { name: '已披露正式事件与限制' });
+  await expect(events).toContainText('4 条已列记录');
+  await expect(events.getByRole('link', { name: '公告原文' })).toHaveCount(4);
+});
+
 test('complete numerical inputs do not activate a pending rule', async ({ page }) => {
   await mockRegulation(page, { completeInputs: true });
   await page.goto(regulationUrl);

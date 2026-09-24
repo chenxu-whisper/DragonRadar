@@ -80,6 +80,8 @@ const event = (
   announcement_url: `https://exchange.example.test/notices/${event_id}`,
   effective_from: REGULATION_DATE,
   effective_to: event_type === 'restriction' ? '2026-09-20' : null,
+  source_id: 'synthetic-event-feed',
+  source_version: 'fixture-v1',
 });
 
 const events = [
@@ -109,6 +111,8 @@ function regulationEnvelope(data: unknown, selectedCoverage = coverage) {
 export interface RegulationMockState {
   unknownEvents?: boolean;
   completeInputs?: boolean;
+  statusUnavailable?: boolean;
+  eventsUnavailable?: boolean;
 }
 
 export async function mockRegulation(
@@ -122,6 +126,9 @@ export async function mockRegulation(
   await page.route('**/api/regulation/**', async (route: Route) => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/regulation/status') {
+      if (state.statusUnavailable) {
+        return route.fulfill({ status: 503, json: {} });
+      }
       return route.fulfill({
         json: regulationEnvelope({
           region1_completeness: {
@@ -137,6 +144,9 @@ export async function mockRegulation(
       });
     }
     if (url.pathname === '/api/regulation/events') {
+      if (state.eventsUnavailable) {
+        return route.fulfill({ status: 503, json: {} });
+      }
       return route.fulfill({
         json: regulationEnvelope(state.unknownEvents
           ? {
