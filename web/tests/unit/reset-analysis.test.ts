@@ -192,6 +192,45 @@ describe('reset analysis response validation', () => {
     )).toBeNull();
   });
 
+  it('allows a null rank only when the requested sort value is unavailable', () => {
+    const data = rankData();
+    data.ranking.push({
+      ...data.ranking[0],
+      rank: null as unknown as number,
+      security_id: 'TEST003',
+      amount_change_ratio: null as unknown as number,
+    });
+    const amountQuery = new URLSearchParams(query);
+    amountQuery.set('sort', 'amount_change');
+    expect(validateRankResponse(
+      envelope(data, { expected: 3, valid: 1, excluded: 0, missing: 2 }),
+      amountQuery,
+    )).toBeNull();
+  });
+
+  it.each([
+    ['wrong rank order', (data: ReturnType<typeof rankData>) => {
+      data.ranking.push({
+        ...data.ranking[0], rank: 1, security_id: 'TEST003', return_ratio: 0.2,
+      });
+    }],
+    ['wrong excess return', (data: ReturnType<typeof rankData>) => {
+      data.ranking[0].excess_return_ratio = 999;
+    }],
+  ])('rejects rank semantic mismatch: %s', (_name, corrupt) => {
+    const data = rankData();
+    corrupt(data);
+    expect(validateRankResponse(
+      envelope(data, {
+        expected: data.ranking.length + data.exclusions.length,
+        valid: data.ranking.length,
+        excluded: 0,
+        missing: data.exclusions.length,
+      }),
+      query,
+    )).toBe('malformed');
+  });
+
   it('allows a complete loss of current amount against a positive baseline', () => {
     const data = rankData();
     data.ranking[0].amount_change_ratio = -1;

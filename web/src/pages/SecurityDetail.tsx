@@ -95,6 +95,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       ? <>
         <ResourceStatus resource={modern} name="证券详情" />
         <ResourceStatus resource={rawKline} name="证券行情" />
+        {modern.data?.data === null && <p className="notice" role="status">当前快照的证券详情不可用</p>}
       </>
       : <ResourceStatus resource={resource} name="证券详情" />}
     {modernData && <>

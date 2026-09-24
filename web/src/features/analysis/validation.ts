@@ -79,6 +79,18 @@ function exclusionIds(value: unknown): Set<string> | null {
   return ids;
 }
 
+const rankFields = {
+  return: ['return_ratio', true],
+  excess_return: ['excess_return_ratio', true],
+  drawdown: ['max_drawdown_ratio', false],
+  amount_change: ['amount_change_ratio', true],
+} as const;
+
+function nearlyEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) <= Number.EPSILON *
+    Math.max(1, Math.abs(left), Math.abs(right)) * 8;
+}
+
 export function validateRankResponse(value: unknown, query: URLSearchParams): AnalysisValidationError | null {
   if (!envelope(value)) return 'malformed';
   if (!basisMatches(value, query, true)) return 'malformed';
@@ -96,15 +108,16 @@ export function validateRankResponse(value: unknown, query: URLSearchParams): An
     !Array.isArray(data.ranking) ||
     !Array.isArray(data.exclusions)) return 'malformed';
   const excludedIds = exclusionIds(data.exclusions);
-  if (!excludedIds || !record(value.coverage) ||
-    data.ranking.length !== value.coverage.valid ||
-    data.exclusions.length !== (value.coverage.excluded as number) + (value.coverage.missing as number)) {
+  const sort = query.get('sort') || 'return';
+  const rankField = rankFields[sort as keyof typeof rankFields];
+  if (!excludedIds || !rankField || !record(value.coverage) ||
+    data.ranking.length + data.exclusions.length !== value.coverage.expected) {
     return 'malformed';
   }
   const ids = new Set<string>();
   for (const item of data.ranking) {
     if (!record(item) ||
-      !(Number.isSafeInteger(item.rank) && (item.rank as number) >= 1) ||
+      !(item.rank === null || (Number.isSafeInteger(item.rank) && (item.rank as number) >= 1)) ||
       typeof item.security_id !== 'string' || !item.security_id ||
       (item.name !== null && typeof item.name !== 'string') ||
       !Array.isArray(item.topics) ||
@@ -117,7 +130,40 @@ export function validateRankResponse(value: unknown, query: URLSearchParams): An
       !(item.amount_change_ratio === null ||
         (finite(item.amount_change_ratio) && item.amount_change_ratio >= -1)) ||
       ids.has(item.security_id) || excludedIds.has(item.security_id)) return 'malformed';
+    if (data.benchmark_return === null
+      ? item.excess_return_ratio !== null
+      : !finite(item.excess_return_ratio) ||
+        !nearlyEqual(item.excess_return_ratio, item.return_ratio - data.benchmark_return)) {
+      return 'malformed';
+    }
     ids.add(item.security_id);
+  }
+  const [field, descending] = rankField;
+  let previousValue: number | undefined;
+  let valid = 0;
+  for (const [index, item] of (data.ranking as ObjectValue[]).entries()) {
+    const current = item[field];
+    if (current === null) {
+      if (item.rank !== null) return 'malformed';
+      continue;
+    }
+    if (!finite(current) || item.rank === null) return 'malformed';
+    valid += 1;
+    if (previousValue !== undefined) {
+      if ((descending && current > previousValue) || (!descending && current < previousValue)) {
+        return 'malformed';
+      }
+    }
+    const expectedRank = previousValue === current
+      ? (data.ranking[index - 1] as ObjectValue).rank
+      : index + 1;
+    if (item.rank !== expectedRank) return 'malformed';
+    previousValue = current;
+  }
+  if (valid !== value.coverage.valid ||
+    data.ranking.length - valid + data.exclusions.length !==
+      (value.coverage.excluded as number) + (value.coverage.missing as number)) {
+    return 'malformed';
   }
   return null;
 }

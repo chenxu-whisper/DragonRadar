@@ -255,6 +255,23 @@ describe('read-only request boundary', () => {
     })).resolves.toMatchObject({ data: { regulation: { active_events: null } } });
   });
 
+  it('accepts a published stock unavailable envelope', async () => {
+    const unavailable = {
+      ...resetEnvelope(null),
+      reason: 'materialization_unavailable',
+      quality_flags: ['materialization_unavailable'],
+      basis: { unit: null, currency: null, price_type: null, benchmark: null },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(unavailable))));
+
+    await expect(request('/api/stock/TEST001?date=2026-09-10&snapshot_id=snapshot-a', {
+      snapshot: 'snapshot-a',
+    })).resolves.toMatchObject({
+      data: null,
+      reason: 'materialization_unavailable',
+    });
+  });
+
   it('rejects malformed legacy stock history before SecurityDetail reads it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       snapshot_id: 'snapshot-a',

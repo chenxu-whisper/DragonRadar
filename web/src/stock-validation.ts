@@ -27,10 +27,9 @@ export function validateResetStockResponse(
   tradeDate: string | null,
 ): ResetStockValidationError | null {
   if (!record(data)) return 'malformed';
-  if (!record(data.coverage) || !record(data.basis) || !record(data.data)) return 'malformed';
+  if (!record(data.coverage) || !record(data.basis)) return 'malformed';
   const coverage = data.coverage;
   const basis = data.basis;
-  const payload = data.data;
   const coverageFields = ['expected', 'valid', 'excluded', 'missing'] as const;
   if (
     typeof data.trade_date !== 'string' ||
@@ -45,6 +44,11 @@ export function validateResetStockResponse(
     !nullableStrings(basis, ['unit', 'currency', 'price_type', 'benchmark'])
   ) return 'malformed';
   if (tradeDate && data.trade_date !== tradeDate) return 'date_mismatch';
+  if (data.data === null) {
+    return typeof data.reason === 'string' && data.reason.length > 0 ? null : 'malformed';
+  }
+  if (!record(data.data)) return 'malformed';
+  const payload = data.data;
   if (!record(payload.quote) || !record(payload.seal) || !record(payload.regulation)) return 'malformed';
   const quote = payload.quote;
   const seal = payload.seal;
