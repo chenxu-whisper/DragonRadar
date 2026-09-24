@@ -138,6 +138,7 @@ class NewsReviewOutcome(FrozenModel):
     association_id: UUID
     decision: ReviewDecision
     revision: Annotated[int, Field(ge=1)]
+    audit_id: UUID
     effective: bool
     pending_topic_publication: bool
     reviewed_at: datetime

@@ -151,6 +151,23 @@ def test_news_models_freeze_prd_article_types():
             )
 
 
+def test_news_review_outcome_serializes_persisted_audit_identity():
+    from dragon_radar.news.models import NewsReviewOutcome
+
+    audit_id = uuid4()
+    outcome = NewsReviewOutcome(
+        association_id=ASSOCIATION_TOPIC,
+        decision="accept",
+        revision=1,
+        audit_id=audit_id,
+        effective=False,
+        pending_topic_publication=True,
+        reviewed_at=NOW,
+    )
+
+    assert outcome.model_dump(mode="json")["audit_id"] == str(audit_id)
+
+
 def _materialization_context(*associations, reviews=None):
     revision = article_revision()
     return {
@@ -848,6 +865,14 @@ async def test_owner_review_requires_owner_write_csrf_and_maps_workbench_errors(
             json={**body, "idempotency_key": "missing-article"},
             headers=_owner_headers(session),
         )
+    with database.engine.connect() as connection:
+        audit_id = connection.execute(
+            text(
+                "SELECT id FROM news_review_audit_events "
+                "WHERE object_id = :association_id"
+            ),
+            {"association_id": str(ASSOCIATION_TOPIC)},
+        ).scalar_one()
 
     assert no_csrf.status_code == 403
     assert no_csrf.json()["code"] == "FORBIDDEN"
@@ -859,6 +884,7 @@ async def test_owner_review_requires_owner_write_csrf_and_maps_workbench_errors(
             "association_id": str(ASSOCIATION_TOPIC),
             "decision": "accept",
             "revision": 1,
+            "audit_id": str(audit_id),
             "effective": False,
             "pending_topic_publication": True,
         }

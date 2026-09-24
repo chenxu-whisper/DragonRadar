@@ -340,7 +340,14 @@ def install_news_review_routes(app: FastAPI) -> None:
         return DecimalJSONResponse(
             outcome.model_dump(
                 mode="json",
-                exclude={"reviewed_at"},
+                include={
+                    "association_id",
+                    "decision",
+                    "revision",
+                    "audit_id",
+                    "effective",
+                    "pending_topic_publication",
+                },
             )
         )
 

@@ -546,7 +546,20 @@ class NewsRepository:
                 .mappings()
                 .one()
             )
-            return self._review_outcome(review, association_row["target_type"])
+            audit_id = connection.execute(
+                select(news_review_audit_events.c.id).where(
+                    news_review_audit_events.c.owner_id == owner_id,
+                    news_review_audit_events.c.action == "news_association_reviewed",
+                    news_review_audit_events.c.object_id == str(association_id),
+                    news_review_audit_events.c.details["revision"].as_integer()
+                    == review["revision"],
+                )
+            ).scalar_one()
+            return self._review_outcome(
+                review,
+                association_row["target_type"],
+                audit_id,
+            )
 
         current_revision = connection.scalar(
             select(
@@ -583,31 +596,44 @@ class NewsRepository:
                 created_at=now,
             )
         )
-        outcome = self._review_outcome(review, association_row["target_type"])
-        connection.execute(
-            insert(news_review_audit_events).values(
+        accepted_topic = (
+            review["decision"] == "accept" and association_row["target_type"] == "topic"
+        )
+        audit_id = connection.execute(
+            insert(news_review_audit_events)
+            .values(
                 id=uuid4(),
                 owner_id=owner_id,
                 action="news_association_reviewed",
                 object_id=str(association_id),
                 details={
                     "decision": decision,
-                    "revision": outcome.revision,
-                    "effective": outcome.effective,
-                    "pending_topic_publication": outcome.pending_topic_publication,
+                    "revision": review["revision"],
+                    "effective": False,
+                    "pending_topic_publication": accepted_topic,
                 },
                 occurred_at=now,
             )
+            .returning(news_review_audit_events.c.id)
+        ).scalar_one()
+        return self._review_outcome(
+            review,
+            association_row["target_type"],
+            audit_id,
         )
-        return outcome
 
     @staticmethod
-    def _review_outcome(review: Mapping, target_type: str) -> NewsReviewOutcome:
+    def _review_outcome(
+        review: Mapping,
+        target_type: str,
+        audit_id: UUID,
+    ) -> NewsReviewOutcome:
         accepted_topic = review["decision"] == "accept" and target_type == "topic"
         return NewsReviewOutcome(
             association_id=review["association_id"],
             decision=review["decision"],
             revision=review["revision"],
+            audit_id=audit_id,
             effective=False,
             pending_topic_publication=accepted_topic,
             reviewed_at=review["reviewed_at"],
