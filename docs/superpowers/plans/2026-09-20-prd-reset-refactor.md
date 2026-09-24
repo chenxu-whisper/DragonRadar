@@ -464,11 +464,11 @@ ROLE_NAMES = {
 
 **文件：** 新建 `regulation/{models,tables,repository,engine}.py`、迁移 `0009_regulation.py`、`tests/test_reset_regulation.py`；修改 `cli.py`、`storage/database.py`、`publication/service.py`；新建 `docs/regulation-rules.md`。
 
-- [ ] 写失败用例：未评审规则即使数值接近阈值仍pending；warning和法定threshold独立；数据不足不能idle；撤回只停新计算，旧结果保持原版本；正式事件独立于计算输出。
-- [ ] 运行 `uv run pytest tests/test_reset_regulation.py -q` 确认失败。
-- [ ] 建规则版本、适用交易所/板块/证券状态、有效期、窗口、方向、基准、重置依据、官方原文、复核与样例；正式事件保存公告ID和有效起止。
-- [ ] 只有官方来源＋复核批准＋回归通过才允许规则启用；合成阈值仅进测试fixture。上下方向各自检查预警区间；未支持的规则保持pending，不能近似替代。
-- [ ] 运行冻结样例与数据缺失/冲突回归；记录每条规则是否可生产启用；提交 `feat: add reviewed regulation rule framework`。
+- [x] 写失败用例：未评审规则即使数值接近阈值仍pending；warning和法定threshold独立；数据不足不能idle；撤回只停新计算，旧结果保持原版本；正式事件独立于计算输出。
+- [x] 运行 `uv run pytest tests/test_reset_regulation.py -q` 确认失败。
+- [x] 建规则版本、适用交易所/板块/证券状态、有效期、窗口、方向、基准、重置依据、官方原文、复核与样例；正式事件保存公告ID和有效起止。
+- [x] 只有官方来源＋复核批准＋回归通过才允许规则启用；合成阈值仅进测试fixture。上下方向各自检查预警区间；未支持的规则保持pending，不能近似替代。
+- [x] 运行冻结样例与数据缺失/冲突回归；记录每条规则是否可生产启用；提交 `feat: add reviewed regulation rule framework`。
 
 **完成条件：** 规则可审计、可停用；市场上涨不自动等于正式监管事件。
 
