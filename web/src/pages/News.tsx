@@ -16,11 +16,9 @@ import { useResource } from '../hooks/useResource';
 import type { ResearchState } from '../state';
 
 const TYPE_LABELS: Record<Exclude<NewsType, ''>, string> = {
-  company: '公司',
-  industry: '行业',
-  regulation: '监管',
-  macro: '宏观',
-  market: '市场',
+  news: '新闻',
+  announcement: '公告',
+  research: '研报',
 };
 
 const METHOD_LABELS = {

@@ -7,7 +7,7 @@ import type {
 
 type Failure = 'malformed_response' | 'selection_mismatch' | 'article_mismatch' | null;
 const UUID = /^[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
-const TYPES: NewsType[] = ['', 'company', 'industry', 'regulation', 'macro', 'market'];
+const TYPES: NewsType[] = ['', 'news', 'announcement', 'research'];
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);

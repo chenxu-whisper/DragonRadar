@@ -7,7 +7,7 @@ describe('news runtime contract', () => {
     const path = newsListPath({
       date: '2026-09-10',
       snapshot: NEWS_SNAPSHOT,
-      type: 'company',
+      type: 'announcement',
       source: 'synthetic-wire',
       q: 'robot',
       securityId: 'TEST001',
@@ -20,7 +20,7 @@ describe('news runtime contract', () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({
       date: '2026-09-10',
       snapshot_id: NEWS_SNAPSHOT,
-      type: 'company',
+      type: 'announcement',
       source: 'synthetic-wire',
       q: 'robot',
       security_id: 'TEST001',
@@ -66,6 +66,14 @@ describe('news runtime contract', () => {
       sources: ['synthetic-wire'],
       event_count: 1,
     }), request)).toBe('selection_mismatch');
+    expect(validateNewsListResponse(newsEnvelope({
+      items: [{ ...articleA, type: 'company' }],
+      page: 1,
+      size: 20,
+      total: 1,
+      sources: ['synthetic-wire'],
+      event_count: 1,
+    }), request)).toBe('malformed_response');
   });
 
   test('rejects a detail response for another article or snapshot', async () => {

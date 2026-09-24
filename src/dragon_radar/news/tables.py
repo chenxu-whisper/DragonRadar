@@ -68,9 +68,7 @@ news_article_revisions = Table(
     UniqueConstraint("source_id", "source_article_id", "revision"),
     CheckConstraint("revision > 0"),
     CheckConstraint("available_at >= received_at"),
-    CheckConstraint(
-        "news_type IN ('company', 'industry', 'regulation', 'macro', 'market')"
-    ),
+    CheckConstraint("news_type IN ('news', 'announcement', 'research')"),
     CheckConstraint("content_scope IN ('none', 'summary', 'full')"),
     Index(
         "news_article_revisions_available",

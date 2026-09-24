@@ -55,9 +55,20 @@ class NewsService:
         return self.repository.review_for_owner(**values)
 
     @staticmethod
-    def materialize_context(context: dict) -> DomainMaterialization:
+    def materialize_context(
+        context: dict,
+        topic_context=None,
+    ) -> DomainMaterialization:
         associations_by_revision: dict = {}
         reviews = context["reviews"]
+        topic_ids = (
+            {topic.topic_id for topic in topic_context[2].topics}
+            if topic_context is not None
+            else set()
+        )
+        topic_published_at = (
+            topic_context[0]["published_at"] if topic_context is not None else None
+        )
         for association in context["associations"]:
             review = reviews.get(association["id"])
             status = (
@@ -69,17 +80,41 @@ class NewsService:
             )
             accepted_by_review = review is not None and review["decision"] == "accept"
             target_type = association["target_type"]
+            target_exists = (
+                target_type != "topic" or association["target_id"] in topic_ids
+            )
+            reviewed_topic_effective = (
+                accepted_by_review
+                and target_type == "topic"
+                and target_exists
+                and topic_published_at is not None
+                and topic_published_at > review["reviewed_at"]
+            )
+            preconfirmed = (
+                review is None
+                and association["status"] == "accepted"
+                and association["method"] in {"direct", "manual"}
+                and target_exists
+            )
+            effective = reviewed_topic_effective or preconfirmed
             projected = {
                 "association_id": str(association["id"]),
                 f"{target_type}_id": association["target_id"],
                 "method": association["method"],
                 "status": status,
                 "evidence_snippets": list(association["evidence_snippets"]),
-                "effective": (
-                    association["status"] == "accepted" and not accepted_by_review
-                ),
+                "effective": effective,
                 "pending_topic_publication": (
-                    accepted_by_review and target_type == "topic"
+                    target_type == "topic"
+                    and (
+                        accepted_by_review
+                        or (
+                            review is None
+                            and association["status"] == "accepted"
+                            and association["method"] in {"direct", "manual"}
+                        )
+                    )
+                    and not effective
                 ),
             }
             associations_by_revision.setdefault(

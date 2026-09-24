@@ -411,7 +411,10 @@ class PublicationService:
                         elif domain == "topic":
                             result = self._topic_materialization(topic_context)
                         elif domain == "news":
-                            result = NewsService.materialize_context(news_context)
+                            result = NewsService.materialize_context(
+                                news_context,
+                                topic_context=topic_context,
+                            )
                         elif domain == "role":
                             result, role_dependencies = self._role_materialization(
                                 connection,

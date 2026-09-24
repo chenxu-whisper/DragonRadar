@@ -60,21 +60,42 @@ def _ingest_base(service):
     )
 
 
-def _publish_news(database, repository, news_snapshot):
+def _publish_news(
+    database,
+    repository,
+    news_snapshot,
+    *,
+    topic_snapshot=None,
+    key_suffix="",
+    clock=None,
+):
     from dragon_radar.publication.models import PublicationCommand
     from dragon_radar.publication.service import PublicationService
 
     market = repository.publish(
-        repository.import_batch(batch(), key=f"news-market-{news_snapshot.id}").id
+        repository.import_batch(
+            batch(),
+            key=f"news-market-{news_snapshot.id}{key_suffix}",
+        ).id
     )
-    return PublicationService(database, repository, clock=lambda: NOW).publish(
+    disabled_domains = (
+        ("topic", "regulation", "role")
+        if topic_snapshot is None
+        else ("regulation", "role")
+    )
+    return PublicationService(
+        database,
+        repository,
+        clock=clock or (lambda: NOW),
+    ).publish(
         PublicationCommand(
             trade_date=DAYS[-1],
             market_snapshot_id=market.id,
+            topic_snapshot_id=topic_snapshot.id if topic_snapshot else None,
             news_input_id=news_snapshot.id,
-            disabled_domains=("topic", "regulation", "role"),
+            disabled_domains=disabled_domains,
         ),
-        key=f"news-publication-{news_snapshot.id}",
+        key=f"news-publication-{news_snapshot.id}{key_suffix}",
     )
 
 
@@ -116,6 +137,135 @@ def test_news_models_enforce_availability_content_and_deterministic_event_eviden
         event_evidence(kind="content_digest", value="a" * 64).kind == "content_digest"
     )
     assert event_evidence(kind="manual_confirmation").kind == "manual_confirmation"
+
+
+def test_news_models_freeze_prd_article_types():
+    from dragon_radar.news.models import NewsArticleRevision
+
+    for news_type in ("news", "announcement", "research"):
+        assert article_revision(news_type=news_type).news_type == news_type
+    for legacy_type in ("company", "industry", "regulation", "macro", "market"):
+        with pytest.raises(ValidationError):
+            NewsArticleRevision.model_validate(
+                article_revision().model_dump() | {"news_type": legacy_type}
+            )
+
+
+def _materialization_context(*associations, reviews=None):
+    revision = article_revision()
+    return {
+        "root": {"as_of": NOW + timedelta(hours=2)},
+        "rows": [
+            revision.model_dump()
+            | {
+                "article_revision_id": revision.id,
+                "event_id": uuid4(),
+            }
+        ],
+        "associations": [item.model_dump() for item in associations],
+        "reviews": reviews or {},
+    }
+
+
+def test_ai_imported_accepted_association_is_not_self_effective():
+    from dragon_radar.news.service import NewsService
+
+    direct = association(method="direct", status="accepted")
+    manual = association(id=uuid4(), method="manual", status="accepted")
+    ai = association(id=uuid4(), method="ai", status="accepted")
+    projected = NewsService.materialize_context(
+        _materialization_context(direct, manual, ai)
+    ).payload["articles"][0]["securities"]
+
+    assert {item["method"]: item["effective"] for item in projected} == {
+        "direct": True,
+        "manual": True,
+        "ai": False,
+    }
+    assert all(item["status"] == "accepted" for item in projected)
+    assert all(item["pending_topic_publication"] is False for item in projected)
+
+
+def test_reviewed_topic_stays_pending_for_snapshot_not_formed_after_review():
+    from topic_factories import topic_batch
+
+    from dragon_radar.news.service import NewsService
+
+    reviewed_at = NOW
+    reviewed = association(
+        id=ASSOCIATION_TOPIC,
+        target_type="topic",
+        target_id="topic-a",
+        method="ai",
+        status="unreviewed",
+    )
+    context = _materialization_context(
+        reviewed,
+        reviews={
+            ASSOCIATION_TOPIC: {
+                "decision": "accept",
+                "reviewed_at": reviewed_at,
+            }
+        },
+    )
+
+    projected = NewsService.materialize_context(
+        context,
+        topic_context=(
+            {"id": uuid4(), "published_at": reviewed_at},
+            {},
+            topic_batch(),
+        ),
+    ).payload["articles"][0]["topics"][0]
+
+    assert projected["effective"] is False
+    assert projected["pending_topic_publication"] is True
+
+
+def test_reviewed_topic_activates_only_in_new_snapshot_containing_target():
+    from topic_factories import topic_batch
+
+    from dragon_radar.news.service import NewsService
+
+    reviewed_at = NOW
+    reviewed = association(
+        id=ASSOCIATION_TOPIC,
+        target_type="topic",
+        target_id="topic-a",
+        method="ai",
+        status="unreviewed",
+    )
+    context = _materialization_context(
+        reviewed,
+        reviews={
+            ASSOCIATION_TOPIC: {
+                "decision": "accept",
+                "reviewed_at": reviewed_at,
+            }
+        },
+    )
+    new_snapshot = {
+        "id": uuid4(),
+        "published_at": reviewed_at + timedelta(microseconds=1),
+    }
+
+    effective = NewsService.materialize_context(
+        context,
+        topic_context=(new_snapshot, {}, topic_batch()),
+    ).payload["articles"][0]["topics"][0]
+    missing_target = NewsService.materialize_context(
+        context,
+        topic_context=(
+            new_snapshot,
+            {},
+            topic_batch().model_copy(update={"topics": (), "memberships": ()}),
+        ),
+    ).payload["articles"][0]["topics"][0]
+
+    assert effective["effective"] is True
+    assert effective["pending_topic_publication"] is False
+    assert missing_target["effective"] is False
+    assert missing_target["pending_topic_publication"] is True
 
 
 def test_snapshot_cutoff_uses_available_at_and_pins_exact_revision(
@@ -358,6 +508,82 @@ def test_publication_materializes_news_without_override_and_records_lineage(
     }
 
 
+def test_publication_activates_reviewed_topic_only_with_post_review_snapshot(
+    database, repository
+):
+    from topic_factories import topic_batch
+
+    from dragon_radar.news.service import NewsService
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.topics.repository import TopicRepository
+
+    old_topics = TopicRepository(database, clock=lambda: NOW)
+    old_snapshot = old_topics.publish(
+        old_topics.import_batch(topic_batch(), key="news-topic-old").id
+    )
+    reviewed_at = NOW + timedelta(minutes=1)
+    service = NewsService(
+        database,
+        repository,
+        clock=lambda: reviewed_at,
+    )
+    _ingest_base(service)
+    service.review_for_owner(
+        owner_id=_owner_id(database),
+        article_id=ARTICLE_A,
+        association_id=ASSOCIATION_TOPIC,
+        decision="accept",
+        expected_revision=0,
+        key="activate-reviewed-topic",
+    )
+    news_snapshot = service.create_snapshot(
+        as_of=reviewed_at,
+        key="news-reviewed-topic-snapshot",
+    )
+    old_publication = _publish_news(
+        database,
+        repository,
+        news_snapshot,
+        topic_snapshot=old_snapshot,
+        key_suffix="-old-topic",
+        clock=lambda: reviewed_at + timedelta(minutes=1),
+    )
+
+    new_time = reviewed_at + timedelta(minutes=2)
+    new_topics = TopicRepository(database, clock=lambda: new_time)
+    new_snapshot = new_topics.publish(
+        new_topics.import_batch(
+            topic_batch(source_version="s2", membership_version="m2"),
+            key="news-topic-new",
+        ).id
+    )
+    new_publication = _publish_news(
+        database,
+        repository,
+        news_snapshot,
+        topic_snapshot=new_snapshot,
+        key_suffix="-new-topic",
+        clock=lambda: new_time,
+    )
+    publications = PublicationRepository(database, repository, clock=lambda: new_time)
+
+    old_association = (
+        publications.get_snapshot(old_publication.id)
+        .result("news")
+        .payload["articles"][0]["topics"][0]
+    )
+    new_association = (
+        publications.get_snapshot(new_publication.id)
+        .result("news")
+        .payload["articles"][0]["topics"][0]
+    )
+
+    assert old_association["effective"] is False
+    assert old_association["pending_topic_publication"] is True
+    assert new_association["effective"] is True
+    assert new_association["pending_topic_publication"] is False
+
+
 def test_publication_read_revalidates_news_lineage_and_withdrawal(database, repository):
     from dragon_radar.publication.repository import PublicationRepository
     from dragon_radar.publication.retention import RetentionService
@@ -401,6 +627,15 @@ def test_migration_adds_news_tables_fk_guards_and_readiness(database):
         and fk["constrained_columns"] == ["news_input_id"]
         for fk in inspector.get_foreign_keys("publications")
     )
+    article_type_checks = " ".join(
+        constraint["sqltext"]
+        for constraint in inspector.get_check_constraints("news_article_revisions")
+        if "news_type" in constraint["sqltext"]
+    )
+    assert "'news'" in article_type_checks
+    assert "'announcement'" in article_type_checks
+    assert "'research'" in article_type_checks
+    assert "'company'" not in article_type_checks
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
@@ -414,7 +649,7 @@ def published_news(database, repository):
     _ingest_base(service)
     service.ingest_article(
         second_article(
-            news_type="industry",
+            news_type="research",
             content_scope="none",
             summary=None,
             content=None,
@@ -453,22 +688,27 @@ async def test_public_get_requires_date_filters_pages_and_reads_only_publication
             "/api/news",
             params={
                 **common,
-                "type": "company",
+                "type": "announcement",
                 "source": "synthetic",
                 "q": "announcement",
                 "security_id": "A",
                 "page": 1,
-                "size": 20,
+                "size": 1,
             },
+        )
+        legacy_type = await client.get(
+            "/api/news",
+            params={**common, "type": "company"},
         )
         detail = await client.get(f"/api/news/{ARTICLE_A}", params=common)
 
     assert missing_date.status_code == 400
+    assert legacy_type.status_code == 400
     assert listed.status_code == 200
     assert listed.json()["data"] == {
         "items": [detail.json()["data"]],
         "page": 1,
-        "size": 20,
+        "size": 1,
         "total": 1,
         "sources": ["synthetic"],
         "event_count": 1,

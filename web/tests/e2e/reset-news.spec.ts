@@ -24,8 +24,8 @@ test('renders fixed-snapshot list, detail, source/type/query filters and pager',
   await expect(list.getByRole('button', { name: /行业跟踪/ })).toBeVisible();
   await expect(page.getByText('2 篇文章 · 1 个事件', { exact: true })).toBeVisible();
 
-  await page.getByLabel('消息类型').selectOption('company');
-  await expect(page).toHaveURL(/news_type=company/);
+  await page.getByLabel('消息类型').selectOption('announcement');
+  await expect(page).toHaveURL(/news_type=announcement/);
   await expect(list.getByRole('button', { name: /行业跟踪/ })).toHaveCount(0);
   await page.getByLabel('消息来源').selectOption('synthetic-wire');
   await expect(page).toHaveURL(/news_source=synthetic-wire/);
@@ -45,7 +45,7 @@ test('renders fixed-snapshot list, detail, source/type/query filters and pager',
   const latest = requests.at(-1)!;
   expect(latest.searchParams.get('snapshot_id')).toBe(NEWS_SNAPSHOT);
   expect(latest.searchParams.get('date')).toBe('2026-09-10');
-  expect(latest.searchParams.get('type')).toBe('company');
+  expect(latest.searchParams.get('type')).toBe('announcement');
   expect(latest.searchParams.get('source')).toBe('synthetic-wire');
   expect(latest.searchParams.get('q')).toBe('机器人');
   expect(latest.searchParams.get('page')).toBe('1');
@@ -65,7 +65,7 @@ test('unlicensed article still shows title and source link with explicit limitat
 
 test('article security uses the single shared drawer and returns with news state intact', async ({ page }) => {
   await mockNews(page);
-  await page.goto(`${newsUrl}&article=${ARTICLE_A}&news_type=company&news_source=synthetic-wire&q=robot&page=2`);
+  await page.goto(`${newsUrl}&article=${ARTICLE_A}&news_type=announcement&news_source=synthetic-wire&q=robot&page=2`);
 
   await page.getByRole('region', { name: '消息详情' })
     .getByRole('button', { name: '合成测试证券1' }).click();
@@ -78,7 +78,7 @@ test('article security uses the single shared drawer and returns with news state
   await page.getByRole('link', { name: '返回研究列表' }).click();
   await expect(page).toHaveURL(/view=news/);
   await expect(page).toHaveURL(new RegExp(`article=${ARTICLE_A}`));
-  await expect(page).toHaveURL(/news_type=company/);
+  await expect(page).toHaveURL(/news_type=announcement/);
   await expect(page).toHaveURL(/news_source=synthetic-wire/);
   await expect(page).toHaveURL(/q=robot/);
   await expect(page).toHaveURL(/page=2/);
@@ -86,7 +86,7 @@ test('article security uses the single shared drawer and returns with news state
 
 test('security detail links back to associated news without losing snapshot context', async ({ page }) => {
   await mockNews(page);
-  await page.goto(`/?view=stock&snapshot=${NEWS_SNAPSHOT}&date=2026-09-10&security=TEST001&return_view=news&article=${ARTICLE_A}&news_type=company`);
+  await page.goto(`/?view=stock&snapshot=${NEWS_SNAPSHOT}&date=2026-09-10&security=TEST001&return_view=news&article=${ARTICLE_A}&news_type=announcement`);
 
   const related = page.getByRole('region', { name: '关联消息' });
   await expect(related.getByRole('link', { name: '机器人公司签署合成测试订单' })).toBeVisible();
@@ -94,7 +94,7 @@ test('security detail links back to associated news without losing snapshot cont
   await expect(page).toHaveURL(/view=news/);
   await expect(page).toHaveURL(new RegExp(`article=${ARTICLE_A}`));
   await expect(page).toHaveURL(new RegExp(`snapshot=${NEWS_SNAPSHOT}`));
-  await expect(page).toHaveURL(/news_type=company/);
+  await expect(page).toHaveURL(/news_type=announcement/);
 });
 
 test('malformed or mismatched responses clear stale article data', async ({ page }) => {

@@ -15,7 +15,7 @@ from dragon_radar.domain.models import (
     UTCDateTime,
 )
 
-NewsType = Literal["company", "industry", "regulation", "macro", "market"]
+NewsType = Literal["news", "announcement", "research"]
 ContentScope = Literal["none", "summary", "full"]
 AssociationMethod = Literal["direct", "manual", "ai"]
 AssociationStatus = Literal["accepted", "unreviewed", "rejected"]

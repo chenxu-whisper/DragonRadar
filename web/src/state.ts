@@ -3,7 +3,7 @@ import { ROLE_NAMES, type RoleName } from './features/roles/types';
 export type View = 'overview' | 'analysis' | 'stock' | 'review' | 'news' | 'leaders' | 'regulation';
 export type Sort = 'security_id' | 'name' | 'close' | 'change' | 'amount' | 'interval_return' | 'excess_return' | 'maximum_drawdown' | 'amount_change';
 export type Adjustment = 'raw' | 'qfq' | 'hfq';
-export type NewsType = '' | 'company' | 'industry' | 'regulation' | 'macro' | 'market';
+export type NewsType = '' | 'news' | 'announcement' | 'research';
 export interface ResearchState {
   view: View; snapshot: string; date: string; q: string; sort: Sort;
   order: 'asc' | 'desc'; page: number; page_size: number; n: number;
@@ -83,7 +83,7 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   let article = p.get('article') || '';
   let newsInvalid = false;
   if (article && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(article)) newsInvalid = true;
-  let news_type = choice<NewsType>('news_type', ['', 'company', 'industry', 'regulation', 'macro', 'market'], '');
+  let news_type = choice<NewsType>('news_type', ['', 'news', 'announcement', 'research'], '');
   if (p.has('news_type') && !news_type) newsInvalid = true;
   let news_source = p.get('news_source') || '';
   if (news_source.length > 200 || news_source === '.' || news_source === '..') newsInvalid = true;

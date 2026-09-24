@@ -1,6 +1,6 @@
 import type { WorkbenchEnvelope } from '../../types';
 
-export type NewsType = '' | 'company' | 'industry' | 'regulation' | 'macro' | 'market';
+export type NewsType = '' | 'news' | 'announcement' | 'research';
 export type NewsContentScope = 'none' | 'summary' | 'full';
 export type NewsAssociationMethod = 'direct' | 'manual' | 'ai';
 export type NewsAssociationStatus = 'accepted' | 'unreviewed' | 'rejected';

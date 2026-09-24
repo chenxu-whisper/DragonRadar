@@ -37,7 +37,7 @@ from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
 router = APIRouter()
-_NEWS_TYPES = frozenset({"company", "industry", "regulation", "macro", "market"})
+_NEWS_TYPES = frozenset({"news", "announcement", "research"})
 
 
 def _repository(request: Request):
@@ -215,8 +215,6 @@ def list_news(request: Request):
         raise ValueError("Invalid news filter")
     page = query_integer(query.get("page", "1"), 1, 100000)
     size = query_integer(query.get("size", "20"), 1, 100)
-    if size not in {20, 50, 100}:
-        raise ValueError("Invalid news page size")
     snapshot = _selected_snapshot(request, trade_date, snapshot_id)
     if snapshot is None:
         return DecimalJSONResponse(empty_envelope(trade_date))
