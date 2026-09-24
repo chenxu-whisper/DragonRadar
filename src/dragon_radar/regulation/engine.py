@@ -3,14 +3,13 @@
 from decimal import Decimal
 
 from dragon_radar.regulation.models import (
+    SUPPORTED_CALCULATION_METHODS,
     RegulationCalculation,
     RegulationObservation,
     RegulationRule,
     production_gate_reasons,
     rule_is_effective,
 )
-
-SUPPORTED_CALCULATION_METHODS = frozenset({"relative_return"})
 
 
 def _value_state(rule: RegulationRule, value: Decimal) -> str:
@@ -27,7 +26,10 @@ def _value_state(rule: RegulationRule, value: Decimal) -> str:
     return "idle"
 
 
-def _applicable(rule: RegulationRule, observation: RegulationObservation) -> bool:
+def rule_is_applicable(
+    rule: RegulationRule,
+    observation: RegulationObservation,
+) -> bool:
     return (
         rule_is_effective(rule, observation.trade_date)
         and (
@@ -63,7 +65,12 @@ def evaluate_rule(
         reasons.append("unsupported_calculation_method")
     if rule.benchmark_index is None:
         reasons.append("benchmark_missing")
-    if not _applicable(rule, observation):
+    if (
+        observation.rule_id != rule.rule_id
+        or observation.rule_version != rule.rule_version
+    ):
+        reasons.append("rule_input_mismatch")
+    if not rule_is_applicable(rule, observation):
         reasons.append("rule_not_applicable")
     if observation.input_state != "complete":
         reasons.append(f"input_{observation.input_state}")

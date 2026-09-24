@@ -59,7 +59,10 @@ dragon-radar regulation-materialize OBSERVATIONS.json \
   --market-snapshot UUID --key KEY
 ```
 
-`OBSERVATIONS.json` is an array of `RegulationObservation` objects. Publication
-then binds the resulting regulation snapshot through
+`OBSERVATIONS.json` is an array of `RegulationObservation` objects. Every
+observation includes `rule_id` and `rule_version`; values are never reused
+between rule versions. Omitted observations are materialized as
+`pending/input_missing` for every applicable rule across the market snapshot's
+full expected security pool. Publication then binds the resulting snapshot through
 `PublicationCommand.regulation_input_id`; `PublicationService` materializes the
 stable completeness, rule, calculation, and event payload.

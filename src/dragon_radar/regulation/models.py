@@ -26,6 +26,7 @@ EventType = Literal[
     "restriction",
 ]
 RuleLifecycleStatus = Literal["active", "withdrawn"]
+SUPPORTED_CALCULATION_METHODS = frozenset({"relative_return"})
 
 
 def _https_url(value: str | None) -> str | None:
@@ -126,6 +127,8 @@ class RegulationRuleStatus(FrozenModel):
 
 
 class RegulationObservation(FrozenModel):
+    rule_id: Annotated[StrictStr, Field(min_length=1, max_length=30)]
+    rule_version: Annotated[StrictStr, Field(min_length=1, max_length=20)]
     security_id: Identifier
     trade_date: date
     exchange: Identifier
@@ -223,4 +226,6 @@ def production_gate_reasons(rule: RegulationRule) -> tuple[str, ...]:
         reasons.append("regression_cases_missing")
     if not rule.regression_passed:
         reasons.append("regression_not_passed")
+    if rule.calculation_method not in SUPPORTED_CALCULATION_METHODS:
+        reasons.append("unsupported_calculation_method")
     return tuple(reasons)

@@ -133,6 +133,7 @@ regulation_snapshots = Table(
     ),
     Column("trade_date", Date, nullable=False),
     Column("as_of", DateTime(timezone=True), nullable=False),
+    Column("status_sequence_watermark", BigInteger, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Index("regulation_snapshots_market", "market_snapshot_id"),
 )
@@ -165,6 +166,12 @@ regulation_snapshot_inputs = Table(
         "snapshot_id",
         PGUUID(as_uuid=True),
         ForeignKey("regulation_snapshots.id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column(
+        "rule_record_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("regulation_rules.id", ondelete="RESTRICT"),
         primary_key=True,
     ),
     Column("security_id", String(100), primary_key=True),
@@ -201,9 +208,10 @@ regulation_calculations = Table(
     Column("reasons", JSONB, nullable=False),
     UniqueConstraint("snapshot_id", "rule_record_id", "security_id"),
     ForeignKeyConstraint(
-        ["snapshot_id", "security_id"],
+        ["snapshot_id", "rule_record_id", "security_id"],
         [
             "regulation_snapshot_inputs.snapshot_id",
+            "regulation_snapshot_inputs.rule_record_id",
             "regulation_snapshot_inputs.security_id",
         ],
         ondelete="RESTRICT",

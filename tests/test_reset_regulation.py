@@ -1,10 +1,14 @@
 """Reviewed regulation rules, calculations, events, and publication lineage."""
 
+from contextlib import nullcontext
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
-from factories import DAYS, NOW, batch
+from factories import DAYS, NOW, bar, batch, state
 from pydantic import ValidationError
 
 
@@ -68,6 +72,8 @@ def _observation(**changes):
     from dragon_radar.regulation.models import RegulationObservation
 
     values = {
+        "rule_id": "synthetic-upper",
+        "rule_version": "test-v1",
         "security_id": "A",
         "trade_date": DAYS[-1],
         "exchange": "TEST",
@@ -164,7 +170,10 @@ def test_lower_warning_and_legal_threshold_are_independent(computed, state):
     assert (
         evaluate_rule(
             lower,
-            _observation(computed_value=Decimal(computed)),
+            _observation(
+                rule_id=lower.rule_id,
+                computed_value=Decimal(computed),
+            ),
         ).state
         == state
     )
@@ -196,6 +205,18 @@ def test_missing_conflicting_or_inapplicable_input_never_becomes_idle(changes, r
 
     assert result.state == "pending"
     assert reason in result.reasons
+
+
+def test_rule_evaluation_rejects_an_observation_bound_to_another_rule():
+    from dragon_radar.regulation.engine import evaluate_rule
+
+    result = evaluate_rule(
+        _rule(),
+        _observation(rule_version="another-version"),
+    )
+
+    assert result.state == "pending"
+    assert "rule_input_mismatch" in result.reasons
 
 
 def test_unsupported_inactive_or_incompletely_released_rule_stays_pending():
@@ -307,6 +328,149 @@ def test_cli_exposes_only_controlled_regulation_write_commands_without_database(
     assert "regulation-materialize" in help_text
 
 
+def test_observation_identity_requires_rule_id_and_version():
+    from dragon_radar.regulation.models import RegulationObservation
+
+    values = _observation().model_dump()
+    values.pop("rule_version")
+
+    with pytest.raises(ValidationError):
+        RegulationObservation(**values)
+
+
+def test_duplicate_or_conflicting_security_rule_inputs_are_rejected_before_storage():
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    repository = RegulationRepository(object(), object())
+    duplicate = _observation()
+    conflict = _observation(computed_value=Decimal("0.69"))
+
+    with pytest.raises(ValueError, match="unique security and rule identities"):
+        repository.materialize(
+            market_snapshot_id=uuid4(),
+            observations=(duplicate, duplicate),
+            key="duplicate-rule-input",
+        )
+    with pytest.raises(ValueError, match="unique security and rule identities"):
+        repository.materialize(
+            market_snapshot_id=uuid4(),
+            observations=(duplicate, conflict),
+            key="conflicting-rule-input",
+        )
+
+
+def test_materialized_production_gate_includes_method_and_snapshot_binding():
+    from dragon_radar.regulation.models import RegulationSnapshot
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    snapshot = RegulationSnapshot(
+        id=uuid4(),
+        market_snapshot_id=uuid4(),
+        trade_date=DAYS[-1],
+        as_of=NOW,
+        created_at=NOW,
+    )
+    context = {
+        "snapshot": snapshot,
+        "calculations": (),
+        "events": (),
+        "inputs": (),
+        "expected_security_ids": ("A",),
+        "rule_bindings": (
+            {"active": True},
+            {"active": False},
+        ),
+        "rules": (
+            _rule(
+                rule_id="unsupported-rule",
+                calculation_method="not-supported",
+            ),
+            _rule(rule_id="inactive-binding-rule"),
+        ),
+    }
+
+    payload = RegulationRepository.materialize_context(context).payload
+    unsupported, inactive = payload["rules"]
+
+    assert unsupported["production_enabled"] is False
+    assert unsupported["production_gate_reasons"] == ("unsupported_calculation_method",)
+    assert inactive["production_enabled"] is False
+    assert inactive["production_gate_reasons"] == ("snapshot_binding_inactive",)
+
+
+def test_regulation_sql_guards_cannot_treat_null_eligibility_as_allowed():
+    migration = Path(
+        "src/dragon_radar/migrations/versions/0009_regulation.py"
+    ).read_text(encoding="utf-8")
+
+    assert "RETURN COALESCE(" in migration
+    assert "regulation_rule_is_production_eligible(NEW) IS NOT TRUE" in migration
+    assert "regulation_rule_is_production_eligible(rule_row) IS NOT TRUE" in migration
+    assert "rule_row.calculation_method IN ('relative_return')" in migration
+
+
+def test_regulation_record_clocks_are_read_only_after_advisory_locks(monkeypatch):
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    class Engine:
+        def begin(self):
+            return nullcontext(object())
+
+    class Market:
+        lock_count = 0
+
+        def _lock(self, _connection, _key):
+            self.lock_count += 1
+
+    market = Market()
+
+    def clock():
+        assert market.lock_count == 2
+        return NOW
+
+    regulations = RegulationRepository(
+        SimpleNamespace(engine=Engine()),
+        market,
+        clock=clock,
+    )
+
+    def stop_after_lock(_connection, _key, _payload_hash):
+        raise RuntimeError("stop after lock")
+
+    monkeypatch.setattr(regulations, "_existing_command", stop_after_lock)
+    operations = (
+        lambda: regulations.register_rule(_rule(), key="clock-rule"),
+        lambda: regulations.withdraw_rule(
+            "synthetic-upper",
+            "test-v1",
+            reason="clock_withdrawal",
+            key="clock-status",
+        ),
+        lambda: regulations.append_event(_event(), key="clock-event"),
+        lambda: regulations.materialize(
+            market_snapshot_id=uuid4(),
+            observations=(_observation(),),
+            key="clock-snapshot",
+        ),
+    )
+
+    for operation in operations:
+        market.lock_count = 0
+        with pytest.raises(RuntimeError, match="stop after lock"):
+            operation()
+
+
+def test_regulation_snapshot_schema_has_status_sequence_watermark():
+    from sqlalchemy import BigInteger
+
+    from dragon_radar.regulation.tables import regulation_snapshots
+
+    watermark = regulation_snapshots.c.status_sequence_watermark
+
+    assert isinstance(watermark.type, BigInteger)
+    assert watermark.nullable is False
+
+
 def test_repository_withdrawal_stops_new_calculation_but_keeps_old_snapshot(
     database, repository
 ):
@@ -341,6 +505,129 @@ def test_repository_withdrawal_stops_new_calculation_but_keeps_old_snapshot(
     assert len(regulations.snapshot_context(second.id)["inputs"]) == 1
     assert len(regulations.snapshot_context(first.id)["events"]) == 1
     assert len(regulations.snapshot_context(second.id)["events"]) == 1
+
+
+def test_materialization_fills_missing_expected_security_for_each_applicable_rule(
+    database, repository
+):
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    market_batch = batch(
+        expected_security_ids=("A", "B"),
+        security_states=(state("A"), state("B")),
+        bars=tuple(
+            bar(security_id=security_id, trade_date=day)
+            for security_id in ("A", "B")
+            for day in DAYS
+        ),
+    )
+    market = repository.publish(
+        repository.import_batch(
+            market_batch,
+            key="regulation-completeness-market",
+        ).id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="regulation-completeness-rule")
+
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        key="regulation-completeness-snapshot",
+    )
+    context = regulations.snapshot_context(snapshot.id)
+    payload = regulations.materialize_context(context)
+    calculations = {
+        calculation.security_id: calculation for calculation in context["calculations"]
+    }
+
+    assert calculations["B"].state == "pending"
+    assert calculations["B"].reasons == ("input_missing",)
+    assert payload.coverage == {
+        "expected": 2,
+        "valid": 1,
+        "legal_excluded": 0,
+        "missing": 1,
+    }
+
+
+def test_each_rule_version_consumes_only_its_own_observation(database, repository):
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="regulation-independent-values-market",
+        ).id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="regulation-independent-values-v1")
+    regulations.register_rule(
+        _rule(rule_version="test-v2", window_days=20),
+        key="regulation-independent-values-v2",
+    )
+
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(
+            _observation(computed_value=Decimal("0.68")),
+            _observation(
+                rule_version="test-v2",
+                computed_value=Decimal("0.90"),
+            ),
+        ),
+        key="regulation-independent-values-snapshot",
+    )
+    calculations = {
+        item.rule_version: item
+        for item in regulations.snapshot_context(snapshot.id)["calculations"]
+    }
+
+    assert calculations["test-v1"].computed_value == Decimal("0.68")
+    assert calculations["test-v1"].state == "approaching_alert"
+    assert calculations["test-v2"].computed_value == Decimal("0.90")
+    assert calculations["test-v2"].state == "triggered"
+
+
+def test_status_sequence_watermark_wins_over_inverted_recorded_times(
+    database, repository
+):
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="regulation-status-watermark-market",
+        ).id
+    )
+    times = iter(
+        (
+            NOW - timedelta(hours=1),
+            NOW + timedelta(hours=1),
+            NOW + timedelta(hours=2),
+        )
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: next(times))
+    regulations.register_rule(
+        _rule(active=False),
+        key="regulation-status-watermark-rule",
+    )
+    regulations.activate_rule(
+        "synthetic-upper",
+        "test-v1",
+        key="regulation-status-watermark-activation",
+    )
+
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        key="regulation-status-watermark-snapshot",
+    )
+    context = regulations.snapshot_context(snapshot.id)
+
+    assert context["root"]["status_sequence_watermark"] == 1
+    assert context["rule_bindings"][0]["active"] is True
+    assert context["calculations"][0].state == "approaching_alert"
 
 
 def test_pending_rule_is_materialized_but_cannot_be_activated(database, repository):
@@ -420,7 +707,7 @@ def test_publication_automatically_materializes_stable_regulation_payload(
     assert result.payload["schema"] == "dragon-radar.regulation"
     assert result.payload["completeness"]["expected"] == 1
     assert result.payload["calculations"][0]["state"] == "approaching_alert"
-    assert result.payload["events"] == [
+    assert result.payload["events"] == (
         {
             "event_id": "event-001",
             "rule_id": "synthetic-upper",
@@ -431,12 +718,12 @@ def test_publication_automatically_materializes_stable_regulation_payload(
             "announcement_url": "https://exchange.example.test/notices/001",
             "effective_from": DAYS[-1].isoformat(),
             "effective_to": None,
-        }
-    ]
+        },
+    )
 
 
 def test_regulation_tables_are_append_only_and_migration_is_ready(database):
-    from sqlalchemy import inspect, text, update
+    from sqlalchemy import insert, inspect, text, update
     from sqlalchemy.exc import DBAPIError
 
     from dragon_radar.regulation.repository import RegulationRepository
@@ -471,6 +758,12 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
             .where(regulation_rules.c.rule_id == "synthetic-upper")
             .values(window_days=99)
         )
+    incomplete = _rule(official_source_url=None, active=False).model_dump(mode="json")
+    incomplete["id"] = uuid4()
+    incomplete["active"] = True
+    incomplete["created_at"] = NOW
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(regulation_rules).values(**incomplete))
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))

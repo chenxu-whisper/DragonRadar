@@ -224,7 +224,8 @@ def upgrade():
         )
         RETURNS boolean AS $$
         BEGIN
-            RETURN rule_row.review_switch = 'approved'
+            RETURN COALESCE(
+               rule_row.review_switch = 'approved'
                AND rule_row.official_source_url ~ '^https://[^/@]+'
                AND rule_row.official_source_url !~ '^https://[^/]*@'
                AND rule_row.review_record IS NOT NULL
@@ -241,6 +242,7 @@ def upgrade():
                    >= (rule_row.review_record ->> 'reviewed_at')::timestamptz
                AND jsonb_array_length(rule_row.test_cases) > 0
                AND rule_row.regression_passed
+               AND rule_row.calculation_method IN ('relative_return')
                AND NOT EXISTS (
                    SELECT 1
                      FROM jsonb_array_elements(rule_row.test_cases) test_case
@@ -269,14 +271,18 @@ def upgrade():
                               THEN 'approaching_alert'
                               ELSE 'idle'
                           END
-               );
+               ),
+               FALSE
+            );
         END;
         $$ LANGUAGE plpgsql IMMUTABLE;
 
         CREATE FUNCTION guard_regulation_rule_initial_activation()
         RETURNS trigger AS $$
         BEGIN
-            IF NEW.active AND NOT regulation_rule_is_production_eligible(NEW) THEN
+            IF NEW.active
+               AND regulation_rule_is_production_eligible(NEW) IS NOT TRUE
+            THEN
                 RAISE EXCEPTION 'regulation rule is not production eligible';
             END IF;
             RETURN NEW;
@@ -297,7 +303,7 @@ def upgrade():
             SELECT * INTO STRICT rule_row
               FROM regulation_rules
              WHERE id = NEW.rule_record_id;
-            IF NOT regulation_rule_is_production_eligible(rule_row) THEN
+            IF regulation_rule_is_production_eligible(rule_row) IS NOT TRUE THEN
                 RAISE EXCEPTION 'regulation rule is not production eligible';
             END IF;
             RETURN NEW;
@@ -312,12 +318,12 @@ def upgrade():
         CREATE FUNCTION guard_regulation_snapshot_rule() RETURNS trigger AS $$
         DECLARE
             snapshot_as_of timestamptz;
-            snapshot_created_at timestamptz;
+            status_watermark bigint;
             initial_active boolean;
             latest_status text;
         BEGIN
-            SELECT as_of, created_at
-              INTO STRICT snapshot_as_of, snapshot_created_at
+            SELECT as_of, status_sequence_watermark
+              INTO STRICT snapshot_as_of, status_watermark
               FROM regulation_snapshots
              WHERE id = NEW.snapshot_id;
             SELECT active INTO STRICT initial_active
@@ -327,23 +333,10 @@ def upgrade():
             SELECT status INTO latest_status
               FROM regulation_rule_statuses
              WHERE rule_record_id = NEW.rule_record_id
-               AND recorded_at <= snapshot_as_of
+               AND sequence <= status_watermark
              ORDER BY sequence DESC
              LIMIT 1;
-            IF EXISTS (
-                   SELECT 1
-                     FROM regulation_rule_statuses status
-                    WHERE status.rule_record_id = NEW.rule_record_id
-                      AND status.recorded_at <= snapshot_created_at
-                      AND status.status = 'withdrawn'
-                      AND NOT EXISTS (
-                          SELECT 1
-                            FROM regulation_rule_statuses later
-                           WHERE later.rule_record_id = status.rule_record_id
-                             AND later.recorded_at <= snapshot_created_at
-                             AND later.sequence > status.sequence
-                      )
-               )
+            IF latest_status = 'withdrawn'
                OR NEW.active IS DISTINCT FROM
                   COALESCE(latest_status = 'active', initial_active)
             THEN
