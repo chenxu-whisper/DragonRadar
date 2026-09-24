@@ -449,12 +449,12 @@ ROLE_NAMES = {
 
 **文件：** 新建 `news/{models,tables,repository,service}.py`、迁移 `0008_news.py`、`http/routes/news.py`、`tests/test_reset_news.py`、`web/tests/e2e/reset-news.spec.ts`；修改 `pages/News.tsx`、`pages/SecurityDetail.tsx`、`publication/service.py`、`http/app.py`、`storage/database.py`。
 
-- [ ] 写失败用例：published早但received晚于历史截止的文章不可进入历史分析；同一文章修订保留旧文；同事件多文章不被当成多个独立事件；未经审核建议不能改变正式题材池。
-- [ ] 运行 `uv run pytest tests/test_reset_news.py -q` 确认失败。
-- [ ] 建文章与事件标识、版本、URL、许可正文/摘要、published_at/received_at/available_at、片段位置；去重优先源ID/规范URL/内容摘要，不用相似标题自动确认同事件。
-- [ ] 注册接口09～10；实现列表/详情/来源类型筛选/分页；关联分直接证据、人工判断、AI建议，确认与驳回追加审计。
-- [ ] 人工关联写入采用owner专属 `POST /api/news/{article_id}/associations/review`，body包含关联ID、accept/reject、expected_revision和idempotency_key；发布新的题材版本后才生效。公开应用不装配此路由。消息与证券抽屉互相跳转保持快照。
-- [ ] 跑消息pytest、浏览器E2E、构建；提交 `feat: add traceable news and topic associations`。
+- [x] 写失败用例：published早但received晚于历史截止的文章不可进入历史分析；同一文章修订保留旧文；同事件多文章不被当成多个独立事件；未经审核建议不能改变正式题材池。
+- [x] 运行 `uv run pytest tests/test_reset_news.py -q` 确认失败。
+- [x] 建文章与事件标识、版本、URL、许可正文/摘要、published_at/received_at/available_at、片段位置；去重优先源ID/规范URL/内容摘要，不用相似标题自动确认同事件。
+- [x] 注册接口09～10；实现列表/详情/来源类型筛选/分页；关联分直接证据、人工判断、AI建议，确认与驳回追加审计。
+- [x] 人工关联写入采用owner专属 `POST /api/news/{article_id}/associations/review`，body包含关联ID、accept/reject、expected_revision和idempotency_key；发布新的题材版本后才生效。公开应用不装配此路由。消息与证券抽屉互相跳转保持快照。
+- [x] 跑消息pytest、浏览器E2E、构建；提交 `feat: add traceable news and topic associations`。
 
 **完成条件：** 没有正文时可看标题和链接，但不能显示“已完成全文解读”。
 
