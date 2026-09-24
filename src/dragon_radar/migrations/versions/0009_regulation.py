@@ -219,6 +219,192 @@ def upgrade():
         _immutable(table.name)
 
     op.execute("""
+        CREATE FUNCTION regulation_identifier_is_valid(value text)
+        RETURNS boolean AS $$
+            SELECT value IS NOT NULL
+               AND length(value) > 0
+               AND value ~ '[^[:space:]]';
+        $$ LANGUAGE sql IMMUTABLE;
+
+        CREATE FUNCTION regulation_https_url_is_valid(value text)
+        RETURNS boolean AS $$
+            SELECT value IS NOT NULL
+               AND value ~* '^https://[^/?#@]+($|[/?#])';
+        $$ LANGUAGE sql IMMUTABLE;
+
+        CREATE FUNCTION guard_regulation_rule_structure()
+        RETURNS trigger AS $$
+        DECLARE
+            reviewed_at_value timestamptz;
+            published_at_value timestamptz;
+            test_case jsonb;
+            test_value numeric;
+            case_names text[] := ARRAY[]::text[];
+        BEGIN
+            IF NOT regulation_identifier_is_valid(NEW.rule_id)
+               OR NOT regulation_identifier_is_valid(NEW.rule_version)
+               OR (
+                   NEW.applicable_exchange IS NOT NULL
+                   AND NOT regulation_identifier_is_valid(NEW.applicable_exchange)
+               )
+               OR (
+                   NEW.applicable_board IS NOT NULL
+                   AND NOT regulation_identifier_is_valid(NEW.applicable_board)
+               )
+               OR (
+                   NEW.security_status IS NOT NULL
+                   AND NOT regulation_identifier_is_valid(NEW.security_status)
+               )
+               OR NEW.effective_to IS NOT NULL
+                  AND NEW.effective_to <= NEW.effective_from
+               OR NEW.threshold = 'NaN'::numeric
+               OR NEW.warning_threshold = 'NaN'::numeric
+               OR (
+                   NEW.benchmark_index IS NOT NULL
+                   AND NOT regulation_identifier_is_valid(NEW.benchmark_index)
+               )
+               OR (
+                   NEW.normal_anomaly_count_mode IS NOT NULL
+                   AND NOT regulation_identifier_is_valid(
+                       NEW.normal_anomaly_count_mode
+                   )
+               )
+               OR (
+                   NEW.recompute_condition IS NOT NULL
+                   AND NOT regulation_identifier_is_valid(NEW.recompute_condition)
+               )
+               OR NOT regulation_identifier_is_valid(NEW.calculation_method)
+               OR (
+                   NEW.official_source_url IS NOT NULL
+                   AND NOT regulation_https_url_is_valid(NEW.official_source_url)
+               )
+            THEN
+                RAISE EXCEPTION 'invalid regulation rule structure';
+            END IF;
+
+            IF NEW.review_record IS NOT NULL
+               AND NEW.review_record <> 'null'::jsonb
+            THEN
+                IF jsonb_typeof(NEW.review_record) <> 'object'
+                   OR NOT (NEW.review_record ?& ARRAY[
+                       'prepared_by',
+                       'reviewed_by',
+                       'published_by',
+                       'reviewed_at',
+                       'published_at'
+                   ])
+                   OR (
+                       SELECT count(*) FROM jsonb_object_keys(NEW.review_record)
+                   ) <> 5
+                   OR EXISTS (
+                       SELECT 1
+                         FROM jsonb_each(NEW.review_record) item
+                        WHERE jsonb_typeof(item.value) <> 'string'
+                   )
+                   OR NOT regulation_identifier_is_valid(
+                       NEW.review_record ->> 'prepared_by'
+                   )
+                   OR NOT regulation_identifier_is_valid(
+                       NEW.review_record ->> 'reviewed_by'
+                   )
+                   OR NOT regulation_identifier_is_valid(
+                       NEW.review_record ->> 'published_by'
+                   )
+                   OR NEW.review_record ->> 'prepared_by'
+                      = NEW.review_record ->> 'reviewed_by'
+                   OR NEW.review_record ->> 'reviewed_at'
+                      !~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                   OR NEW.review_record ->> 'published_at'
+                      !~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                THEN
+                    RAISE EXCEPTION 'invalid regulation review record';
+                END IF;
+                BEGIN
+                    reviewed_at_value :=
+                        (NEW.review_record ->> 'reviewed_at')::timestamptz;
+                    published_at_value :=
+                        (NEW.review_record ->> 'published_at')::timestamptz;
+                EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow THEN
+                    RAISE EXCEPTION 'invalid regulation review record';
+                END;
+                IF published_at_value < reviewed_at_value THEN
+                    RAISE EXCEPTION 'invalid regulation review record';
+                END IF;
+            END IF;
+
+            IF jsonb_typeof(NEW.test_cases) <> 'array' THEN
+                RAISE EXCEPTION 'invalid regulation test cases';
+            END IF;
+            FOR test_case IN
+                SELECT value FROM jsonb_array_elements(NEW.test_cases)
+            LOOP
+                IF jsonb_typeof(test_case) <> 'object'
+                   OR NOT (test_case ?& ARRAY[
+                       'name',
+                       'computed_value',
+                       'expected_state'
+                   ])
+                   OR (SELECT count(*) FROM jsonb_object_keys(test_case)) <> 3
+                   OR jsonb_typeof(test_case -> 'name') <> 'string'
+                   OR jsonb_typeof(test_case -> 'computed_value') <> 'string'
+                   OR jsonb_typeof(test_case -> 'expected_state') <> 'string'
+                   OR NOT regulation_identifier_is_valid(test_case ->> 'name')
+                   OR test_case ->> 'expected_state' NOT IN (
+                       'idle',
+                       'approaching_alert',
+                       'triggered'
+                   )
+                THEN
+                    RAISE EXCEPTION 'invalid regulation test case';
+                END IF;
+                BEGIN
+                    test_value := (test_case ->> 'computed_value')::numeric;
+                EXCEPTION WHEN invalid_text_representation THEN
+                    RAISE EXCEPTION 'invalid regulation test case';
+                END;
+                IF test_value = 'NaN'::numeric
+                   OR test_case ->> 'name' = ANY(case_names)
+                THEN
+                    RAISE EXCEPTION 'invalid regulation test case';
+                END IF;
+                case_names := array_append(case_names, test_case ->> 'name');
+            END LOOP;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER regulation_rules_structure_guard
+        BEFORE INSERT ON regulation_rules
+        FOR EACH ROW EXECUTE FUNCTION guard_regulation_rule_structure();
+
+        CREATE FUNCTION guard_regulation_event_structure()
+        RETURNS trigger AS $$
+        BEGIN
+            IF NOT regulation_identifier_is_valid(NEW.event_id)
+               OR NOT regulation_identifier_is_valid(NEW.rule_id)
+               OR NOT regulation_identifier_is_valid(NEW.rule_version)
+               OR NOT regulation_identifier_is_valid(NEW.security_id)
+               OR (
+                   NEW.announcement_id IS NOT NULL
+                   AND NOT regulation_identifier_is_valid(NEW.announcement_id)
+               )
+               OR (
+                   NEW.announcement_url IS NOT NULL
+                   AND NOT regulation_https_url_is_valid(NEW.announcement_url)
+               )
+               OR NEW.effective_to IS NOT NULL
+                  AND NEW.effective_to <= NEW.effective_from
+            THEN
+                RAISE EXCEPTION 'invalid regulation event structure';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER regulation_events_structure_guard
+        BEFORE INSERT ON regulation_events
+        FOR EACH ROW EXECUTE FUNCTION guard_regulation_event_structure();
+    """)
+
+    op.execute("""
         CREATE FUNCTION regulation_rule_is_production_eligible(
             rule_row regulation_rules
         )
@@ -226,8 +412,7 @@ def upgrade():
         BEGIN
             RETURN COALESCE(
                rule_row.review_switch = 'approved'
-               AND rule_row.official_source_url
-                   ~* '^https://[^/?#@]+($|[/?#])'
+               AND regulation_https_url_is_valid(rule_row.official_source_url)
                AND rule_row.review_record IS NOT NULL
                AND rule_row.review_record ?& ARRAY[
                    'prepared_by',
@@ -315,6 +500,34 @@ def upgrade():
     """)
 
     op.execute("""
+        CREATE FUNCTION guard_regulation_snapshot_root() RETURNS trigger AS $$
+        DECLARE
+            market_date date;
+            market_as_of timestamptz;
+            visible_status_watermark bigint;
+        BEGIN
+            SELECT market.trade_date,
+                   (batch.canonical_json::jsonb ->> 'as_of')::timestamptz
+              INTO STRICT market_date, market_as_of
+              FROM snapshots market
+              JOIN import_batches batch ON batch.id = market.batch_id
+             WHERE market.id = NEW.market_snapshot_id;
+            SELECT COALESCE(max(sequence), 0)
+              INTO visible_status_watermark
+              FROM regulation_rule_statuses;
+            IF NEW.trade_date IS DISTINCT FROM market_date
+               OR NEW.as_of IS DISTINCT FROM market_as_of
+               OR NEW.status_sequence_watermark > visible_status_watermark
+            THEN
+                RAISE EXCEPTION 'invalid regulation snapshot root';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER regulation_snapshots_root_guard
+        BEFORE INSERT ON regulation_snapshots
+        FOR EACH ROW EXECUTE FUNCTION guard_regulation_snapshot_root();
+
         CREATE FUNCTION guard_regulation_snapshot_rule() RETURNS trigger AS $$
         DECLARE
             snapshot_as_of timestamptz;
@@ -361,6 +574,12 @@ def upgrade():
             ) THEN
                 RAISE EXCEPTION 'invalid regulation snapshot input';
             END IF;
+            IF (NEW.input_state = 'complete') IS DISTINCT FROM
+                   (NEW.computed_value IS NOT NULL)
+               OR NEW.computed_value = 'NaN'::numeric
+            THEN
+                RAISE EXCEPTION 'invalid regulation snapshot input state';
+            END IF;
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -373,19 +592,126 @@ def upgrade():
         CREATE FUNCTION guard_regulation_calculation() RETURNS trigger AS $$
         DECLARE
             snapshot_date date;
+            binding_active boolean;
+            rule_row regulation_rules%ROWTYPE;
+            input_row regulation_snapshot_inputs%ROWTYPE;
+            expected_reasons jsonb := '[]'::jsonb;
+            expected_state text;
         BEGIN
             SELECT trade_date INTO STRICT snapshot_date
               FROM regulation_snapshots
              WHERE id = NEW.snapshot_id;
-            IF NEW.trade_date <> snapshot_date
-               OR NOT EXISTS (
-                   SELECT 1
-                     FROM regulation_snapshot_rules binding
-                    WHERE binding.snapshot_id = NEW.snapshot_id
-                      AND binding.rule_record_id = NEW.rule_record_id
-               )
-            THEN
+            SELECT rule.* INTO STRICT rule_row
+              FROM regulation_rules rule
+              JOIN regulation_snapshot_rules binding
+                ON binding.rule_record_id = rule.id
+             WHERE binding.snapshot_id = NEW.snapshot_id
+               AND binding.rule_record_id = NEW.rule_record_id;
+            SELECT active INTO STRICT binding_active
+              FROM regulation_snapshot_rules
+             WHERE snapshot_id = NEW.snapshot_id
+               AND rule_record_id = NEW.rule_record_id;
+            SELECT * INTO STRICT input_row
+              FROM regulation_snapshot_inputs input
+             WHERE input.snapshot_id = NEW.snapshot_id
+               AND input.rule_record_id = NEW.rule_record_id
+               AND input.security_id = NEW.security_id;
+
+            IF NEW.trade_date IS DISTINCT FROM snapshot_date THEN
                 RAISE EXCEPTION 'invalid regulation calculation lineage';
+            END IF;
+            IF rule_row.review_switch <> 'approved' THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('rule_not_approved');
+            END IF;
+            IF NOT binding_active THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('rule_inactive');
+            END IF;
+            IF rule_row.official_source_url IS NULL THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('official_source_missing');
+            END IF;
+            IF rule_row.review_record IS NULL
+               OR rule_row.review_record = 'null'::jsonb
+            THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('review_record_missing');
+            END IF;
+            IF jsonb_array_length(rule_row.test_cases) = 0 THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('regression_cases_missing');
+            END IF;
+            IF NOT rule_row.regression_passed THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('regression_not_passed');
+            END IF;
+            IF rule_row.calculation_method NOT IN ('relative_return') THEN
+                expected_reasons :=
+                    expected_reasons
+                    || jsonb_build_array('unsupported_calculation_method');
+            END IF;
+            IF rule_row.benchmark_index IS NULL THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('benchmark_missing');
+            END IF;
+            IF NOT (
+                rule_row.effective_from <= input_row.trade_date
+                AND (
+                    rule_row.effective_to IS NULL
+                    OR input_row.trade_date < rule_row.effective_to
+                )
+                AND (
+                    rule_row.applicable_exchange IS NULL
+                    OR rule_row.applicable_exchange = input_row.exchange
+                )
+                AND (
+                    rule_row.applicable_board IS NULL
+                    OR rule_row.applicable_board = input_row.board
+                )
+                AND (
+                    rule_row.security_status IS NULL
+                    OR rule_row.security_status = input_row.security_status
+                )
+            ) THEN
+                expected_reasons :=
+                    expected_reasons || jsonb_build_array('rule_not_applicable');
+            END IF;
+            IF input_row.input_state <> 'complete' THEN
+                expected_reasons :=
+                    expected_reasons
+                    || jsonb_build_array('input_' || input_row.input_state);
+            END IF;
+
+            IF jsonb_array_length(expected_reasons) > 0 THEN
+                expected_state := 'pending';
+            ELSIF rule_row.direction = 'upper'
+                  AND input_row.computed_value >= rule_row.threshold
+            THEN
+                expected_state := 'triggered';
+            ELSIF rule_row.direction = 'upper'
+                  AND input_row.computed_value >= rule_row.warning_threshold
+            THEN
+                expected_state := 'approaching_alert';
+            ELSIF rule_row.direction = 'lower'
+                  AND input_row.computed_value <= rule_row.threshold
+            THEN
+                expected_state := 'triggered';
+            ELSIF rule_row.direction = 'lower'
+                  AND input_row.computed_value <= rule_row.warning_threshold
+            THEN
+                expected_state := 'approaching_alert';
+            ELSE
+                expected_state := 'idle';
+            END IF;
+
+            IF NEW.input_state IS DISTINCT FROM input_row.input_state
+               OR NEW.computed_value IS DISTINCT FROM input_row.computed_value
+               OR NEW.state IS DISTINCT FROM expected_state
+               OR jsonb_typeof(NEW.reasons) IS DISTINCT FROM 'array'
+               OR NEW.reasons IS DISTINCT FROM expected_reasons
+            THEN
+                RAISE EXCEPTION 'invalid regulation calculation result';
             END IF;
             RETURN NEW;
         END;

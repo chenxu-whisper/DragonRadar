@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -462,25 +463,36 @@ class RegulationRepository:
         return row, archive, market
 
     @staticmethod
-    def _market_state(market: MarketBatch, security_id: str):
-        states = tuple(
-            state
-            for state in market.security_states
-            if state.security_id == security_id
-            and state.available_at <= market.as_of
-            and state.effective_from <= market.trade_date
-            and (state.effective_to is None or market.trade_date < state.effective_to)
-        )
-        return states[0] if len(states) == 1 else None
+    def _market_states_by_security(market: MarketBatch) -> dict:
+        states_by_security = {}
+        conflicted = set()
+        for state in market.security_states:
+            if (
+                state.available_at > market.as_of
+                or state.effective_from > market.trade_date
+                or (
+                    state.effective_to is not None
+                    and market.trade_date >= state.effective_to
+                )
+            ):
+                continue
+            if state.security_id in states_by_security:
+                conflicted.add(state.security_id)
+            else:
+                states_by_security[state.security_id] = state
+        for security_id in conflicted:
+            states_by_security[security_id] = None
+        return states_by_security
 
     @staticmethod
     def _normalize_observation(
         market: MarketBatch,
         observation: RegulationObservation,
+        states_by_security: Mapping,
     ) -> RegulationObservation:
         if observation.trade_date != market.trade_date:
             raise ValueError("Regulation observation date mismatch")
-        state = RegulationRepository._market_state(market, observation.security_id)
+        state = states_by_security.get(observation.security_id)
         expected = observation.security_id in market.expected_security_ids
         identity_matches = (
             state is not None
@@ -549,8 +561,10 @@ class RegulationRepository:
             market_row, _archive, market = self._market_context(
                 connection, market_snapshot_id
             )
+            states_by_security = self._market_states_by_security(market)
             supplied = tuple(
-                self._normalize_observation(market, item) for item in observations
+                self._normalize_observation(market, item, states_by_security)
+                for item in observations
             )
             status_sequence_watermark = connection.scalar(
                 select(func.coalesce(func.max(regulation_rule_statuses.c.sequence), 0))
@@ -567,25 +581,39 @@ class RegulationRepository:
                 .mappings()
                 .all()
             )
+            ranked_statuses = (
+                select(
+                    regulation_rule_statuses.c.rule_record_id,
+                    regulation_rule_statuses.c.status,
+                    func.row_number()
+                    .over(
+                        partition_by=regulation_rule_statuses.c.rule_record_id,
+                        order_by=regulation_rule_statuses.c.sequence.desc(),
+                    )
+                    .label("rank"),
+                )
+                .where(
+                    regulation_rule_statuses.c.sequence <= status_sequence_watermark,
+                )
+                .subquery()
+            )
+            latest_status_by_rule = {
+                row["rule_record_id"]: row["status"]
+                for row in connection.execute(
+                    select(
+                        ranked_statuses.c.rule_record_id,
+                        ranked_statuses.c.status,
+                    ).where(ranked_statuses.c.rank == 1)
+                )
+                .mappings()
+                .all()
+            }
             selected = []
             for row in rule_rows:
-                latest = (
-                    connection.execute(
-                        select(regulation_rule_statuses)
-                        .where(
-                            regulation_rule_statuses.c.rule_record_id == row["id"],
-                            regulation_rule_statuses.c.sequence
-                            <= status_sequence_watermark,
-                        )
-                        .order_by(regulation_rule_statuses.c.sequence.desc())
-                        .limit(1)
-                    )
-                    .mappings()
-                    .first()
-                )
-                if latest is not None and latest["status"] == "withdrawn":
+                latest_status = latest_status_by_rule.get(row["id"])
+                if latest_status == "withdrawn":
                     continue
-                selected.append((row, latest))
+                selected.append((row, latest_status))
             supplied_by_identity = {
                 (item.security_id, item.rule_id, item.rule_version): item
                 for item in supplied
@@ -613,7 +641,7 @@ class RegulationRepository:
             for row, _latest in selected:
                 rule = _rule(row)
                 for security_id in market.expected_security_ids:
-                    state = self._market_state(market, security_id)
+                    state = states_by_security.get(security_id)
                     expected = RegulationObservation(
                         rule_id=rule.rule_id,
                         rule_version=rule.rule_version,
@@ -643,6 +671,9 @@ class RegulationRepository:
                 materialized_inputs_by_identity[identity]
                 for identity in sorted(materialized_inputs_by_identity)
             )
+            inputs_by_rule_record_id = defaultdict(list)
+            for rule_record_id, observation in materialized_inputs:
+                inputs_by_rule_record_id[rule_record_id].append(observation)
             event_rows = (
                 connection.execute(
                     select(regulation_events)
@@ -671,42 +702,53 @@ class RegulationRepository:
                 "created_at": now,
             }
             connection.execute(insert(regulation_snapshots).values(**root))
-            for position, (row, latest) in enumerate(selected):
+            rule_bindings = []
+            for position, (row, latest_status) in enumerate(selected):
                 active = (
-                    latest["status"] == "active"
-                    if latest is not None
+                    latest_status == "active"
+                    if latest_status is not None
                     else row["active"]
                 )
-                connection.execute(
-                    insert(regulation_snapshot_rules).values(
-                        snapshot_id=root["id"],
-                        rule_record_id=row["id"],
-                        position=position,
-                        active=active,
-                    )
+                rule_bindings.append(
+                    {
+                        "snapshot_id": root["id"],
+                        "rule_record_id": row["id"],
+                        "position": position,
+                        "active": active,
+                    }
                 )
+            if rule_bindings:
+                connection.execute(
+                    insert(regulation_snapshot_rules),
+                    rule_bindings,
+                )
+            input_values = []
             for rule_record_id, observation in materialized_inputs:
                 values = observation.model_dump(
                     mode="json",
                     exclude={"rule_id", "rule_version"},
                 )
-                connection.execute(
-                    insert(regulation_snapshot_inputs).values(
-                        snapshot_id=root["id"],
-                        rule_record_id=rule_record_id,
+                input_values.append(
+                    {
+                        "snapshot_id": root["id"],
+                        "rule_record_id": rule_record_id,
                         **values,
-                    )
+                    }
                 )
-            for row, latest in selected:
+            if input_values:
+                connection.execute(
+                    insert(regulation_snapshot_inputs),
+                    input_values,
+                )
+            calculation_values = []
+            for row, latest_status in selected:
                 active = (
-                    latest["status"] == "active"
-                    if latest is not None
+                    latest_status == "active"
+                    if latest_status is not None
                     else row["active"]
                 )
                 rule = _rule(row)
-                for rule_record_id, observation in materialized_inputs:
-                    if rule_record_id != row["id"]:
-                        continue
+                for observation in inputs_by_rule_record_id[row["id"]]:
                     identity = (
                         observation.security_id,
                         observation.rule_id,
@@ -715,26 +757,36 @@ class RegulationRepository:
                     if identity not in expected_input_identities:
                         continue
                     calculation = evaluate_rule(rule, observation, active=active)
-                    connection.execute(
-                        insert(regulation_calculations).values(
-                            id=uuid4(),
-                            snapshot_id=root["id"],
-                            rule_record_id=row["id"],
-                            security_id=observation.security_id,
-                            trade_date=observation.trade_date,
-                            computed_value=observation.computed_value,
-                            input_state=observation.input_state,
-                            state=calculation.state,
-                            reasons=list(calculation.reasons),
-                        )
+                    calculation_values.append(
+                        {
+                            "id": uuid4(),
+                            "snapshot_id": root["id"],
+                            "rule_record_id": row["id"],
+                            "security_id": observation.security_id,
+                            "trade_date": observation.trade_date,
+                            "computed_value": observation.computed_value,
+                            "input_state": observation.input_state,
+                            "state": calculation.state,
+                            "reasons": list(calculation.reasons),
+                        }
                     )
-            for position, row in enumerate(effective_events):
+            if calculation_values:
                 connection.execute(
-                    insert(regulation_snapshot_events).values(
-                        snapshot_id=root["id"],
-                        event_id=row["event_id"],
-                        position=position,
-                    )
+                    insert(regulation_calculations),
+                    calculation_values,
+                )
+            event_bindings = [
+                {
+                    "snapshot_id": root["id"],
+                    "event_id": row["event_id"],
+                    "position": position,
+                }
+                for position, row in enumerate(effective_events)
+            ]
+            if event_bindings:
+                connection.execute(
+                    insert(regulation_snapshot_events),
+                    event_bindings,
                 )
             self._record_command(
                 connection,

@@ -618,6 +618,121 @@ def test_each_rule_version_consumes_only_its_own_observation(database, repositor
     assert calculations["test-v2"].state == "triggered"
 
 
+def test_materialize_sql_count_does_not_scale_with_rules_times_securities(
+    database,
+    repository,
+):
+    from sqlalchemy import event as sqlalchemy_event
+
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(
+        _rule(rule_id="scale-rule-0"),
+        key="regulation-scale-rule-0",
+    )
+    small_market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="regulation-scale-small-market",
+        ).id
+    )
+
+    statements = []
+
+    def record_statement(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        statements.append((statement, executemany))
+
+    sqlalchemy_event.listen(
+        database.engine,
+        "before_cursor_execute",
+        record_statement,
+    )
+    try:
+        regulations.materialize(
+            market_snapshot_id=small_market.id,
+            observations=(_observation(rule_id="scale-rule-0"),),
+            key="regulation-scale-small-snapshot",
+        )
+    finally:
+        sqlalchemy_event.remove(
+            database.engine,
+            "before_cursor_execute",
+            record_statement,
+        )
+    small_count = len(statements)
+
+    for index in range(1, 6):
+        regulations.register_rule(
+            _rule(rule_id=f"scale-rule-{index}"),
+            key=f"regulation-scale-rule-{index}",
+        )
+    security_ids = tuple(f"S{index}" for index in range(6))
+    large_market = repository.publish(
+        repository.import_batch(
+            batch(
+                expected_security_ids=security_ids,
+                security_states=tuple(
+                    state(security_id) for security_id in security_ids
+                ),
+                bars=tuple(
+                    bar(security_id=security_id, trade_date=day)
+                    for security_id in security_ids
+                    for day in DAYS
+                ),
+            ),
+            key="regulation-scale-large-market",
+        ).id
+    )
+    observations = tuple(
+        _observation(
+            rule_id=f"scale-rule-{rule_index}",
+            security_id=security_id,
+        )
+        for rule_index in range(6)
+        for security_id in security_ids
+    )
+
+    statements = []
+    sqlalchemy_event.listen(
+        database.engine,
+        "before_cursor_execute",
+        record_statement,
+    )
+    try:
+        regulations.materialize(
+            market_snapshot_id=large_market.id,
+            observations=observations,
+            key="regulation-scale-large-snapshot",
+        )
+    finally:
+        sqlalchemy_event.remove(
+            database.engine,
+            "before_cursor_execute",
+            record_statement,
+        )
+
+    assert len(statements) == small_count
+    for table_name in (
+        "regulation_snapshot_rules",
+        "regulation_snapshot_inputs",
+        "regulation_calculations",
+    ):
+        inserts = [
+            executemany
+            for statement, executemany in statements
+            if statement.startswith(f"INSERT INTO {table_name} ")
+        ]
+        assert inserts == [True]
+
+
 def test_status_sequence_watermark_wins_over_inverted_recorded_times(
     database, repository
 ):
@@ -749,6 +864,339 @@ def test_publication_automatically_materializes_stable_regulation_payload(
             "effective_to": None,
         },
     )
+
+
+def _stored_rule_values(**changes):
+    values = _rule(
+        active=False,
+        review_switch="pending",
+        review_record=None,
+        test_cases=(),
+        regression_passed=False,
+        official_source_url=None,
+    ).model_dump(mode="json")
+    values.update(
+        id=uuid4(),
+        created_at=NOW,
+        **changes,
+    )
+    return values
+
+
+def _materialized_regulation_fixture(database, repository, *, suffix):
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key=f"regulation-integrity-market-{suffix}",
+        ).id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(
+        _rule(),
+        key=f"regulation-integrity-rule-{suffix}",
+    )
+    regulations.append_event(
+        _event(event_id=f"event-{suffix}", announcement_id=f"notice-{suffix}"),
+        key=f"regulation-integrity-event-{suffix}",
+    )
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        key=f"regulation-integrity-snapshot-{suffix}",
+    )
+    return market, regulations, snapshot
+
+
+@pytest.mark.parametrize(
+    (
+        "security_id",
+        "input_value",
+        "input_state",
+        "stored_value",
+        "stored_input_state",
+        "stored_state",
+        "stored_reasons",
+    ),
+    [
+        (
+            "forged-trigger",
+            Decimal("0.60"),
+            "complete",
+            Decimal("0.60"),
+            "complete",
+            "triggered",
+            [],
+        ),
+        ("forged-idle", None, "missing", None, "missing", "idle", []),
+        (
+            "forged-reasons",
+            None,
+            "missing",
+            None,
+            "missing",
+            "pending",
+            ["wrong_reason"],
+        ),
+        (
+            "forged-input-state",
+            Decimal("0.68"),
+            "complete",
+            Decimal("0.68"),
+            "conflict",
+            "pending",
+            ["input_conflict"],
+        ),
+        (
+            "forged-value",
+            Decimal("0.68"),
+            "complete",
+            Decimal("0.69"),
+            "complete",
+            "approaching_alert",
+            [],
+        ),
+    ],
+)
+def test_postgres_recomputes_and_rejects_forged_regulation_calculations(
+    database,
+    repository,
+    security_id,
+    input_value,
+    input_state,
+    stored_value,
+    stored_input_state,
+    stored_state,
+    stored_reasons,
+):
+    from sqlalchemy import insert, select
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import (
+        regulation_calculations,
+        regulation_snapshot_inputs,
+        regulation_snapshot_rules,
+    )
+
+    _market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix=security_id,
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        rule_record_id = connection.scalar(
+            select(regulation_snapshot_rules.c.rule_record_id).where(
+                regulation_snapshot_rules.c.snapshot_id == snapshot.id
+            )
+        )
+        connection.execute(
+            insert(regulation_snapshot_inputs).values(
+                snapshot_id=snapshot.id,
+                rule_record_id=rule_record_id,
+                security_id=security_id,
+                trade_date=snapshot.trade_date,
+                exchange="TEST",
+                board="synthetic_test",
+                security_status="regular",
+                computed_value=input_value,
+                input_state=input_state,
+            )
+        )
+        connection.execute(
+            insert(regulation_calculations).values(
+                id=uuid4(),
+                snapshot_id=snapshot.id,
+                rule_record_id=rule_record_id,
+                security_id=security_id,
+                trade_date=snapshot.trade_date,
+                computed_value=stored_value,
+                input_state=stored_input_state,
+                state=stored_state,
+                reasons=stored_reasons,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("trade_date", DAYS[-2]),
+        ("as_of", NOW + timedelta(seconds=1)),
+        ("status_sequence_watermark", 2),
+    ],
+)
+def test_postgres_rejects_regulation_snapshot_root_not_matching_market_cut(
+    database,
+    repository,
+    field,
+    invalid_value,
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import regulation_snapshots
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key=f"regulation-root-market-{field}",
+        ).id
+    )
+    values = {
+        "id": uuid4(),
+        "idempotency_key": f"regulation-root-{field}",
+        "command_hash": "a" * 64,
+        "market_snapshot_id": market.id,
+        "trade_date": DAYS[-1],
+        "as_of": NOW,
+        "status_sequence_watermark": 0,
+        "created_at": NOW,
+    }
+    values[field] = invalid_value
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(regulation_snapshots).values(**values))
+
+
+def test_postgres_allows_structurally_valid_inactive_pending_rule_without_source(
+    database,
+):
+    from sqlalchemy import insert
+
+    from dragon_radar.regulation.tables import regulation_rules
+
+    with database.engine.begin() as connection:
+        connection.execute(insert(regulation_rules).values(**_stored_rule_values()))
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("effective_to", DAYS[0]),
+        ("warning_threshold", Decimal("0.70")),
+        ("benchmark_index", ""),
+        ("normal_anomaly_count_mode", " "),
+        ("official_source_url", ""),
+        ("official_source_url", "http://exchange.example.test/rule"),
+        ("official_source_url", "https://user@example.test/rule"),
+        ("review_record", []),
+        ("review_record", {"prepared_by": "author"}),
+        ("test_cases", {}),
+        ("test_cases", [{"name": "case-without-result"}]),
+    ],
+)
+def test_postgres_rejects_structurally_invalid_inactive_rules(
+    database,
+    field,
+    invalid_value,
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import regulation_rules
+
+    values = _stored_rule_values(**{field: invalid_value})
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(regulation_rules).values(**values))
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("effective_to", DAYS[-1]),
+        ("announcement_url", ""),
+        ("announcement_url", "http://exchange.example.test/notice"),
+        ("announcement_url", "https://user@example.test/notice"),
+    ],
+)
+def test_postgres_rejects_structurally_invalid_events(
+    database,
+    field,
+    invalid_value,
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import regulation_events
+
+    regulations = RegulationRepository(database, clock=lambda: NOW)
+    regulations.register_rule(
+        _rule(active=False),
+        key=f"regulation-event-parent-{field}",
+    )
+    values = _event().model_dump(mode="json")
+    values.update(created_at=NOW, **{field: invalid_value})
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(regulation_events).values(**values))
+
+
+REGULATION_TABLES = (
+    "regulation_rules",
+    "regulation_rule_statuses",
+    "regulation_events",
+    "regulation_snapshots",
+    "regulation_snapshot_rules",
+    "regulation_snapshot_inputs",
+    "regulation_calculations",
+    "regulation_snapshot_events",
+    "regulation_commands",
+)
+
+
+@pytest.mark.parametrize("table_name", REGULATION_TABLES)
+def test_every_regulation_table_rejects_update_and_delete(
+    database,
+    repository,
+    table_name,
+):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    _materialized_regulation_fixture(database, repository, suffix=table_name)
+
+    for statement in (
+        f"UPDATE {table_name} SET ",
+        f"DELETE FROM {table_name}",
+    ):
+        sql = (
+            statement + "idempotency_key = idempotency_key"
+            if table_name in {"regulation_snapshots", "regulation_commands"}
+            and statement.startswith("UPDATE")
+            else statement + "event_id = event_id"
+            if table_name in {"regulation_events", "regulation_snapshot_events"}
+            and statement.startswith("UPDATE")
+            else statement + "rule_record_id = rule_record_id"
+            if table_name
+            in {
+                "regulation_rule_statuses",
+                "regulation_snapshot_rules",
+                "regulation_snapshot_inputs",
+                "regulation_calculations",
+            }
+            and statement.startswith("UPDATE")
+            else statement + "rule_id = rule_id"
+            if table_name == "regulation_rules" and statement.startswith("UPDATE")
+            else statement
+        )
+        with pytest.raises(DBAPIError), database.engine.begin() as connection:
+            connection.execute(text(sql))
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    ("regulation_rules", "regulation_snapshots", "regulation_commands"),
+)
+def test_representative_regulation_table_families_reject_truncate(
+    database,
+    table_name,
+):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
 def test_regulation_tables_are_append_only_and_migration_is_ready(database):
