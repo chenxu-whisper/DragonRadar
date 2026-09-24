@@ -80,8 +80,6 @@ export function validateResetStockResponse(
     !['complete', 'unknown'].includes(String(regulation.event_source_completeness)) ||
     (regulation.event_source_completeness === 'complete' &&
       regulation.formal_event_count === null) ||
-    (regulation.event_source_completeness === 'unknown' &&
-      regulation.formal_event_count !== null) ||
     (regulation.reason !== null && typeof regulation.reason !== 'string')
   ) return 'malformed';
   return payload.security_id === id ? null : 'security_mismatch';

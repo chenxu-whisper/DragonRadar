@@ -26,6 +26,7 @@ EventType = Literal[
     "restriction",
 ]
 RuleLifecycleStatus = Literal["active", "withdrawn"]
+EventSourceCompleteness = Literal["unknown", "complete"]
 SUPPORTED_CALCULATION_METHODS = frozenset({"relative_return"})
 
 
@@ -197,7 +198,22 @@ class RegulationSnapshot(FrozenModel):
     market_snapshot_id: UUID
     trade_date: date
     as_of: UTCDateTime
+    event_source_completeness: EventSourceCompleteness = "unknown"
+    event_source_id: Identifier | None = None
+    event_source_version: Identifier | None = None
     created_at: UTCDateTime
+
+    @model_validator(mode="after")
+    def validate_event_source_evidence(self):
+        source_is_identified = (
+            self.event_source_id is not None and self.event_source_version is not None
+        )
+        if self.event_source_completeness == "complete":
+            if not source_is_identified:
+                raise ValueError("Complete event source requires identity and version")
+        elif self.event_source_id is not None or self.event_source_version is not None:
+            raise ValueError("Unknown event source cannot claim identity or version")
+        return self
 
 
 def rule_is_effective(rule: RegulationRule, day: date) -> bool:

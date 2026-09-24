@@ -141,7 +141,7 @@ flowchart LR
 | `tests/test_reset_*.py`、`web/tests/unit/reset-*.test.ts`、`web/tests/e2e/reset-*.spec.ts` | 新改造验收；不重写已通过的无关旧测试 |
 | `docs/acceptance/` | 每阶段一个验收记录；失败集中登记 |
 
-新增 Alembic 修订依次为：`0005_publications`、`0006_market_readmodels`、`0007_role_readmodels`、`0008_news`、`0009_regulation`、`0010_ai_tasks`。每次迁移同步 `storage/database.py` 的 readiness 检查。旧 migrations 不改写、不删除；并行开发迁移在集成时按此单链序列合入。
+新增 Alembic 修订依次为：`0005_publications`、`0006_market_readmodels`、`0007_role_readmodels`、`0008_news`、`0009_regulation`、`0009a_reg_event_source`、`0010_ai_tasks`。`0009a` 是 Task16 的追加修订，`0010_ai_tasks` 必须以其为 `down_revision`。每次迁移同步 `storage/database.py` 的 readiness 检查。旧 migrations 不改写、不删除；并行开发迁移在集成时按此单链序列合入。
 
 ## 5. 通用执行与验证约定
 
@@ -482,6 +482,7 @@ ROLE_NAMES = {
 - [ ] 运行对应pytest/E2E确认失败。
 - [ ] 注册接口15～16并渲染三个独立区域：数据完整性、数值计算状态、正式事件/限制；预警阈值与法定阈值分列，附原文/版本/有效期。
 - [ ] 证券抽屉显示正式事件数和来源完整性；不显示“安全再涨几板”或无风险表述。
+- [ ] 正式事件来源完整性持久化在监管快照；`unknown` 仍展示已列事件及已列数量，但总量保持未知；仅显式 `complete` 可声明零事件和完整总数。
 - [ ] 跑接口/E2E/构建并演示pending、approaching、triggered与正式event分离；提交 `feat: deliver regulation evidence views`。
 
 **完成条件：** 用户能辨认“数据不足”“计算接近提醒”和“已披露限制”的区别。

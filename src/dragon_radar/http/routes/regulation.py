@@ -53,9 +53,7 @@ def _selection(request: Request, *, allow_security: bool = False):
         raise ValueError("Regulation date is required")
     snapshot_id = UUID(query["snapshot_id"]) if "snapshot_id" in query else None
     security_id = query.get("security_id")
-    if security_id is not None and (
-        not security_id.strip() or len(security_id) > 200
-    ):
+    if security_id is not None and (not security_id.strip() or len(security_id) > 200):
         raise ValueError("Invalid security")
     return trade_date, snapshot_id, security_id
 
@@ -68,16 +66,13 @@ def _selected_snapshot(request: Request, trade_date: date, snapshot_id: UUID | N
 
 
 def _models(value: object, model):
-    if (
-        not isinstance(value, (list, tuple))
-        or any(not isinstance(item, Mapping) for item in value)
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, Mapping) for item in value
     ):
         raise DataUnavailable
     try:
         return tuple(
-            model.model_validate(
-                {key: item[key] for key in model.model_fields}
-            )
+            model.model_validate({key: item[key] for key in model.model_fields})
             for item in value
         )
     except (KeyError, ValidationError):
@@ -89,13 +84,26 @@ def _regulation_payload(snapshot: PublishedSnapshot):
     if result.status != "ready":
         return None, result
     payload = dict(result.payload)
+    event_source_completeness = payload.get("event_source_completeness", "unknown")
+    event_source_id = payload.get("event_source_id")
+    event_source_version = payload.get("event_source_version")
+    event_source_is_valid = (
+        event_source_completeness == "unknown"
+        and event_source_id is None
+        and event_source_version is None
+    ) or (
+        event_source_completeness == "complete"
+        and isinstance(event_source_id, str)
+        and bool(event_source_id)
+        and isinstance(event_source_version, str)
+        and bool(event_source_version)
+    )
     if (
         payload.get("schema") != REGULATION_SCHEMA
         or payload.get("schema_version") != REGULATION_SCHEMA_VERSION
         or payload.get("snapshot_id") != str(result.input_id)
         or payload.get("trade_date") != snapshot.trade_date.isoformat()
-        or payload.get("event_source_completeness", "unknown")
-        not in {"complete", "unknown"}
+        or not event_source_is_valid
         or not isinstance(payload.get("completeness"), Mapping)
     ):
         raise DataUnavailable
@@ -121,9 +129,7 @@ def _regulation_payload(snapshot: PublishedSnapshot):
         "rules": rules,
         "calculations": calculations,
         "events": events,
-        "event_source_completeness": payload.get(
-            "event_source_completeness", "unknown"
-        ),
+        "event_source_completeness": event_source_completeness,
         "stored_rules": tuple(payload["rules"]),
     }, result
 
@@ -209,7 +215,12 @@ def _unknown_response(snapshot, result, *, status: bool):
             "region3_events": None,
         }
     else:
-        data = {"events": None, "total": None, "source_check": "unknown"}
+        data = {
+            "events": None,
+            "listed_count": None,
+            "total": None,
+            "source_check": "unknown",
+        }
     return _response(
         snapshot,
         result,
@@ -248,14 +259,13 @@ def regulation_status(request: Request):
         )
     )
     events = [_event(item) for item in payload["events"]]
-    event_source_complete = payload["event_source_completeness"] == "complete"
     return _response(
         snapshot,
         result,
         {
             "region1_completeness": _completeness(payload["coverage"], "pass"),
             "region2_calc_state": calculations,
-            "region3_events": events if event_source_complete else None,
+            "region3_events": events,
         },
         payload["coverage"],
     )
@@ -273,14 +283,6 @@ def regulation_events(request: Request):
     payload, result = _regulation_payload(snapshot)
     if payload is None:
         return _unknown_response(snapshot, result, status=False)
-    if payload["event_source_completeness"] != "complete":
-        return _response(
-            snapshot,
-            result,
-            {"events": None, "total": None, "source_check": "unknown"},
-            payload["coverage"],
-            reason="regulation_event_source_unknown",
-        )
     events = [
         _event(item)
         for item in payload["events"]
@@ -289,8 +291,26 @@ def regulation_events(request: Request):
     return _response(
         snapshot,
         result,
-        {"events": events, "total": len(events), "source_check": "pass"},
+        {
+            "events": events,
+            "listed_count": len(events),
+            "total": (
+                len(events)
+                if payload["event_source_completeness"] == "complete"
+                else None
+            ),
+            "source_check": (
+                "pass"
+                if payload["event_source_completeness"] == "complete"
+                else "unknown"
+            ),
+        },
         payload["coverage"],
+        reason=(
+            None
+            if payload["event_source_completeness"] == "complete"
+            else "regulation_event_source_unknown"
+        ),
     )
 
 

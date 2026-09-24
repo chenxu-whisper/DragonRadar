@@ -134,7 +134,29 @@ regulation_snapshots = Table(
     Column("trade_date", Date, nullable=False),
     Column("as_of", DateTime(timezone=True), nullable=False),
     Column("status_sequence_watermark", BigInteger, nullable=False),
+    Column(
+        "event_source_completeness",
+        String(20),
+        nullable=False,
+        server_default="unknown",
+    ),
+    Column("event_source_id", String(200)),
+    Column("event_source_version", String(200)),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "("
+        "event_source_completeness = 'unknown' "
+        "AND event_source_id IS NULL "
+        "AND event_source_version IS NULL"
+        ") OR ("
+        "event_source_completeness = 'complete' "
+        "AND event_source_id IS NOT NULL "
+        "AND event_source_version IS NOT NULL "
+        "AND event_source_id ~ '^[A-Za-z0-9_.:-]{1,200}$' "
+        "AND event_source_version ~ '^[A-Za-z0-9_.:-]{1,200}$'"
+        ")",
+        name="regulation_snapshots_event_source_evidence",
+    ),
     Index("regulation_snapshots_market", "market_snapshot_id"),
 )
 

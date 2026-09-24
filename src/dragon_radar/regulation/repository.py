@@ -16,6 +16,7 @@ from dragon_radar.regulation.engine import (
     run_regression_cases,
 )
 from dragon_radar.regulation.models import (
+    EventSourceCompleteness,
     RegulationCalculation,
     RegulationEvent,
     RegulationObservation,
@@ -118,6 +119,9 @@ def _snapshot(row: Mapping) -> RegulationSnapshot:
         market_snapshot_id=row["market_snapshot_id"],
         trade_date=row["trade_date"],
         as_of=row["as_of"],
+        event_source_completeness=row["event_source_completeness"],
+        event_source_id=row["event_source_id"],
+        event_source_version=row["event_source_version"],
         created_at=row["created_at"],
     )
 
@@ -513,10 +517,27 @@ class RegulationRepository:
         *,
         market_snapshot_id: UUID | str,
         observations: tuple[RegulationObservation, ...],
+        event_source_completeness: EventSourceCompleteness = "unknown",
+        event_source_id: str | None = None,
+        event_source_version: str | None = None,
         key: str,
     ) -> RegulationSnapshot:
         market_snapshot_id = _uuid(market_snapshot_id)
         _identifier(key)
+        if event_source_completeness not in {"unknown", "complete"}:
+            raise ValueError("Invalid event source completeness")
+        if event_source_id is not None:
+            _identifier(event_source_id)
+        if event_source_version is not None:
+            _identifier(event_source_version)
+        source_is_identified = (
+            event_source_id is not None and event_source_version is not None
+        )
+        if event_source_completeness == "complete":
+            if not source_is_identified:
+                raise ValueError("Complete event source requires identity and version")
+        elif event_source_id is not None or event_source_version is not None:
+            raise ValueError("Unknown event source cannot claim identity or version")
         observations = tuple(
             RegulationObservation.model_validate(item.model_dump())
             for item in observations
@@ -530,6 +551,9 @@ class RegulationRepository:
             )
         command = {
             "market_snapshot_id": str(market_snapshot_id),
+            "event_source_completeness": event_source_completeness,
+            "event_source_id": event_source_id,
+            "event_source_version": event_source_version,
             "observations": sorted(
                 (item.model_dump(mode="json") for item in observations),
                 key=lambda item: (
@@ -708,6 +732,9 @@ class RegulationRepository:
                 "trade_date": market.trade_date,
                 "as_of": market.as_of,
                 "status_sequence_watermark": status_sequence_watermark,
+                "event_source_completeness": event_source_completeness,
+                "event_source_id": event_source_id,
+                "event_source_version": event_source_version,
                 "created_at": now,
             }
             connection.execute(insert(regulation_snapshots).values(**root))
@@ -1065,9 +1092,11 @@ class RegulationRepository:
                 "market_snapshot_id": str(context["snapshot"].market_snapshot_id),
                 "trade_date": context["snapshot"].trade_date.isoformat(),
                 "as_of": context["snapshot"].as_of.isoformat(),
-                "event_source_completeness": context.get(
-                    "event_source_completeness", "unknown"
+                "event_source_completeness": (
+                    context["snapshot"].event_source_completeness
                 ),
+                "event_source_id": context["snapshot"].event_source_id,
+                "event_source_version": context["snapshot"].event_source_version,
                 "completeness": completeness,
                 "rules": rules,
                 "calculations": calculations,

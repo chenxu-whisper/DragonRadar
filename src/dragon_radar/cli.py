@@ -210,6 +210,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     regulation_materialize.add_argument("path", type=Path)
     regulation_materialize.add_argument("--market-snapshot", required=True)
+    regulation_materialize.add_argument(
+        "--event-source-completeness",
+        choices=("unknown", "complete"),
+        default="unknown",
+    )
+    regulation_materialize.add_argument("--event-source-id")
+    regulation_materialize.add_argument("--event-source-version")
     regulation_materialize.add_argument("--key", required=True)
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
@@ -448,12 +455,20 @@ def main(argv: list[str] | None = None) -> int:
                 observations=tuple(
                     RegulationObservation.model_validate(item) for item in payload
                 ),
+                event_source_completeness=args.event_source_completeness,
+                event_source_id=args.event_source_id,
+                event_source_version=args.event_source_version,
                 key=args.key,
             )
             result = {
                 "regulation_snapshot_id": str(regulation_snapshot.id),
                 "market_snapshot_id": str(regulation_snapshot.market_snapshot_id),
                 "trade_date": regulation_snapshot.trade_date.isoformat(),
+                "event_source_completeness": (
+                    regulation_snapshot.event_source_completeness
+                ),
+                "event_source_id": regulation_snapshot.event_source_id,
+                "event_source_version": regulation_snapshot.event_source_version,
             }
         else:
             import uvicorn

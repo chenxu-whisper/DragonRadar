@@ -156,6 +156,8 @@ export function RegulationContent({
           <div><span>区域 3</span><h2>已披露正式事件与限制</h2></div>
           <p>{eventData?.source_check === 'pass' && eventData.total !== null
             ? `${eventData.total} 条正式记录`
+            : eventData && eventData.events !== null && eventData.listed_count !== null
+              ? `${eventData.listed_count} 条已列记录 · 事件来源完整性未知`
             : '事件来源完整性未知'}</p>
         </div>
         {eventData?.events === null
@@ -177,6 +179,8 @@ export function RegulationContent({
                 </a>
                 : <span className="muted">公告原文缺失</span>}
             </article>)}</div>
+          : eventData?.source_check === 'unknown'
+          ? <p className="empty">当前快照未列出正式事件，事件来源完整性未知。</p>
           : eventData
           ? <p className="empty">事件来源完整，当前快照没有正式事件记录。</p>
           : null}

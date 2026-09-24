@@ -359,6 +359,31 @@ def test_cli_exposes_only_controlled_regulation_write_commands_without_database(
     assert "regulation-materialize" in help_text
 
 
+def test_cli_accepts_controlled_regulation_event_source_attestation():
+    from dragon_radar.cli import _parser
+
+    args = _parser().parse_args(
+        [
+            "regulation-materialize",
+            "observations.json",
+            "--market-snapshot",
+            str(uuid4()),
+            "--key",
+            "synthetic-materialization",
+            "--event-source-completeness",
+            "complete",
+            "--event-source-id",
+            "synthetic-event-feed",
+            "--event-source-version",
+            "fixture-v1",
+        ]
+    )
+
+    assert args.event_source_completeness == "complete"
+    assert args.event_source_id == "synthetic-event-feed"
+    assert args.event_source_version == "fixture-v1"
+
+
 def test_observation_identity_requires_rule_id_and_version():
     from dragon_radar.regulation.models import RegulationObservation
 
@@ -387,6 +412,41 @@ def test_duplicate_or_conflicting_security_rule_inputs_are_rejected_before_stora
             market_snapshot_id=uuid4(),
             observations=(duplicate, conflict),
             key="conflicting-rule-input",
+        )
+
+
+def test_regulation_snapshot_event_source_evidence_is_explicit_and_consistent():
+    from dragon_radar.regulation.models import RegulationSnapshot
+
+    values = {
+        "id": uuid4(),
+        "market_snapshot_id": uuid4(),
+        "trade_date": DAYS[-1],
+        "as_of": NOW,
+        "created_at": NOW,
+    }
+
+    unknown = RegulationSnapshot(**values)
+    complete = RegulationSnapshot(
+        **values,
+        event_source_completeness="complete",
+        event_source_id="synthetic-event-feed",
+        event_source_version="fixture-v1",
+    )
+
+    assert unknown.event_source_completeness == "unknown"
+    assert unknown.event_source_id is None
+    assert unknown.event_source_version is None
+    assert complete.event_source_completeness == "complete"
+    with pytest.raises(ValidationError):
+        RegulationSnapshot(
+            **values,
+            event_source_completeness="complete",
+        )
+    with pytest.raises(ValidationError):
+        RegulationSnapshot(
+            **values,
+            event_source_id="synthetic-event-feed",
         )
 
 
@@ -581,6 +641,54 @@ def test_materialization_fills_missing_expected_security_for_each_applicable_rul
         "missing": 1,
     }
     assert payload.payload["event_source_completeness"] == "unknown"
+
+
+def test_materialization_persists_complete_event_source_evidence_and_hashes_it(
+    database,
+    repository,
+):
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.storage.repository import Conflict
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="event-source-evidence-market",
+        ).id
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="event-source-evidence-rule")
+    snapshot = regulations.materialize(
+        market_snapshot_id=market.id,
+        observations=(_observation(),),
+        event_source_completeness="complete",
+        event_source_id="synthetic-event-feed",
+        event_source_version="fixture-v1",
+        key="event-source-evidence-snapshot",
+    )
+
+    context = regulations.snapshot_context(snapshot.id)
+    payload = regulations.materialize_context(context).payload
+
+    assert snapshot.event_source_completeness == "complete"
+    assert snapshot.event_source_id == "synthetic-event-feed"
+    assert snapshot.event_source_version == "fixture-v1"
+    assert context["root"]["event_source_completeness"] == "complete"
+    assert context["root"]["event_source_id"] == "synthetic-event-feed"
+    assert context["root"]["event_source_version"] == "fixture-v1"
+    assert payload["event_source_completeness"] == "complete"
+    assert payload["event_source_id"] == "synthetic-event-feed"
+    assert payload["event_source_version"] == "fixture-v1"
+
+    with pytest.raises(Conflict):
+        regulations.materialize(
+            market_snapshot_id=market.id,
+            observations=(_observation(),),
+            event_source_completeness="complete",
+            event_source_id="synthetic-event-feed",
+            event_source_version="fixture-v2",
+            key="event-source-evidence-snapshot",
+        )
 
 
 def test_each_rule_version_consumes_only_its_own_observation(database, repository):
@@ -826,6 +934,9 @@ def test_publication_automatically_materializes_stable_regulation_payload(
     regulation_snapshot = regulations.materialize(
         market_snapshot_id=market.id,
         observations=(_observation(),),
+        event_source_completeness="complete",
+        event_source_id="synthetic-event-feed",
+        event_source_version="fixture-v1",
         key="regulation-publication-input",
     )
 
@@ -853,6 +964,9 @@ def test_publication_automatically_materializes_stable_regulation_payload(
     assert result.status == "ready"
     assert result.input_id == regulation_snapshot.id
     assert result.payload["schema"] == "dragon-radar.regulation"
+    assert result.payload["event_source_completeness"] == "complete"
+    assert result.payload["event_source_id"] == "synthetic-event-feed"
+    assert result.payload["event_source_version"] == "fixture-v1"
     assert result.payload["completeness"]["expected"] == 1
     assert result.payload["calculations"][0]["state"] == "approaching_alert"
     assert result.payload["events"] == (
@@ -2217,20 +2331,134 @@ def test_representative_regulation_table_families_reject_truncate(
         connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
-def test_regulation_schema_revision_remains_at_0009():
+def test_regulation_schema_revision_is_0009a():
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0009_regulation"
+    assert SCHEMA_REVISION == "0009a_reg_event_source"
 
 
-def test_regulation_migration_head_remains_at_0009():
+def test_regulation_migration_head_is_0009a_and_reserves_0010_for_ai():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     config = Config()
     config.set_main_option("script_location", "dragon_radar:migrations")
 
-    assert ScriptDirectory.from_config(config).get_heads() == ["0009_regulation"]
+    script = ScriptDirectory.from_config(config)
+    assert script.get_heads() == ["0009a_reg_event_source"]
+    assert script.get_revision("0009a_reg_event_source").down_revision == (
+        "0009_regulation"
+    )
+
+
+def test_regulation_event_source_migration_upgrades_existing_0009_schema(database_url):
+    from alembic import command as alembic_command
+    from alembic.config import Config
+    from sqlalchemy import inspect, text
+
+    from dragon_radar.storage.database import SCHEMA_REVISION, Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            alembic_command.upgrade(config, "0009_regulation")
+            connection.execute(
+                text(
+                    "ALTER TABLE regulation_snapshots "
+                    "DROP CONSTRAINT IF EXISTS "
+                    "regulation_snapshots_event_source_evidence, "
+                    "DROP COLUMN IF EXISTS event_source_version, "
+                    "DROP COLUMN IF EXISTS event_source_id, "
+                    "DROP COLUMN IF EXISTS event_source_completeness"
+                )
+            )
+            assert {
+                column["name"]
+                for column in inspect(connection).get_columns("regulation_snapshots")
+            }.isdisjoint(
+                {
+                    "event_source_completeness",
+                    "event_source_id",
+                    "event_source_version",
+                }
+            )
+        database.migrate()
+        with database.engine.connect() as connection:
+            columns = {
+                column["name"]: column
+                for column in inspect(connection).get_columns("regulation_snapshots")
+            }
+            assert columns["event_source_completeness"]["nullable"] is False
+            assert columns["event_source_completeness"]["default"] is not None
+            assert columns["event_source_id"]["nullable"] is True
+            assert columns["event_source_version"]["nullable"] is True
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == SCHEMA_REVISION
+            )
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize(
+    ("completeness", "source_id", "source_version"),
+    (
+        ("unknown", "synthetic-event-feed", None),
+        ("unknown", None, "fixture-v1"),
+        ("complete", None, None),
+        ("complete", "", "fixture-v1"),
+        ("complete", "synthetic-event-feed", ""),
+    ),
+)
+def test_database_rejects_inconsistent_event_source_evidence(
+    database,
+    repository,
+    completeness,
+    source_id,
+    source_version,
+):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    _market, regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix=f"src-{uuid4().hex[:8]}",
+    )
+    with (
+        pytest.raises(
+            DBAPIError,
+            match="regulation_snapshots_event_source_evidence",
+        ),
+        database.engine.begin() as connection,
+    ):
+        connection.execute(
+            text("""
+                INSERT INTO regulation_snapshots (
+                    id, idempotency_key, command_hash, market_snapshot_id,
+                    trade_date, as_of, status_sequence_watermark, created_at,
+                    event_source_completeness, event_source_id,
+                    event_source_version
+                )
+                SELECT :id, :key, :command_hash, market_snapshot_id,
+                       trade_date, as_of, status_sequence_watermark, created_at,
+                       :completeness, :source_id, :source_version
+                  FROM regulation_snapshots
+                 WHERE id = :snapshot_id
+            """),
+            {
+                "id": uuid4(),
+                "key": f"invalid-event-source-{uuid4()}",
+                "command_hash": "0" * 64,
+                "completeness": completeness,
+                "source_id": source_id,
+                "source_version": source_version,
+                "snapshot_id": snapshot.id,
+            },
+        )
 
 
 def test_regulation_tables_are_append_only_and_migration_is_ready(database):
@@ -2244,7 +2472,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0009_regulation"
+    assert SCHEMA_REVISION == "0009a_reg_event_source"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {
@@ -2258,6 +2486,11 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
         "regulation_snapshot_events",
         "regulation_commands",
     } <= set(inspector.get_table_names())
+    snapshot_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("regulation_snapshots")
+    }
+    assert snapshot_columns["event_source_completeness"]["nullable"] is False
     assert any(
         fk["referred_table"] == "regulation_snapshots"
         and fk["constrained_columns"] == ["regulation_input_id"]
@@ -2288,5 +2521,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0009_regulation"
+            == "0009a_reg_event_source"
         )

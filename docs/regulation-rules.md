@@ -56,13 +56,27 @@ dragon-radar regulation-rule-activate RULE_ID VERSION --key KEY
 dragon-radar regulation-rule-withdraw RULE_ID VERSION --reason REASON --key KEY
 dragon-radar regulation-event-add EVENT.json --key KEY
 dragon-radar regulation-materialize OBSERVATIONS.json \
-  --market-snapshot UUID --key KEY
+  --market-snapshot UUID \
+  --event-source-completeness complete \
+  --event-source-id SOURCE_ID \
+  --event-source-version SOURCE_VERSION \
+  --key KEY
 ```
 
 `OBSERVATIONS.json` is an array of `RegulationObservation` objects. Every
 observation includes `rule_id` and `rule_version`; values are never reused
 between rule versions. Omitted observations are materialized as
 `pending/input_missing` for every applicable rule across the market snapshot's
-full expected security pool. Publication then binds the resulting snapshot through
+full expected security pool.
+
+Event-source evidence defaults to `unknown`, with no source ID or version.
+`complete` is accepted only when both identifier flags are present and valid.
+The attestation is immutable, participates in the materialization command hash,
+and is copied into the published payload. Listed formal events remain visible
+when completeness is unknown, but a complete total is reported only for an
+explicitly complete source. No calculation state, readiness state, or listed
+event count upgrades completeness.
+
+Publication binds the resulting snapshot through
 `PublicationCommand.regulation_input_id`; `PublicationService` materializes the
-stable completeness, rule, calculation, and event payload.
+stable completeness, rule, calculation, event, and event-source payload.

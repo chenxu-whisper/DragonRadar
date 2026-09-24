@@ -133,8 +133,18 @@ export async function mockRegulation(
     if (url.pathname === '/api/regulation/events') {
       return route.fulfill({
         json: regulationEnvelope(state.unknownEvents
-          ? { events: null, total: null, source_check: 'unknown' }
-          : { events, total: events.length, source_check: 'pass' }, selectedCoverage),
+          ? {
+            events,
+            listed_count: events.length,
+            total: null,
+            source_check: 'unknown',
+          }
+          : {
+            events,
+            listed_count: events.length,
+            total: events.length,
+            source_check: 'pass',
+          }, selectedCoverage),
       });
     }
     return route.fulfill({ status: 404, json: {} });
@@ -162,7 +172,7 @@ export async function mockRegulation(
             reason: 'intraday_seal_fields_unavailable',
           },
           regulation: {
-            formal_event_count: state.unknownEvents ? null : events.length,
+            formal_event_count: events.length,
             event_source_completeness: state.unknownEvents
               ? 'unknown'
               : 'complete',

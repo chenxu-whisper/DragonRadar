@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0009_regulation"
+SCHEMA_REVISION = "0009a_reg_event_source"
 
 
 class Database:

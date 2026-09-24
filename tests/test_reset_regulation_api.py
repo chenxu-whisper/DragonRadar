@@ -90,10 +90,17 @@ def _observation(rule_id: str, value: str):
     )
 
 
-@pytest.fixture
-def regulation_publication(database, repository):
+def _build_regulation_publication(
+    database,
+    repository,
+    *,
+    suffix,
+    event_source_completeness="unknown",
+    event_source_id=None,
+    event_source_version=None,
+):
     market = repository.publish(
-        repository.import_batch(batch(), key="task16-market").id
+        repository.import_batch(batch(), key=f"task16-market-{suffix}").id
     )
     regulations = RegulationRepository(database, repository, clock=lambda: NOW)
     for rule_id, pending in (
@@ -104,7 +111,7 @@ def regulation_publication(database, repository):
     ):
         regulations.register_rule(
             _rule(rule_id, pending=pending),
-            key=f"task16-rule-{rule_id}",
+            key=f"task16-rule-{suffix}-{rule_id}",
         )
     regulations.append_event(
         RegulationEvent(
@@ -118,7 +125,7 @@ def regulation_publication(database, repository):
             effective_from=DAYS[-1],
             effective_to=None,
         ),
-        key="task16-event",
+        key=f"task16-event-{suffix}",
     )
     regulation_snapshot = regulations.materialize(
         market_snapshot_id=market.id,
@@ -128,7 +135,10 @@ def regulation_publication(database, repository):
             _observation("synthetic-triggered", "0.80"),
             _observation("synthetic-pending", "0.40"),
         ),
-        key="task16-regulation-snapshot",
+        event_source_completeness=event_source_completeness,
+        event_source_id=event_source_id,
+        event_source_version=event_source_version,
+        key=f"task16-regulation-snapshot-{suffix}",
     )
     publication = PublicationService(
         database,
@@ -141,9 +151,30 @@ def regulation_publication(database, repository):
             regulation_input_id=regulation_snapshot.id,
             disabled_domains=("topic", "news", "role"),
         ),
-        key="task16-publication",
+        key=f"task16-publication-{suffix}",
     )
     return publication, PublicationRepository(database, repository, clock=lambda: NOW)
+
+
+@pytest.fixture
+def regulation_publication(database, repository):
+    return _build_regulation_publication(
+        database,
+        repository,
+        suffix="unknown",
+    )
+
+
+@pytest.fixture
+def complete_regulation_publication(database, repository):
+    return _build_regulation_publication(
+        database,
+        repository,
+        suffix="complete",
+        event_source_completeness="complete",
+        event_source_id="synthetic-event-feed",
+        event_source_version="fixture-v1",
+    )
 
 
 async def _client(repository):
@@ -155,34 +186,10 @@ async def _client(repository):
     )
 
 
-def _with_complete_event_source(publications, publication):
-    snapshot = publications.get_snapshot(publication.id)
-    regulation = snapshot.result("regulation")
-    complete = regulation.model_copy(
-        update={
-            "payload": {
-                **regulation.payload,
-                "event_source_completeness": "complete",
-            }
-        }
-    )
-    return _SnapshotRepository(
-        PublishedSnapshot(
-            snapshot.publication,
-            snapshot.market_snapshot,
-            tuple(
-                complete if result.domain == "regulation" else result
-                for result in snapshot.results
-            ),
-        )
-    )
-
-
 async def test_status_keeps_completeness_calculations_and_formal_events_separate(
-    regulation_publication,
+    complete_regulation_publication,
 ):
-    publication, publications = regulation_publication
-    publications = _with_complete_event_source(publications, publication)
+    publication, publications = complete_regulation_publication
     params = {
         "date": str(publication.trade_date),
         "snapshot_id": str(publication.id),
@@ -207,9 +214,7 @@ async def test_status_keeps_completeness_calculations_and_formal_events_separate
     calculations = {
         item["rule_id"]: item for item in body["data"]["region2_calc_state"]
     }
-    assert {
-        rule_id: item["state"] for rule_id, item in calculations.items()
-    } == {
+    assert {rule_id: item["state"] for rule_id, item in calculations.items()} == {
         "synthetic-approaching": "approaching_alert",
         "synthetic-idle": "idle",
         "synthetic-pending": "pending",
@@ -246,10 +251,9 @@ async def test_status_keeps_completeness_calculations_and_formal_events_separate
 
 
 async def test_events_known_empty_is_zero_and_filter_does_not_infer_from_calculation(
-    regulation_publication,
+    complete_regulation_publication,
 ):
-    publication, publications = regulation_publication
-    publications = _with_complete_event_source(publications, publication)
+    publication, publications = complete_regulation_publication
     common = {
         "date": str(publication.trade_date),
         "snapshot_id": str(publication.id),
@@ -268,10 +272,12 @@ async def test_events_known_empty_is_zero_and_filter_does_not_infer_from_calcula
     assert known_empty.status_code == 200, known_empty.text
     assert known_empty.json()["data"] == {
         "events": [],
+        "listed_count": 0,
         "total": 0,
         "source_check": "pass",
     }
     assert formal.json()["data"]["total"] == 1
+    assert formal.json()["data"]["listed_count"] == 1
     assert formal.json()["data"]["events"][0]["event_type"] == "monitoring"
     assert all(
         event["rule_id"] != "synthetic-triggered"
@@ -290,9 +296,7 @@ class _SnapshotRepository:
 
     def list_snapshots(self, *, trade_date=None, limit=1, **_kwargs):
         return (
-            [self.snapshot]
-            if trade_date == self.snapshot.trade_date and limit
-            else []
+            [self.snapshot] if trade_date == self.snapshot.trade_date and limit else []
         )
 
 
@@ -334,6 +338,7 @@ async def test_missing_event_source_is_unknown_not_zero(regulation_publication):
     assert response.status_code == 200, response.text
     assert response.json()["data"] == {
         "events": None,
+        "listed_count": None,
         "total": None,
         "source_check": "unknown",
     }
@@ -354,6 +359,21 @@ async def test_ready_regulation_without_event_source_evidence_remains_unknown(
                 "snapshot_id": str(publication.id),
             },
         )
+        empty = await client.get(
+            "/api/regulation/events",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+                "security_id": "NO-FORMAL-EVENT",
+            },
+        )
+        status = await client.get(
+            "/api/regulation/status",
+            params={
+                "date": str(publication.trade_date),
+                "snapshot_id": str(publication.id),
+            },
+        )
         stock = await client.get(
             "/api/stock/A",
             params={
@@ -363,20 +383,42 @@ async def test_ready_regulation_without_event_source_evidence_remains_unknown(
         )
 
     assert events.json()["data"] == {
-        "events": None,
+        "events": [
+            {
+                "event_id": "formal-monitoring-001",
+                "rule_id": "synthetic-approaching",
+                "rule_version": "synthetic-v1",
+                "security_id": "A",
+                "event_type": "monitoring",
+                "display_state": "monitoring",
+                "announcement_id": "notice-001",
+                "announcement_url": "https://exchange.example.test/notices/001",
+                "effective_from": DAYS[-1].isoformat(),
+                "effective_to": None,
+            }
+        ],
+        "listed_count": 1,
         "total": None,
         "source_check": "unknown",
     }
+    assert empty.json()["data"] == {
+        "events": [],
+        "listed_count": 0,
+        "total": None,
+        "source_check": "unknown",
+    }
+    assert status.json()["data"]["region3_events"] == events.json()["data"]["events"]
     assert stock.json()["data"]["regulation"] == {
-        "formal_event_count": None,
+        "formal_event_count": 1,
         "event_source_completeness": "unknown",
         "reason": "regulation_event_source_unknown",
     }
 
 
-async def test_explicit_complete_event_source_can_report_zero(regulation_publication):
-    publication, publications = regulation_publication
-    publications = _with_complete_event_source(publications, publication)
+async def test_explicit_complete_event_source_can_report_zero(
+    complete_regulation_publication,
+):
+    publication, publications = complete_regulation_publication
 
     async with await _client(publications) as client:
         response = await client.get(
@@ -390,16 +432,16 @@ async def test_explicit_complete_event_source_can_report_zero(regulation_publica
 
     assert response.json()["data"] == {
         "events": [],
+        "listed_count": 0,
         "total": 0,
         "source_check": "pass",
     }
 
 
 async def test_stock_detail_reports_formal_count_and_event_source_completeness(
-    regulation_publication,
+    complete_regulation_publication,
 ):
-    publication, publications = regulation_publication
-    publications = _with_complete_event_source(publications, publication)
+    publication, publications = complete_regulation_publication
 
     async with await _client(publications) as client:
         response = await client.get(

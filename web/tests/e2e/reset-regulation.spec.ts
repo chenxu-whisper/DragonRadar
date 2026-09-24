@@ -57,7 +57,16 @@ test('unknown event source is not rendered as zero formal events', async ({ page
 
   const events = page.getByRole('region', { name: '已披露正式事件与限制' });
   await expect(events).toContainText('事件来源完整性未知');
+  await expect(events).toContainText('4 条已列记录');
+  await expect(events.getByRole('link', { name: '公告原文' })).toHaveCount(4);
   await expect(events).not.toContainText('0 条正式记录');
+
+  await page.goto(
+    `/?view=stock&snapshot=${REGULATION_SNAPSHOT}&date=${REGULATION_DATE}` +
+    '&security=TEST001&return_view=regulation',
+  );
+  await expect(page.getByText('正式监管事件：4')).toBeVisible();
+  await expect(page.getByText(/事件来源完整性：未知/)).toBeVisible();
 });
 
 test('complete numerical inputs do not activate a pending rule', async ({ page }) => {

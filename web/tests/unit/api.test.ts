@@ -226,11 +226,6 @@ describe('read-only request boundary', () => {
       event_source_completeness: 'complete',
       reason: null,
     } } }],
-    ['regulation unknown with count', { data: { regulation: {
-      formal_event_count: 0,
-      event_source_completeness: 'unknown',
-      reason: 'regulation_event_source_unknown',
-    } } }],
   ])('rejects a malformed reset stock %s with a sanitized 502', async (_field, patch) => {
     const valid = {
       trade_date: '2026-09-10',
@@ -275,7 +270,7 @@ describe('read-only request boundary', () => {
     });
   });
 
-  it('accepts unknown regulation event source and complete seal fields', async () => {
+  it('accepts listed regulation count with unknown source and complete seal fields', async () => {
     const valid = {
       ...resetEnvelope({
         security_id: 'TEST001',
@@ -290,9 +285,9 @@ describe('read-only request boundary', () => {
           continuous_boards: 2, reason: null,
         },
         regulation: {
-          formal_event_count: null,
+          formal_event_count: 0,
           event_source_completeness: 'unknown',
-          reason: 'regulation_missing',
+          reason: 'regulation_event_source_unknown',
         },
       }),
       basis: { unit: 'currency/share', currency: 'CNY', price_type: 'raw', benchmark: null },
@@ -304,7 +299,7 @@ describe('read-only request boundary', () => {
     })).resolves.toMatchObject({
       data: {
         regulation: {
-          formal_event_count: null,
+          formal_event_count: 0,
           event_source_completeness: 'unknown',
         },
       },

@@ -163,12 +163,23 @@ export function validateRegulationEventsResponse(
     return 'malformed_response';
   }
   if (data.source_check === 'unknown') {
-    return data.events === null && data.total === null
+    if (data.events === null) {
+      return data.listed_count === null && data.total === null
+        ? null
+        : 'malformed_response';
+    }
+    return Array.isArray(data.events) &&
+      data.events.every(event) &&
+      integer(data.listed_count) &&
+      data.listed_count === data.events.length &&
+      data.total === null
       ? null
       : 'malformed_response';
   }
   return Array.isArray(data.events) &&
     data.events.every(event) &&
+    integer(data.listed_count) &&
+    data.listed_count === data.events.length &&
     integer(data.total) &&
     data.total === data.events.length
     ? null

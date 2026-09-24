@@ -109,15 +109,23 @@ describe('regulation response validation', () => {
 
   it('validates event totals and unknown-source nullability', () => {
     expect(validateRegulationEventsResponse(
-      envelope({ events: [event], total: 0, source_check: 'pass' }),
+      envelope({ events: [event], listed_count: 1, total: 0, source_check: 'pass' }),
       selection,
     )).toBe('malformed_response');
     expect(validateRegulationEventsResponse(
-      envelope({ events: [], total: 0, source_check: 'unknown' }),
+      envelope({ events: [], listed_count: 0, total: null, source_check: 'unknown' }),
+      selection,
+    )).toBeNull();
+    expect(validateRegulationEventsResponse(
+      envelope({ events: [event], listed_count: 1, total: null, source_check: 'unknown' }),
+      selection,
+    )).toBeNull();
+    expect(validateRegulationEventsResponse(
+      envelope({ events: [event], listed_count: 1, total: 1, source_check: 'unknown' }),
       selection,
     )).toBe('malformed_response');
     expect(validateRegulationEventsResponse(
-      envelope({ events: null, total: null, source_check: 'unknown' }),
+      envelope({ events: null, listed_count: null, total: null, source_check: 'unknown' }),
       selection,
     )).toBeNull();
   });

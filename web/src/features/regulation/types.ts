@@ -65,6 +65,7 @@ export interface RegulationStatus {
 
 export interface RegulationEvents {
   events: RegulationEvent[] | null;
+  listed_count: number | null;
   total: number | null;
   source_check: SourceCheck;
 }
