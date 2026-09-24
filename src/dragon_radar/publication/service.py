@@ -159,9 +159,10 @@ class PublicationService:
             dependencies.extend(NewsService.dependencies(news_context))
         regulation_context = None
         if command.regulation_input_id is not None:
-            regulation_context = self.regulations.snapshot_context(
-                command.regulation_input_id
-            )
+            regulation_context = self.regulations.snapshot_contexts(
+                connection,
+                (command.regulation_input_id,),
+            )[command.regulation_input_id]
             if (
                 regulation_context["snapshot"].market_snapshot_id
                 != command.market_snapshot_id

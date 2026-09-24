@@ -668,6 +668,7 @@ def test_materialize_sql_count_does_not_scale_with_rules_times_securities(
             record_statement,
         )
     small_count = len(statements)
+    assert small_count == 16
 
     for index in range(1, 6):
         regulations.register_rule(
@@ -949,7 +950,60 @@ def test_regulated_publication_list_prefetches_contexts_with_fixed_query_budget(
         )
         assert result.payload["calculations"][0]["state"] == "approaching_alert"
     assert one_count == many_count
-    assert many_count <= 22
+    assert many_count == 21
+
+
+def test_market_only_publication_list_keeps_thirteen_query_budget(
+    database,
+    repository,
+):
+    from sqlalchemy import event as sqlalchemy_event
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.service import PublicationService
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="market-only-query-budget-batch",
+        ).id
+    )
+    PublicationService(database, repository, clock=lambda: NOW).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            disabled_domains=("topic", "news", "regulation", "role"),
+        ),
+        key="market-only-query-budget-publication",
+    )
+    statements = []
+
+    def record_statement(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        statements.append(statement)
+
+    sqlalchemy_event.listen(database.engine, "before_cursor_execute", record_statement)
+    try:
+        PublicationRepository(
+            database,
+            repository,
+            clock=lambda: NOW,
+        ).list_snapshots(limit=1)
+    finally:
+        sqlalchemy_event.remove(
+            database.engine,
+            "before_cursor_execute",
+            record_statement,
+        )
+
+    assert len(statements) == 13
 
 
 def test_prefetched_regulation_publications_still_recheck_payload_and_lineage(
@@ -1087,6 +1141,616 @@ def _materialized_regulation_fixture(database, repository, *, suffix):
         key=f"regulation-integrity-snapshot-{suffix}",
     )
     return market, regulations, snapshot
+
+
+def _insert_snapshot_rule(
+    connection,
+    snapshot,
+    *,
+    suffix,
+    bind=True,
+):
+    from sqlalchemy import func, insert, select
+
+    from dragon_radar.regulation.tables import (
+        regulation_rules,
+        regulation_snapshot_rules,
+    )
+
+    values = _rule(rule_id=f"integrity-{suffix}").model_dump(mode="json")
+    values.update(id=uuid4(), created_at=NOW)
+    connection.execute(insert(regulation_rules).values(**values))
+    if bind:
+        position = connection.scalar(
+            select(
+                func.coalesce(func.max(regulation_snapshot_rules.c.position), -1)
+            ).where(regulation_snapshot_rules.c.snapshot_id == snapshot.id)
+        )
+        connection.execute(
+            insert(regulation_snapshot_rules).values(
+                snapshot_id=snapshot.id,
+                rule_record_id=values["id"],
+                position=position + 1,
+                active=True,
+            )
+        )
+    return values["id"]
+
+
+def _stored_input_values(snapshot, rule_record_id, **changes):
+    return {
+        "snapshot_id": snapshot.id,
+        "rule_record_id": rule_record_id,
+        "security_id": "A",
+        "trade_date": snapshot.trade_date,
+        "exchange": "TEST",
+        "board": "synthetic_test",
+        "security_status": "regular",
+        "computed_value": Decimal("0.68"),
+        "input_state": "complete",
+        **changes,
+    }
+
+
+def test_postgres_rejects_valid_looking_input_and_calculation_with_forged_state(
+    database,
+    repository,
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import (
+        regulation_calculations,
+        regulation_snapshot_inputs,
+    )
+
+    _market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix="forged-state",
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        rule_record_id = _insert_snapshot_rule(
+            connection,
+            snapshot,
+            suffix="forged-state",
+        )
+        connection.execute(
+            insert(regulation_snapshot_inputs).values(
+                **_stored_input_values(
+                    snapshot,
+                    rule_record_id,
+                    exchange="OTHER",
+                )
+            )
+        )
+        connection.execute(
+            insert(regulation_calculations).values(
+                id=uuid4(),
+                snapshot_id=snapshot.id,
+                rule_record_id=rule_record_id,
+                security_id="A",
+                trade_date=snapshot.trade_date,
+                computed_value=Decimal("0.68"),
+                input_state="complete",
+                state="pending",
+                reasons=["rule_not_applicable"],
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"rule_record_id": None},
+        {"security_id": "NOT-IN-EXPECTED-POOL"},
+        {"exchange": "OTHER"},
+        {"board": "other_board"},
+        {"security_status": "suspended"},
+    ],
+    ids=(
+        "rule-not-bound-to-snapshot",
+        "security-outside-expected-pool",
+        "exchange-mismatch",
+        "board-mismatch",
+        "security-status-mismatch",
+    ),
+)
+def test_postgres_rejects_regulation_input_outside_immutable_snapshot_context(
+    database,
+    repository,
+    changes,
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import regulation_snapshot_inputs
+
+    _market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix=uuid4().hex[:12],
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        rule_record_id = _insert_snapshot_rule(
+            connection,
+            snapshot,
+            suffix=f"input-{uuid4().hex[:8]}",
+            bind="rule_record_id" not in changes,
+        )
+        values = _stored_input_values(snapshot, rule_record_id)
+        values.update(changes)
+        if values["rule_record_id"] is None:
+            values["rule_record_id"] = rule_record_id
+        connection.execute(insert(regulation_snapshot_inputs).values(**values))
+
+
+@pytest.mark.parametrize(
+    "security_states",
+    [
+        (),
+        (
+            state(),
+            state(name="Conflicting Synthetic A", source_version="s2"),
+        ),
+    ],
+    ids=("missing-state", "conflicting-states"),
+)
+@pytest.mark.parametrize("input_state", ["missing", "conflict"])
+def test_postgres_ambiguous_market_state_allows_only_fail_closed_input(
+    database,
+    repository,
+    security_states,
+    input_state,
+):
+    from sqlalchemy import insert, select
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import (
+        regulation_rules,
+        regulation_snapshot_inputs,
+        regulation_snapshot_rules,
+        regulation_snapshots,
+    )
+    from dragon_radar.storage.models import snapshots
+
+    archive = repository.import_batch(
+        batch(security_states=security_states),
+        key=f"ambiguous-state-archive-{len(security_states)}-{input_state}",
+    )
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(
+        _rule(),
+        key=f"ambiguous-state-rule-{len(security_states)}-{input_state}",
+    )
+    market_snapshot_id = uuid4()
+    snapshot_id = uuid4()
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(snapshots).values(
+                id=market_snapshot_id,
+                batch_id=archive.id,
+                source_id="synthetic",
+                trade_date=DAYS[-1],
+                revision=1,
+                supersedes=None,
+                manifest={},
+                published_at=NOW,
+            )
+        )
+        rule_record_id = connection.scalar(
+            select(regulation_rules.c.id).where(
+                regulation_rules.c.rule_id == "synthetic-upper"
+            )
+        )
+        connection.execute(
+            insert(regulation_snapshots).values(
+                id=snapshot_id,
+                idempotency_key=f"ambiguous-state-{len(security_states)}-{input_state}",
+                command_hash="a" * 64,
+                market_snapshot_id=market_snapshot_id,
+                trade_date=DAYS[-1],
+                as_of=NOW,
+                status_sequence_watermark=0,
+                created_at=NOW,
+            )
+        )
+        connection.execute(
+            insert(regulation_snapshot_rules).values(
+                snapshot_id=snapshot_id,
+                rule_record_id=rule_record_id,
+                position=0,
+                active=True,
+            )
+        )
+        connection.execute(
+            insert(regulation_snapshot_inputs).values(
+                snapshot_id=snapshot_id,
+                rule_record_id=rule_record_id,
+                security_id="A",
+                trade_date=DAYS[-1],
+                exchange="unknown",
+                board="unknown",
+                security_status="unknown",
+                computed_value=None,
+                input_state=input_state,
+            )
+        )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        second_rule_record_id = _insert_snapshot_rule(
+            connection,
+            SimpleNamespace(id=snapshot_id),
+            suffix=f"ambiguous-{len(security_states)}",
+        )
+        connection.execute(
+            insert(regulation_snapshot_inputs).values(
+                snapshot_id=snapshot_id,
+                rule_record_id=second_rule_record_id,
+                security_id="A",
+                trade_date=DAYS[-1],
+                exchange="TEST",
+                board="synthetic_test",
+                security_status="regular",
+                computed_value=Decimal("0.68"),
+                input_state="complete",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("rule_changes", "field"),
+    [
+        ({"threshold": Decimal("Infinity")}, "threshold-positive-infinity"),
+        (
+            {
+                "direction": "lower",
+                "threshold": Decimal("-Infinity"),
+                "warning_threshold": Decimal("0.35"),
+            },
+            "threshold-negative-infinity",
+        ),
+        ({"warning_threshold": Decimal("-Infinity")}, "warning-negative-infinity"),
+        (
+            {
+                "direction": "lower",
+                "threshold": Decimal("0.30"),
+                "warning_threshold": Decimal("Infinity"),
+            },
+            "warning-positive-infinity",
+        ),
+    ],
+)
+def test_postgres_rejects_nonfinite_regulation_rule_thresholds(
+    database,
+    rule_changes,
+    field,
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import regulation_rules
+
+    values = _stored_rule_values(
+        rule_id=f"nonfinite-{field}"[:30],
+        **rule_changes,
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(regulation_rules).values(**values))
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_postgres_rejects_nonfinite_regulation_snapshot_inputs(
+    database,
+    repository,
+    value,
+):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import regulation_snapshot_inputs
+
+    _market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix=uuid4().hex[:12],
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        rule_record_id = _insert_snapshot_rule(
+            connection,
+            snapshot,
+            suffix=f"input-{value}",
+        )
+        connection.execute(
+            insert(regulation_snapshot_inputs).values(
+                **_stored_input_values(
+                    snapshot,
+                    rule_record_id,
+                    computed_value=Decimal(value),
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "state"),
+    [
+        ("NaN", "idle"),
+        ("Infinity", "triggered"),
+        ("-Infinity", "idle"),
+    ],
+)
+def test_postgres_rejects_nonfinite_regulation_calculations(
+    database,
+    repository,
+    value,
+    state,
+):
+    from sqlalchemy import insert, text
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.regulation.tables import (
+        regulation_calculations,
+        regulation_snapshot_inputs,
+    )
+
+    _market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix=uuid4().hex[:12],
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        rule_record_id = _insert_snapshot_rule(
+            connection,
+            snapshot,
+            suffix=f"calc-{uuid4().hex[:8]}",
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE regulation_snapshot_inputs "
+                "DISABLE TRIGGER regulation_snapshot_inputs_guard"
+            )
+        )
+        connection.execute(
+            insert(regulation_snapshot_inputs).values(
+                **_stored_input_values(
+                    snapshot,
+                    rule_record_id,
+                    computed_value=Decimal(value),
+                )
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE regulation_snapshot_inputs "
+                "ENABLE TRIGGER regulation_snapshot_inputs_guard"
+            )
+        )
+        connection.execute(
+            insert(regulation_calculations).values(
+                id=uuid4(),
+                snapshot_id=snapshot.id,
+                rule_record_id=rule_record_id,
+                security_id="A",
+                trade_date=snapshot.trade_date,
+                computed_value=Decimal(value),
+                input_state="complete",
+                state=state,
+                reasons=[],
+            )
+        )
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_postgres_jsonb_rejects_nonfinite_json_number_tokens(database, token):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(text(f"""SELECT '{{"value": {token}}}'::jsonb"""))
+
+
+@pytest.mark.parametrize("publication_status", ["published", "revoked"])
+@pytest.mark.parametrize(
+    "child_table",
+    [
+        "regulation_snapshot_rules",
+        "regulation_snapshot_inputs",
+        "regulation_calculations",
+        "regulation_snapshot_events",
+    ],
+)
+def test_published_regulation_snapshot_rejects_new_children(
+    database,
+    repository,
+    publication_status,
+    child_table,
+):
+    from sqlalchemy import insert, update
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.publication.tables import publications
+    from dragon_radar.regulation.tables import (
+        regulation_calculations,
+        regulation_events,
+        regulation_snapshot_events,
+        regulation_snapshot_inputs,
+        regulation_snapshot_rules,
+    )
+
+    market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix=uuid4().hex[:12],
+    )
+    event_id = f"sealed-{uuid4().hex[:20]}"
+    with database.engine.begin() as connection:
+        calculation_rule_id = _insert_snapshot_rule(
+            connection,
+            snapshot,
+            suffix=f"calc-{uuid4().hex[:8]}",
+        )
+        connection.execute(
+            insert(regulation_snapshot_inputs).values(
+                **_stored_input_values(snapshot, calculation_rule_id)
+            )
+        )
+        input_rule_id = _insert_snapshot_rule(
+            connection,
+            snapshot,
+            suffix=f"input-{uuid4().hex[:8]}",
+        )
+        unbound_rule_id = _insert_snapshot_rule(
+            connection,
+            snapshot,
+            suffix=f"rule-{uuid4().hex[:8]}",
+            bind=False,
+        )
+        event_values = _event(
+            event_id=event_id,
+            announcement_id=f"notice-{uuid4().hex[:8]}",
+        ).model_dump(mode="json")
+        event_values["created_at"] = NOW
+        connection.execute(insert(regulation_events).values(**event_values))
+
+    publication = PublicationService(
+        database,
+        repository,
+        clock=lambda: NOW,
+    ).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            regulation_input_id=snapshot.id,
+            disabled_domains=("topic", "news", "role"),
+        ),
+        key=f"sealed-{publication_status}-{child_table}",
+    )
+    if publication_status == "revoked":
+        with database.engine.begin() as connection:
+            connection.execute(
+                update(publications)
+                .where(publications.c.id == publication.id)
+                .values(status="revoked")
+            )
+
+    statements = {
+        "regulation_snapshot_rules": insert(regulation_snapshot_rules).values(
+            snapshot_id=snapshot.id,
+            rule_record_id=unbound_rule_id,
+            position=99,
+            active=True,
+        ),
+        "regulation_snapshot_inputs": insert(regulation_snapshot_inputs).values(
+            **_stored_input_values(snapshot, input_rule_id)
+        ),
+        "regulation_calculations": insert(regulation_calculations).values(
+            id=uuid4(),
+            snapshot_id=snapshot.id,
+            rule_record_id=calculation_rule_id,
+            security_id="A",
+            trade_date=snapshot.trade_date,
+            computed_value=Decimal("0.68"),
+            input_state="complete",
+            state="approaching_alert",
+            reasons=[],
+        ),
+        "regulation_snapshot_events": insert(regulation_snapshot_events).values(
+            snapshot_id=snapshot.id,
+            event_id=event_id,
+            position=99,
+        ),
+    }
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(statements[child_table])
+
+
+def test_regulation_publish_reuses_outer_transaction_for_snapshot_context(
+    database,
+    repository,
+    monkeypatch,
+):
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+
+    market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix="single-connection",
+    )
+    service = PublicationService(database, repository, clock=lambda: NOW)
+
+    def reject_second_transaction(_snapshot_id):
+        raise AssertionError("publish requested a second database connection")
+
+    monkeypatch.setattr(
+        service.regulations, "snapshot_context", reject_second_transaction
+    )
+
+    publication = service.publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            regulation_input_id=snapshot.id,
+            disabled_domains=("topic", "news", "role"),
+        ),
+        key="regulation-single-connection",
+    )
+
+    assert publication.regulation_input_id == snapshot.id
+
+
+def test_materialize_context_consumes_regulation_inputs_once():
+    from dragon_radar.regulation.engine import evaluate_rule
+    from dragon_radar.regulation.models import RegulationSnapshot
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    class OnePass:
+        def __init__(self, values):
+            self.values = values
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("regulation inputs were scanned more than once")
+            return iter(self.values)
+
+    observations = (
+        _observation(security_id="A"),
+        _observation(security_id="B"),
+    )
+    inputs = OnePass(observations)
+    context = {
+        "snapshot": RegulationSnapshot(
+            id=uuid4(),
+            market_snapshot_id=uuid4(),
+            trade_date=DAYS[-1],
+            as_of=NOW,
+            created_at=NOW,
+        ),
+        "calculations": tuple(
+            evaluate_rule(_rule(), observation) for observation in observations
+        ),
+        "events": (),
+        "inputs": inputs,
+        "expected_security_ids": ("A", "B"),
+        "rule_bindings": ({"active": True},),
+        "rules": (_rule(),),
+    }
+
+    result = RegulationRepository.materialize_context(context)
+
+    assert result.coverage == {
+        "expected": 2,
+        "valid": 2,
+        "legal_excluded": 0,
+        "missing": 0,
+    }
+    assert inputs.iterations == 1
 
 
 @pytest.mark.parametrize(

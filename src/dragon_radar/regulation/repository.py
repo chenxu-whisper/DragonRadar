@@ -671,6 +671,15 @@ class RegulationRepository:
                 materialized_inputs_by_identity[identity]
                 for identity in sorted(materialized_inputs_by_identity)
             )
+            input_rule_record_ids = {
+                rule_record_id for rule_record_id, _observation in materialized_inputs
+            }
+            bound = [
+                (row, latest_status_by_rule.get(row["id"]))
+                for row in rule_rows
+                if latest_status_by_rule.get(row["id"]) != "withdrawn"
+                or row["id"] in input_rule_record_ids
+            ]
             inputs_by_rule_record_id = defaultdict(list)
             for rule_record_id, observation in materialized_inputs:
                 inputs_by_rule_record_id[rule_record_id].append(observation)
@@ -703,7 +712,7 @@ class RegulationRepository:
             }
             connection.execute(insert(regulation_snapshots).values(**root))
             rule_bindings = []
-            for position, (row, latest_status) in enumerate(selected):
+            for position, (row, latest_status) in enumerate(bound):
                 active = (
                     latest_status == "active"
                     if latest_status is not None
@@ -1001,18 +1010,16 @@ class RegulationRepository:
             (item.security_id, item.rule_id, item.rule_version)
             for item in context["calculations"]
         }
+        indexed_inputs = defaultdict(list)
+        for item in context["inputs"]:
+            if (
+                item.security_id,
+                item.rule_id,
+                item.rule_version,
+            ) in calculation_identities:
+                indexed_inputs[item.security_id].append(item)
         inputs_by_security = {
-            security_id: tuple(
-                item
-                for item in context["inputs"]
-                if item.security_id == security_id
-                and (
-                    item.security_id,
-                    item.rule_id,
-                    item.rule_version,
-                )
-                in calculation_identities
-            )
+            security_id: tuple(indexed_inputs.get(security_id, ()))
             for security_id in expected_security_ids
         }
         expected = len(expected_security_ids)

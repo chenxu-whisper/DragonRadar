@@ -257,8 +257,16 @@ def upgrade():
                )
                OR NEW.effective_to IS NOT NULL
                   AND NEW.effective_to <= NEW.effective_from
-               OR NEW.threshold = 'NaN'::numeric
-               OR NEW.warning_threshold = 'NaN'::numeric
+               OR NEW.threshold IN (
+                   'NaN'::numeric,
+                   'Infinity'::numeric,
+                   '-Infinity'::numeric
+               )
+               OR NEW.warning_threshold IN (
+                   'NaN'::numeric,
+                   'Infinity'::numeric,
+                   '-Infinity'::numeric
+               )
                OR (
                    NEW.benchmark_index IS NOT NULL
                    AND NOT regulation_identifier_is_valid(NEW.benchmark_index)
@@ -362,7 +370,11 @@ def upgrade():
                 EXCEPTION WHEN invalid_text_representation THEN
                     RAISE EXCEPTION 'invalid regulation test case';
                 END;
-                IF test_value = 'NaN'::numeric
+                IF test_value IN (
+                       'NaN'::numeric,
+                       'Infinity'::numeric,
+                       '-Infinity'::numeric
+                   )
                    OR test_case ->> 'name' = ANY(case_names)
                 THEN
                     RAISE EXCEPTION 'invalid regulation test case';
@@ -549,9 +561,12 @@ def upgrade():
                AND sequence <= status_watermark
              ORDER BY sequence DESC
              LIMIT 1;
-            IF latest_status = 'withdrawn'
-               OR NEW.active IS DISTINCT FROM
-                  COALESCE(latest_status = 'active', initial_active)
+            IF NEW.active IS DISTINCT FROM (
+                  CASE
+                      WHEN latest_status = 'withdrawn' THEN FALSE
+                      ELSE COALESCE(latest_status = 'active', initial_active)
+                  END
+               )
             THEN
                 RAISE EXCEPTION 'invalid regulation snapshot rule';
             END IF;
@@ -565,18 +580,97 @@ def upgrade():
 
     op.execute("""
         CREATE FUNCTION guard_regulation_snapshot_input() RETURNS trigger AS $$
+        DECLARE
+            snapshot_date date;
+            snapshot_as_of timestamptz;
+            market_json jsonb;
+            effective_state_count integer;
+            expected_exchange text;
+            expected_board text;
+            expected_security_status text;
         BEGIN
-            IF NOT EXISTS (
-                SELECT 1
-                  FROM regulation_snapshots snapshot
-                 WHERE snapshot.id = NEW.snapshot_id
-                   AND snapshot.trade_date = NEW.trade_date
-            ) THEN
+            SELECT regulation.trade_date,
+                   regulation.as_of,
+                   batch.canonical_json::jsonb
+              INTO STRICT snapshot_date, snapshot_as_of, market_json
+              FROM regulation_snapshots regulation
+              JOIN snapshots market
+                ON market.id = regulation.market_snapshot_id
+              JOIN import_batches batch
+                ON batch.id = market.batch_id
+             WHERE regulation.id = NEW.snapshot_id;
+            IF NEW.trade_date IS DISTINCT FROM snapshot_date
+               OR NOT EXISTS (
+                   SELECT 1
+                     FROM regulation_snapshot_rules binding
+                    WHERE binding.snapshot_id = NEW.snapshot_id
+                      AND binding.rule_record_id = NEW.rule_record_id
+               )
+               OR NOT EXISTS (
+                   SELECT 1
+                     FROM jsonb_array_elements_text(
+                         market_json -> 'expected_security_ids'
+                     ) AS expected(security_id)
+                    WHERE expected.security_id = NEW.security_id
+               )
+            THEN
                 RAISE EXCEPTION 'invalid regulation snapshot input';
+            END IF;
+
+            SELECT count(*),
+                   max(state ->> 'exchange'),
+                   max(COALESCE(state ->> 'board_category', 'unknown')),
+                   max(
+                       CASE
+                           WHEN (state ->> 'suspended')::boolean IS TRUE
+                           THEN 'suspended'
+                           WHEN (state ->> 'is_st')::boolean IS TRUE
+                           THEN 'st'
+                           WHEN (state ->> 'is_delisting')::boolean IS TRUE
+                           THEN 'delisting'
+                           WHEN state ->> 'suspended' IS NULL
+                                OR state ->> 'is_st' IS NULL
+                                OR state ->> 'is_delisting' IS NULL
+                           THEN 'unknown'
+                           ELSE 'regular'
+                       END
+                   )
+              INTO effective_state_count,
+                   expected_exchange,
+                   expected_board,
+                   expected_security_status
+              FROM jsonb_array_elements(
+                  market_json -> 'security_states'
+              ) state
+             WHERE state ->> 'security_id' = NEW.security_id
+               AND (state ->> 'available_at')::timestamptz <= snapshot_as_of
+               AND (state ->> 'effective_from')::date <= snapshot_date
+               AND (
+                   state ->> 'effective_to' IS NULL
+                   OR snapshot_date < (state ->> 'effective_to')::date
+               );
+            IF effective_state_count = 1 THEN
+                IF NEW.exchange IS DISTINCT FROM expected_exchange
+                   OR NEW.board IS DISTINCT FROM expected_board
+                   OR NEW.security_status IS DISTINCT FROM expected_security_status
+                THEN
+                    RAISE EXCEPTION 'invalid regulation snapshot input state identity';
+                END IF;
+            ELSIF NEW.exchange <> 'unknown'
+                  OR NEW.board <> 'unknown'
+                  OR NEW.security_status <> 'unknown'
+                  OR NEW.computed_value IS NOT NULL
+                  OR NEW.input_state NOT IN ('missing', 'conflict')
+            THEN
+                RAISE EXCEPTION 'ambiguous regulation snapshot input state';
             END IF;
             IF (NEW.input_state = 'complete') IS DISTINCT FROM
                    (NEW.computed_value IS NOT NULL)
-               OR NEW.computed_value = 'NaN'::numeric
+               OR NEW.computed_value IN (
+                   'NaN'::numeric,
+                   'Infinity'::numeric,
+                   '-Infinity'::numeric
+               )
             THEN
                 RAISE EXCEPTION 'invalid regulation snapshot input state';
             END IF;
@@ -619,6 +713,13 @@ def upgrade():
 
             IF NEW.trade_date IS DISTINCT FROM snapshot_date THEN
                 RAISE EXCEPTION 'invalid regulation calculation lineage';
+            END IF;
+            IF NEW.computed_value IN (
+                'NaN'::numeric,
+                'Infinity'::numeric,
+                '-Infinity'::numeric
+            ) THEN
+                RAISE EXCEPTION 'invalid regulation calculation value';
             END IF;
             IF rule_row.review_switch <> 'approved' THEN
                 expected_reasons :=
@@ -745,6 +846,43 @@ def upgrade():
         CREATE TRIGGER regulation_snapshot_events_guard
         BEFORE INSERT ON regulation_snapshot_events
         FOR EACH ROW EXECUTE FUNCTION guard_regulation_snapshot_event();
+    """)
+
+    op.execute("""
+        CREATE FUNCTION guard_regulation_snapshot_child_insert()
+        RETURNS trigger AS $$
+        BEGIN
+            PERFORM 1
+              FROM publications
+             WHERE regulation_input_id = NEW.snapshot_id
+               FOR UPDATE;
+            IF EXISTS (
+                SELECT 1
+                  FROM publications
+                 WHERE regulation_input_id = NEW.snapshot_id
+                   AND status IN ('published', 'revoked')
+            ) THEN
+                RAISE EXCEPTION 'published regulation snapshot is sealed';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER regulation_snapshot_rules_publication_seal
+        BEFORE INSERT ON regulation_snapshot_rules
+        FOR EACH ROW
+        EXECUTE FUNCTION guard_regulation_snapshot_child_insert();
+        CREATE TRIGGER regulation_snapshot_inputs_publication_seal
+        BEFORE INSERT ON regulation_snapshot_inputs
+        FOR EACH ROW
+        EXECUTE FUNCTION guard_regulation_snapshot_child_insert();
+        CREATE TRIGGER regulation_calculations_publication_seal
+        BEFORE INSERT ON regulation_calculations
+        FOR EACH ROW
+        EXECUTE FUNCTION guard_regulation_snapshot_child_insert();
+        CREATE TRIGGER regulation_snapshot_events_publication_seal
+        BEFORE INSERT ON regulation_snapshot_events
+        FOR EACH ROW
+        EXECUTE FUNCTION guard_regulation_snapshot_child_insert();
     """)
 
     op.execute("""
