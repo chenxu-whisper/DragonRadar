@@ -809,19 +809,23 @@ class RegulationRepository:
             root["market_batch_id"] = market_row["batch_id"]
             return _snapshot(root)
 
-    def snapshot_contexts(self, connection, snapshot_ids) -> dict[UUID, dict]:
+    def snapshot_contexts(
+        self,
+        connection,
+        snapshot_ids,
+        *,
+        lock_snapshots: bool = False,
+    ) -> dict[UUID, dict]:
         snapshot_ids = {_uuid(snapshot_id) for snapshot_id in snapshot_ids}
         if not snapshot_ids:
             return {}
+        root_query = select(regulation_snapshots).where(
+            regulation_snapshots.c.id.in_(snapshot_ids)
+        )
+        if lock_snapshots:
+            root_query = root_query.with_for_update()
         roots = {
-            row["id"]: row
-            for row in connection.execute(
-                select(regulation_snapshots).where(
-                    regulation_snapshots.c.id.in_(snapshot_ids)
-                )
-            )
-            .mappings()
-            .all()
+            row["id"]: row for row in connection.execute(root_query).mappings().all()
         }
         if set(roots) != snapshot_ids:
             raise NotFound("Regulation snapshot not found")

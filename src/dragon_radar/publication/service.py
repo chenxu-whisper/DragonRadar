@@ -162,6 +162,7 @@ class PublicationService:
             regulation_context = self.regulations.snapshot_contexts(
                 connection,
                 (command.regulation_input_id,),
+                lock_snapshots=True,
             )[command.regulation_input_id]
             if (
                 regulation_context["snapshot"].market_snapshot_id

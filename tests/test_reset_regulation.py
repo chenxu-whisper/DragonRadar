@@ -1,9 +1,11 @@
 """Reviewed regulation rules, calculations, events, and publication lineage."""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -1668,6 +1670,177 @@ def test_published_regulation_snapshot_rejects_new_children(
         connection.execute(statements[child_table])
 
 
+def test_publication_and_child_append_serialize_on_regulation_snapshot(
+    database,
+    repository,
+):
+    from sqlalchemy import event as sqlalchemy_event
+    from sqlalchemy import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.regulation.tables import (
+        regulation_events,
+        regulation_snapshot_events,
+    )
+
+    market, _regulations, snapshot = _materialized_regulation_fixture(
+        database,
+        repository,
+        suffix="publication-child-race",
+    )
+    event_id = f"race-{uuid4().hex[:20]}"
+    event_values = _event(
+        event_id=event_id,
+        announcement_id=f"notice-{uuid4().hex[:8]}",
+    ).model_dump(mode="json")
+    event_values["created_at"] = NOW
+    with database.engine.begin() as connection:
+        connection.execute(insert(regulation_events).values(**event_values))
+
+    insert_started = Barrier(2)
+    child_inserted = Barrier(2)
+    coordination = {"publication_locks_snapshot": False}
+
+    def coordinate_publication(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        normalized = statement.upper()
+        if (
+            "FROM REGULATION_SNAPSHOTS" in normalized
+            and "WHERE REGULATION_SNAPSHOTS.ID IN" in normalized
+        ):
+            coordination["publication_locks_snapshot"] = "FOR UPDATE" in normalized
+        if (
+            "FROM REGULATION_SNAPSHOT_EVENTS JOIN REGULATION_EVENTS" in normalized
+            and "ORDER BY REGULATION_SNAPSHOT_EVENTS.SNAPSHOT_ID" in normalized
+        ):
+            insert_started.wait(timeout=10)
+            if not coordination["publication_locks_snapshot"]:
+                child_inserted.wait(timeout=10)
+
+    def coordinate_child_insert(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        if "INSERT INTO REGULATION_SNAPSHOT_EVENTS" not in statement.upper():
+            return
+        insert_started.wait(timeout=10)
+
+    def confirm_child_insert(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        if (
+            "INSERT INTO REGULATION_SNAPSHOT_EVENTS" in statement.upper()
+            and not coordination["publication_locks_snapshot"]
+        ):
+            child_inserted.wait(timeout=10)
+
+    def publish():
+        return PublicationService(
+            database,
+            repository,
+            clock=lambda: NOW,
+        ).publish(
+            PublicationCommand(
+                trade_date=DAYS[-1],
+                market_snapshot_id=market.id,
+                regulation_input_id=snapshot.id,
+                disabled_domains=("topic", "news", "role"),
+            ),
+            key="regulation-publication-child-race",
+        )
+
+    def append_child():
+        try:
+            with database.engine.begin() as connection:
+                connection.execute(
+                    insert(regulation_snapshot_events).values(
+                        snapshot_id=snapshot.id,
+                        event_id=event_id,
+                        position=1,
+                    )
+                )
+        except DBAPIError:
+            return "rejected"
+        return "inserted"
+
+    sqlalchemy_event.listen(
+        database.engine,
+        "before_cursor_execute",
+        coordinate_publication,
+    )
+    sqlalchemy_event.listen(
+        database.engine,
+        "before_cursor_execute",
+        coordinate_child_insert,
+    )
+    sqlalchemy_event.listen(
+        database.engine,
+        "after_cursor_execute",
+        confirm_child_insert,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            publication_future = pool.submit(publish)
+            child_future = pool.submit(append_child)
+            publication = publication_future.result(timeout=20)
+            child_result = child_future.result(timeout=20)
+    finally:
+        sqlalchemy_event.remove(
+            database.engine,
+            "before_cursor_execute",
+            coordinate_publication,
+        )
+        sqlalchemy_event.remove(
+            database.engine,
+            "before_cursor_execute",
+            coordinate_child_insert,
+        )
+        sqlalchemy_event.remove(
+            database.engine,
+            "after_cursor_execute",
+            confirm_child_insert,
+        )
+
+    stored = next(
+        item
+        for item in PublicationRepository(database, repository).list_results(
+            publication.id
+        )
+        if item.domain == "regulation"
+    )
+    current = RegulationRepository.materialize_context(
+        RegulationRepository(
+            database,
+            repository,
+            clock=lambda: NOW,
+        ).snapshot_context(snapshot.id)
+    )
+
+    assert child_result in {"inserted", "rejected"}
+    assert stored.payload == current.payload
+    assert stored.coverage == current.coverage
+    assert stored.quality_flags == current.quality_flags
+
+
 def test_regulation_publish_reuses_outer_transaction_for_snapshot_context(
     database,
     repository,
@@ -2054,7 +2227,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0009_regulation"
+    assert SCHEMA_REVISION == "0010_regulation_publication_lock"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {
@@ -2073,6 +2246,16 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
         and fk["constrained_columns"] == ["regulation_input_id"]
         for fk in inspector.get_foreign_keys("publications")
     )
+    regulation_binding_index = next(
+        index
+        for index in inspector.get_indexes("publications")
+        if index["name"] == "publications_regulation_input"
+    )
+    assert regulation_binding_index["column_names"] == ["regulation_input_id"]
+    assert (
+        regulation_binding_index["dialect_options"]["postgresql_where"]
+        == "(regulation_input_id IS NOT NULL)"
+    )
     with pytest.raises(DBAPIError), database.engine.begin() as connection:
         connection.execute(
             update(regulation_rules)
@@ -2088,5 +2271,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0009_regulation"
+            == "0010_regulation_publication_lock"
         )

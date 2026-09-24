@@ -83,6 +83,11 @@ publications = Table(
         text("version DESC"),
         text("id ASC"),
     ),
+    Index(
+        "publications_regulation_input",
+        "regulation_input_id",
+        postgresql_where=text("regulation_input_id IS NOT NULL"),
+    ),
 )
 
 publication_results = Table(
