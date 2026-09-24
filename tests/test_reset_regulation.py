@@ -122,6 +122,20 @@ def _register_event_source(repository, source_id):
     )
 
 
+def _insert_legacy_event(database, event):
+    from sqlalchemy import insert
+
+    from dragon_radar.regulation.tables import regulation_events
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(regulation_events).values(
+                **event.model_dump(mode="json"),
+                created_at=NOW,
+            )
+        )
+
+
 def test_unreviewed_rule_stays_pending_even_near_warning_threshold():
     from dragon_radar.regulation.engine import evaluate_rule
 
@@ -314,6 +328,67 @@ def test_formal_event_adds_only_source_provenance_to_prd_table_8_facts():
     assert calculation.state == "triggered"
     assert not hasattr(calculation, "event")
     assert not hasattr(calculation, "event_type")
+
+
+def test_legacy_event_model_allows_null_provenance_but_repository_rejects_new_write():
+    from dragon_radar.regulation.repository import RegulationRepository
+
+    event = _event()
+
+    assert event.source_id is None
+    assert event.source_version is None
+
+    class Engine:
+        def begin(self):
+            raise AssertionError("invalid event must be rejected before database write")
+
+    regulations = RegulationRepository(
+        SimpleNamespace(engine=Engine()),
+        SimpleNamespace(),
+    )
+
+    with pytest.raises(ValueError, match="New regulation events require source"):
+        regulations.append_event(event, key="missing-event-provenance")
+
+
+def test_sourced_event_append_authorizes_new_write_and_replays_valid_command(
+    database,
+    repository,
+):
+    from dragon_radar.regulation.repository import RegulationRepository
+    from dragon_radar.storage.repository import Forbidden
+
+    regulations = RegulationRepository(database, repository, clock=lambda: NOW)
+    regulations.register_rule(_rule(), key="sourced-event-rule")
+    event = _event(source_id="synthetic", source_version="fixture-v1")
+
+    recorded = regulations.append_event(event, key="sourced-event")
+    repository.revoke_source("synthetic")
+    replayed = regulations.append_event(event, key="sourced-event")
+
+    assert recorded == event
+    assert replayed == event
+    with pytest.raises(Forbidden, match="event source"):
+        regulations.append_event(
+            event.model_copy(
+                update={
+                    "event_id": "event-revoked",
+                    "announcement_id": "notice-revoked",
+                }
+            ),
+            key="revoked-event-source",
+        )
+    with pytest.raises(Forbidden, match="Source is not locally authorized"):
+        regulations.append_event(
+            event.model_copy(
+                update={
+                    "event_id": "event-unknown",
+                    "announcement_id": "notice-unknown",
+                    "source_id": "unknown-event-source",
+                }
+            ),
+            key="unknown-event-source",
+        )
 
 
 @pytest.mark.parametrize(("url", "accepted"), HTTPS_URL_CASES)
@@ -548,7 +623,10 @@ def test_regulation_record_clocks_are_read_only_after_advisory_locks(monkeypatch
             reason="clock_withdrawal",
             key="clock-status",
         ),
-        lambda: regulations.append_event(_event(), key="clock-event"),
+        lambda: regulations.append_event(
+            _event(source_id="synthetic", source_version="fixture-v1"),
+            key="clock-event",
+        ),
         lambda: regulations.materialize(
             market_snapshot_id=uuid4(),
             observations=(_observation(),),
@@ -583,7 +661,10 @@ def test_repository_withdrawal_stops_new_calculation_but_keeps_old_snapshot(
     )
     regulations = RegulationRepository(database, repository, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-rule")
-    regulations.append_event(_event(), key="regulation-event")
+    regulations.append_event(
+        _event(source_id="synthetic", source_version="fixture-v1"),
+        key="regulation-event",
+    )
     first = regulations.materialize(
         market_snapshot_id=market.id,
         observations=(_observation(),),
@@ -735,12 +816,15 @@ def test_complete_attestation_binds_only_exact_source_and_version_events(
             source_id="synthetic-event-b",
             source_version="v1",
         ),
+    ):
+        regulations.append_event(event, key=f"append-{event.event_id}")
+    _insert_legacy_event(
+        database,
         _event(
             event_id="event-legacy",
             announcement_id="notice-legacy",
         ),
-    ):
-        regulations.append_event(event, key=f"append-{event.event_id}")
+    )
 
     snapshot = regulations.materialize(
         market_snapshot_id=market.id,
@@ -858,13 +942,16 @@ def test_unknown_event_completeness_retains_authorized_and_legacy_disclosures(
             source_id="synthetic-unknown-b",
             source_version="v4",
         ),
+    )
+    for event in events:
+        regulations.append_event(event, key=f"append-{event.event_id}")
+    _insert_legacy_event(
+        database,
         _event(
             event_id="unknown-legacy",
             announcement_id="notice-unknown-legacy",
         ),
     )
-    for event in events:
-        regulations.append_event(event, key=f"append-{event.event_id}")
 
     snapshot = regulations.materialize(
         market_snapshot_id=market.id,
@@ -1463,7 +1550,12 @@ def _materialized_regulation_fixture(database, repository, *, suffix):
         key=f"regulation-integrity-rule-{suffix}",
     )
     regulations.append_event(
-        _event(event_id=f"event-{suffix}", announcement_id=f"notice-{suffix}"),
+        _event(
+            event_id=f"event-{suffix}",
+            announcement_id=f"notice-{suffix}",
+            source_id="synthetic",
+            source_version="fixture-v1",
+        ),
         key=f"regulation-integrity-event-{suffix}",
     )
     snapshot = regulations.materialize(

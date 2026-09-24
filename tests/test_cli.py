@@ -111,6 +111,26 @@ def test_cli_bad_key_and_missing_file_are_safe(database_url, tmp_path):
     assert "sensitive-filename" not in result.stderr
 
 
+def test_cli_rejects_regulation_event_without_provenance_safely(
+    database_url,
+    tmp_path,
+):
+    from test_reset_regulation import _event
+
+    path = tmp_path / "private-event.json"
+    path.write_text(_event(announcement_id="private-secret").model_dump_json())
+
+    result = run_cli(
+        ["regulation-event-add", str(path), "--key", "missing-provenance"],
+        database_url,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr.strip() == "Invalid configuration or input"
+    assert "private-secret" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stdout + result.stderr
+
+
 def test_serve_host_port_and_no_proxy_trust(monkeypatch, database_url):
     from dragon_radar.cli import main
     from dragon_radar.publication.repository import PublicationRepository

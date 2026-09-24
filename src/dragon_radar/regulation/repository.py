@@ -413,9 +413,12 @@ class RegulationRepository:
     def append_event(self, event: RegulationEvent, *, key: str) -> RegulationEvent:
         _identifier(key)
         event = RegulationEvent.model_validate(event.model_dump())
-        if event.source_id is not None:
-            _identifier(event.source_id)
-            _identifier(event.source_version)
+        if event.source_id is None or event.source_version is None:
+            raise ValueError(
+                "New regulation events require source identity and version"
+            )
+        _identifier(event.source_id)
+        _identifier(event.source_version)
         payload_hash = _digest(event.model_dump(mode="json"))
         with self.database.engine.begin() as connection:
             self.market._lock(connection, f"regulation-command:{key}")
@@ -438,6 +441,13 @@ class RegulationRepository:
                     .one()
                 )
                 return _event(row)
+            source = self.market._source(connection, event.source_id)
+            if not grant_allows_display(
+                source,
+                source_id=event.source_id,
+                now=now,
+            ):
+                raise Forbidden("Regulation event source is not locally authorized")
             self._rule_row(connection, event.rule_id, event.rule_version)
             if connection.scalar(
                 select(regulation_events.c.event_id).where(
