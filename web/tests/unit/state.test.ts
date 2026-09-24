@@ -16,6 +16,16 @@ describe('URL research state', () => {
     expect(search.has('benchmark')).toBe(false);
     expect(search.has('adj')).toBe(false);
   });
+  it.each(['excess_return', 'amount_change'])('rejects reset-only legacy sort %s with a notice', sort => {
+    const parsed = parseState(`?view=analysis&sort=${sort}`);
+    expect(parsed.state.sort).toBe('security_id');
+    expect(parsed.notices).toEqual(['无效的网址参数已重置，请检查研究条件。']);
+  });
+  it.each(['excess_return', 'amount_change'])('accepts reset analysis sort %s', sort => {
+    const parsed = parseState(`?view=analysis&sort=${sort}`, false, true);
+    expect(parsed.state.sort).toBe(sort);
+    expect(parsed.notices).toEqual([]);
+  });
   it('sanitizes malformed selectors and reports the changes', () => {
     const result = parseState('?view=bad&snapshot=oops&date=2024-02-30&page=-1&page_size=7&n=251&sort=bad');
     expect(result.state).toMatchObject({ view: 'overview', snapshot: '', date: '', page: 1, page_size: 50, n: 20 });

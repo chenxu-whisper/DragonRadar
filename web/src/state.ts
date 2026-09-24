@@ -64,7 +64,11 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   }
   let note = allowPrivate ? p.get('note') || '' : '';
   if (note && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(note)) { invalid(); note = ''; }
-  let sort = choice<Sort>('sort', ['security_id', 'name', 'close', 'change', 'amount', 'interval_return', 'excess_return', 'maximum_drawdown', 'amount_change'], 'security_id');
+  const legacySorts: readonly Sort[] = [
+    'security_id', 'name', 'close', 'change', 'amount', 'interval_return', 'maximum_drawdown',
+  ];
+  const resetSorts: readonly Sort[] = [...legacySorts, 'excess_return', 'amount_change'];
+  let sort = choice<Sort>('sort', reset ? resetSorts : legacySorts, 'security_id');
   if (view === 'overview' && ['interval_return', 'excess_return', 'maximum_drawdown', 'amount_change'].includes(sort)) { invalid(); sort = 'security_id'; }
   const q = p.get('q') || '';
   if (q.length > 100) invalid();

@@ -59,20 +59,13 @@ function rankData(start = sessions[0], end = sessions.at(-1)!) {
         max_drawdown_ratio: 0.25, amount_change_ratio: 0.2,
       },
       {
-        rank: null, security_id: 'TEST002', name: '合成乙',
-        topics: [], topic_status: 'unavailable',
-        topic_reasons: ['historical_topic_coverage_unavailable'], reasons: [],
-        return_ratio: null, excess_return_ratio: null,
-        max_drawdown_ratio: null, amount_change_ratio: null,
-      },
-      {
-        rank: 3, security_id: 'TEST006', name: '合成己',
+        rank: 2, security_id: 'TEST006', name: '合成己',
         topics: [], topic_status: 'available', topic_reasons: [], reasons: [],
         return_ratio: 0.01, excess_return_ratio: -0.01,
         max_drawdown_ratio: 0.02, amount_change_ratio: 0.03,
       },
     ],
-    exclusions: [{ security_id: 'TEST003', reasons: ['missing_price'] }],
+    exclusions: [{ security_id: 'TEST002', reasons: ['missing_price'] }],
   };
 }
 
@@ -86,7 +79,7 @@ function curves() {
       reasons: index === 0 ? ['missing_price'] : [],
       points: sessions.map((tradeDate, pointIndex) => ({
         trade_date: tradeDate,
-        normalized: index === 0 && pointIndex === 8 ? null : 100 + pointIndex + index,
+        normalized: index === 0 && pointIndex === 8 ? null : 100 + pointIndex,
         drawdown: index === 0 && pointIndex === 8 ? null : pointIndex === 20 ? 0.25 : 0,
       })),
     })),
@@ -184,11 +177,12 @@ test('20日排行展示基准、收益、回撤、成交额、题材、覆盖和
 
   const table = page.getByRole('table', { name: '涨幅排行' });
   await expect(table.getByRole('row', { name: /1.*TEST001.*合成甲.*机器人.*10%.*8%.*25%.*20%/ })).toBeVisible();
-  await expect(table.getByRole('row', { name: /—.*TEST002.*合成乙.*—/ })).toBeVisible();
+  await expect(table.getByText('TEST002')).toHaveCount(0);
   await expect(page.getByText('基准收益 +2%')).toBeVisible();
   await expect(page.getByText('有效 2 / 应有 3 · 排除 0 · 缺失 1')).toBeVisible();
   await page.getByText('查看排除原因（1）').click();
-  await expect(page.getByRole('table', { name: '排除原因' }).getByText('价格缺失')).toBeVisible();
+  const exclusions = page.getByRole('table', { name: '排除原因' });
+  await expect(exclusions.getByRole('row', { name: /TEST002.*价格缺失/ })).toBeVisible();
   expect(rankRequests).toHaveLength(1);
   expect(rankRequests[0].searchParams.get('start')).toBe(sessions[0]);
   expect(rankRequests[0].searchParams.get('end')).toBe(sessions.at(-1));

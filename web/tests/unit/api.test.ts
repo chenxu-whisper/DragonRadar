@@ -76,12 +76,6 @@ describe('read-only request boundary', () => {
         topic_status: 'available', topic_reasons: [], reasons: [],
         return_ratio: 0.1, excess_return_ratio: 0.08,
         max_drawdown_ratio: 0.25, amount_change_ratio: 0.2,
-      }, {
-        rank: null, security_id: 'TEST002', name: null,
-        topics: [], topic_status: 'unavailable',
-        topic_reasons: ['historical_topic_coverage_unavailable'], reasons: [],
-        return_ratio: null, excess_return_ratio: null,
-        max_drawdown_ratio: null, amount_change_ratio: null,
       }],
       exclusions: [],
     }],
@@ -148,6 +142,34 @@ describe('read-only request boundary', () => {
       adjusted_start: '2026-08-13', adjusted_end: '2026-09-10', benchmark: 'B000300',
       curves: [{ security_id: 'TEST999', reasons: [], points: [] }],
       exclusions: [],
+    }), 502],
+    ['rank invariant', '/api/rank/range?snapshot_id=snapshot-a&start=2026-08-13&end=2026-09-10&adj=raw&sort=return', resetEnvelope({
+      window_days: 20, adjusted_start: '2026-08-13', adjusted_end: '2026-09-10',
+      benchmark_return: 0.02,
+      ranking: [{
+        rank: 1, security_id: 'TEST001', name: null,
+        topics: [], topic_status: 'available', topic_reasons: [], reasons: [],
+        return_ratio: -1, excess_return_ratio: 0,
+        max_drawdown_ratio: 0, amount_change_ratio: 0,
+      }],
+      exclusions: [],
+    }), 502],
+    ['curve invariant', '/api/compare/curves?snapshot_id=snapshot-a&start=2026-08-13&end=2026-09-10&symbols=TEST001&adj=raw', resetEnvelope({
+      adjusted_start: '2026-08-13', adjusted_end: '2026-09-10', benchmark: 'B000300',
+      curves: [{
+        security_id: 'TEST001', reasons: [],
+        points: [{ trade_date: '2026-08-13', normalized: 99, drawdown: 0 }],
+      }],
+      exclusions: [],
+    }), 502],
+    ['kline invariant', '/api/stock/TEST001/kline?snapshot_id=snapshot-a&start=2026-08-13&end=2026-09-10&adj=raw', resetEnvelope({
+      security_id: 'TEST001', adjustment: 'raw',
+      adjusted_start: '2026-08-13', adjusted_end: '2026-09-10',
+      chart_type: 'line',
+      points: [{
+        trade_date: '2026-08-13',
+        open: null, high: null, low: null, close: 11, volume: -1, amount: 1100,
+      }],
     }), 502],
   ])('rejects mismatched or malformed %s without echoing payloads', async (_name, path, body, status) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));

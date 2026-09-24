@@ -15,6 +15,10 @@ function finiteOrNull(value: unknown): boolean {
   return value === null || (typeof value === 'number' && Number.isFinite(value));
 }
 
+function finite(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function strings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === 'string');
 }
@@ -62,10 +66,17 @@ function requestedWindow(query: URLSearchParams, start: string, end: string): An
   return null;
 }
 
-function exclusions(value: unknown): boolean {
-  return Array.isArray(value) && value.every(item =>
-    record(item) && typeof item.security_id === 'string' && strings(item.reasons),
-  );
+function exclusionIds(value: unknown): Set<string> | null {
+  if (!Array.isArray(value)) return null;
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (!record(item) || typeof item.security_id !== 'string' || !item.security_id ||
+      !Array.isArray(item.reasons) || item.reasons.length === 0 ||
+      !item.reasons.every(reason => typeof reason === 'string' && reason.length > 0) ||
+      ids.has(item.security_id)) return null;
+    ids.add(item.security_id);
+  }
+  return ids;
 }
 
 export function validateRankResponse(value: unknown, query: URLSearchParams): AnalysisValidationError | null {
@@ -81,21 +92,31 @@ export function validateRankResponse(value: unknown, query: URLSearchParams): An
   if (mismatch) return mismatch;
   if (value.trade_date !== adjustedEnd) return 'date_mismatch';
   if (!Number.isSafeInteger(data.window_days) || (data.window_days as number) < 0 ||
-    !finiteOrNull(data.benchmark_return) ||
+    !(data.benchmark_return === null || (finite(data.benchmark_return) && data.benchmark_return > -1)) ||
     !Array.isArray(data.ranking) ||
-    !exclusions(data.exclusions)) return 'malformed';
+    !Array.isArray(data.exclusions)) return 'malformed';
+  const excludedIds = exclusionIds(data.exclusions);
+  if (!excludedIds || !record(value.coverage) ||
+    data.ranking.length !== value.coverage.valid ||
+    data.exclusions.length !== (value.coverage.excluded as number) + (value.coverage.missing as number)) {
+    return 'malformed';
+  }
   const ids = new Set<string>();
   for (const item of data.ranking) {
     if (!record(item) ||
-      !(item.rank === null || (Number.isSafeInteger(item.rank) && (item.rank as number) >= 1)) ||
+      !(Number.isSafeInteger(item.rank) && (item.rank as number) >= 1) ||
       typeof item.security_id !== 'string' || !item.security_id ||
       (item.name !== null && typeof item.name !== 'string') ||
       !Array.isArray(item.topics) ||
       !item.topics.every(topic => record(topic) && typeof topic.topic_id === 'string' && typeof topic.name === 'string') ||
       typeof item.topic_status !== 'string' || !strings(item.topic_reasons) || !strings(item.reasons) ||
-      !['return_ratio', 'excess_return_ratio', 'max_drawdown_ratio', 'amount_change_ratio']
-        .every(key => finiteOrNull(item[key])) ||
-      ids.has(item.security_id)) return 'malformed';
+      !finite(item.return_ratio) || item.return_ratio <= -1 ||
+      !finiteOrNull(item.excess_return_ratio) ||
+      !(item.max_drawdown_ratio === null ||
+        (finite(item.max_drawdown_ratio) && item.max_drawdown_ratio >= 0 && item.max_drawdown_ratio < 1)) ||
+      !(item.amount_change_ratio === null ||
+        (finite(item.amount_change_ratio) && item.amount_change_ratio >= -1)) ||
+      ids.has(item.security_id) || excludedIds.has(item.security_id)) return 'malformed';
     ids.add(item.security_id);
   }
   return null;
@@ -115,27 +136,37 @@ export function validateCurvesResponse(value: unknown, query: URLSearchParams): 
   if (value.trade_date !== adjustedEnd ||
     typeof data.benchmark !== 'string' ||
     !Array.isArray(data.curves) ||
-    !exclusions(data.exclusions)) return 'malformed';
+    !Array.isArray(data.exclusions)) return 'malformed';
+  const excludedIds = exclusionIds(data.exclusions);
+  if (!excludedIds) return 'malformed';
   let expectedDates: string[] | undefined;
   const ids = new Set<string>();
   for (const curve of data.curves) {
-    if (!record(curve) || typeof curve.security_id !== 'string' || ids.has(curve.security_id) ||
-      !strings(curve.reasons) || !Array.isArray(curve.points)) return 'malformed';
+    if (!record(curve) || typeof curve.security_id !== 'string' || !curve.security_id ||
+      ids.has(curve.security_id) || excludedIds.has(curve.security_id) ||
+      !strings(curve.reasons) || !Array.isArray(curve.points) || curve.points.length === 0) return 'malformed';
     ids.add(curve.security_id);
     const dates: string[] = [];
     for (const point of curve.points) {
-      if (!record(point) || !dateValue(point.trade_date) ||
-        point.trade_date < adjustedStart || point.trade_date > adjustedEnd ||
-        !finiteOrNull(point.normalized) || !finiteOrNull(point.drawdown)) return 'date_mismatch';
+      if (!record(point) || !dateValue(point.trade_date)) return 'malformed';
+      if (point.trade_date < adjustedStart || point.trade_date > adjustedEnd) return 'date_mismatch';
+      if ((point.normalized === null) !== (point.drawdown === null) ||
+        !(point.normalized === null ||
+          (finite(point.normalized) && point.normalized > 0 &&
+            finite(point.drawdown) && point.drawdown >= 0 && point.drawdown < 1))) {
+        return 'malformed';
+      }
       dates.push(point.trade_date);
     }
+    const first = curve.points[0] as ObjectValue;
+    if (first.normalized !== 100 || first.drawdown !== 0) return 'malformed';
     if (dates.some((day, index) => index > 0 && day <= dates[index - 1])) return 'date_mismatch';
     if (expectedDates && dates.join(',') !== expectedDates.join(',')) return 'date_mismatch';
     expectedDates = dates;
   }
   const requestedIds = new Set((query.get('symbols') || '').split(',').filter(Boolean));
   const returnedIds = new Set(ids);
-  for (const item of data.exclusions as ObjectValue[]) returnedIds.add(item.security_id as string);
+  for (const securityId of excludedIds) returnedIds.add(securityId);
   if (requestedIds.size !== returnedIds.size ||
     [...requestedIds].some(securityId => !returnedIds.has(securityId))) return 'malformed';
   return null;
@@ -164,11 +195,27 @@ export function validateKlineResponse(
     !Array.isArray(data.points)) return 'malformed';
   let previous = '';
   for (const point of data.points) {
-    if (!record(point) || !dateValue(point.trade_date) ||
-      point.trade_date <= previous ||
-      point.trade_date < adjustedStart || point.trade_date > adjustedEnd ||
-      !['open', 'high', 'low', 'close', 'volume', 'amount'].every(key => finiteOrNull(point[key]))) {
-      return point && record(point) && dateValue(point.trade_date) ? 'date_mismatch' : 'malformed';
+    if (!record(point) || !dateValue(point.trade_date)) return 'malformed';
+    if (point.trade_date <= previous ||
+      point.trade_date < adjustedStart || point.trade_date > adjustedEnd) return 'date_mismatch';
+    if (!['volume', 'amount'].every(key =>
+      point[key] === null || (finite(point[key]) && point[key] >= 0))) return 'malformed';
+    const openHighLow = ['open', 'high', 'low'] as const;
+    const gap = [...openHighLow, 'close'].every(key => point[key] === null);
+    if (!gap) {
+      const closeOnly = openHighLow.every(key => point[key] === null);
+      const complete = openHighLow.every(key => finite(point[key]));
+      if (!finite(point.close) || point.close <= 0 ||
+        (!closeOnly && !complete) ||
+        (data.chart_type === 'candlestick' && !complete)) return 'malformed';
+      if (complete) {
+        const open = point.open as number;
+        const high = point.high as number;
+        const low = point.low as number;
+        if (open <= 0 || high <= 0 || low <= 0 ||
+          low > Math.min(open, point.close) ||
+          Math.max(open, point.close) > high) return 'malformed';
+      }
     }
     previous = point.trade_date;
   }
