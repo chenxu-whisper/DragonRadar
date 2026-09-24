@@ -125,6 +125,19 @@ def test_news_models_enforce_availability_content_and_deterministic_event_eviden
         article_revision(content_scope="none", summary="not licensed", content=None)
     with pytest.raises(ValidationError):
         article_revision(content_scope="summary", content="not licensed")
+    for field in ("supporting_evidence", "opposing_evidence"):
+        with pytest.raises(ValidationError):
+            NewsArticleRevision.model_validate(
+                article_revision().model_dump() | {field: (" ",)}
+            )
+        with pytest.raises(ValidationError):
+            NewsArticleRevision.model_validate(
+                article_revision().model_dump() | {field: (1,)}
+            )
+    with pytest.raises(ValidationError):
+        NewsArticleRevision.model_validate(
+            article_revision().model_dump() | {"is_novel_event": 1}
+        )
     with pytest.raises(ValidationError):
         NewsEventEvidence(kind="title_similarity", value="same title")
 
@@ -132,6 +145,16 @@ def test_news_models_enforce_availability_content_and_deterministic_event_eviden
         NewsArticleRevision.model_validate(article_revision().model_dump()).revision
         == 1
     )
+    with pytest.raises(ValidationError):
+        NewsArticleRevision.model_validate(
+            article_revision().model_dump(
+                exclude={
+                    "is_novel_event",
+                    "supporting_evidence",
+                    "opposing_evidence",
+                }
+            )
+        )
     assert event_evidence(kind="canonical_url").kind == "canonical_url"
     assert (
         event_evidence(kind="content_digest", value="a" * 64).kind == "content_digest"
@@ -182,6 +205,54 @@ def _materialization_context(*associations, reviews=None):
         "associations": [item.model_dump() for item in associations],
         "reviews": reviews or {},
     }
+
+
+def test_news_routes_project_frozen_list_and_detail_wire_contracts():
+    from dragon_radar.http.routes.news import _detail_article, _list_article
+    from dragon_radar.news.service import NewsService
+
+    internal = NewsService.materialize_context(
+        _materialization_context(association())
+    ).payload["articles"][0]
+
+    listed = _list_article(internal)
+    assert set(listed) == {
+        "article_id",
+        "title",
+        "source",
+        "source_version",
+        "published_at",
+        "available_at",
+        "article_type",
+        "summary",
+        "event_id",
+        "revision",
+    }
+    assert listed["source"] == "synthetic"
+    assert listed["article_type"] == "announcement"
+    assert listed["summary"] == "Synthetic licensed summary."
+
+    detail = _detail_article(internal)
+    assert {
+        "article_id",
+        "title",
+        "content",
+        "source",
+        "url",
+        "published_at",
+        "received_at",
+        "article_type",
+        "ai_summary",
+        "related_security_ids",
+        "is_novel_event",
+        "supporting_evidence",
+        "opposing_evidence",
+    } <= set(detail)
+    assert detail["source"] == "synthetic"
+    assert detail["ai_summary"] is None
+    assert detail["summary"] == "Synthetic licensed summary."
+    assert detail["related_security_ids"] == ["A"]
+    assert detail["supporting_evidence"] != detail["securities"][0]["evidence_snippets"]
 
 
 def test_ai_imported_accepted_association_is_not_self_effective():
@@ -307,9 +378,25 @@ def test_snapshot_cutoff_uses_available_at_and_pins_exact_revision(
         for item in current.items
     ] == [(ARTICLE_A, REVISION_A2, 2)]
     with database.engine.connect() as connection:
-        assert (
-            connection.scalar(text("SELECT count(*) FROM news_article_revisions")) == 2
-        )
+        stored = connection.execute(
+            text(
+                "SELECT is_novel_event, supporting_evidence, opposing_evidence, "
+                "(SELECT count(*) FROM news_article_revisions) "
+                "FROM news_article_revisions WHERE id = :revision_id"
+            ),
+            {"revision_id": REVISION_A1},
+        ).one()
+    assert stored == (
+        True,
+        ["Synthetic filing reports a new order."],
+        ["Order value remains subject to closing conditions."],
+        2,
+    )
+    round_trip = service.ingest_article(article_revision(), key="news-a1-replay")
+    assert round_trip.supporting_evidence == ("Synthetic filing reports a new order.",)
+    assert round_trip.opposing_evidence == (
+        "Order value remains subject to closing conditions.",
+    )
 
 
 def test_early_published_at_never_bypasses_late_receipt_cutoff(database, repository):
@@ -519,6 +606,14 @@ def test_publication_materializes_news_without_override_and_records_lineage(
     assert news.input_id == snapshot.id
     assert news.payload["event_count"] == 1
     assert len(news.payload["articles"]) == 2
+    assert news.payload["articles"][0]["is_novel_event"] is True
+    assert news.payload["articles"][0]["supporting_evidence"] == [
+        "Synthetic filing reports a new order."
+    ]
+    assert news.payload["articles"][0]["opposing_evidence"] == [
+        "Order value remains subject to closing conditions."
+    ]
+    assert news.payload["articles"][0]["ai_summary"] is None
     assert {row["archive_type"] for row in dependencies} == {"news_article_revision"}
     assert {row["archive_id"] for row in dependencies} == {
         item.article_revision_id for item in snapshot.items
@@ -653,6 +748,14 @@ def test_migration_adds_news_tables_fk_guards_and_readiness(database):
     assert "'announcement'" in article_type_checks
     assert "'research'" in article_type_checks
     assert "'company'" not in article_type_checks
+    revision_columns = {
+        column["name"] for column in inspector.get_columns("news_article_revisions")
+    }
+    assert {
+        "is_novel_event",
+        "supporting_evidence",
+        "opposing_evidence",
+    } <= revision_columns
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
@@ -722,23 +825,47 @@ async def test_public_get_requires_date_filters_pages_and_reads_only_publication
     assert missing_date.status_code == 400
     assert legacy_type.status_code == 400
     assert listed.status_code == 200
-    assert listed.json()["data"] == {
-        "items": [detail.json()["data"]],
-        "page": 1,
-        "size": 1,
-        "total": 1,
-        "sources": ["synthetic"],
-        "event_count": 1,
-    }
+    list_data = listed.json()["data"]
+    assert "items" not in list_data
+    assert list_data["page"] == 1
+    assert list_data["size"] == 1
+    assert list_data["total"] == 1
+    assert list_data["sources"] == ["synthetic"]
+    assert list_data["event_count"] == 1
+    assert list_data["articles"] == [
+        {
+            "article_id": str(ARTICLE_A),
+            "title": "Synthetic announcement",
+            "source": "synthetic",
+            "source_version": "news-v1",
+            "published_at": (NOW - timedelta(hours=4)).isoformat(),
+            "available_at": (NOW - timedelta(hours=1)).isoformat(),
+            "article_type": "announcement",
+            "summary": "Synthetic licensed summary.",
+            "event_id": list_data["articles"][0]["event_id"],
+            "revision": 1,
+        }
+    ]
     assert detail.status_code == 200
     assert detail.json()["snapshot_id"] == str(publication.id)
-    assert detail.json()["data"]["article_id"] == str(ARTICLE_A)
-    assert detail.json()["data"]["content_scope"] == "full"
-    assert detail.json()["data"]["content"] == "Synthetic licensed article body."
-    assert detail.json()["data"]["securities"][0]["association_id"] == str(
-        ASSOCIATION_SECURITY
-    )
-    assert detail.json()["data"]["topics"][0]["status"] == "unreviewed"
+    detail_data = detail.json()["data"]
+    assert detail_data["article_id"] == str(ARTICLE_A)
+    assert detail_data["source"] == "synthetic"
+    assert detail_data["article_type"] == "announcement"
+    assert detail_data["content_scope"] == "full"
+    assert detail_data["content"] == "Synthetic licensed article body."
+    assert detail_data["summary"] == "Synthetic licensed summary."
+    assert detail_data["ai_summary"] is None
+    assert detail_data["related_security_ids"] == ["A"]
+    assert detail_data["is_novel_event"] is True
+    assert detail_data["supporting_evidence"] == [
+        "Synthetic filing reports a new order."
+    ]
+    assert detail_data["opposing_evidence"] == [
+        "Order value remains subject to closing conditions."
+    ]
+    assert detail_data["securities"][0]["association_id"] == str(ASSOCIATION_SECURITY)
+    assert detail_data["topics"][0]["status"] == "unreviewed"
 
 
 async def test_public_news_hides_unlicensed_content_and_stable_sort_is_snapshot_bound(
@@ -756,14 +883,15 @@ async def test_public_news_hides_unlicensed_content_and_stable_sort_is_snapshot_
         unlicensed = await client.get(f"/api/news/{ARTICLE_B}", params=common)
         unknown = await client.get(f"/api/news/{uuid4()}", params=common)
 
-    items = listed.json()["data"]["items"]
-    assert [item["article_id"] for item in items] == sorted(
-        [item["article_id"] for item in items]
+    articles = listed.json()["data"]["articles"]
+    assert [item["article_id"] for item in articles] == sorted(
+        [item["article_id"] for item in articles]
     )
     assert listed.json()["data"]["event_count"] == 1
     assert unlicensed.status_code == 200
     assert unlicensed.json()["data"]["content_scope"] == "none"
     assert unlicensed.json()["data"]["summary"] is None
+    assert unlicensed.json()["data"]["ai_summary"] is None
     assert unlicensed.json()["data"]["content"] is None
     assert unknown.status_code == 404
 

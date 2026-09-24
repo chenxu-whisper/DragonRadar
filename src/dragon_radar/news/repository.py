@@ -69,6 +69,9 @@ def _revision(row: Mapping) -> NewsArticleRevision:
         content_scope=row["content_scope"],
         summary=row["summary"],
         content=row["content"],
+        is_novel_event=row["is_novel_event"],
+        supporting_evidence=tuple(row["supporting_evidence"]),
+        opposing_evidence=tuple(row["opposing_evidence"]),
         content_digest=row["content_digest"],
         grant=SourceGrant.model_validate(row["embedded_grant"]),
     )

@@ -151,6 +151,10 @@ class NewsService:
                     "content_scope": row["content_scope"],
                     "summary": row["summary"],
                     "content": row["content"],
+                    "ai_summary": None,
+                    "is_novel_event": row["is_novel_event"],
+                    "supporting_evidence": list(row["supporting_evidence"]),
+                    "opposing_evidence": list(row["opposing_evidence"]),
                     "securities": securities,
                     "topics": topics,
                 }

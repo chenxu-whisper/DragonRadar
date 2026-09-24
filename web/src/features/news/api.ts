@@ -1,6 +1,7 @@
 import type {
   NewsArticle,
   NewsDetailRequest,
+  NewsListArticle,
   NewsListRequest,
   NewsType,
 } from './types';
@@ -17,6 +18,10 @@ function strings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === 'string');
 }
 
+function nonblankStrings(value: unknown): value is string[] {
+  return strings(value) && value.every(item => Boolean(item.trim()));
+}
+
 function association(value: unknown, target: 'security' | 'topic'): boolean {
   if (!record(value)) return false;
   const id = value[`${target}_id`];
@@ -24,28 +29,38 @@ function association(value: unknown, target: 'security' | 'topic'): boolean {
     typeof id === 'string' && Boolean(id) &&
     ['direct', 'manual', 'ai'].includes(String(value.method)) &&
     ['accepted', 'unreviewed', 'rejected'].includes(String(value.status)) &&
-    strings(value.evidence_snippets) && value.evidence_snippets.length > 0 &&
+    nonblankStrings(value.evidence_snippets) && value.evidence_snippets.length > 0 &&
     typeof value.effective === 'boolean' &&
     typeof value.pending_topic_publication === 'boolean';
 }
 
-function article(value: unknown): value is NewsArticle {
-  if (!record(value) || !record(value.source)) return false;
+function listArticle(value: unknown): value is NewsListArticle {
+  if (!record(value)) return false;
   return typeof value.article_id === 'string' && UUID.test(value.article_id) &&
-    typeof value.revision_id === 'string' && UUID.test(value.revision_id) &&
     Number.isInteger(value.revision) && Number(value.revision) >= 1 &&
     typeof value.event_id === 'string' && UUID.test(value.event_id) &&
-    TYPES.slice(1).includes(value.type as NewsType) &&
-    typeof value.source.id === 'string' && Boolean(value.source.id) &&
-    typeof value.source.version === 'string' && Boolean(value.source.version) &&
+    TYPES.slice(1).includes(value.article_type as NewsType) &&
+    typeof value.source === 'string' && Boolean(value.source) &&
+    typeof value.source_version === 'string' && Boolean(value.source_version) &&
     typeof value.title === 'string' && Boolean(value.title) &&
-    typeof value.url === 'string' && value.url.startsWith('https://') &&
-    ['published_at', 'received_at', 'available_at'].every(
+    ['published_at', 'available_at'].every(
       field => typeof value[field] === 'string' && Number.isFinite(Date.parse(String(value[field]))),
     ) &&
+    (value.summary === null || typeof value.summary === 'string');
+}
+
+function article(value: unknown): value is NewsArticle {
+  if (!listArticle(value) || !record(value)) return false;
+  return typeof value.revision_id === 'string' && UUID.test(value.revision_id) &&
+    typeof value.url === 'string' && value.url.startsWith('https://') &&
+    typeof value.received_at === 'string' && Number.isFinite(Date.parse(value.received_at)) &&
     ['none', 'summary', 'full'].includes(String(value.content_scope)) &&
-    (value.summary === null || typeof value.summary === 'string') &&
     (value.content === null || typeof value.content === 'string') &&
+    (value.ai_summary === null || typeof value.ai_summary === 'string') &&
+    nonblankStrings(value.related_security_ids) &&
+    typeof value.is_novel_event === 'boolean' &&
+    nonblankStrings(value.supporting_evidence) &&
+    nonblankStrings(value.opposing_evidence) &&
     Array.isArray(value.securities) && value.securities.every(item => association(item, 'security')) &&
     Array.isArray(value.topics) && value.topics.every(item => association(item, 'topic'));
 }
@@ -95,12 +110,12 @@ export function validateNewsListResponse(
   }
   if (
     !record(data) ||
-    !Array.isArray(data.items) ||
-    !data.items.every(article) ||
+    !Array.isArray(data.articles) ||
+    !data.articles.every(listArticle) ||
     data.page !== request.page ||
     data.size !== request.size ||
     !Number.isInteger(data.total) ||
-    Number(data.total) < data.items.length ||
+    Number(data.total) < data.articles.length ||
     !strings(data.sources) ||
     !Number.isInteger(data.event_count) ||
     Number(data.event_count) < 0

@@ -77,6 +77,10 @@ def _article(value) -> bool:
         "content_scope",
         "summary",
         "content",
+        "ai_summary",
+        "is_novel_event",
+        "supporting_evidence",
+        "opposing_evidence",
         "securities",
         "topics",
     }
@@ -114,12 +118,23 @@ def _article(value) -> bool:
         and not isinstance(value["summary"], str)
         or value["content"] is not None
         and not isinstance(value["content"], str)
+        or value["ai_summary"] is not None
+        and not isinstance(value["ai_summary"], str)
+        or type(value["is_novel_event"]) is not bool
+        or not _text_list(value["supporting_evidence"])
+        or not _text_list(value["opposing_evidence"])
         or not isinstance(value["securities"], list)
         or not isinstance(value["topics"], list)
     ):
         return False
     return all(_association(item, "security") for item in value["securities"]) and all(
         _association(item, "topic") for item in value["topics"]
+    )
+
+
+def _text_list(value) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, str) and bool(item.strip()) for item in value
     )
 
 
@@ -155,6 +170,51 @@ def _association(value, target_type: str) -> bool:
         and type(value["effective"]) is bool
         and type(value["pending_topic_publication"]) is bool
     )
+
+
+def _list_article(article: dict) -> dict:
+    return {
+        "article_id": article["article_id"],
+        "title": article["title"],
+        "source": article["source"]["id"],
+        "source_version": article["source"]["version"],
+        "published_at": article["published_at"],
+        "available_at": article["available_at"],
+        "article_type": article["type"],
+        "summary": article["summary"],
+        "event_id": article["event_id"],
+        "revision": article["revision"],
+    }
+
+
+def _detail_article(article: dict) -> dict:
+    securities = article["securities"]
+    return {
+        "article_id": article["article_id"],
+        "title": article["title"],
+        "content": article["content"],
+        "source": article["source"]["id"],
+        "url": article["url"],
+        "published_at": article["published_at"],
+        "received_at": article["received_at"],
+        "article_type": article["type"],
+        "ai_summary": article["ai_summary"],
+        "related_security_ids": sorted(
+            {association["security_id"] for association in securities}
+        ),
+        "source_version": article["source"]["version"],
+        "revision_id": article["revision_id"],
+        "revision": article["revision"],
+        "event_id": article["event_id"],
+        "available_at": article["available_at"],
+        "content_scope": article["content_scope"],
+        "summary": article["summary"],
+        "is_novel_event": article["is_novel_event"],
+        "supporting_evidence": article["supporting_evidence"],
+        "opposing_evidence": article["opposing_evidence"],
+        "securities": securities,
+        "topics": article["topics"],
+    }
 
 
 def _payload(snapshot: PublishedSnapshot):
@@ -241,9 +301,9 @@ def list_news(request: Request):
     items.sort(key=lambda item: item["available_at"], reverse=True)
     total = len(items)
     start = (page - 1) * size
-    selected = items[start : start + size]
+    selected = [_list_article(item) for item in items[start : start + size]]
     data = {
-        "items": selected,
+        "articles": selected,
         "page": page,
         "size": size,
         "total": total,
@@ -269,7 +329,7 @@ def news_detail(article_id: UUID, request: Request):
     ]
     if len(matches) != 1:
         raise NotFound("News article not found")
-    return _response(snapshot, matches[0], coverage)
+    return _response(snapshot, _detail_article(matches[0]), coverage)
 
 
 class _NewsReviewRoute(APIRoute):

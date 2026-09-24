@@ -25,27 +25,36 @@ export interface NewsTopicAssociation {
   pending_topic_publication: boolean;
 }
 
-export interface NewsArticle {
+export interface NewsListArticle {
   article_id: string;
-  revision_id: string;
-  revision: number;
-  event_id: string;
-  type: Exclude<NewsType, ''>;
-  source: { id: string; version: string };
   title: string;
-  url: string;
+  source: string;
+  source_version: string;
   published_at: string;
-  received_at: string;
   available_at: string;
-  content_scope: NewsContentScope;
+  article_type: Exclude<NewsType, ''>;
   summary: string | null;
+  event_id: string;
+  revision: number;
+}
+
+export interface NewsArticle extends NewsListArticle {
+  revision_id: string;
+  url: string;
+  received_at: string;
+  content_scope: NewsContentScope;
   content: string | null;
+  ai_summary: string | null;
+  related_security_ids: string[];
+  is_novel_event: boolean;
+  supporting_evidence: string[];
+  opposing_evidence: string[];
   securities: NewsSecurityAssociation[];
   topics: NewsTopicAssociation[];
 }
 
 export interface NewsList {
-  items: NewsArticle[];
+  articles: NewsListArticle[];
   page: number;
   size: number;
   total: number;

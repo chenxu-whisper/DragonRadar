@@ -191,8 +191,8 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
     {resetEnabled && <section className="related-news" aria-label="关联消息">
       <h3>关联消息</h3>
       <ResourceStatus resource={relatedNews} name="关联消息" />
-      {relatedNews.data?.data?.items.length
-        ? <ul>{relatedNews.data.data.items.map(article => <li key={article.article_id}>
+      {relatedNews.data?.data?.articles.length
+        ? <ul>{relatedNews.data.data.articles.map(article => <li key={article.article_id}>
           <a
             href={stateSearch({ ...state, view: 'news', article: article.article_id, security: '' }, false, true)}
             onClick={event => {

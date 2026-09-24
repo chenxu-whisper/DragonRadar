@@ -36,6 +36,9 @@ def article_revision(**changes):
         "content_scope": "full",
         "summary": "Synthetic licensed summary.",
         "content": content,
+        "is_novel_event": True,
+        "supporting_evidence": ("Synthetic filing reports a new order.",),
+        "opposing_evidence": ("Order value remains subject to closing conditions.",),
         "content_digest": sha256(digest_source.encode()).hexdigest(),
         "grant": grant(),
     }

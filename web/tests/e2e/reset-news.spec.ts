@@ -40,7 +40,12 @@ test('renders fixed-snapshot list, detail, source/type/query filters and pager',
   await expect(detail.getByText('仅获摘要展示许可的合成消息。')).toBeVisible();
   await expect(detail.getByRole('link', { name: '查看原文' })).toHaveAttribute('href', /example\.test/);
   await expect(detail.getByText('全文解读完成')).toHaveCount(0);
+  await expect(detail.getByText('AI 摘要：')).toHaveCount(0);
   await expect(detail.getByText('未获正文展示许可', { exact: true })).toBeVisible();
+  await expect(detail.getByRole('heading', { name: '事件新颖性：新颖事件' })).toBeVisible();
+  await expect(detail.getByText('首次披露合成测试订单。')).toBeVisible();
+  await expect(detail.getByText('订单仍需满足交割条件。')).toBeVisible();
+  await expect(detail.getByRole('button', { name: /确认|驳回/ })).toHaveCount(0);
 
   const latest = requests.at(-1)!;
   expect(latest.searchParams.get('snapshot_id')).toBe(NEWS_SNAPSHOT);

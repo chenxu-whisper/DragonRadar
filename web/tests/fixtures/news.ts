@@ -28,8 +28,9 @@ export const articleA = {
   revision_id: '00000000-0000-4000-8000-000000000161',
   revision: 1,
   event_id: '00000000-0000-4000-8000-000000000171',
-  type: 'announcement',
-  source: { id: 'synthetic-wire', version: 'news-v1' },
+  article_type: 'announcement',
+  source: 'synthetic-wire',
+  source_version: 'news-v1',
   title: '机器人公司签署合成测试订单',
   url: 'https://example.test/news/a/very/long/path/that/must/wrap',
   published_at: '2026-09-10T07:00:00Z',
@@ -38,6 +39,11 @@ export const articleA = {
   content_scope: 'summary',
   summary: '仅获摘要展示许可的合成消息。',
   content: null,
+  ai_summary: null,
+  related_security_ids: ['TEST001'],
+  is_novel_event: true,
+  supporting_evidence: ['首次披露合成测试订单。'],
+  opposing_evidence: ['订单仍需满足交割条件。'],
   securities: [{
     association_id: '00000000-0000-4000-8000-000000000181',
     security_id: 'TEST001',
@@ -63,13 +69,34 @@ export const articleB = {
   article_id: ARTICLE_B,
   revision_id: '00000000-0000-4000-8000-000000000162',
   event_id: articleA.event_id,
-  type: 'research',
+  article_type: 'research',
   title: '行业跟踪：同一事件的第二篇报道与超长标题用于验证窄屏换行不会造成页面横向溢出',
   url: 'https://example.test/news/b',
   content_scope: 'none',
   summary: null,
   securities: [],
   topics: [],
+};
+
+export const listArticleA = {
+  article_id: articleA.article_id,
+  title: articleA.title,
+  source: articleA.source,
+  source_version: articleA.source_version,
+  published_at: articleA.published_at,
+  available_at: articleA.available_at,
+  article_type: articleA.article_type,
+  summary: articleA.summary,
+  event_id: articleA.event_id,
+  revision: articleA.revision,
+};
+
+export const listArticleB = {
+  ...listArticleA,
+  article_id: articleB.article_id,
+  title: articleB.title,
+  article_type: articleB.article_type,
+  summary: articleB.summary,
 };
 
 export type NewsMockState = {
@@ -109,17 +136,17 @@ export async function mockNews(page: Page, state: NewsMockState = {}) {
       const source = url.searchParams.get('source');
       const q = (url.searchParams.get('q') || '').toLowerCase();
       const pageNumber = Number(url.searchParams.get('page') || 1);
-      let items = [articleA, articleB];
-      if (type) items = items.filter(item => item.type === type);
-      if (source) items = items.filter(item => item.source.id === source);
-      if (q) items = items.filter(item => `${item.title} ${item.summary || ''}`.toLowerCase().includes(q));
+      let articles = [listArticleA, listArticleB];
+      if (type) articles = articles.filter(item => item.article_type === type);
+      if (source) articles = articles.filter(item => item.source === source);
+      if (q) articles = articles.filter(item => `${item.title} ${item.summary || ''}`.toLowerCase().includes(q));
       return respond(newsEnvelope({
-        items,
+        articles,
         page: pageNumber,
         size: Number(url.searchParams.get('size') || 20),
-        total: items.length,
+        total: articles.length,
         sources: ['synthetic-wire'],
-        event_count: new Set(items.map(item => item.event_id)).size,
+        event_count: new Set(articles.map(item => item.event_id)).size,
       }));
     }
     if (url.pathname.startsWith('/api/news/')) {

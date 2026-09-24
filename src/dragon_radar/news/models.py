@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import Field, StrictStr, field_validator, model_validator
+from pydantic import Field, StrictBool, StrictStr, field_validator, model_validator
 
 from dragon_radar.domain.models import (
     FrozenModel,
@@ -57,6 +57,9 @@ class NewsArticleRevision(FrozenModel):
     content_scope: ContentScope
     summary: Annotated[StrictStr, Field(min_length=1)] | None = None
     content: Annotated[StrictStr, Field(min_length=1)] | None = None
+    is_novel_event: StrictBool
+    supporting_evidence: tuple[StrictStr, ...]
+    opposing_evidence: tuple[StrictStr, ...]
     content_digest: SHA256
     grant: SourceGrant
 
@@ -68,6 +71,13 @@ class NewsArticleRevision(FrozenModel):
         if not value.strip():
             raise ValueError("News title cannot be blank")
         return value
+
+    @field_validator("supporting_evidence", "opposing_evidence")
+    @classmethod
+    def nonblank_event_evidence(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value.strip() for value in values):
+            raise ValueError("News event evidence cannot be blank")
+        return values
 
     @model_validator(mode="after")
     def valid_availability_and_scope(self):

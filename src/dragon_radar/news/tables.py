@@ -1,6 +1,7 @@
 """SQLAlchemy mappings for immutable news history and owner reviews."""
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -61,6 +62,9 @@ news_article_revisions = Table(
     Column("content_scope", String(20), nullable=False),
     Column("summary", Text),
     Column("content", Text),
+    Column("is_novel_event", Boolean, nullable=False),
+    Column("supporting_evidence", JSONB, nullable=False),
+    Column("opposing_evidence", JSONB, nullable=False),
     Column("content_digest", String(64), nullable=False),
     Column("embedded_grant", JSONB, nullable=False),
     Column("ingested_at", DateTime(timezone=True), nullable=False),

@@ -48,7 +48,7 @@ function ArticleDetail({
   open: NewsProps['open'];
 }) {
   return <section className="news-detail" aria-label="消息详情">
-    <p className="eyebrow">{TYPE_LABELS[article.type]} · {article.source.id} / {article.source.version}</p>
+    <p className="eyebrow">{TYPE_LABELS[article.article_type]} · {article.source} / {article.source_version}</p>
     <h2>{article.title}</h2>
     <dl className="metadata-grid news-metadata">
       <dt>发布时间</dt><dd>{article.published_at}</dd>
@@ -59,10 +59,23 @@ function ArticleDetail({
     <a className="news-source-link" href={article.url} target="_blank" rel="noreferrer">
       <ExternalLink size={16} />查看原文
     </a>
-    {article.summary && <p className="news-summary">{article.summary}</p>}
+    {article.ai_summary && <p className="news-summary">AI 摘要：{article.ai_summary}</p>}
+    {article.summary && <p className="news-summary">授权摘要：{article.summary}</p>}
     {article.content
       ? <div className="news-content"><FileText size={18} /><p>{article.content}</p></div>
       : <p className="notice news-license"><strong>未获正文展示许可</strong>{article.summary ? '，仅展示授权摘要' : ''}</p>}
+
+    <section aria-label="事件新颖性证据">
+      <h3>事件新颖性：{article.is_novel_event ? '新颖事件' : '非新颖事件'}</h3>
+      <h4>支持证据</h4>
+      {article.supporting_evidence.length
+        ? <ul>{article.supporting_evidence.map(item => <li key={item}>{item}</li>)}</ul>
+        : <p className="muted">无支持证据。</p>}
+      <h4>反证</h4>
+      {article.opposing_evidence.length
+        ? <ul>{article.opposing_evidence.map(item => <li key={item}>{item}</li>)}</ul>
+        : <p className="muted">无反证。</p>}
+    </section>
 
     <section className="news-associations" aria-label="关联证券与题材">
       <h3>关联证据</h3>
@@ -175,15 +188,15 @@ export function News({ state, patch, refreshToken, open }: NewsProps) {
     <ResourceStatus resource={detail} name="消息详情" />
     {data && <div className="news-layout">
       <section className="news-list" aria-label="消息列表">
-        {data.items.length === 0
+        {data.articles.length === 0
           ? <p className="empty">当前筛选没有已发布消息。</p>
-          : data.items.map(article => <button
+          : data.articles.map(article => <button
             className="news-list-row"
             aria-pressed={state.article === article.article_id}
             key={article.article_id}
             onClick={() => patch({ article: article.article_id })}
           >
-            <span>{TYPE_LABELS[article.type]} · {article.source.id}</span>
+            <span>{TYPE_LABELS[article.article_type]} · {article.source}</span>
             <strong>{article.title}</strong>
             <small>{article.available_at}</small>
           </button>)}

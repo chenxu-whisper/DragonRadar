@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { ARTICLE_A, articleA, newsEnvelope, NEWS_SNAPSHOT } from '../fixtures/news';
+import {
+  ARTICLE_A,
+  articleA,
+  listArticleA,
+  newsEnvelope,
+  NEWS_SNAPSHOT,
+} from '../fixtures/news';
 
 describe('news runtime contract', () => {
   test('builds a fixed-snapshot list request with all supported filters', async () => {
@@ -43,7 +49,7 @@ describe('news runtime contract', () => {
     };
 
     expect(validateNewsListResponse(newsEnvelope({
-      items: [articleA],
+      articles: [listArticleA],
       page: 1,
       size: 20,
       total: 1,
@@ -51,7 +57,7 @@ describe('news runtime contract', () => {
       event_count: 1,
     }), request)).toBeNull();
     expect(validateNewsListResponse(newsEnvelope({
-      items: 'old payload',
+      articles: 'old payload',
       page: 1,
       size: 20,
       total: 1,
@@ -59,7 +65,7 @@ describe('news runtime contract', () => {
       event_count: 1,
     }), request)).toBe('malformed_response');
     expect(validateNewsListResponse(newsEnvelope({
-      items: [articleA],
+      articles: [listArticleA],
       page: 2,
       size: 20,
       total: 1,
@@ -67,7 +73,15 @@ describe('news runtime contract', () => {
       event_count: 1,
     }), request)).toBe('selection_mismatch');
     expect(validateNewsListResponse(newsEnvelope({
-      items: [{ ...articleA, type: 'company' }],
+      articles: [{ ...listArticleA, article_type: 'company' }],
+      page: 1,
+      size: 20,
+      total: 1,
+      sources: ['synthetic-wire'],
+      event_count: 1,
+    }), request)).toBe('malformed_response');
+    expect(validateNewsListResponse(newsEnvelope({
+      items: [listArticleA],
       page: 1,
       size: 20,
       total: 1,
@@ -76,7 +90,7 @@ describe('news runtime contract', () => {
     }), request)).toBe('malformed_response');
   });
 
-  test('rejects a detail response for another article or snapshot', async () => {
+  test('accepts the frozen detail contract and rejects another article or snapshot', async () => {
     const { validateNewsDetailResponse } = await import('../../src/features/news/api');
 
     expect(validateNewsDetailResponse(newsEnvelope(articleA), {
@@ -99,5 +113,21 @@ describe('news runtime contract', () => {
       date: '2026-09-10',
       snapshot: NEWS_SNAPSHOT,
     })).toBe('selection_mismatch');
+    expect(validateNewsDetailResponse(newsEnvelope({
+      ...articleA,
+      source: { id: 'synthetic-wire', version: 'news-v1' },
+    }), {
+      articleId: ARTICLE_A,
+      date: '2026-09-10',
+      snapshot: NEWS_SNAPSHOT,
+    })).toBe('malformed_response');
+    expect(validateNewsDetailResponse(newsEnvelope({
+      ...articleA,
+      supporting_evidence: [' '],
+    }), {
+      articleId: ARTICLE_A,
+      date: '2026-09-10',
+      snapshot: NEWS_SNAPSHOT,
+    })).toBe('malformed_response');
   });
 });
