@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
@@ -12,13 +13,26 @@ class ProviderUnavailable(Exception):
     """Raised when no explicitly configured provider adapter is available."""
 
 
+@dataclass(frozen=True)
+class AIProviderLimits:
+    deadline: datetime
+    timeout_seconds: float
+    max_tokens: int
+    max_cost: Decimal
+
+
 class AIProvider(Protocol):
     name: str
     model_version: str
     prompt_version: str
 
-    def generate(self, task_type: TaskType, manifest: dict) -> AIProviderResult | dict:
-        """Generate a draft without receiving database or write capabilities."""
+    def generate(
+        self,
+        task_type: TaskType,
+        manifest: dict,
+        limits: AIProviderLimits,
+    ) -> AIProviderResult | dict:
+        """Generate within the supplied wall-clock deadline and budget limits."""
 
 
 def _integer(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -95,7 +109,12 @@ class UnavailableProvider:
         self.model_version = config.model_version
         self.prompt_version = config.prompt_version
 
-    def generate(self, task_type: TaskType, manifest: dict):
+    def generate(
+        self,
+        task_type: TaskType,
+        manifest: dict,
+        limits: AIProviderLimits,
+    ):
         raise ProviderUnavailable("AI provider is unavailable")
 
 
@@ -109,6 +128,7 @@ def provider_from_environment(config: AIProviderConfig | None = None) -> AIProvi
 __all__ = [
     "AIProvider",
     "AIProviderConfig",
+    "AIProviderLimits",
     "ProviderUnavailable",
     "UnavailableProvider",
     "load_provider_config",

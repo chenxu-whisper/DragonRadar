@@ -164,6 +164,14 @@ class AIService:
             raise ValueError("Invalid AI submission") from None
         with self.tasks.database.engine.begin() as connection:
             owner = self.tasks._authorize(connection, token, csrf)
+            replay = self.tasks.replay_for_owner(
+                connection,
+                owner.owner_id,
+                submission,
+                key=key,
+            )
+            if replay is not None:
+                return replay
             row = (
                 connection.execute(
                     select(publications).where(

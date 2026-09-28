@@ -10,6 +10,7 @@ from dragon_radar.ai.models import (
 from dragon_radar.ai.provider import (
     AIProvider,
     AIProviderConfig,
+    AIProviderLimits,
     ProviderUnavailable,
     load_provider_config,
     provider_from_environment,
@@ -22,6 +23,7 @@ __all__ = [
     "AIDraft",
     "AIProvider",
     "AIProviderConfig",
+    "AIProviderLimits",
     "AIProviderResult",
     "AIService",
     "AISubmission",

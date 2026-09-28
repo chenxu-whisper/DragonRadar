@@ -211,6 +211,61 @@ def test_submit_replays_same_payload_and_conflicts_on_key_reuse(ai_setup):
         )
 
 
+def test_submit_replays_same_payload_after_ai_permission_withdrawal(
+    ai_setup, repository
+):
+    _tasks, service, _owners, session, publication = ai_setup
+    first = _submit(service, session, publication)
+
+    repository.register_source(grant(ai=False))
+    replay = _submit(service, session, publication)
+
+    assert replay == first
+
+
+@pytest.mark.anyio
+async def test_submit_changed_payload_same_key_is_409_after_ai_permission_withdrawal(
+    ai_setup, repository
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+
+    _tasks, service, owners, session, publication = ai_setup
+    owner = create_owner_app(
+        repository=service.publications.market,
+        owner_repository=owners,
+        publication_repository=service.publications,
+        ai_service=service,
+    )
+    body = {
+        "date": publication.trade_date.isoformat(),
+        "notes_context": "original",
+        "snapshot_id": str(publication.id),
+        "as_of": publication.published_at.isoformat(),
+        "version": f"v{publication.version}",
+        "idempotency_key": "withdrawn-ai-key",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=owner),
+        base_url="https://localhost:8030",
+    ) as client:
+        created = await client.post(
+            "/api/ai/daily-review",
+            json=body,
+            headers=_headers(session),
+        )
+        repository.register_source(grant(ai=False))
+        conflict = await client.post(
+            "/api/ai/daily-review",
+            json={**body, "notes_context": "changed"},
+            headers=_headers(session),
+        )
+
+    assert created.status_code == 200
+    assert conflict.status_code == 409
+
+
 def test_manifest_is_owner_bound_and_uses_published_snapshot_data(ai_setup):
     tasks, service, _owners, session, publication = ai_setup
 
@@ -441,7 +496,48 @@ def test_claim_is_skip_locked_and_restart_resumes(ai_setup):
     assert recovered.job.id == second.id
 
 
-def test_worker_timeout_is_bounded_and_attempts_end(ai_setup):
+def test_worker_supplies_immutable_provider_limits(ai_setup):
+    from dataclasses import FrozenInstanceError
+    from datetime import UTC, datetime
+
+    from dragon_radar.ai.provider import AIProviderLimits
+    from dragon_radar.ai.worker import AIWorker
+
+    class CapturingProvider:
+        name = "fake"
+        model_version = "fake-v1"
+        prompt_version = "prompt-v1"
+
+        def generate(self, task_type, manifest, limits):
+            self.limits = limits
+            return {"content": {"text": "done"}, "token_usage": 1, "cost": "0"}
+
+    tasks, service, _owners, session, publication = ai_setup
+    _submit(service, session, publication)
+    provider = CapturingProvider()
+    started = datetime.now(UTC)
+
+    completed = AIWorker(
+        tasks,
+        provider,
+        worker_id="limits-worker",
+        provider_timeout=2,
+        max_tokens=123,
+        max_cost=Decimal("4.50"),
+    ).run_once()
+
+    assert completed.status == "succeeded"
+    assert isinstance(provider.limits, AIProviderLimits)
+    assert provider.limits.timeout_seconds == 2
+    assert provider.limits.max_tokens == 123
+    assert provider.limits.max_cost == Decimal("4.50")
+    assert provider.limits.deadline >= started + timedelta(seconds=1.9)
+    with pytest.raises(FrozenInstanceError):
+        provider.limits.max_tokens = 1
+
+
+def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup):
+    from threading import Lock
     from time import monotonic, sleep
 
     from dragon_radar.ai.worker import AIWorker
@@ -451,16 +547,33 @@ def test_worker_timeout_is_bounded_and_attempts_end(ai_setup):
         model_version = "fake-v1"
         prompt_version = "prompt-v1"
 
-        def generate(self, task_type, manifest):
-            sleep(0.25)
-            return {"content": {"text": "too late"}, "token_usage": 1, "cost": "0"}
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+            self.lock = Lock()
+
+        def generate(self, task_type, manifest, limits):
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                sleep(0.15)
+                return {
+                    "content": {"text": "too late"},
+                    "token_usage": 1,
+                    "cost": "0",
+                }
+            finally:
+                with self.lock:
+                    self.active -= 1
 
     tasks, service, _owners, session, publication = ai_setup
     task = _submit(service, session, publication)
+    provider = SlowProvider()
     started = monotonic()
     worker = AIWorker(
         tasks,
-        SlowProvider(),
+        provider,
         worker_id="timeout-worker",
         lease_for=timedelta(seconds=1),
         provider_timeout=0.1,
@@ -471,68 +584,22 @@ def test_worker_timeout_is_bounded_and_attempts_end(ai_setup):
 
     assert worker.run_once().status == "queued"
     assert worker.run_once().status == "failed"
-    assert monotonic() - started < 0.3
+    assert monotonic() - started >= 0.25
+    assert provider.max_active == 1
     failed = tasks.get(session.token, task.id)
     assert failed.attempt_count == 2
     assert failed.failure == {"code": "provider_timeout"}
-
-
-def test_worker_renews_lease_while_provider_is_running():
-    from threading import Event
-    from time import sleep
-
-    from dragon_radar.ai.worker import AIWorker
-
-    started = Event()
-    release = Event()
-    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
-
-    class LeaseRepository:
-        def __init__(self):
-            self.renewals = 0
-
-        def claim(self, worker_id, *, lease_for, max_attempts):
-            return lease
-
-        def load_input(self, claimed):
-            return {"input": {}}
-
-        def renew(self, claimed, *, lease_for):
-            self.renewals += 1
-            return claimed
-
-        def succeed(self, claimed, result, **metadata):
-            return SimpleNamespace(status="succeeded")
-
-    class BlockingProvider:
-        name = "fake"
-        model_version = "fake-v1"
-        prompt_version = "prompt-v1"
-
-        def generate(self, task_type, manifest):
-            started.set()
-            assert release.wait(2)
-            return {"content": {"text": "done"}, "token_usage": 1, "cost": "0"}
-
-    repository = LeaseRepository()
-    worker = AIWorker(
-        repository,
-        BlockingProvider(),
-        worker_id="heartbeat-worker",
-        lease_for=timedelta(seconds=1),
-        provider_timeout=2,
-    )
-    from concurrent.futures import ThreadPoolExecutor
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(worker.run_once)
-        assert started.wait(1)
-        sleep(0.45)
-        release.set()
-        completed = future.result(timeout=2)
-
-    assert completed.status == "succeeded"
-    assert repository.renewals >= 1
+    with tasks.database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM ai_task_drafts "
+                    "WHERE task_id = :task_id AND source = 'provider'"
+                ),
+                {"task_id": task.id},
+            )
+            == 0
+        )
 
 
 def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
@@ -543,7 +610,7 @@ def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
         model_version = "fake-v1"
         prompt_version = "prompt-v1"
 
-        def generate(self, task_type, manifest):
+        def generate(self, task_type, manifest, limits):
             raise RuntimeError("Bearer secret-token raw provider stack")
 
     tasks, service, _owners, session, publication = ai_setup
@@ -564,6 +631,7 @@ def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
 
 def test_provider_config_is_server_only_and_missing_token_is_unavailable(monkeypatch):
     from dragon_radar.ai.provider import (
+        AIProviderLimits,
         ProviderUnavailable,
         load_provider_config,
         provider_from_environment,
@@ -578,7 +646,16 @@ def test_provider_config_is_server_only_and_missing_token_is_unavailable(monkeyp
     assert config.token is None
     assert config.concurrency >= 1
     with pytest.raises(ProviderUnavailable):
-        provider.generate("daily_review", {"input": {}})
+        provider.generate(
+            "daily_review",
+            {"input": {}},
+            AIProviderLimits(
+                deadline=NOW + timedelta(seconds=1),
+                timeout_seconds=1,
+                max_tokens=1,
+                max_cost=Decimal("1"),
+            ),
+        )
 
     monkeypatch.setenv("DRAGON_AI_TOKEN", "secret-token-value")
     configured = load_provider_config()

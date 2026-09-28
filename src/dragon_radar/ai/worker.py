@@ -2,15 +2,14 @@
 
 import time
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import monotonic
 
 from pydantic import ValidationError
 
 from dragon_radar.ai.models import AIProviderResult, AITaskRecord
-from dragon_radar.ai.provider import AIProvider, ProviderUnavailable
+from dragon_radar.ai.provider import AIProvider, AIProviderLimits, ProviderUnavailable
 from dragon_radar.ai.repository import AITaskRepository
 from dragon_radar.storage.repository import Forbidden, NotFound
 
@@ -54,31 +53,21 @@ class AIWorker:
         self.concurrency = concurrency
 
     def _invoke(self, lease, manifest) -> tuple[AIProviderResult, object]:
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(
-            self.provider.generate,
+        limits = AIProviderLimits(
+            deadline=datetime.now(UTC) + timedelta(seconds=self.provider_timeout),
+            timeout_seconds=self.provider_timeout,
+            max_tokens=self.max_tokens,
+            max_cost=self.max_cost,
+        )
+        started = monotonic()
+        value = self.provider.generate(
             lease.job.task_type,
             dict(manifest),
+            limits,
         )
-        deadline = monotonic() + self.provider_timeout
-        heartbeat = self.lease_for.total_seconds() / 3
-        try:
-            while True:
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    raise FutureTimeoutError
-                try:
-                    value = future.result(timeout=min(heartbeat, remaining))
-                    return AIProviderResult.model_validate(value), lease
-                except FutureTimeoutError:
-                    if future.done() or monotonic() >= deadline:
-                        raise
-                    lease = self.repository.renew(
-                        lease,
-                        lease_for=self.lease_for,
-                    )
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+        if monotonic() - started >= self.provider_timeout:
+            raise TimeoutError
+        return AIProviderResult.model_validate(value), lease
 
     def run_once(self) -> AITaskRecord | None:
         lease = self.repository.claim(
@@ -98,7 +87,7 @@ class AIWorker:
             result, lease = self._invoke(lease, manifest)
         except ProviderUnavailable:
             return self.repository.fail(lease, code="provider_unavailable")
-        except FutureTimeoutError:
+        except TimeoutError:
             return self.repository.retry_or_fail(
                 lease,
                 code="provider_timeout",

@@ -246,24 +246,17 @@ class AITaskRepository:
     ) -> AITaskRecord:
         if not connection.in_transaction():
             raise ValueError("AI submission requires a transaction")
-        _identifier(key)
         submission = AISubmission.model_validate(submission.model_dump())
-        stored_manifest = _stored_object(manifest)
-        self._lock(connection, f"ai-submit:{owner_id}:{key}")
-        existing = (
-            connection.execute(
-                select(ai_tasks).where(
-                    ai_tasks.c.owner_id == owner_id,
-                    ai_tasks.c.idempotency_key == key,
-                )
-            )
-            .mappings()
-            .first()
+        existing = self.replay_for_owner(
+            connection,
+            owner_id,
+            submission,
+            key=key,
         )
         if existing is not None:
-            if existing["request_hash"] != submission.request_hash:
-                raise Conflict("AI idempotency key belongs to another payload")
-            return self._record(connection, existing)
+            return existing
+        stored_manifest = _stored_object(manifest)
+
         now = self._now()
         row = (
             connection.execute(
@@ -303,6 +296,35 @@ class AITaskRepository:
             .one()
         )
         return self._record(connection, row)
+
+    def replay_for_owner(
+        self,
+        connection: Connection,
+        owner_id: UUID,
+        submission: AISubmission,
+        *,
+        key: str,
+    ) -> AITaskRecord | None:
+        if not connection.in_transaction():
+            raise ValueError("AI submission replay requires a transaction")
+        _identifier(key)
+        submission = AISubmission.model_validate(submission.model_dump())
+        self._lock(connection, f"ai-submit:{owner_id}:{key}")
+        existing = (
+            connection.execute(
+                select(ai_tasks).where(
+                    ai_tasks.c.owner_id == owner_id,
+                    ai_tasks.c.idempotency_key == key,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if existing is not None:
+            if existing["request_hash"] != submission.request_hash:
+                raise Conflict("AI idempotency key belongs to another payload")
+            return self._record(connection, existing)
+        return None
 
     def _authorize(self, connection: Connection, token: str, csrf: str | None = None):
         if self.owners is None:
