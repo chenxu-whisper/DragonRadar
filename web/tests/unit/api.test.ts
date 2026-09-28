@@ -89,6 +89,7 @@ describe('read-only request boundary', () => {
         points: [
           { trade_date: '2026-08-13', normalized: 100, drawdown: 0 },
           { trade_date: '2026-08-14', normalized: null, drawdown: null },
+          { trade_date: '2026-09-10', normalized: null, drawdown: null },
         ],
       }],
       exclusions: [],
