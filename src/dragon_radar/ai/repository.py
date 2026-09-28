@@ -37,6 +37,10 @@ class AITaskRateLimited(Exception):
     """Raised when an owner already has the maximum active AI task count."""
 
 
+class AIProviderResultLimitExceeded(ValueError):
+    """Raised when provider output exceeds a configured persistence limit."""
+
+
 def _stored_object(value: Mapping) -> dict:
     canonical = canonical_object(dict(value))
     return json.loads(canonical)
@@ -57,13 +61,21 @@ def _review_note(decision: str, revision: int) -> str:
     return revision_note + "与服务端 revision 不一致返回 409"
 
 
-def _validate_latency(latency_ms: int | None, *, required: bool = False) -> None:
+def _validate_latency(
+    latency_ms: int | None,
+    *,
+    required: bool = False,
+    result_limit: bool = False,
+) -> None:
     if latency_ms is None:
         if required:
             raise ValueError("Invalid AI provider latency")
         return
-    if type(latency_ms) is not int or not 0 <= latency_ms <= MAX_PROVIDER_LATENCY_MS:
+    if type(latency_ms) is not int:
         raise ValueError("Invalid AI provider latency")
+    if not 0 <= latency_ms <= MAX_PROVIDER_LATENCY_MS:
+        error = AIProviderResultLimitExceeded if result_limit else ValueError
+        raise error("AI provider latency exceeds configured limits")
 
 
 class AITaskRepository:
@@ -758,14 +770,19 @@ class AITaskRepository:
         result = AIProviderResult.model_validate(result.model_dump())
         for value in (provider, model_version, prompt_version):
             _identifier(value)
-        _validate_latency(latency_ms, required=True)
+        _validate_latency(latency_ms, required=True, result_limit=True)
+        if type(max_tokens) is not int or max_tokens < 0:
+            raise ValueError("Invalid AI token limit")
         if (
-            type(max_tokens) is not int
-            or max_tokens < 0
-            or result.token_usage > max_tokens
-            or result.cost > max_cost
+            not isinstance(max_cost, Decimal)
+            or not max_cost.is_finite()
+            or max_cost < 0
         ):
-            raise ValueError("AI provider result exceeds configured limits")
+            raise ValueError("Invalid AI cost limit")
+        if result.token_usage > max_tokens or result.cost > max_cost:
+            raise AIProviderResultLimitExceeded(
+                "AI provider result exceeds configured limits"
+            )
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
             now = self._now()
@@ -898,6 +915,7 @@ class AITaskRepository:
 
 __all__ = [
     "MAX_ACTIVE_AI_TASKS_PER_OWNER",
+    "AIProviderResultLimitExceeded",
     "AITaskRateLimited",
     "AITaskRepository",
 ]

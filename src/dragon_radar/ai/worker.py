@@ -15,7 +15,10 @@ from dragon_radar.ai.models import (
     AITaskRecord,
 )
 from dragon_radar.ai.provider import AIProvider, AIProviderLimits, ProviderUnavailable
-from dragon_radar.ai.repository import AITaskRepository
+from dragon_radar.ai.repository import (
+    AIProviderResultLimitExceeded,
+    AITaskRepository,
+)
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
 AI_LEASE_COMPLETION_MARGIN = timedelta(seconds=1)
@@ -259,7 +262,7 @@ class AIWorker:
                 max_tokens=self.max_tokens,
                 max_cost=self.max_cost,
             )
-        except ValueError:
+        except AIProviderResultLimitExceeded:
             return self._write(
                 self.repository.fail,
                 lease,

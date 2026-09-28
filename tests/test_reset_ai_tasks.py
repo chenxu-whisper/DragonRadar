@@ -758,6 +758,36 @@ def test_worker_supplies_immutable_provider_limits(ai_setup):
         limits.max_tokens = 1
 
 
+@pytest.mark.parametrize("limit", ("token", "cost", "latency"))
+def test_repository_classifies_only_provider_result_limit_violations(
+    ai_setup,
+    limit,
+):
+    from dragon_radar.ai.models import MAX_PROVIDER_LATENCY_MS, AIProviderResult
+    from dragon_radar.ai.repository import AIProviderResultLimitExceeded
+
+    tasks, service, _owners, session, publication = ai_setup
+    _submit(service, session, publication, key=f"{limit}-limit")
+    lease = tasks.claim(f"{limit}-limit-worker")
+    result = AIProviderResult(
+        content={"text": "over limit"},
+        token_usage=2 if limit == "token" else 1,
+        cost="2" if limit == "cost" else "0",
+    )
+
+    with pytest.raises(AIProviderResultLimitExceeded):
+        tasks.succeed(
+            lease,
+            result,
+            provider="fake",
+            model_version="fake-v1",
+            prompt_version="prompt-v1",
+            latency_ms=MAX_PROVIDER_LATENCY_MS + 1 if limit == "latency" else 1,
+            max_tokens=1,
+            max_cost=Decimal("1"),
+        )
+
+
 def test_worker_persists_bounded_success_and_failure_latency(ai_setup):
     from dragon_radar.ai.worker import AIWorker
 
@@ -1003,6 +1033,7 @@ def test_worker_returns_none_when_lease_is_lost_at_write_boundary(
 ):
     from dragon_radar.ai.models import AIProviderResult
     from dragon_radar.ai.provider import ProviderUnavailable
+    from dragon_radar.ai.repository import AIProviderResultLimitExceeded
     from dragon_radar.ai.worker import AIWorker
     from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
@@ -1033,7 +1064,7 @@ def test_worker_returns_none_when_lease_is_lost_at_write_boundary(
         def succeed(self, claimed, result, **metadata):
             self.writes.append(("succeed", None))
             if outcome == "result_limit_exceeded":
-                raise ValueError("result limit")
+                raise AIProviderResultLimitExceeded("result limit")
             raise Conflict("lease lost")
 
     def invoke(claimed, manifest):
@@ -1061,8 +1092,13 @@ def test_worker_returns_none_when_lease_is_lost_at_write_boundary(
     monkeypatch.setattr(worker, "_invoke", invoke)
 
     assert worker.run_once() is None
-    expected_writes = 2 if outcome == "result_limit_exceeded" else 1
-    assert len(repository.writes) == expected_writes
+    if outcome == "result_limit_exceeded":
+        assert repository.writes == [
+            ("succeed", None),
+            ("fail", "result_limit_exceeded"),
+        ]
+    else:
+        assert len(repository.writes) == 1
 
 
 def test_worker_does_not_convert_programming_errors_to_provider_failures(monkeypatch):
@@ -1097,6 +1133,47 @@ def test_worker_does_not_convert_programming_errors_to_provider_failures(monkeyp
     with pytest.raises(KeyError, match="implementation defect"):
         worker.run_once()
     assert repository.retries == 0
+
+
+def test_worker_batch_does_not_mask_persistence_value_error(monkeypatch):
+    from dragon_radar.ai.models import AIProviderResult
+    from dragon_radar.ai.worker import AIWorker
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class InvalidMetadataRepository:
+        failures = 0
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            return lease
+
+        def load_input(self, claimed):
+            return {"input": {}}
+
+        def succeed(self, claimed, result, **metadata):
+            raise ValueError("Invalid AI provider metadata")
+
+        def fail(self, *args, **kwargs):
+            self.failures += 1
+
+    repository = InvalidMetadataRepository()
+    worker = AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id="invalid-metadata-worker",
+    )
+    monkeypatch.setattr(
+        worker,
+        "_invoke",
+        lambda claimed, manifest: (
+            AIProviderResult(content={"text": "draft"}, token_usage=1, cost="0"),
+            claimed,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Invalid AI provider metadata"):
+        worker.run_batch()
+    assert repository.failures == 0
 
 
 def test_worker_batch_keeps_concurrent_result_when_another_lease_is_lost(monkeypatch):
