@@ -536,6 +536,106 @@ def test_worker_supplies_immutable_provider_limits(ai_setup):
         provider.limits.max_tokens = 1
 
 
+@pytest.mark.parametrize(
+    ("lease_seconds", "provider_timeout"),
+    [
+        (30, 30),
+        (29, 30),
+        (30.5, 30),
+    ],
+)
+def test_worker_rejects_lease_that_cannot_cover_provider_and_persistence(
+    lease_seconds,
+    provider_timeout,
+):
+    from dragon_radar.ai.worker import AIWorker
+
+    class UntouchedRepository:
+        def __init__(self):
+            self.claims = 0
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            self.claims += 1
+
+    class UntouchedProvider:
+        name = "fake"
+        model_version = "fake-v1"
+        prompt_version = "prompt-v1"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, task_type, manifest, limits):
+            self.calls += 1
+
+    repository = UntouchedRepository()
+    provider = UntouchedProvider()
+
+    with pytest.raises(ValueError, match="lease"):
+        AIWorker(
+            repository,
+            provider,
+            worker_id="invalid-timing-worker",
+            lease_for=timedelta(seconds=lease_seconds),
+            provider_timeout=provider_timeout,
+        )
+
+    assert repository.claims == 0
+    assert provider.calls == 0
+
+
+def test_worker_renews_lease_to_cover_provider_deadline_and_persistence():
+    from datetime import UTC, datetime
+
+    from dragon_radar.ai.worker import AI_LEASE_COMPLETION_MARGIN, AIWorker
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        renewed = None
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            return lease
+
+        def load_input(self, claimed):
+            return {"input": {}}
+
+        def renew(self, claimed, *, lease_for):
+            self.renewed = SimpleNamespace(
+                job=claimed.job,
+                expires_at=datetime.now(UTC) + lease_for,
+            )
+            return self.renewed
+
+        def succeed(self, claimed, result, **metadata):
+            assert claimed is self.renewed
+            return SimpleNamespace(status="succeeded")
+
+    class CapturingProvider:
+        name = "fake"
+        model_version = "fake-v1"
+        prompt_version = "prompt-v1"
+
+        def generate(self, task_type, manifest, limits):
+            self.limits = limits
+            return {"content": {"text": "done"}, "token_usage": 1, "cost": "0"}
+
+    repository = LeaseRepository()
+    provider = CapturingProvider()
+    completed = AIWorker(
+        repository,
+        provider,
+        worker_id="renew-before-call",
+        lease_for=timedelta(seconds=2),
+        provider_timeout=1,
+    ).run_once()
+
+    assert completed.status == "succeeded"
+    assert repository.renewed.expires_at >= (
+        provider.limits.deadline + AI_LEASE_COMPLETION_MARGIN
+    )
+
+
 def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup):
     from threading import Lock
     from time import monotonic, sleep
@@ -575,7 +675,7 @@ def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup
         tasks,
         provider,
         worker_id="timeout-worker",
-        lease_for=timedelta(seconds=1),
+        lease_for=timedelta(seconds=2),
         provider_timeout=0.1,
         max_attempts=2,
         max_tokens=10,
@@ -890,6 +990,7 @@ async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
 
 
 def test_ai_worker_cli_is_bounded_and_compose_is_internal():
+    from dragon_radar.ai.worker import AI_LEASE_COMPLETION_MARGIN
     from dragon_radar.cli import _parser
 
     defaults = _parser().parse_args(["ai-worker"])
@@ -911,6 +1012,9 @@ def test_ai_worker_cli_is_bounded_and_compose_is_internal():
         ]
     )
     assert defaults.worker_id == "ai-worker-1"
+    assert defaults.lease_seconds >= (
+        defaults.provider_timeout_seconds + AI_LEASE_COMPLETION_MARGIN.total_seconds()
+    )
     assert vars(configured) == {
         "command": "ai-worker",
         "worker_id": "ai-worker.prod:1",
@@ -947,3 +1051,37 @@ def test_ai_worker_cli_is_bounded_and_compose_is_internal():
     assert set(worker["networks"]) == {"backend"}
     assert "ports" not in worker
     assert all("TOKEN" not in item for item in worker["command"])
+    command = worker["command"]
+    lease_seconds = float(command[command.index("--lease-seconds") + 1])
+    timeout_seconds = float(command[command.index("--provider-timeout-seconds") + 1])
+    assert lease_seconds >= (
+        timeout_seconds + AI_LEASE_COMPLETION_MARGIN.total_seconds()
+    )
+
+
+def test_ai_worker_cli_rejects_unsafe_timing_before_database_with_sanitized_error(
+    monkeypatch,
+    capsys,
+):
+    from dragon_radar.cli import main
+
+    secret = "secret-ai-provider-token"
+    monkeypatch.delenv("DRAGON_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DRAGON_AI_TOKEN", secret)
+
+    result = main(
+        [
+            "ai-worker",
+            "--lease-seconds",
+            "30",
+            "--provider-timeout-seconds",
+            "30",
+        ]
+    )
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.out == ""
+    assert output.err.strip() == "Invalid configuration or input"
+    assert secret not in output.err
+    assert "Traceback" not in output.err

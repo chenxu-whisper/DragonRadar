@@ -10,6 +10,11 @@ from alembic.util.exc import CommandError
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
+from dragon_radar.ai.worker import (
+    DEFAULT_AI_LEASE_DURATION,
+    DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS,
+    validate_ai_worker_timing,
+)
 from dragon_radar.domain.models import MarketBatch, SourceGrant
 from dragon_radar.ingestion.contracts import MarketImportAttempt, MarketImportTask
 from dragon_radar.ingestion.local_json import load_licensed_market_json
@@ -259,7 +264,7 @@ def _parser() -> argparse.ArgumentParser:
     ai_worker.add_argument(
         "--lease-seconds",
         type=lambda value: _ai_integer(value, 1, 3600),
-        default=60,
+        default=int(DEFAULT_AI_LEASE_DURATION.total_seconds()),
     )
     ai_worker.add_argument(
         "--max-attempts",
@@ -269,7 +274,7 @@ def _parser() -> argparse.ArgumentParser:
     ai_worker.add_argument(
         "--provider-timeout-seconds",
         type=_ai_float,
-        default=30.0,
+        default=DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS,
     )
     ai_worker.add_argument(
         "--concurrency",
@@ -287,6 +292,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     database = None
     try:
+        if args.command == "ai-worker":
+            validate_ai_worker_timing(
+                lease_for=timedelta(seconds=args.lease_seconds),
+                provider_timeout=args.provider_timeout_seconds,
+            )
         database = Database()
         repository = Repository(database)
         topic_repository = (

@@ -13,6 +13,28 @@ from dragon_radar.ai.provider import AIProvider, AIProviderLimits, ProviderUnava
 from dragon_radar.ai.repository import AITaskRepository
 from dragon_radar.storage.repository import Forbidden, NotFound
 
+AI_LEASE_COMPLETION_MARGIN = timedelta(seconds=1)
+DEFAULT_AI_LEASE_DURATION = timedelta(seconds=60)
+DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS = 30.0
+
+
+def validate_ai_worker_timing(
+    *,
+    lease_for: timedelta,
+    provider_timeout: float,
+) -> None:
+    if not 0.1 <= provider_timeout <= 300:
+        raise ValueError("Invalid AI provider timeout")
+    if not isinstance(lease_for, timedelta) or not (
+        timedelta(seconds=1) <= lease_for <= timedelta(hours=1)
+    ):
+        raise ValueError("Invalid AI lease duration")
+    required_lease = timedelta(seconds=provider_timeout) + AI_LEASE_COMPLETION_MARGIN
+    if lease_for < required_lease:
+        raise ValueError(
+            "AI lease duration must cover provider timeout and completion margin"
+        )
+
 
 class AIWorker:
     def __init__(
@@ -21,15 +43,17 @@ class AIWorker:
         provider: AIProvider,
         *,
         worker_id: str,
-        lease_for: timedelta = timedelta(seconds=30),
-        provider_timeout: float = 30,
+        lease_for: timedelta = DEFAULT_AI_LEASE_DURATION,
+        provider_timeout: float = DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS,
         max_attempts: int = 3,
         max_tokens: int = 4096,
         max_cost: Decimal = Decimal("10"),
         concurrency: int = 1,
     ):
-        if not 0.1 <= provider_timeout <= 300:
-            raise ValueError("Invalid AI provider timeout")
+        validate_ai_worker_timing(
+            lease_for=lease_for,
+            provider_timeout=provider_timeout,
+        )
         if type(concurrency) is not int or not 1 <= concurrency <= 8:
             raise ValueError("Invalid AI worker concurrency")
         if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
@@ -59,6 +83,7 @@ class AIWorker:
             max_tokens=self.max_tokens,
             max_cost=self.max_cost,
         )
+        lease = self.repository.renew(lease, lease_for=self.lease_for)
         started = monotonic()
         value = self.provider.generate(
             lease.job.task_type,
@@ -144,4 +169,10 @@ class AIWorker:
             return
 
 
-__all__ = ["AIWorker"]
+__all__ = [
+    "AI_LEASE_COMPLETION_MARGIN",
+    "AIWorker",
+    "DEFAULT_AI_LEASE_DURATION",
+    "DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS",
+    "validate_ai_worker_timing",
+]
