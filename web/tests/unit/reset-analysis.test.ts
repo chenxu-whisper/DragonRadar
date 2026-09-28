@@ -123,6 +123,29 @@ describe('reset analysis query projection', () => {
 });
 
 describe('reset analysis response validation', () => {
+  it('rejects curves whose common axis ends before adjusted_end', () => {
+    const data = curvesData();
+    data.curves[0].points[1].trade_date = '2026-09-09';
+    expect(validateCurvesResponse(envelope(data), query)).toBe('date_mismatch');
+  });
+
+  it('rejects curves whose common axis starts after adjusted_start despite a valid baseline', () => {
+    const data = curvesData();
+    data.curves[0].points[0].trade_date = '2026-08-14';
+    expect(data.curves[0].points[0]).toMatchObject({ normalized: 100, drawdown: 0 });
+    expect(validateCurvesResponse(envelope(data), query)).toBe('date_mismatch');
+  });
+
+  it('allows paired null gaps inside a complete curve axis', () => {
+    const data = curvesData();
+    data.curves[0].points.splice(1, 0, {
+      trade_date: '2026-08-14',
+      normalized: null as unknown as number,
+      drawdown: null as unknown as number,
+    });
+    expect(validateCurvesResponse(envelope(data), query)).toBeNull();
+  });
+
   it.each([
     ['unpaired nulls', 1, { normalized: null }],
     ['wrong normalized baseline', 0, { normalized: 99 }],

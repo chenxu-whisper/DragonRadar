@@ -209,6 +209,7 @@ export function validateCurvesResponse(value: unknown, query: URLSearchParams): 
     const first = curve.points[0] as ObjectValue;
     if (first.normalized !== 100 || first.drawdown !== 0) return 'malformed';
     if (dates.some((day, index) => index > 0 && day <= dates[index - 1])) return 'date_mismatch';
+    if (dates[0] !== adjustedStart || dates[dates.length - 1] !== adjustedEnd) return 'date_mismatch';
     if (expectedDates && dates.join(',') !== expectedDates.join(',')) return 'date_mismatch';
     expectedDates = dates;
   }
