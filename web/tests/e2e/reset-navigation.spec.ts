@@ -1,26 +1,124 @@
-import { expect, test } from '@playwright/test';
-import { ID, OLD, mockLeaders, mockMarket } from '../fixtures/market';
+import { expect, test, type Page } from '@playwright/test';
+import {
+  ID,
+  OLD,
+  mockLeaders,
+  mockMarket,
+  resetSummary,
+  snapshot,
+} from '../fixtures/market';
+
+async function mockHistoricalRegulation(page: Page) {
+  const response = (data: unknown) => ({
+    ...resetSummary(),
+    trade_date: '2026-09-09',
+    snapshot_id: OLD,
+    source: 'synthetic-navigation',
+    source_version: 'navigation-v1',
+    coverage: null,
+    quality_flags: ['regulation_missing'],
+    rule_version: null,
+    data,
+  });
+  await page.route('**/api/regulation/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/regulation/status') {
+      return route.fulfill({ json: response({
+        region1_completeness: {
+          status: 'missing',
+          coverage_ratio: null,
+          missing_count: null,
+          source_check: 'unknown',
+          expected: null,
+          valid: null,
+          excluded: null,
+          missing: null,
+        },
+        region2_calc_state: [],
+        region3_events: null,
+      }) });
+    }
+    if (url.pathname === '/api/regulation/events') {
+      return route.fulfill({ json: response({
+        events: null,
+        listed_count: null,
+        total: null,
+        source_check: 'unknown',
+      }) });
+    }
+    return route.fulfill({ status: 404, json: {} });
+  });
+}
+
+async function mockNavigationAnalysis(page: Page) {
+  await page.route('**/api/rank/range?**', async route => {
+    const url = new URL(route.request().url());
+    const start = url.searchParams.get('start')!;
+    const end = url.searchParams.get('end')!;
+    return route.fulfill({ json: {
+      ...resetSummary(snapshot),
+      source: 'synthetic-navigation',
+      source_version: 'navigation-v1',
+      coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
+      rule_version: 'navigation-v1',
+      basis: {
+        unit: 'ratio',
+        currency: 'CNY',
+        price_type: url.searchParams.get('adj'),
+        benchmark: url.searchParams.get('benchmark'),
+      },
+      data: {
+        window_days: 20,
+        adjusted_start: start,
+        adjusted_end: end,
+        benchmark_return: 0.02,
+        ranking: [{
+          rank: 1,
+          security_id: 'TEST003',
+          name: '合成测试证券3',
+          topics: [],
+          topic_status: 'available',
+          topic_reasons: [],
+          reasons: [],
+          return_ratio: 0.1,
+          excess_return_ratio: 0.08,
+          max_drawdown_ratio: 0.03,
+          amount_change_ratio: 0.2,
+        }],
+        exclusions: [],
+      },
+    } });
+  });
+}
 
 test.beforeEach(async ({}, testInfo) => {
   test.skip(!testInfo.project.use.baseURL?.endsWith(':5174'), 'Requires the explicit reset server.');
 });
 
-test('six reset destinations retain a fixed historical snapshot', async ({ page }) => {
+test('implemented reset destinations retain a fixed historical snapshot and honest evidence states', async ({ page }) => {
   await mockLeaders(page);
+  await mockHistoricalRegulation(page);
   await page.goto(`/?snapshot=${OLD}&date=2026-09-09`);
   const nav = page.getByRole('navigation', { name: '主导航' });
   await expect(nav.getByRole('link')).toHaveText(['总览', '消息', '梯队', '涨幅', '监管', '我的复盘']);
-  for (const [name, view, reason] of [
-    ['消息', 'news', '消息来源'],
-    ['监管', 'regulation', '正式规则'],
-  ]) {
-    await nav.getByRole('link', { name, exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`view=${view}`));
-    await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
-    await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
-    await expect(page.getByRole('status').filter({ hasText: '未就绪' })).toContainText(reason);
-    await expect(page.getByRole('table', { name: '证券列表' })).toHaveCount(0);
-  }
+
+  await nav.getByRole('link', { name: '消息', exact: true }).click();
+  await expect(page).toHaveURL(/view=news/);
+  await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
+  await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('未找到该快照或证券，当前日期与输入已保留。');
+  await expect(page.getByRole('button', { name: '重试消息列表' })).toBeVisible();
+
+  await nav.getByRole('link', { name: '监管', exact: true }).click();
+  await expect(page).toHaveURL(/view=regulation/);
+  await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
+  await expect(page.getByRole('heading', { name: '监管', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '数据完整性' })).toContainText('来源校验未知');
+  await expect(page.getByRole('region', { name: '数值计算状态' })).toContainText('当前快照没有已发布的数值计算记录');
+  const events = page.getByRole('region', { name: '已披露正式事件与限制' });
+  await expect(events).toContainText('事件来源完整性未知，不能将缺失解释为零');
+  await expect(events).not.toContainText('0 条正式记录');
+
   await nav.getByRole('link', { name: '梯队', exact: true }).click();
   await expect(page).toHaveURL(/view=leaders/);
   await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
@@ -29,13 +127,14 @@ test('six reset destinations retain a fixed historical snapshot', async ({ page 
 
 test('per-page filter and sort survive navigation, drawer and browser back', async ({ page }) => {
   await mockMarket(page);
+  await mockNavigationAnalysis(page);
   await page.goto(`/?view=overview&snapshot=${ID}&date=2026-09-10&q=TEST002&sort=amount&order=desc`);
   await expect(page.getByRole('button', { name: '合成测试证券2', exact: true })).toBeVisible();
   const original = new URL(page.url()).search;
   await page.getByRole('link', { name: '涨幅', exact: true }).click();
   await page.getByLabel('搜索证券', { exact: true }).fill('TEST003');
   await page.getByRole('button', { name: '搜索', exact: true }).click();
-  await page.getByRole('button', { name: '最大回撤幅度', exact: true }).click();
+  await page.getByRole('button', { name: '最大回撤', exact: true }).click();
   const analysis = new URL(page.url()).search;
   await page.getByRole('link', { name: '总览', exact: true }).click();
   await expect(page).toHaveURL(url => url.search === original);

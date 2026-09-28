@@ -244,7 +244,7 @@ test('自定义休市区间展示后端调整结果', async ({ page }) => {
   await expect(page.getByText('实际区间：2026-08-17 至 2026-09-10')).toBeVisible();
 });
 
-test('详情使用同快照raw K线，并展示完整角色、封板和监管不可用', async ({ page }) => {
+test('详情使用同快照raw K线，并展示完整角色、封板和未知监管证据', async ({ page }) => {
   const klineRequests: URL[] = [];
   page.on('request', request => {
     const url = new URL(request.url());
@@ -260,7 +260,10 @@ test('详情使用同快照raw K线，并展示完整角色、封板和监管不
   await expect(drawer.getByText('角色状态：部分可用')).toBeVisible();
   await expect(drawer.getByText('收盘涨停 是 · 盘中触及 是')).toBeVisible();
   await expect(drawer.getByText('首封 09:35:00 · 末封 14:55:00 · 开板 0 · 封单 210,000,000 货币 · 连板 2')).toBeVisible();
-  await expect(drawer.getByText('正式监管事件：不可用')).toBeVisible();
+  await expect(drawer.getByText('正式监管事件：未知')).toBeVisible();
+  await expect(drawer.getByText('事件来源完整性：未知 · 未识别状态')).toBeVisible();
+  await expect(drawer).not.toContainText('正式监管事件：0');
+  await expect(drawer).not.toContainText(/安全|无风险/);
   expect(klineRequests[0].searchParams.get('snapshot_id')).toBe(ID);
   expect(klineRequests[0].searchParams.get('adj')).toBe('raw');
 
