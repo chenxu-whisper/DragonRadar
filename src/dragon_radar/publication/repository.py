@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
-from dragon_radar.domain.quality import grant_allows_display
+from dragon_radar.domain.quality import grant_allows_ai, grant_allows_display
 from dragon_radar.news.tables import (
     news_article_revisions,
     news_event_articles,
@@ -207,6 +207,7 @@ class PublicationRepository:
         dependencies,
         grants,
         *,
+        ai_domains,
         market_rows,
         market_archives,
         topic_rows,
@@ -227,6 +228,20 @@ class PublicationRepository:
             raise Forbidden("Publication inputs were withdrawn")
         if record.id in withdrawn_publications:
             raise Forbidden("Publication inputs were withdrawn")
+        ai_source_ids = {
+            row["source_id"]
+            for row in dependencies
+            if row["derived_type"] in ai_domains
+        }
+        if not all(
+            grant_allows_ai(
+                grants[source_id],
+                source_id=source_id,
+                now=self.clock(),
+            )
+            for source_id in ai_source_ids
+        ):
+            raise Forbidden("Source is not authorized for AI processing")
 
         market_row = market_rows.get(record.market_snapshot_id)
         market_dependencies = [
@@ -248,6 +263,12 @@ class PublicationRepository:
             raise Forbidden("Publication market identity is invalid")
         market_batch = MarketBatch.model_validate_json(market_archive["canonical_json"])
         self.market._authorize(grants[market_row["source_id"]], market_batch)
+        if "market" in ai_domains and not grant_allows_ai(
+            market_batch.grant,
+            source_id=market_row["source_id"],
+            now=self.clock(),
+        ):
+            raise Forbidden("Source is not authorized for AI processing")
         market = self.market._snapshot(market_row, market_archive)
 
         if record.topic_snapshot_id is not None:
@@ -279,6 +300,12 @@ class PublicationRepository:
                 self.clock(),
             ):
                 raise Forbidden("Source is not locally authorized")
+            if "topic" in ai_domains and not grant_allows_ai(
+                topic_batch.grant,
+                source_id=topic_row["source_id"],
+                now=self.clock(),
+            ):
+                raise Forbidden("Source is not authorized for AI processing")
         elif any(row["derived_type"] == "topic" for row in dependencies):
             raise Forbidden("Publication topic identity is invalid")
 
@@ -369,6 +396,12 @@ class PublicationRepository:
                     for grant in (grants[revision["source_id"]], embedded)
                 ):
                     raise Forbidden("Source is not locally authorized")
+                if "news" in ai_domains and not grant_allows_ai(
+                    embedded,
+                    source_id=revision["source_id"],
+                    now=self.clock(),
+                ):
+                    raise Forbidden("Source is not authorized for AI processing")
         elif news_dependencies:
             raise Forbidden("Publication news lineage is invalid")
 
@@ -466,6 +499,12 @@ class PublicationRepository:
                     raise Forbidden("Publication role lineage is invalid")
                 batch = MarketBatch.model_validate_json(archive["canonical_json"])
                 self.market._authorize(grants[dependency["source_id"]], batch)
+                if "role" in ai_domains and not grant_allows_ai(
+                    batch.grant,
+                    source_id=dependency["source_id"],
+                    now=self.clock(),
+                ):
+                    raise Forbidden("Source is not authorized for AI processing")
             elif dependency["archive_type"] == "topic_import_batch":
                 archive = topic_archives.get(dependency["archive_id"])
                 if archive is None or archive["source_id"] != dependency["source_id"]:
@@ -478,6 +517,12 @@ class PublicationRepository:
                     self.clock(),
                 ):
                     raise Forbidden("Source is not locally authorized")
+                if "role" in ai_domains and not grant_allows_ai(
+                    batch.grant,
+                    source_id=dependency["source_id"],
+                    now=self.clock(),
+                ):
+                    raise Forbidden("Source is not authorized for AI processing")
             else:
                 raise Forbidden("Publication role lineage is invalid")
         if any(
@@ -492,7 +537,14 @@ class PublicationRepository:
             tuple(self._result(row) for row in result_rows.get(record.id, ())),
         )
 
-    def _authorized_records(self, connection, rows, *, omit_forbidden=False):
+    def _authorized_records(
+        self,
+        connection,
+        rows,
+        *,
+        omit_forbidden=False,
+        ai_domains=frozenset(),
+    ):
         records = [_publication(row) for row in rows]
         publication_ids = [record.id for record in records]
         dependencies = (
@@ -827,6 +879,7 @@ class PublicationRepository:
                     record,
                     by_publication[record.id],
                     grants,
+                    ai_domains=ai_domains,
                     market_rows=market_rows,
                     market_archives=market_archives,
                     topic_rows=topic_rows,

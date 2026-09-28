@@ -9,9 +9,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 
+from dragon_radar.ai.repository import AITaskRepository
+from dragon_radar.ai.service import AIService
 from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
 from dragon_radar.analysis_jobs.routes import install_analysis_job_routes
 from dragon_radar.api import StorageUnavailable, create_app
+from dragon_radar.http.routes.ai import install_ai_routes
 from dragon_radar.http.routes.news import install_news_review_routes
 from dragon_radar.news.repository import NewsRepository
 from dragon_radar.owner.repository import (
@@ -54,6 +57,7 @@ def create_owner_app(
     owner_repository: OwnerRepository | None = None,
     publication_repository: PublicationRepository | None = None,
     analysis_repository: AnalysisJobRepository | None = None,
+    ai_service: AIService | None = None,
     news_repository: NewsRepository | None = None,
     origin: str = DEFAULT_ORIGIN,
 ) -> FastAPI:
@@ -66,9 +70,13 @@ def create_owner_app(
             owner_repository,
             publication_repository,
             analysis_repository,
+            ai_service,
             news_repository,
         )
     )
+    if ai_service is not None:
+        publication_repository = publication_repository or ai_service.publications
+        owner_repository = owner_repository or ai_service.tasks.owners
     if analysis_repository is not None:
         publication_repository = (
             publication_repository or analysis_repository.publications
@@ -84,6 +92,8 @@ def create_owner_app(
         if publication_repository is not None
         else analysis_repository.database
         if analysis_repository is not None
+        else ai_service.tasks.database
+        if ai_service is not None
         else news_repository.database
         if news_repository is not None
         else owner_repository.database
@@ -102,6 +112,15 @@ def create_owner_app(
         analysis_repository = AnalysisJobRepository(
             database,
             owner_repository,
+            publication_repository,
+        )
+    if ai_service is None and database is not None:
+        ai_service = AIService(
+            AITaskRepository(
+                database,
+                owner_repository,
+                publication_repository,
+            ),
             publication_repository,
         )
     if news_repository is None and database is not None:
@@ -131,6 +150,7 @@ def create_owner_app(
     app.state.owner_repository = owner_repository
     app.state.publication_repository = publication_repository
     app.state.analysis_repository = analysis_repository
+    app.state.ai_service = ai_service
     app.state.news_repository = news_repository
     app.state.owner_origin = origin
     # Copy only explicit market routes. Do not mount a second application whose
@@ -222,6 +242,7 @@ def create_owner_app(
 
     install_review_routes(app)
     install_analysis_job_routes(app)
+    install_ai_routes(app)
     install_news_review_routes(app)
     app.add_middleware(OwnerGate, origin=origin, owner_repository=owner_repository)
     return app

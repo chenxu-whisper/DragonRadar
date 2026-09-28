@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0009d_reg_event_complete_set"
+SCHEMA_REVISION = "0010_ai_tasks"
 
 
 class Database:
@@ -115,6 +115,10 @@ class Database:
                     "regulation_calculations",
                     "regulation_snapshot_events",
                     "regulation_commands",
+                    "ai_tasks",
+                    "ai_task_drafts",
+                    "ai_task_cancellations",
+                    "ai_task_reviews",
                 ):
                     connection.execute(text(f"SELECT 1 FROM {table} LIMIT 0"))
             return True

@@ -1,0 +1,795 @@
+"""Transactional owner-scoped persistence for asynchronous AI tasks."""
+
+import hashlib
+import json
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from sqlalchemy import and_, func, insert, or_, select, text, update
+from sqlalchemy.engine import Connection
+
+from dragon_radar.ai.models import (
+    AI_INPUT_DOMAINS,
+    AIDraft,
+    AIProviderResult,
+    AISubmission,
+    AITaskLease,
+    AITaskRecord,
+    canonical_object,
+)
+from dragon_radar.ai.tables import (
+    ai_task_cancellations,
+    ai_task_drafts,
+    ai_task_reviews,
+    ai_tasks,
+)
+from dragon_radar.publication.tables import publications
+from dragon_radar.storage.repository import Conflict, Forbidden, NotFound, _identifier
+
+
+def _stored_object(value: Mapping) -> dict:
+    canonical = canonical_object(dict(value))
+    return json.loads(canonical)
+
+
+def _digest(value: Mapping) -> str:
+    return hashlib.sha256(canonical_object(dict(value)).encode("ascii")).hexdigest()
+
+
+class AITaskRepository:
+    def __init__(
+        self,
+        database,
+        owner_repository,
+        publication_repository=None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
+        self.database = database
+        self.owners = owner_repository
+        self.publications = publication_repository
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    def _now(self) -> datetime:
+        value = self.clock()
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("AI task clock must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @staticmethod
+    def _lock(connection: Connection, key: str) -> None:
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": key},
+        )
+
+    @staticmethod
+    def _task_row(
+        connection: Connection,
+        task_id: UUID | str,
+        *,
+        owner_id: UUID | None = None,
+        lock: bool = False,
+    ):
+        try:
+            task_id = UUID(str(task_id))
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("Invalid AI task ID") from None
+        query = select(ai_tasks).where(ai_tasks.c.id == task_id)
+        if owner_id is not None:
+            query = query.where(ai_tasks.c.owner_id == owner_id)
+        if lock:
+            query = query.with_for_update()
+        row = connection.execute(query).mappings().first()
+        if row is None:
+            raise NotFound("AI task not found")
+        return row
+
+    @staticmethod
+    def _next_revision(connection: Connection, task_id: UUID) -> int:
+        return (
+            connection.scalar(
+                select(func.coalesce(func.max(ai_task_drafts.c.revision), 0)).where(
+                    ai_task_drafts.c.task_id == task_id
+                )
+            )
+            + 1
+        )
+
+    @staticmethod
+    def _template(row) -> dict:
+        task_type = row["task_type"].replace("_", " ")
+        publication = row["input_manifest"]["publication"]
+        return {
+            "kind": "deterministic_template",
+            "ai_generated": False,
+            "title": f"Deterministic {task_type} draft",
+            "snapshot_id": publication["snapshot_id"],
+            "as_of": publication["as_of"],
+            "sections": [
+                {
+                    "heading": "Published input",
+                    "text": (
+                        "This template is derived from the selected published snapshot."
+                    ),
+                },
+                {
+                    "heading": "Owner review",
+                    "text": "Complete and verify this draft before using it.",
+                },
+            ],
+        }
+
+    def _ensure_template(self, connection: Connection, row, now: datetime):
+        if row["status"] == "cancelled" or now - row["created_at"] < timedelta(
+            seconds=120
+        ):
+            return row
+        provider_exists = connection.scalar(
+            select(ai_task_drafts.c.id)
+            .where(
+                ai_task_drafts.c.task_id == row["id"],
+                ai_task_drafts.c.source == "provider",
+            )
+            .limit(1)
+        )
+        if provider_exists is not None:
+            return row
+        existing_template = connection.scalar(
+            select(ai_task_drafts.c.id)
+            .where(
+                ai_task_drafts.c.task_id == row["id"],
+                ai_task_drafts.c.source == "deterministic_template",
+            )
+            .limit(1)
+        )
+        if existing_template is None:
+            revision = self._next_revision(connection, row["id"])
+            connection.execute(
+                insert(ai_task_drafts).values(
+                    id=uuid4(),
+                    task_id=row["id"],
+                    revision=revision,
+                    source="deterministic_template",
+                    content=self._template(row),
+                    model_version=None,
+                    prompt_version=None,
+                    provider=None,
+                    token_usage=None,
+                    cost=None,
+                    created_at=now,
+                )
+            )
+            row = (
+                connection.execute(
+                    update(ai_tasks)
+                    .where(ai_tasks.c.id == row["id"])
+                    .values(selected_revision=revision)
+                    .returning(ai_tasks)
+                )
+                .mappings()
+                .one()
+            )
+        return row
+
+    @staticmethod
+    def _draft(connection: Connection, row) -> AIDraft | None:
+        if row["selected_revision"] is None:
+            return None
+        draft = (
+            connection.execute(
+                select(ai_task_drafts).where(
+                    ai_task_drafts.c.task_id == row["id"],
+                    ai_task_drafts.c.revision == row["selected_revision"],
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return AIDraft(
+            revision=draft["revision"],
+            source=draft["source"],
+            content=draft["content"],
+            ai_generated=draft["source"] == "provider",
+            created_at=draft["created_at"],
+        )
+
+    def _record(
+        self,
+        connection: Connection,
+        row,
+        *,
+        now: datetime | None = None,
+        ensure_template: bool = False,
+    ) -> AITaskRecord:
+        now = now or self._now()
+        if ensure_template:
+            row = self._ensure_template(connection, row, now)
+        return AITaskRecord(
+            id=row["id"],
+            owner_id=row["owner_id"],
+            task_type=row["task_type"],
+            snapshot_id=row["snapshot_id"],
+            as_of=row["as_of"],
+            version=row["version"],
+            input_manifest=row["input_manifest"],
+            status=row["status"],
+            verification_status=row["verification_status"],
+            human_review_status=row["human_review_status"],
+            attempt_count=row["attempt_count"],
+            content_draft=self._draft(connection, row),
+            processing_overdue=(
+                row["status"] in {"queued", "running"}
+                and now - row["created_at"] >= timedelta(seconds=60)
+            ),
+            model_version=row["model_version"],
+            prompt_version=row["prompt_version"],
+            provider=row["provider"],
+            token_usage=row["token_usage"],
+            cost=row["cost"],
+            failure=row["failure"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+        )
+
+    def submit_for_owner(
+        self,
+        connection: Connection,
+        owner_id: UUID,
+        submission: AISubmission,
+        manifest: Mapping,
+        *,
+        key: str,
+    ) -> AITaskRecord:
+        if not connection.in_transaction():
+            raise ValueError("AI submission requires a transaction")
+        _identifier(key)
+        submission = AISubmission.model_validate(submission.model_dump())
+        stored_manifest = _stored_object(manifest)
+        self._lock(connection, f"ai-submit:{owner_id}:{key}")
+        existing = (
+            connection.execute(
+                select(ai_tasks).where(
+                    ai_tasks.c.owner_id == owner_id,
+                    ai_tasks.c.idempotency_key == key,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if existing is not None:
+            if existing["request_hash"] != submission.request_hash:
+                raise Conflict("AI idempotency key belongs to another payload")
+            return self._record(connection, existing)
+        now = self._now()
+        row = (
+            connection.execute(
+                insert(ai_tasks)
+                .values(
+                    id=uuid4(),
+                    owner_id=owner_id,
+                    idempotency_key=key,
+                    request_hash=submission.request_hash,
+                    task_type=submission.task_type,
+                    snapshot_id=submission.snapshot_id,
+                    as_of=submission.as_of,
+                    version=submission.version,
+                    input_manifest=stored_manifest,
+                    status="queued",
+                    verification_status="pending",
+                    human_review_status="unreviewed",
+                    attempt_count=0,
+                    available_at=now,
+                    lease_token=None,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    selected_revision=None,
+                    model_version=None,
+                    prompt_version=None,
+                    provider=None,
+                    token_usage=None,
+                    cost=None,
+                    failure=None,
+                    created_at=now,
+                    started_at=None,
+                    completed_at=None,
+                )
+                .returning(ai_tasks)
+            )
+            .mappings()
+            .one()
+        )
+        return self._record(connection, row)
+
+    def _authorize(self, connection: Connection, token: str, csrf: str | None = None):
+        if self.owners is None:
+            raise Forbidden("Owner access is unavailable")
+        return self.owners.authorize_connection(connection, token, csrf)
+
+    def get(self, token: str, task_id: UUID | str) -> AITaskRecord:
+        with self.database.engine.begin() as connection:
+            owner = self._authorize(connection, token)
+            row = self._task_row(
+                connection,
+                task_id,
+                owner_id=owner.owner_id,
+                lock=True,
+            )
+            return self._record(connection, row, ensure_template=True)
+
+    def cancel(
+        self,
+        token: str,
+        csrf: str,
+        task_id: UUID | str,
+        *,
+        key: str,
+    ) -> AITaskRecord:
+        _identifier(key)
+        try:
+            normalized_id = UUID(str(task_id))
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("Invalid AI task ID") from None
+        payload_hash = _digest({"task_id": str(normalized_id)})
+        with self.database.engine.begin() as connection:
+            owner = self._authorize(connection, token, csrf)
+            self._lock(connection, f"ai-cancel:{owner.owner_id}:{key}")
+            command = (
+                connection.execute(
+                    select(ai_task_cancellations).where(
+                        ai_task_cancellations.c.owner_id == owner.owner_id,
+                        ai_task_cancellations.c.idempotency_key == key,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if command is not None:
+                if command["payload_hash"] != payload_hash:
+                    raise Conflict("Cancellation key belongs to another payload")
+                row = self._task_row(
+                    connection,
+                    command["task_id"],
+                    owner_id=owner.owner_id,
+                )
+                return self._record(connection, row)
+            row = self._task_row(
+                connection,
+                normalized_id,
+                owner_id=owner.owner_id,
+                lock=True,
+            )
+            if row["status"] not in {"queued", "running", "cancelled"}:
+                raise Conflict("AI task can no longer be cancelled")
+            now = self._now()
+            connection.execute(
+                insert(ai_task_cancellations).values(
+                    id=uuid4(),
+                    task_id=row["id"],
+                    owner_id=owner.owner_id,
+                    idempotency_key=key,
+                    payload_hash=payload_hash,
+                    accepted_at=now,
+                )
+            )
+            if row["status"] != "cancelled":
+                row = (
+                    connection.execute(
+                        update(ai_tasks)
+                        .where(ai_tasks.c.id == row["id"])
+                        .values(
+                            status="cancelled",
+                            lease_token=None,
+                            lease_owner=None,
+                            lease_expires_at=None,
+                            completed_at=now,
+                        )
+                        .returning(ai_tasks)
+                    )
+                    .mappings()
+                    .one()
+                )
+            return self._record(connection, row)
+
+    def review(
+        self,
+        token: str,
+        csrf: str,
+        task_id: UUID | str,
+        *,
+        decision: str,
+        revision: int,
+        key: str,
+        edited_content: Mapping | None = None,
+    ) -> AITaskRecord:
+        _identifier(key)
+        if decision not in {"accept", "edit", "reject"}:
+            raise ValueError("Invalid AI review decision")
+        if type(revision) is not int or revision < 1:
+            raise ValueError("Invalid AI draft revision")
+        if (decision == "edit") != (edited_content is not None):
+            raise ValueError("Edited content is required only for edit decisions")
+        stored_edit = (
+            _stored_object(edited_content) if edited_content is not None else None
+        )
+        payload = {
+            "task_id": str(task_id),
+            "decision": decision,
+            "revision": revision,
+            "edited_content": stored_edit,
+        }
+        payload_hash = _digest(payload)
+        with self.database.engine.begin() as connection:
+            owner = self._authorize(connection, token, csrf)
+            self._lock(connection, f"ai-review:{owner.owner_id}:{key}")
+            command = (
+                connection.execute(
+                    select(ai_task_reviews).where(
+                        ai_task_reviews.c.owner_id == owner.owner_id,
+                        ai_task_reviews.c.idempotency_key == key,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if command is not None:
+                if command["payload_hash"] != payload_hash:
+                    raise Conflict("Review key belongs to another payload")
+                row = self._task_row(
+                    connection,
+                    command["task_id"],
+                    owner_id=owner.owner_id,
+                )
+                return self._record(connection, row)
+            row = self._task_row(
+                connection,
+                task_id,
+                owner_id=owner.owner_id,
+                lock=True,
+            )
+            if row["status"] == "cancelled" or row["selected_revision"] != revision:
+                raise Conflict("AI draft revision changed")
+            draft_id = None
+            resulting_revision = revision
+            now = self._now()
+            if decision == "edit":
+                resulting_revision = self._next_revision(connection, row["id"])
+                draft_id = uuid4()
+                connection.execute(
+                    insert(ai_task_drafts).values(
+                        id=draft_id,
+                        task_id=row["id"],
+                        revision=resulting_revision,
+                        source="human_edit",
+                        content=stored_edit,
+                        model_version=None,
+                        prompt_version=None,
+                        provider=None,
+                        token_usage=None,
+                        cost=None,
+                        created_at=now,
+                    )
+                )
+            connection.execute(
+                insert(ai_task_reviews).values(
+                    id=uuid4(),
+                    task_id=row["id"],
+                    owner_id=owner.owner_id,
+                    idempotency_key=key,
+                    payload_hash=payload_hash,
+                    decision=decision,
+                    expected_revision=revision,
+                    resulting_revision=resulting_revision,
+                    draft_id=draft_id,
+                    created_at=now,
+                )
+            )
+            values = {
+                "human_review_status": {
+                    "accept": "accepted",
+                    "edit": "edited",
+                    "reject": "rejected",
+                }[decision],
+            }
+            if decision == "edit":
+                values["selected_revision"] = resulting_revision
+                values["verification_status"] = "needs_human"
+            row = (
+                connection.execute(
+                    update(ai_tasks)
+                    .where(ai_tasks.c.id == row["id"])
+                    .values(**values)
+                    .returning(ai_tasks)
+                )
+                .mappings()
+                .one()
+            )
+            return self._record(connection, row)
+
+    def claim(
+        self,
+        worker_id: str,
+        *,
+        lease_for: timedelta = timedelta(seconds=30),
+        max_attempts: int = 3,
+    ) -> AITaskLease | None:
+        _identifier(worker_id)
+        if not isinstance(lease_for, timedelta) or not (
+            timedelta(seconds=1) <= lease_for <= timedelta(hours=1)
+        ):
+            raise ValueError("Invalid AI lease duration")
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
+            raise ValueError("Invalid AI max attempts")
+        now = self._now()
+        with self.database.engine.begin() as connection:
+            while True:
+                row = (
+                    connection.execute(
+                        select(ai_tasks)
+                        .where(
+                            ai_tasks.c.available_at <= now,
+                            or_(
+                                ai_tasks.c.status == "queued",
+                                and_(
+                                    ai_tasks.c.status == "running",
+                                    ai_tasks.c.lease_expires_at <= now,
+                                ),
+                            ),
+                        )
+                        .order_by(ai_tasks.c.available_at, ai_tasks.c.created_at)
+                        .with_for_update(skip_locked=True)
+                        .limit(1)
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is None:
+                    return None
+                if row["attempt_count"] >= max_attempts:
+                    connection.execute(
+                        update(ai_tasks)
+                        .where(ai_tasks.c.id == row["id"])
+                        .values(
+                            status="failed",
+                            verification_status="failed",
+                            lease_token=None,
+                            lease_owner=None,
+                            lease_expires_at=None,
+                            failure={"code": "attempts_exhausted"},
+                            completed_at=now,
+                        )
+                    )
+                    continue
+                break
+            token = uuid4()
+            expires_at = now + lease_for
+            claimed = (
+                connection.execute(
+                    update(ai_tasks)
+                    .where(ai_tasks.c.id == row["id"])
+                    .values(
+                        status="running",
+                        attempt_count=row["attempt_count"] + 1,
+                        lease_token=token,
+                        lease_owner=worker_id,
+                        lease_expires_at=expires_at,
+                        started_at=row["started_at"] or now,
+                        failure=None,
+                    )
+                    .returning(ai_tasks)
+                )
+                .mappings()
+                .one()
+            )
+            return AITaskLease(
+                job=self._record(connection, claimed),
+                token=token,
+                worker_id=worker_id,
+                expires_at=expires_at,
+            )
+
+    def _active_lease(self, connection: Connection, lease: AITaskLease):
+        row = self._task_row(connection, lease.job.id, lock=True)
+        if (
+            row["status"] != "running"
+            or row["lease_token"] != lease.token
+            or row["lease_owner"] != lease.worker_id
+            or row["lease_expires_at"] <= self._now()
+        ):
+            raise Conflict("AI task lease is no longer active")
+        return row
+
+    def renew(
+        self,
+        lease: AITaskLease,
+        *,
+        lease_for: timedelta = timedelta(seconds=30),
+    ) -> AITaskLease:
+        if not isinstance(lease_for, timedelta) or not (
+            timedelta(seconds=1) <= lease_for <= timedelta(hours=1)
+        ):
+            raise ValueError("Invalid AI lease duration")
+        with self.database.engine.begin() as connection:
+            row = self._active_lease(connection, lease)
+            expires_at = self._now() + lease_for
+            renewed = (
+                connection.execute(
+                    update(ai_tasks)
+                    .where(ai_tasks.c.id == row["id"])
+                    .values(lease_expires_at=expires_at)
+                    .returning(ai_tasks)
+                )
+                .mappings()
+                .one()
+            )
+            return AITaskLease(
+                job=self._record(connection, renewed),
+                token=lease.token,
+                worker_id=lease.worker_id,
+                expires_at=expires_at,
+            )
+
+    def load_input(self, lease: AITaskLease) -> Mapping:
+        with self.database.engine.begin() as connection:
+            row = self._active_lease(connection, lease)
+            publication = (
+                connection.execute(
+                    select(publications).where(publications.c.id == row["snapshot_id"])
+                )
+                .mappings()
+                .first()
+            )
+            if publication is None:
+                raise NotFound("Publication not found")
+            if publication["status"] != "published":
+                raise Forbidden("Publication is not available")
+            if self.publications is None:
+                raise Forbidden("Publication authorization is unavailable")
+            self.publications._authorized_records(
+                connection,
+                [publication],
+                ai_domains=AI_INPUT_DOMAINS[row["task_type"]],
+            )
+            return row["input_manifest"]
+
+    def succeed(
+        self,
+        lease: AITaskLease,
+        result: AIProviderResult,
+        *,
+        provider: str,
+        model_version: str,
+        prompt_version: str,
+        max_tokens: int,
+        max_cost: Decimal,
+    ) -> AITaskRecord:
+        result = AIProviderResult.model_validate(result.model_dump())
+        for value in (provider, model_version, prompt_version):
+            _identifier(value)
+        if (
+            type(max_tokens) is not int
+            or max_tokens < 0
+            or result.token_usage > max_tokens
+            or result.cost > max_cost
+        ):
+            raise ValueError("AI provider result exceeds configured limits")
+        with self.database.engine.begin() as connection:
+            row = self._active_lease(connection, lease)
+            revision = self._next_revision(connection, row["id"])
+            now = self._now()
+            connection.execute(
+                insert(ai_task_drafts).values(
+                    id=uuid4(),
+                    task_id=row["id"],
+                    revision=revision,
+                    source="provider",
+                    content=result.model_dump(mode="json")["content"],
+                    model_version=model_version,
+                    prompt_version=prompt_version,
+                    provider=provider,
+                    token_usage=result.token_usage,
+                    cost=result.cost,
+                    created_at=now,
+                )
+            )
+            selected_revision = (
+                revision
+                if row["human_review_status"] == "unreviewed"
+                else row["selected_revision"]
+            )
+            completed = (
+                connection.execute(
+                    update(ai_tasks)
+                    .where(ai_tasks.c.id == row["id"])
+                    .values(
+                        status="succeeded",
+                        lease_token=None,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        selected_revision=selected_revision,
+                        model_version=model_version,
+                        prompt_version=prompt_version,
+                        provider=provider,
+                        token_usage=result.token_usage,
+                        cost=result.cost,
+                        failure=None,
+                        completed_at=now,
+                    )
+                    .returning(ai_tasks)
+                )
+                .mappings()
+                .one()
+            )
+            return self._record(connection, completed)
+
+    def fail(self, lease: AITaskLease, *, code: str) -> AITaskRecord:
+        if code not in {
+            "provider_failed",
+            "provider_timeout",
+            "provider_unavailable",
+            "input_forbidden",
+            "input_unavailable",
+            "result_limit_exceeded",
+        }:
+            raise ValueError("Invalid sanitized AI failure code")
+        with self.database.engine.begin() as connection:
+            row = self._active_lease(connection, lease)
+            completed = (
+                connection.execute(
+                    update(ai_tasks)
+                    .where(ai_tasks.c.id == row["id"])
+                    .values(
+                        status="failed",
+                        verification_status="failed",
+                        lease_token=None,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        failure={"code": code},
+                        completed_at=self._now(),
+                    )
+                    .returning(ai_tasks)
+                )
+                .mappings()
+                .one()
+            )
+            return self._record(connection, completed)
+
+    def retry_or_fail(
+        self,
+        lease: AITaskLease,
+        *,
+        code: str,
+        max_attempts: int,
+    ) -> AITaskRecord:
+        if code not in {"provider_timeout", "provider_failed"}:
+            raise ValueError("Invalid retry failure code")
+        with self.database.engine.begin() as connection:
+            row = self._active_lease(connection, lease)
+            terminal = row["attempt_count"] >= max_attempts
+            values = {
+                "status": "failed" if terminal else "queued",
+                "verification_status": "failed" if terminal else "pending",
+                "lease_token": None,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "available_at": self._now(),
+                "failure": {"code": code},
+                "completed_at": self._now() if terminal else None,
+            }
+            updated = (
+                connection.execute(
+                    update(ai_tasks)
+                    .where(ai_tasks.c.id == row["id"])
+                    .values(**values)
+                    .returning(ai_tasks)
+                )
+                .mappings()
+                .one()
+            )
+            return self._record(connection, updated)
+
+
+__all__ = ["AITaskRepository"]

@@ -75,6 +75,11 @@ def grant_allows_display(grant: SourceGrant, *, source_id: str, now: datetime) -
     )
 
 
+def grant_allows_ai(grant: SourceGrant, *, source_id: str, now: datetime) -> bool:
+    """Check provenance, time bounds, and the independent AI-processing right."""
+    return bool(_grant_is_current(grant, source_id=source_id, now=now) and grant.ai)
+
+
 def grant_allows_local(grant: SourceGrant, *, source_id: str, now: datetime) -> bool:
     """Compatibility predicate for operations that require both local rights."""
     return bool(

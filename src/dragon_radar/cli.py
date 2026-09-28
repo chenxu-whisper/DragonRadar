@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from alembic.util.exc import CommandError
@@ -32,6 +33,7 @@ from dragon_radar.storage.repository import (
     NotFound,
     QualityRejected,
     Repository,
+    _identifier,
 )
 from dragon_radar.topics.models import TopicAttempt, TopicBatch
 from dragon_radar.topics.repository import TopicRepository
@@ -89,6 +91,35 @@ def _market_task_result(task: MarketImportTask) -> dict[str, object]:
         "request_from": task.request_from.isoformat(),
         "request_to": task.request_to.isoformat(),
     }
+
+
+def _ai_worker_id(value: str) -> str:
+    try:
+        return _identifier(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid worker identifier") from None
+
+
+def _ai_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid bounded number") from None
+    if not 0.1 <= parsed <= 300:
+        raise argparse.ArgumentTypeError("number must be between 0.1 and 300")
+    return parsed
+
+
+def _ai_integer(value: str, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid bounded integer") from None
+    if not minimum <= parsed <= maximum:
+        raise argparse.ArgumentTypeError(
+            f"integer must be between {minimum} and {maximum}"
+        )
+    return parsed
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -218,6 +249,33 @@ def _parser() -> argparse.ArgumentParser:
     regulation_materialize.add_argument("--event-source-id")
     regulation_materialize.add_argument("--event-source-version")
     regulation_materialize.add_argument("--key", required=True)
+    ai_worker = commands.add_parser("ai-worker", help="Run bounded queued AI tasks")
+    ai_worker.add_argument(
+        "--worker-id",
+        type=_ai_worker_id,
+        default="ai-worker-1",
+    )
+    ai_worker.add_argument("--poll-seconds", type=_ai_float, default=1.0)
+    ai_worker.add_argument(
+        "--lease-seconds",
+        type=lambda value: _ai_integer(value, 1, 3600),
+        default=60,
+    )
+    ai_worker.add_argument(
+        "--max-attempts",
+        type=lambda value: _ai_integer(value, 1, 10),
+        default=3,
+    )
+    ai_worker.add_argument(
+        "--provider-timeout-seconds",
+        type=_ai_float,
+        default=30.0,
+    )
+    ai_worker.add_argument(
+        "--concurrency",
+        type=lambda value: _ai_integer(value, 1, 8),
+        default=1,
+    )
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
@@ -470,6 +528,35 @@ def main(argv: list[str] | None = None) -> int:
                 "event_source_id": regulation_snapshot.event_source_id,
                 "event_source_version": regulation_snapshot.event_source_version,
             }
+        elif args.command == "ai-worker":
+            from dragon_radar.ai.provider import (
+                load_provider_config,
+                provider_from_environment,
+            )
+            from dragon_radar.ai.repository import AITaskRepository
+            from dragon_radar.ai.worker import AIWorker
+            from dragon_radar.owner.repository import OwnerRepository
+            from dragon_radar.publication.repository import PublicationRepository
+
+            config = load_provider_config()
+            publications = PublicationRepository(database, repository)
+            tasks = AITaskRepository(
+                database,
+                OwnerRepository(database),
+                publications,
+            )
+            AIWorker(
+                tasks,
+                provider_from_environment(config),
+                worker_id=args.worker_id,
+                lease_for=timedelta(seconds=args.lease_seconds),
+                provider_timeout=args.provider_timeout_seconds,
+                max_attempts=args.max_attempts,
+                max_tokens=config.max_tokens,
+                max_cost=config.max_cost,
+                concurrency=args.concurrency,
+            ).run_forever(poll_seconds=args.poll_seconds)
+            return 0
         else:
             import uvicorn
 

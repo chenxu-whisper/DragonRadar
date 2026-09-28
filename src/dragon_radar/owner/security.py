@@ -25,6 +25,7 @@ SESSION_COOKIE = "__Host-dragon-private-session"
 CSRF_COOKIE = "__Host-dragon-private-csrf"
 MAX_BODY_BYTES = 131072
 ANALYSIS_JOBS_PATH = "/api/analysis/jobs"
+AI_TASKS_PATH = "/api/ai/"
 NEWS_PATH = "/api/news/"
 PAIR_PATH = "/api/owner/v1/pair"
 SESSION_PATH = "/api/owner/v1/session"
@@ -53,7 +54,11 @@ def storage_unavailable() -> BoundaryError:
 
 
 def _analysis_path(path: str) -> bool:
-    return path == ANALYSIS_JOBS_PATH or path.startswith(ANALYSIS_JOBS_PATH + "/")
+    return (
+        path == ANALYSIS_JOBS_PATH
+        or path.startswith(ANALYSIS_JOBS_PATH + "/")
+        or path.startswith(AI_TASKS_PATH)
+    )
 
 
 def _news_review_path(path: str) -> bool:

@@ -32,6 +32,38 @@ services:
       retries: 6
     restart: unless-stopped
 
+  ai-worker:
+    build: .
+    command:
+      - ai-worker
+      - --worker-id
+      - ai-worker-1
+      - --poll-seconds
+      - ${DRAGON_AI_POLL_SECONDS:-1}
+      - --lease-seconds
+      - ${DRAGON_AI_LEASE_SECONDS:-60}
+      - --max-attempts
+      - ${DRAGON_AI_MAX_ATTEMPTS:-3}
+      - --provider-timeout-seconds
+      - ${DRAGON_AI_TIMEOUT_SECONDS:-30}
+      - --concurrency
+      - ${DRAGON_AI_CONCURRENCY:-1}
+    environment:
+      DRAGON_DATABASE_URL: postgresql+psycopg://dragon_radar:${DRAGON_DB_PASSWORD:?Set a strong database password}@db:5432/dragon_radar
+      DRAGON_AI_PROVIDER: ${DRAGON_AI_PROVIDER:-}
+      DRAGON_AI_TOKEN: ${DRAGON_AI_TOKEN:-}
+      DRAGON_AI_MODEL_VERSION: ${DRAGON_AI_MODEL_VERSION:-}
+      DRAGON_AI_PROMPT_VERSION: ${DRAGON_AI_PROMPT_VERSION:-prompt-v1}
+      DRAGON_AI_MAX_TOKENS: ${DRAGON_AI_MAX_TOKENS:-4096}
+      DRAGON_AI_MAX_COST: ${DRAGON_AI_MAX_COST:-10}
+      DRAGON_AI_TIMEOUT_SECONDS: ${DRAGON_AI_TIMEOUT_SECONDS:-30}
+      DRAGON_AI_CONCURRENCY: ${DRAGON_AI_CONCURRENCY:-1}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+    restart: unless-stopped
+
 networks:
   backend:
     internal: true

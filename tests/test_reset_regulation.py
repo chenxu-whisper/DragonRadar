@@ -2900,13 +2900,13 @@ def test_representative_regulation_table_families_reject_truncate(
         connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
-def test_regulation_schema_revision_is_0009d():
+def test_schema_revision_advances_to_ai_after_0009d():
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0009d_reg_event_complete_set"
+    assert SCHEMA_REVISION == "0010_ai_tasks"
 
 
-def test_regulation_migration_head_is_0009d_and_reserves_0010_for_ai():
+def test_ai_migration_head_descends_from_immutable_regulation_revision():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -2914,7 +2914,10 @@ def test_regulation_migration_head_is_0009d_and_reserves_0010_for_ai():
     config.set_main_option("script_location", "dragon_radar:migrations")
 
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0009d_reg_event_complete_set"]
+    assert script.get_heads() == ["0010_ai_tasks"]
+    assert script.get_revision("0010_ai_tasks").down_revision == (
+        "0009d_reg_event_complete_set"
+    )
     assert script.get_revision("0009d_reg_event_complete_set").down_revision == (
         "0009c_reg_event_provenance_required"
     )
@@ -3200,7 +3203,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0009d_reg_event_complete_set"
+    assert SCHEMA_REVISION == "0010_ai_tasks"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {
@@ -3259,5 +3262,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0009d_reg_event_complete_set"
+            == "0010_ai_tasks"
         )
