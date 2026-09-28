@@ -1,10 +1,10 @@
 """Bounded lease worker that invokes only the configured provider interface."""
 
+import multiprocessing
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from time import monotonic
 
 from pydantic import ValidationError
 
@@ -16,6 +16,30 @@ from dragon_radar.storage.repository import Forbidden, NotFound
 AI_LEASE_COMPLETION_MARGIN = timedelta(seconds=1)
 DEFAULT_AI_LEASE_DURATION = timedelta(seconds=60)
 DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS = 30.0
+
+
+def _provider_child(send, provider, task_type, manifest, limits) -> None:
+    try:
+        value = provider.generate(task_type, manifest, limits)
+        result = AIProviderResult.model_validate(value)
+        send.send(("result", result.model_dump(mode="json")))
+    except ProviderUnavailable:
+        send.send(("failure", "provider_unavailable"))
+    except Exception:
+        try:
+            send.send(("failure", "provider_failed"))
+        except Exception:
+            pass
+    finally:
+        send.close()
+
+
+def _stop_process(process) -> None:
+    if process.pid is None:
+        return
+    if process.is_alive():
+        process.terminate()
+    process.join()
 
 
 def validate_ai_worker_timing(
@@ -84,15 +108,39 @@ class AIWorker:
             max_cost=self.max_cost,
         )
         lease = self.repository.renew(lease, lease_for=self.lease_for)
-        started = monotonic()
-        value = self.provider.generate(
-            lease.job.task_type,
-            dict(manifest),
-            limits,
+        context = multiprocessing.get_context("spawn")
+        receive, send = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_provider_child,
+            args=(
+                send,
+                self.provider,
+                lease.job.task_type,
+                dict(manifest),
+                limits,
+            ),
         )
-        if monotonic() - started >= self.provider_timeout:
-            raise TimeoutError
-        return AIProviderResult.model_validate(value), lease
+        try:
+            process.start()
+            send.close()
+            if not receive.poll(self.provider_timeout):
+                _stop_process(process)
+                raise TimeoutError
+            kind, payload = receive.recv()
+            _stop_process(process)
+        except TimeoutError:
+            raise
+        except Exception:
+            _stop_process(process)
+            raise RuntimeError("provider_failed") from None
+        finally:
+            receive.close()
+            send.close()
+        if kind == "failure":
+            if payload == "provider_unavailable":
+                raise ProviderUnavailable
+            raise RuntimeError("provider_failed")
+        return AIProviderResult.model_validate(payload), lease
 
     def run_once(self) -> AITaskRecord | None:
         lease = self.repository.claim(

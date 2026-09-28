@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-SCHEMA_REVISION = "0010_ai_tasks"
+SCHEMA_REVISION = "0011_ai_task_gap_fixes"
 
 
 class Database:

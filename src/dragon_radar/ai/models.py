@@ -167,6 +167,7 @@ class AITaskRecord(_StrictFrozenModel):
     processing_overdue: bool = False
     model_version: str | None = None
     prompt_version: str | None = None
+    retrieval_version: SafeVersion
     provider: str | None = None
     token_usage: int | None = None
     cost: Decimal | None = None
@@ -183,9 +184,26 @@ class AITaskLease(_StrictFrozenModel):
     expires_at: datetime
 
 
+class AICancellationReceipt(_StrictFrozenModel):
+    task_id: UUID
+    status: Literal["cancelled"]
+    idempotency_key: SafeVersion
+    accepted_at: UTCDateTime
+
+
+class AIReviewReceipt(_StrictFrozenModel):
+    task_id: UUID
+    human_review_status: HumanReviewStatus
+    revision: Annotated[int, Field(ge=1)]
+    idempotency_key: SafeVersion
+    verification_status: VerificationStatus
+
+
 __all__ = [
+    "AICancellationReceipt",
     "AIDraft",
     "AIProviderResult",
+    "AIReviewReceipt",
     "AI_INPUT_DOMAINS",
     "AISubmission",
     "AITaskLease",

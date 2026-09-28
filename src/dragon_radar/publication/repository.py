@@ -920,6 +920,33 @@ class PublicationRepository:
             self._authorized_records(connection, [row])
             return record
 
+    def get_ai_snapshot(
+        self,
+        connection,
+        snapshot_id: UUID | str,
+        *,
+        ai_domains,
+    ) -> PublishedSnapshot | None:
+        if not connection.in_transaction():
+            raise ValueError("AI snapshot retrieval requires a transaction")
+        snapshot_id = _uuid(snapshot_id)
+        row = (
+            connection.execute(
+                select(publications).where(publications.c.id == snapshot_id)
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            return None
+        if row["status"] != "published":
+            raise Forbidden("Publication is not available")
+        return self._authorized_records(
+            connection,
+            [row],
+            ai_domains=frozenset(ai_domains),
+        )[0]
+
     def get_snapshot(self, snapshot_id: UUID | str):
         snapshot_id = _uuid(snapshot_id)
         with self.database.engine.begin() as connection:

@@ -17,7 +17,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 from dragon_radar.owner.models import owner_principals  # noqa: F401
-from dragon_radar.publication.tables import publications  # noqa: F401
 from dragon_radar.storage.models import metadata
 
 ai_tasks = Table(
@@ -53,6 +52,12 @@ ai_tasks = Table(
     Column("selected_revision", Integer),
     Column("model_version", String(100)),
     Column("prompt_version", String(100)),
+    Column(
+        "retrieval_version",
+        String(30),
+        nullable=False,
+        server_default="r1",
+    ),
     Column("provider", String(100)),
     Column("token_usage", BigInteger),
     Column("cost", Numeric(18, 6)),
@@ -97,6 +102,7 @@ Index(
     ai_tasks.c.created_at,
     postgresql_where=ai_tasks.c.status.in_(("pending", "running")),
 )
+Index("ai_tasks_snapshot_id", ai_tasks.c.snapshot_id)
 
 ai_task_drafts = Table(
     "ai_task_drafts",
@@ -174,6 +180,8 @@ ai_task_reviews = Table(
     Column("decision", String(20), nullable=False),
     Column("expected_revision", Integer, nullable=False),
     Column("resulting_revision", Integer, nullable=False),
+    Column("human_review_status", String(20), nullable=False),
+    Column("verification_status", String(20), nullable=False),
     Column(
         "draft_id",
         PGUUID(as_uuid=True),
@@ -182,6 +190,14 @@ ai_task_reviews = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("owner_id", "idempotency_key"),
     CheckConstraint("decision IN ('accept', 'edit', 'reject')"),
+    CheckConstraint(
+        "human_review_status IN ('accepted', 'edited', 'rejected')",
+        name="ai_task_reviews_human_status",
+    ),
+    CheckConstraint(
+        "verification_status IN ('pending', 'passed', 'failed', 'needs_human')",
+        name="ai_task_reviews_verification_status",
+    ),
     CheckConstraint("expected_revision > 0 AND resulting_revision > 0"),
     CheckConstraint(
         "(decision = 'edit' AND draft_id IS NOT NULL "

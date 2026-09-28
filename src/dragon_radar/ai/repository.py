@@ -12,8 +12,10 @@ from sqlalchemy.engine import Connection
 
 from dragon_radar.ai.models import (
     AI_INPUT_DOMAINS,
+    AICancellationReceipt,
     AIDraft,
     AIProviderResult,
+    AIReviewReceipt,
     AISubmission,
     AITaskLease,
     AITaskRecord,
@@ -25,8 +27,13 @@ from dragon_radar.ai.tables import (
     ai_task_reviews,
     ai_tasks,
 )
-from dragon_radar.publication.tables import publications
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound, _identifier
+
+MAX_ACTIVE_AI_TASKS_PER_OWNER = 8
+
+
+class AITaskRateLimited(Exception):
+    """Raised when an owner already has the maximum active AI task count."""
 
 
 def _stored_object(value: Mapping) -> dict:
@@ -226,6 +233,7 @@ class AITaskRepository:
             ),
             model_version=row["model_version"],
             prompt_version=row["prompt_version"],
+            retrieval_version=row["retrieval_version"],
             provider=row["provider"],
             token_usage=row["token_usage"],
             cost=row["cost"],
@@ -255,6 +263,16 @@ class AITaskRepository:
         )
         if existing is not None:
             return existing
+        active_count = connection.scalar(
+            select(func.count())
+            .select_from(ai_tasks)
+            .where(
+                ai_tasks.c.owner_id == owner_id,
+                ai_tasks.c.status.in_(("pending", "running")),
+            )
+        )
+        if active_count >= MAX_ACTIVE_AI_TASKS_PER_OWNER:
+            raise AITaskRateLimited
         stored_manifest = _stored_object(manifest)
 
         now = self._now()
@@ -349,7 +367,7 @@ class AITaskRepository:
         task_id: UUID | str,
         *,
         key: str,
-    ) -> AITaskRecord:
+    ) -> AICancellationReceipt:
         _identifier(key)
         try:
             normalized_id = UUID(str(task_id))
@@ -372,12 +390,17 @@ class AITaskRepository:
             if command is not None:
                 if command["payload_hash"] != payload_hash:
                     raise Conflict("Cancellation key belongs to another payload")
-                row = self._task_row(
+                self._task_row(
                     connection,
                     command["task_id"],
                     owner_id=owner.owner_id,
                 )
-                return self._record(connection, row)
+                return AICancellationReceipt(
+                    task_id=command["task_id"],
+                    status="cancelled",
+                    idempotency_key=command["idempotency_key"],
+                    accepted_at=command["accepted_at"],
+                )
             row = self._task_row(
                 connection,
                 normalized_id,
@@ -414,7 +437,12 @@ class AITaskRepository:
                     .mappings()
                     .one()
                 )
-            return self._record(connection, row)
+            return AICancellationReceipt(
+                task_id=row["id"],
+                status="cancelled",
+                idempotency_key=key,
+                accepted_at=now,
+            )
 
     def review(
         self,
@@ -426,7 +454,7 @@ class AITaskRepository:
         revision: int,
         key: str,
         edited_content: Mapping | None = None,
-    ) -> AITaskRecord:
+    ) -> AIReviewReceipt:
         _identifier(key)
         if decision not in {"accept", "edit", "reject"}:
             raise ValueError("Invalid AI review decision")
@@ -460,12 +488,18 @@ class AITaskRepository:
             if command is not None:
                 if command["payload_hash"] != payload_hash:
                     raise Conflict("Review key belongs to another payload")
-                row = self._task_row(
+                self._task_row(
                     connection,
                     command["task_id"],
                     owner_id=owner.owner_id,
                 )
-                return self._record(connection, row)
+                return AIReviewReceipt(
+                    task_id=command["task_id"],
+                    human_review_status=command["human_review_status"],
+                    revision=command["resulting_revision"],
+                    idempotency_key=command["idempotency_key"],
+                    verification_status=command["verification_status"],
+                )
             row = self._task_row(
                 connection,
                 task_id,
@@ -477,8 +511,15 @@ class AITaskRepository:
             draft_id = None
             resulting_revision = revision
             now = self._now()
+            human_review_status = {
+                "accept": "accepted",
+                "edit": "edited",
+                "reject": "rejected",
+            }[decision]
+            verification_status = row["verification_status"]
             if decision == "edit":
                 resulting_revision = self._next_revision(connection, row["id"])
+                verification_status = "needs_human"
                 draft_id = uuid4()
                 connection.execute(
                     insert(ai_task_drafts).values(
@@ -505,16 +546,14 @@ class AITaskRepository:
                     decision=decision,
                     expected_revision=revision,
                     resulting_revision=resulting_revision,
+                    human_review_status=human_review_status,
+                    verification_status=verification_status,
                     draft_id=draft_id,
                     created_at=now,
                 )
             )
             values = {
-                "human_review_status": {
-                    "accept": "accepted",
-                    "edit": "edited",
-                    "reject": "rejected",
-                }[decision],
+                "human_review_status": human_review_status,
             }
             if decision == "edit":
                 values["selected_revision"] = resulting_revision
@@ -529,7 +568,13 @@ class AITaskRepository:
                 .mappings()
                 .one()
             )
-            return self._record(connection, row)
+            return AIReviewReceipt(
+                task_id=row["id"],
+                human_review_status=human_review_status,
+                revision=resulting_revision,
+                idempotency_key=key,
+                verification_status=verification_status,
+            )
 
     def claim(
         self,
@@ -657,24 +702,15 @@ class AITaskRepository:
     def load_input(self, lease: AITaskLease) -> Mapping:
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
-            publication = (
-                connection.execute(
-                    select(publications).where(publications.c.id == row["snapshot_id"])
-                )
-                .mappings()
-                .first()
-            )
-            if publication is None:
-                raise NotFound("Publication not found")
-            if publication["status"] != "published":
-                raise Forbidden("Publication is not available")
             if self.publications is None:
                 raise Forbidden("Publication authorization is unavailable")
-            self.publications._authorized_records(
+            snapshot = self.publications.get_ai_snapshot(
                 connection,
-                [publication],
+                row["snapshot_id"],
                 ai_domains=AI_INPUT_DOMAINS[row["task_type"]],
             )
+            if snapshot is None:
+                raise NotFound("Publication not found")
             return row["input_manifest"]
 
     def succeed(
@@ -814,4 +850,8 @@ class AITaskRepository:
             return self._record(connection, updated)
 
 
-__all__ = ["AITaskRepository"]
+__all__ = [
+    "MAX_ACTIVE_AI_TASKS_PER_OWNER",
+    "AITaskRateLimited",
+    "AITaskRepository",
+]

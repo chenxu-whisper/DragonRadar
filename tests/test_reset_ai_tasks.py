@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import subprocess
+import time
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,59 @@ from news_factories import ARTICLE_A, article_revision, event_evidence
 from pydantic import ValidationError
 from sqlalchemy import insert, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
+
+
+class SlowMutatingProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def __init__(self, started_marker: str, late_marker: str):
+        self.started_marker = started_marker
+        self.late_marker = late_marker
+
+    def generate(self, task_type, manifest, limits):
+        Path(self.started_marker).write_text("provider started", encoding="utf-8")
+        time.sleep(5)
+        Path(self.late_marker).write_text("late provider mutation", encoding="utf-8")
+        return {"content": {"text": "too late"}, "token_usage": 1, "cost": "0"}
+
+
+class LimitsEchoProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def generate(self, task_type, manifest, limits):
+        return {
+            "content": {
+                "deadline": limits.deadline.isoformat(),
+                "timeout_seconds": str(limits.timeout_seconds),
+                "max_tokens": limits.max_tokens,
+                "max_cost": str(limits.max_cost),
+            },
+            "token_usage": 1,
+            "cost": "0",
+        }
+
+
+class ShortSlowProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def generate(self, task_type, manifest, limits):
+        time.sleep(0.3)
+        return {"content": {"text": "too late"}, "token_usage": 1, "cost": "0"}
+
+
+class UnsafeProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def generate(self, task_type, manifest, limits):
+        raise RuntimeError("Bearer secret-token raw provider stack")
 
 
 def _session(owners):
@@ -131,10 +185,10 @@ def _submit(service, session, publication, **changes):
     return service.submit(session.token, session.csrf, **values)
 
 
-def test_0010_migration_creates_ai_schema_and_updates_readiness(database):
+def test_ai_gap_migration_creates_schema_and_updates_readiness(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0010_ai_tasks"
+    assert SCHEMA_REVISION == "0011_ai_task_gap_fixes"
     assert database.ready()
     tables = set(inspect(database.engine).get_table_names())
     assert {
@@ -155,6 +209,7 @@ def test_0010_migration_creates_ai_schema_and_updates_readiness(database):
         "human_review_status",
         "model_version",
         "prompt_version",
+        "retrieval_version",
         "provider",
         "token_usage",
         "cost",
@@ -172,6 +227,21 @@ def test_0010_migration_creates_ai_schema_and_updates_readiness(database):
     )
     assert "pending" in str(claim_index["dialect_options"]["postgresql_where"])
     assert "queued" not in str(claim_index["dialect_options"]["postgresql_where"])
+    snapshot_index = next(
+        index
+        for index in inspector.get_indexes("ai_tasks")
+        if index["name"] == "ai_tasks_snapshot_id"
+    )
+    assert snapshot_index["column_names"] == ["snapshot_id"]
+    retrieval_column = next(
+        column for column in reflected_columns if column["name"] == "retrieval_version"
+    )
+    assert retrieval_column["nullable"] is False
+    assert "r1" in str(retrieval_column["default"])
+    review_columns = {
+        column["name"] for column in inspector.get_columns("ai_task_reviews")
+    }
+    assert {"human_review_status", "verification_status"} <= review_columns
 
 
 def test_0010_ai_task_status_check_accepts_pending_and_rejects_queued(ai_setup):
@@ -251,6 +321,68 @@ def test_submit_replays_same_payload_after_ai_permission_withdrawal(
     replay = _submit(service, session, publication)
 
     assert replay == first
+
+
+def test_submit_limits_active_tasks_after_allowing_replay(ai_setup):
+    from dragon_radar.ai.repository import (
+        MAX_ACTIVE_AI_TASKS_PER_OWNER,
+        AITaskRateLimited,
+    )
+
+    tasks, service, _owners, session, publication = ai_setup
+    first = _submit(service, session, publication, key="capacity-0")
+    for index in range(1, MAX_ACTIVE_AI_TASKS_PER_OWNER):
+        _submit(service, session, publication, key=f"capacity-{index}")
+
+    assert _submit(service, session, publication, key="capacity-0") == first
+    with pytest.raises(AITaskRateLimited):
+        _submit(service, session, publication, key="capacity-overflow")
+
+    tasks.cancel(session.token, session.csrf, first.id, key="capacity-cancel")
+    accepted = _submit(service, session, publication, key="capacity-after-cancel")
+    assert accepted.status == "pending"
+
+
+@pytest.mark.anyio
+async def test_ai_route_maps_active_task_limit_to_rate_limited(ai_setup):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.ai.repository import MAX_ACTIVE_AI_TASKS_PER_OWNER
+    from dragon_radar.owner.app import create_owner_app
+
+    _tasks, service, owners, session, publication = ai_setup
+    for index in range(MAX_ACTIVE_AI_TASKS_PER_OWNER):
+        _submit(service, session, publication, key=f"route-capacity-{index}")
+    owner = create_owner_app(
+        repository=service.publications.market,
+        owner_repository=owners,
+        publication_repository=service.publications,
+        ai_service=service,
+    )
+    body = {
+        "date": publication.trade_date.isoformat(),
+        "notes_context": "new task beyond capacity",
+        "snapshot_id": str(publication.id),
+        "as_of": publication.published_at.isoformat(),
+        "version": f"v{publication.version}",
+        "idempotency_key": "route-capacity-overflow",
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=owner),
+        base_url="https://localhost:8030",
+    ) as client:
+        response = await client.post(
+            "/api/ai/daily-review",
+            json=body,
+            headers=_headers(session),
+        )
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "code": "RATE_LIMITED",
+        "message": "Too many requests",
+    }
 
 
 @pytest.mark.anyio
@@ -353,6 +485,23 @@ def test_ai_permission_is_required_at_submit_and_worker_read(ai_setup, repositor
     with pytest.raises(Forbidden):
         tasks.load_input(lease)
     assert tasks.get(session.token, pending.id).status == "running"
+
+
+def test_ai_uses_public_transaction_aware_publication_snapshot_boundary(ai_setup):
+    tasks, service, _owners, session, publication = ai_setup
+
+    with tasks.database.engine.begin() as connection:
+        snapshot = service.publications.get_ai_snapshot(
+            connection,
+            publication.id,
+            ai_domains={"market"},
+        )
+
+    assert snapshot.publication.id == publication.id
+    for relative in Path("src/dragon_radar/ai").glob("*.py"):
+        source = relative.read_text(encoding="utf-8")
+        assert "publication.tables" not in source
+        assert "._authorized_records" not in source
 
 
 @pytest.mark.parametrize(
@@ -533,23 +682,13 @@ def test_worker_supplies_immutable_provider_limits(ai_setup):
     from dragon_radar.ai.provider import AIProviderLimits
     from dragon_radar.ai.worker import AIWorker
 
-    class CapturingProvider:
-        name = "fake"
-        model_version = "fake-v1"
-        prompt_version = "prompt-v1"
-
-        def generate(self, task_type, manifest, limits):
-            self.limits = limits
-            return {"content": {"text": "done"}, "token_usage": 1, "cost": "0"}
-
     tasks, service, _owners, session, publication = ai_setup
     _submit(service, session, publication)
-    provider = CapturingProvider()
     started = datetime.now(UTC)
 
     completed = AIWorker(
         tasks,
-        provider,
+        LimitsEchoProvider(),
         worker_id="limits-worker",
         provider_timeout=2,
         max_tokens=123,
@@ -557,13 +696,18 @@ def test_worker_supplies_immutable_provider_limits(ai_setup):
     ).run_once()
 
     assert completed.status == "succeeded"
-    assert isinstance(provider.limits, AIProviderLimits)
-    assert provider.limits.timeout_seconds == 2
-    assert provider.limits.max_tokens == 123
-    assert provider.limits.max_cost == Decimal("4.50")
-    assert provider.limits.deadline >= started + timedelta(seconds=1.9)
+    limits = AIProviderLimits(
+        deadline=datetime.fromisoformat(completed.content_draft.content["deadline"]),
+        timeout_seconds=float(completed.content_draft.content["timeout_seconds"]),
+        max_tokens=completed.content_draft.content["max_tokens"],
+        max_cost=Decimal(completed.content_draft.content["max_cost"]),
+    )
+    assert limits.timeout_seconds == 2
+    assert limits.max_tokens == 123
+    assert limits.max_cost == Decimal("4.50")
+    assert limits.deadline >= started + timedelta(seconds=1.9)
     with pytest.raises(FrozenInstanceError):
-        provider.limits.max_tokens = 1
+        limits.max_tokens = 1
 
 
 @pytest.mark.parametrize(
@@ -639,22 +783,13 @@ def test_worker_renews_lease_to_cover_provider_deadline_and_persistence():
 
         def succeed(self, claimed, result, **metadata):
             assert claimed is self.renewed
+            self.result = result
             return SimpleNamespace(status="succeeded")
 
-    class CapturingProvider:
-        name = "fake"
-        model_version = "fake-v1"
-        prompt_version = "prompt-v1"
-
-        def generate(self, task_type, manifest, limits):
-            self.limits = limits
-            return {"content": {"text": "done"}, "token_usage": 1, "cost": "0"}
-
     repository = LeaseRepository()
-    provider = CapturingProvider()
     completed = AIWorker(
         repository,
-        provider,
+        LimitsEchoProvider(),
         worker_id="renew-before-call",
         lease_for=timedelta(seconds=2),
         provider_timeout=1,
@@ -662,48 +797,22 @@ def test_worker_renews_lease_to_cover_provider_deadline_and_persistence():
 
     assert completed.status == "succeeded"
     assert repository.renewed.expires_at >= (
-        provider.limits.deadline + AI_LEASE_COMPLETION_MARGIN
+        datetime.fromisoformat(repository.result.content["deadline"])
+        + AI_LEASE_COMPLETION_MARGIN
     )
 
 
 def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup):
-    from threading import Lock
-    from time import monotonic, sleep
+    from time import monotonic
 
     from dragon_radar.ai.worker import AIWorker
 
-    class SlowProvider:
-        name = "fake"
-        model_version = "fake-v1"
-        prompt_version = "prompt-v1"
-
-        def __init__(self):
-            self.active = 0
-            self.max_active = 0
-            self.lock = Lock()
-
-        def generate(self, task_type, manifest, limits):
-            with self.lock:
-                self.active += 1
-                self.max_active = max(self.max_active, self.active)
-            try:
-                sleep(0.15)
-                return {
-                    "content": {"text": "too late"},
-                    "token_usage": 1,
-                    "cost": "0",
-                }
-            finally:
-                with self.lock:
-                    self.active -= 1
-
     tasks, service, _owners, session, publication = ai_setup
     task = _submit(service, session, publication)
-    provider = SlowProvider()
     started = monotonic()
     worker = AIWorker(
         tasks,
-        provider,
+        ShortSlowProvider(),
         worker_id="timeout-worker",
         lease_for=timedelta(seconds=2),
         provider_timeout=0.1,
@@ -714,8 +823,7 @@ def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup
 
     assert worker.run_once().status == "pending"
     assert worker.run_once().status == "failed"
-    assert monotonic() - started >= 0.25
-    assert provider.max_active == 1
+    assert monotonic() - started < 2
     failed = tasks.get(session.token, task.id)
     assert failed.attempt_count == 2
     assert failed.failure == {"code": "provider_timeout"}
@@ -732,16 +840,43 @@ def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup
         )
 
 
-def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
+def test_worker_timeout_is_wall_clock_bounded_and_child_cannot_mutate_late(
+    ai_setup,
+    tmp_path,
+):
+    from time import monotonic
+
     from dragon_radar.ai.worker import AIWorker
 
-    class UnsafeProvider:
-        name = "fake"
-        model_version = "fake-v1"
-        prompt_version = "prompt-v1"
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="hard-timeout")
+    started_marker = tmp_path / "provider-started"
+    late_marker = tmp_path / "late-provider-mutation"
+    started = monotonic()
 
-        def generate(self, task_type, manifest, limits):
-            raise RuntimeError("Bearer secret-token raw provider stack")
+    result = AIWorker(
+        tasks,
+        SlowMutatingProvider(str(started_marker), str(late_marker)),
+        worker_id="hard-timeout-worker",
+        lease_for=timedelta(seconds=4),
+        provider_timeout=2,
+        max_attempts=1,
+        max_tokens=10,
+        max_cost=Decimal("1"),
+    ).run_once()
+    elapsed = monotonic() - started
+    time.sleep(0.5)
+
+    assert elapsed < 4
+    assert result.status == "failed"
+    assert result.failure == {"code": "provider_timeout"}
+    assert started_marker.exists()
+    assert not late_marker.exists()
+    assert tasks.get(session.token, task.id).content_draft is None
+
+
+def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
+    from dragon_radar.ai.worker import AIWorker
 
     tasks, service, _owners, session, publication = ai_setup
     task = _submit(service, session, publication)
@@ -756,6 +891,35 @@ def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
     serialized = json.dumps(tasks.get(session.token, task.id).model_dump(mode="json"))
     assert "secret-token" not in serialized
     assert "RuntimeError" not in serialized
+    assert failed.failure == {"code": "provider_failed"}
+
+
+def test_worker_maps_unpicklable_provider_start_failure_to_bounded_failure(ai_setup):
+    from time import monotonic
+
+    from dragon_radar.ai.worker import AIWorker
+
+    class UnpicklableProvider:
+        name = "fake"
+        model_version = "fake-v1"
+        prompt_version = "prompt-v1"
+
+        def generate(self, task_type, manifest, limits):
+            return {"content": {"text": "unused"}, "token_usage": 1, "cost": "0"}
+
+    tasks, service, _owners, session, publication = ai_setup
+    _submit(service, session, publication, key="unpicklable-provider")
+    started = monotonic()
+
+    failed = AIWorker(
+        tasks,
+        UnpicklableProvider(),
+        worker_id="unpicklable-worker",
+        max_attempts=1,
+    ).run_once()
+
+    assert monotonic() - started < 2
+    assert failed.status == "failed"
     assert failed.failure == {"code": "provider_failed"}
 
 
@@ -868,8 +1032,9 @@ def test_late_provider_draft_appends_and_does_not_override_human_edit(ai_setup):
         edited_content={"text": "Owner revised after provider completion."},
         key="edit-after-provider",
     )
-    assert revised.content_draft.revision == 4
-    assert revised.content_draft.content == {
+    assert revised.revision == 4
+    revised_task = tasks.get(session.token, task.id)
+    assert revised_task.content_draft.content == {
         "text": "Owner revised after provider completion."
     }
     with tasks.database.engine.connect() as connection:
@@ -1007,6 +1172,11 @@ async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
             json={**body, "notes_context": "secret-marker", "extra": "secret-marker"},
             headers=_headers(session),
         )
+        attempted_override = await client.post(
+            "/api/ai/daily-review",
+            json={**body, "retrieval_version": "client-controlled"},
+            headers=_headers(session),
+        )
 
     assert guest.status_code == 403
     assert no_csrf.status_code == 403
@@ -1014,7 +1184,9 @@ async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
     assert set(created.json()) >= {"task_id", "status"}
     assert fetched.status_code == 200
     assert "owner_id" not in fetched.text
+    assert fetched.json()["retrieval_version"] == "r1"
     assert bad.status_code == 400
+    assert attempted_override.status_code == 400
     assert "secret-marker" not in bad.text
     assert created.json()["status"] == "pending"
     assert tasks.get(session.token, created.json()["task_id"]).status == "pending"
@@ -1075,6 +1247,98 @@ async def test_all_ai_submission_routes_and_replays_return_pending(
     assert replay.status_code == 200
     assert replay.json()["task_id"] == created.json()["task_id"]
     assert replay.json()["status"] == "pending"
+
+
+@pytest.mark.anyio
+async def test_cancel_and_review_routes_return_original_command_receipts(ai_setup):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+
+    tasks, service, owners, session, publication = ai_setup
+    cancelled_task = _submit(service, session, publication, key="receipt-cancel-task")
+    reviewed_task = _submit(service, session, publication, key="receipt-review-task")
+    tasks.clock = lambda: NOW + timedelta(seconds=120)
+    review_draft = tasks.get(session.token, reviewed_task.id).content_draft
+    owner = create_owner_app(
+        repository=service.publications.market,
+        owner_repository=owners,
+        publication_repository=service.publications,
+        ai_service=service,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=owner),
+        base_url="https://localhost:8030",
+    ) as client:
+        cancel_path = f"/api/ai/task/{cancelled_task.id}/cancel"
+        cancel_body = {"idempotency_key": "cancel-receipt"}
+        cancelled = await client.post(
+            cancel_path,
+            json=cancel_body,
+            headers=_headers(session),
+        )
+        tasks.clock = lambda: NOW + timedelta(seconds=180)
+        cancel_replay = await client.post(
+            cancel_path,
+            json=cancel_body,
+            headers=_headers(session),
+        )
+
+        review_path = f"/api/ai/task/{reviewed_task.id}/review"
+        edit_body = {
+            "decision": "edit",
+            "revision": review_draft.revision,
+            "edited_content": {"text": "owner edit"},
+            "idempotency_key": "edit-receipt",
+        }
+        edited = await client.post(
+            review_path,
+            json=edit_body,
+            headers=_headers(session),
+        )
+        accepted = await client.post(
+            review_path,
+            json={
+                "decision": "accept",
+                "revision": 2,
+                "idempotency_key": "accept-receipt",
+            },
+            headers=_headers(session),
+        )
+        edit_replay = await client.post(
+            review_path,
+            json=edit_body,
+            headers=_headers(session),
+        )
+
+    assert cancelled.status_code == 200
+    assert set(cancelled.json()) == {
+        "task_id",
+        "status",
+        "idempotency_key",
+        "accepted_at",
+    }
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["idempotency_key"] == "cancel-receipt"
+    assert cancel_replay.json() == cancelled.json()
+    assert accepted.json()["human_review_status"] == "accepted"
+    assert edited.status_code == 200
+    assert set(edited.json()) == {
+        "task_id",
+        "human_review_status",
+        "revision",
+        "idempotency_key",
+        "verification_status",
+    }
+    assert edited.json() == {
+        "task_id": str(reviewed_task.id),
+        "human_review_status": "edited",
+        "revision": 2,
+        "idempotency_key": "edit-receipt",
+        "verification_status": "needs_human",
+    }
+    assert edit_replay.json() == edited.json()
 
 
 def test_ai_worker_cli_is_bounded_and_compose_is_internal():

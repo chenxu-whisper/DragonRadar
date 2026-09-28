@@ -8,6 +8,7 @@ from fastapi.routing import APIRoute
 from sqlalchemy.exc import SQLAlchemyError
 
 from dragon_radar.ai.models import AITaskRecord
+from dragon_radar.ai.repository import AITaskRateLimited
 from dragon_radar.ai.service import AIService
 from dragon_radar.http.errors import StorageUnavailable, error_response
 from dragon_radar.http.serialization import DecimalJSONResponse
@@ -36,6 +37,8 @@ class _AIRoute(APIRoute):
                 return error_response(404, "NOT_FOUND", "Resource not found")
             except Conflict:
                 return error_response(409, "VERSION_CONFLICT", "Version conflict")
+            except AITaskRateLimited:
+                return error_response(429, "RATE_LIMITED", "Too many requests")
             except (SQLAlchemyError, StorageUnavailable):
                 return error_response(503, "STORAGE_UNAVAILABLE", "Storage unavailable")
             except (BoundaryError, TypeError, ValueError):
@@ -77,6 +80,7 @@ def _safe_record(record: AITaskRecord) -> dict:
         "content_draft": draft,
         "model_version": record.model_version,
         "prompt_version": record.prompt_version,
+        "retrieval_version": record.retrieval_version,
         "provider": record.provider,
         "token_usage": record.token_usage,
         "cost": record.cost,
@@ -140,13 +144,13 @@ def install_ai_routes(app: FastAPI) -> None:
         ):
             raise invalid_request()
         assert owner.csrf is not None
-        record = _service(request).tasks.cancel(
+        receipt = _service(request).tasks.cancel(
             owner.token,
             owner.csrf,
             task_id,
             key=body["idempotency_key"],
         )
-        return DecimalJSONResponse(_safe_record(record))
+        return DecimalJSONResponse(receipt.model_dump(mode="json"))
 
     @router.post("/api/ai/task/{task_id}/review")
     def review_task(task_id: UUID, request: Request, owner: OwnerWrite):
@@ -164,7 +168,7 @@ def install_ai_routes(app: FastAPI) -> None:
         ):
             raise invalid_request()
         assert owner.csrf is not None
-        record = _service(request).tasks.review(
+        receipt = _service(request).tasks.review(
             owner.token,
             owner.csrf,
             task_id,
@@ -173,7 +177,7 @@ def install_ai_routes(app: FastAPI) -> None:
             key=body["idempotency_key"],
             edited_content=body.get("edited_content"),
         )
-        return DecimalJSONResponse(_safe_record(record))
+        return DecimalJSONResponse(receipt.model_dump(mode="json"))
 
     app.router.routes.extend(router.routes)
 

@@ -3,8 +3,6 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import select
-
 from dragon_radar.ai.models import (
     AI_INPUT_DOMAINS,
     AISubmission,
@@ -14,7 +12,6 @@ from dragon_radar.ai.models import (
 from dragon_radar.ai.repository import AITaskRepository
 from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.publication.repository import PublicationRepository
-from dragon_radar.publication.tables import publications
 from dragon_radar.storage.repository import Conflict, NotFound
 
 
@@ -172,24 +169,13 @@ class AIService:
             )
             if replay is not None:
                 return replay
-            row = (
-                connection.execute(
-                    select(publications).where(
-                        publications.c.id == submission.snapshot_id
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                raise NotFound("Publication not found")
-            if row["status"] != "published":
-                raise Conflict("Publication is not published")
-            snapshot = self.publications._authorized_records(
+            snapshot = self.publications.get_ai_snapshot(
                 connection,
-                [row],
+                submission.snapshot_id,
                 ai_domains=AI_INPUT_DOMAINS[submission.task_type],
-            )[0]
+            )
+            if snapshot is None:
+                raise NotFound("Publication not found")
             expected_version = f"v{snapshot.publication.version}"
             if (
                 submission.as_of != snapshot.publication.published_at
