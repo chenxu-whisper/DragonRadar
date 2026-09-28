@@ -46,11 +46,15 @@ def _digest(value: Mapping) -> str:
     return hashlib.sha256(canonical_object(dict(value)).encode("ascii")).hexdigest()
 
 
-def _review_note(revision: int) -> str:
-    return (
-        f"人工编辑后对 revision={revision} 重新触发校验；"
-        "与服务端 revision 不一致返回 409"
-    )
+def _review_note(decision: str, revision: int) -> str:
+    action = {
+        "accept": "已接受",
+        "edit": "人工编辑后对",
+        "reject": "已拒绝",
+    }[decision]
+    verification = " 重新触发校验" if decision == "edit" else ""
+    revision_note = f"{action} revision={revision}{verification}；"
+    return revision_note + "与服务端 revision 不一致返回 409"
 
 
 def _validate_latency(latency_ms: int | None, *, required: bool = False) -> None:
@@ -520,7 +524,10 @@ class AITaskRepository:
                     revision=command["resulting_revision"],
                     idempotency_key=command["idempotency_key"],
                     verification_status=command["verification_status"],
-                    note=_review_note(command["resulting_revision"]),
+                    note=_review_note(
+                        command["decision"],
+                        command["resulting_revision"],
+                    ),
                 )
             row = self._task_row(
                 connection,
@@ -596,7 +603,7 @@ class AITaskRepository:
                 revision=resulting_revision,
                 idempotency_key=key,
                 verification_status=verification_status,
-                note=_review_note(resulting_revision),
+                note=_review_note(decision, resulting_revision),
             )
 
     def claim(

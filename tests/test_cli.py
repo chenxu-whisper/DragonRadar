@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 
+import pytest
 from factories import batch, grant
 from sqlalchemy import text
 
@@ -32,6 +33,16 @@ def test_help_no_database_and_missing_environment():
     assert missing.returncode != 0
     assert "DRAGON_DATABASE_URL is required" in missing.stderr
     assert "Traceback" not in missing.stderr
+
+
+def test_ai_worker_id_matches_database_length_limit():
+    from dragon_radar.cli import _parser
+
+    assert _parser().parse_args(["ai-worker", "--worker-id", "w" * 100]).worker_id == (
+        "w" * 100
+    )
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["ai-worker", "--worker-id", "w" * 101])
 
 
 def test_invalid_database_configuration_sanitized():

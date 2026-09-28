@@ -62,11 +62,8 @@ def _no_query(request: Request) -> None:
 
 
 def _safe_record(record: AITaskRecord) -> dict:
-    draft = (
-        record.content_draft.model_dump(mode="json")["content"]
-        if record.content_draft is not None
-        else None
-    )
+    selected_draft = record.content_draft
+    draft = selected_draft.model_dump(mode="json") if selected_draft else None
     return {
         "task_id": str(record.id),
         "task_type": record.task_type,
@@ -77,7 +74,11 @@ def _safe_record(record: AITaskRecord) -> dict:
         "verification_status": record.verification_status,
         "human_review_status": record.human_review_status,
         "processing_overdue": record.processing_overdue,
-        "content_draft": draft,
+        "content_draft": draft["content"] if draft else None,
+        "revision": draft["revision"] if draft else None,
+        "content_draft_source": draft["source"] if draft else None,
+        "content_draft_created_at": draft["created_at"] if draft else None,
+        "ai_generated": draft["ai_generated"] if draft else None,
         "model_version": record.model_version,
         "prompt_version": record.prompt_version,
         "retrieval_version": record.retrieval_version,

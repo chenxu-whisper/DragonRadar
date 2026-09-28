@@ -947,6 +947,240 @@ def test_worker_renews_lease_to_cover_provider_deadline_and_persistence():
     )
 
 
+@pytest.mark.parametrize("conflict_at", ("load", "renew"))
+def test_worker_returns_none_when_lease_is_lost_before_provider_call(conflict_at):
+    from dragon_radar.ai.worker import AIWorker
+    from dragon_radar.storage.repository import Conflict
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        writes = 0
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            return lease
+
+        def load_input(self, claimed):
+            if conflict_at == "load":
+                raise Conflict("cancelled")
+            return {"input": {}}
+
+        def renew(self, claimed, *, lease_for):
+            raise Conflict("lease lost")
+
+        def fail(self, *args, **kwargs):
+            self.writes += 1
+
+        def retry_or_fail(self, *args, **kwargs):
+            self.writes += 1
+
+    repository = LeaseRepository()
+    result = AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id=f"conflict-{conflict_at}",
+    ).run_once()
+
+    assert result is None
+    assert repository.writes == 0
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        "input_forbidden",
+        "input_unavailable",
+        "provider_unavailable",
+        "provider_timeout",
+        "provider_failed",
+        "succeed",
+        "result_limit_exceeded",
+    ),
+)
+def test_worker_returns_none_when_lease_is_lost_at_write_boundary(
+    monkeypatch,
+    outcome,
+):
+    from dragon_radar.ai.models import AIProviderResult
+    from dragon_radar.ai.provider import ProviderUnavailable
+    from dragon_radar.ai.worker import AIWorker
+    from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        def __init__(self):
+            self.writes = []
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            return lease
+
+        def load_input(self, claimed):
+            if outcome == "input_forbidden":
+                raise Forbidden
+            if outcome == "input_unavailable":
+                raise NotFound
+            return {"input": {}}
+
+        def fail(self, claimed, *, code, **metadata):
+            self.writes.append(("fail", code))
+            raise Conflict("lease lost")
+
+        def retry_or_fail(self, claimed, *, code, max_attempts, **metadata):
+            self.writes.append(("retry_or_fail", code))
+            raise Conflict("lease lost")
+
+        def succeed(self, claimed, result, **metadata):
+            self.writes.append(("succeed", None))
+            if outcome == "result_limit_exceeded":
+                raise ValueError("result limit")
+            raise Conflict("lease lost")
+
+    def invoke(claimed, manifest):
+        if outcome == "provider_unavailable":
+            raise ProviderUnavailable
+        if outcome == "provider_timeout":
+            raise TimeoutError
+        if outcome == "provider_failed":
+            raise RuntimeError("provider_failed")
+        return (
+            AIProviderResult(
+                content={"text": "draft"},
+                token_usage=1,
+                cost="0",
+            ),
+            claimed,
+        )
+
+    repository = LeaseRepository()
+    worker = AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id=f"write-conflict-{outcome}",
+    )
+    monkeypatch.setattr(worker, "_invoke", invoke)
+
+    assert worker.run_once() is None
+    expected_writes = 2 if outcome == "result_limit_exceeded" else 1
+    assert len(repository.writes) == expected_writes
+
+
+def test_worker_does_not_convert_programming_errors_to_provider_failures(monkeypatch):
+    from dragon_radar.ai.worker import AIWorker
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        retries = 0
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            return lease
+
+        def load_input(self, claimed):
+            return {"input": {}}
+
+        def retry_or_fail(self, *args, **kwargs):
+            self.retries += 1
+
+    repository = LeaseRepository()
+    worker = AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id="programming-error-worker",
+    )
+
+    def programming_error(claimed, manifest):
+        raise KeyError("implementation defect")
+
+    monkeypatch.setattr(worker, "_invoke", programming_error)
+
+    with pytest.raises(KeyError, match="implementation defect"):
+        worker.run_once()
+    assert repository.retries == 0
+
+
+def test_worker_batch_keeps_concurrent_result_when_another_lease_is_lost(monkeypatch):
+    from threading import Lock
+
+    from dragon_radar.ai.models import AIProviderResult
+    from dragon_radar.ai.worker import AIWorker
+    from dragon_radar.storage.repository import Conflict
+
+    leases = [
+        SimpleNamespace(job=SimpleNamespace(id=1, task_type="daily_review")),
+        SimpleNamespace(job=SimpleNamespace(id=2, task_type="daily_review")),
+    ]
+
+    class LeaseRepository:
+        def __init__(self):
+            self.lock = Lock()
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            with self.lock:
+                return leases.pop(0) if leases else None
+
+        def load_input(self, claimed):
+            if claimed.job.id == 1:
+                raise Conflict("cancelled")
+            return {"input": {}}
+
+        def succeed(self, claimed, result, **metadata):
+            return SimpleNamespace(id=claimed.job.id, status="succeeded")
+
+    repository = LeaseRepository()
+    worker = AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id="concurrent-conflict-worker",
+        concurrency=2,
+    )
+    monkeypatch.setattr(
+        worker,
+        "_invoke",
+        lambda claimed, manifest: (
+            AIProviderResult(content={"text": "draft"}, token_usage=1, cost="0"),
+            claimed,
+        ),
+    )
+
+    completed = worker.run_batch()
+
+    assert [record.id for record in completed] == [2]
+
+
+def test_worker_loop_continues_polling_after_lease_loss():
+    from dragon_radar.ai.worker import AIWorker
+    from dragon_radar.storage.repository import Conflict
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        def __init__(self):
+            self.claims = 0
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            self.claims += 1
+            return lease if self.claims == 1 else None
+
+        def load_input(self, claimed):
+            raise Conflict("cancelled")
+
+    repository = LeaseRepository()
+    sleeps = []
+    AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id="loop-conflict-worker",
+    ).run_forever(
+        max_iterations=2,
+        poll_seconds=0.1,
+        sleep=sleeps.append,
+    )
+
+    assert repository.claims == 2
+    assert sleeps == [0.1, 0.1]
+
+
 def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup):
     from time import monotonic
 
@@ -1166,9 +1400,7 @@ def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
     assert failed.failure == {"code": "provider_failed"}
 
 
-def test_worker_maps_unpicklable_provider_start_failure_to_bounded_failure(ai_setup):
-    from time import monotonic
-
+def test_worker_rejects_unpicklable_provider_before_claim_with_sanitized_error():
     from dragon_radar.ai.worker import AIWorker
 
     class UnpicklableProvider:
@@ -1176,23 +1408,31 @@ def test_worker_maps_unpicklable_provider_start_failure_to_bounded_failure(ai_se
         model_version = "fake-v1"
         prompt_version = "prompt-v1"
 
-        def generate(self, task_type, manifest, limits):
-            return {"content": {"text": "unused"}, "token_usage": 1, "cost": "0"}
+        def __reduce__(self):
+            raise RuntimeError("provider-secret-value")
 
-    tasks, service, _owners, session, publication = ai_setup
-    _submit(service, session, publication, key="unpicklable-provider")
-    started = monotonic()
+        def __repr__(self):
+            return "UnpicklableProvider(provider-secret-value)"
 
-    failed = AIWorker(
-        tasks,
-        UnpicklableProvider(),
-        worker_id="unpicklable-worker",
-        max_attempts=1,
-    ).run_once()
+    class UntouchedRepository:
+        claims = 0
 
-    assert monotonic() - started < 2
-    assert failed.status == "failed"
-    assert failed.failure == {"code": "provider_failed"}
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            self.claims += 1
+
+    repository = UntouchedRepository()
+    with pytest.raises(
+        ValueError,
+        match="^AI provider must support Windows spawn serialization$",
+    ) as raised:
+        AIWorker(
+            repository,
+            UnpicklableProvider(),
+            worker_id="unpicklable-worker",
+        )
+
+    assert repository.claims == 0
+    assert "provider-secret-value" not in str(raised.value)
 
 
 def test_provider_config_is_server_only_and_missing_token_is_unavailable(monkeypatch):
@@ -1519,6 +1759,67 @@ def test_review_is_append_only_idempotent_and_revision_checked(ai_setup):
         assert connection.scalar(text("SELECT count(*) FROM ai_task_reviews")) == 1
 
 
+@pytest.mark.parametrize(
+    ("decision", "expected_status", "expected_revision", "expected_note"),
+    (
+        (
+            "accept",
+            "accepted",
+            1,
+            "已接受 revision=1；与服务端 revision 不一致返回 409",
+        ),
+        (
+            "edit",
+            "edited",
+            2,
+            "人工编辑后对 revision=2 重新触发校验；与服务端 revision 不一致返回 409",
+        ),
+        (
+            "reject",
+            "rejected",
+            1,
+            "已拒绝 revision=1；与服务端 revision 不一致返回 409",
+        ),
+    ),
+)
+def test_review_receipt_note_matches_decision_and_replays_identically(
+    ai_setup,
+    decision,
+    expected_status,
+    expected_revision,
+    expected_note,
+):
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key=f"{decision}-note-task")
+    tasks.clock = lambda: NOW + timedelta(seconds=120)
+    draft = tasks.get(session.token, task.id).content_draft
+    values = {
+        "decision": decision,
+        "revision": draft.revision,
+        "key": f"{decision}-note",
+    }
+    if decision == "edit":
+        values["edited_content"] = {"text": "Owner edit."}
+
+    receipt = tasks.review(
+        session.token,
+        session.csrf,
+        task.id,
+        **values,
+    )
+    replay = tasks.review(
+        session.token,
+        session.csrf,
+        task.id,
+        **values,
+    )
+
+    assert receipt.human_review_status == expected_status
+    assert receipt.revision == expected_revision
+    assert receipt.note == expected_note
+    assert replay == receipt
+
+
 @pytest.mark.anyio
 async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
     from httpx import ASGITransport, AsyncClient
@@ -1635,9 +1936,19 @@ async def test_ai_task_route_returns_content_draft_payload_directly(ai_setup):
     assert fetched.status_code == 200
     draft = tasks.get(session.token, task.id).content_draft
     expected = draft.model_dump(mode="json")["content"]
-    assert fetched.json()["content_draft"] == expected
-    assert "revision" not in fetched.json()["content_draft"]
-    assert "source" not in fetched.json()["content_draft"]
+    payload = fetched.json()
+    assert payload["content_draft"] == expected
+    assert payload["revision"] == draft.revision
+    assert payload["content_draft_source"] == draft.source
+    assert (
+        payload["content_draft_created_at"]
+        == draft.model_dump(mode="json")["created_at"]
+    )
+    assert payload["ai_generated"] is draft.ai_generated
+    assert "revision" not in payload["content_draft"]
+    assert "source" not in payload["content_draft"]
+    assert "owner_id" not in payload
+    assert "input_manifest" not in payload
 
 
 @pytest.mark.anyio
@@ -1692,6 +2003,11 @@ async def test_all_ai_submission_routes_and_replays_return_pending(
 
     assert created.status_code == 200
     assert created.json()["status"] == "pending"
+    assert created.json()["content_draft"] is None
+    assert created.json()["revision"] is None
+    assert created.json()["content_draft_source"] is None
+    assert created.json()["content_draft_created_at"] is None
+    assert created.json()["ai_generated"] is None
     assert replay.status_code == 200
     assert replay.json()["task_id"] == created.json()["task_id"]
     assert replay.json()["status"] == "pending"

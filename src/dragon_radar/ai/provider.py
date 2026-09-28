@@ -22,6 +22,8 @@ class AIProviderLimits:
 
 
 class AIProvider(Protocol):
+    """Provider and captured state must be serializable by Windows spawn."""
+
     name: str
     model_version: str
     prompt_version: str

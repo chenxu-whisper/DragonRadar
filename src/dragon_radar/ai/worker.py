@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from multiprocessing.reduction import ForkingPickler
 
 from pydantic import ValidationError
 
@@ -15,7 +16,7 @@ from dragon_radar.ai.models import (
 )
 from dragon_radar.ai.provider import AIProvider, AIProviderLimits, ProviderUnavailable
 from dragon_radar.ai.repository import AITaskRepository
-from dragon_radar.storage.repository import Forbidden, NotFound
+from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
 AI_LEASE_COMPLETION_MARGIN = timedelta(seconds=1)
 DEFAULT_AI_LEASE_DURATION = timedelta(seconds=60)
@@ -115,6 +116,12 @@ class AIWorker:
             or not Decimal("0") <= max_cost <= Decimal("1000000")
         ):
             raise ValueError("Invalid AI cost limit")
+        try:
+            ForkingPickler.dumps(provider)
+        except Exception:
+            raise ValueError(
+                "AI provider must support Windows spawn serialization"
+            ) from None
         self.repository = repository
         self.provider = provider
         self.worker_id = worker_id
@@ -158,7 +165,7 @@ class AIWorker:
                 raise _ProviderCleanupError
         except (TimeoutError, _ProviderCleanupError):
             raise
-        except Exception:
+        except (EOFError, OSError):
             if not _stop_process(process):
                 raise _ProviderCleanupError from None
             raise RuntimeError("provider_failed") from None
@@ -171,6 +178,13 @@ class AIWorker:
             raise RuntimeError("provider_failed")
         return AIProviderResult.model_validate(payload), lease
 
+    @staticmethod
+    def _write(operation, *args, **kwargs) -> AITaskRecord | None:
+        try:
+            return operation(*args, **kwargs)
+        except Conflict:
+            return None
+
     def run_once(self) -> AITaskRecord | None:
         lease = self.repository.claim(
             self.worker_id,
@@ -181,21 +195,35 @@ class AIWorker:
             return None
         try:
             manifest = self.repository.load_input(lease)
+        except Conflict:
+            return None
         except Forbidden:
-            return self.repository.fail(lease, code="input_forbidden")
+            return self._write(
+                self.repository.fail,
+                lease,
+                code="input_forbidden",
+            )
         except NotFound:
-            return self.repository.fail(lease, code="input_unavailable")
+            return self._write(
+                self.repository.fail,
+                lease,
+                code="input_unavailable",
+            )
         started_ns = time.monotonic_ns()
         try:
             result, lease = self._invoke(lease, manifest)
+        except Conflict:
+            return None
         except ProviderUnavailable:
-            return self.repository.fail(
+            return self._write(
+                self.repository.fail,
                 lease,
                 code="provider_unavailable",
                 latency_ms=_elapsed_ms(started_ns),
             )
         except TimeoutError:
-            return self.repository.retry_or_fail(
+            return self._write(
+                self.repository.retry_or_fail,
                 lease,
                 code="provider_timeout",
                 max_attempts=self.max_attempts,
@@ -204,13 +232,15 @@ class AIWorker:
         except _ProviderCleanupError:
             raise
         except ValidationError:
-            return self.repository.fail(
+            return self._write(
+                self.repository.fail,
                 lease,
                 code="result_limit_exceeded",
                 latency_ms=_elapsed_ms(started_ns),
             )
-        except Exception:
-            return self.repository.retry_or_fail(
+        except RuntimeError:
+            return self._write(
+                self.repository.retry_or_fail,
                 lease,
                 code="provider_failed",
                 max_attempts=self.max_attempts,
@@ -218,7 +248,8 @@ class AIWorker:
             )
         latency_ms = _elapsed_ms(started_ns)
         try:
-            return self.repository.succeed(
+            return self._write(
+                self.repository.succeed,
                 lease,
                 result,
                 provider=self.provider.name,
@@ -229,7 +260,8 @@ class AIWorker:
                 max_cost=self.max_cost,
             )
         except ValueError:
-            return self.repository.fail(
+            return self._write(
+                self.repository.fail,
                 lease,
                 code="result_limit_exceeded",
                 latency_ms=latency_ms,

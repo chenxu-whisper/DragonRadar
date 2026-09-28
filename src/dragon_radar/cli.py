@@ -99,6 +99,8 @@ def _market_task_result(task: MarketImportTask) -> dict[str, object]:
 
 def _ai_worker_id(value: str) -> str:
     try:
+        if len(value) > 100:
+            raise ValueError
         return _identifier(value)
     except ValueError:
         raise argparse.ArgumentTypeError("invalid worker identifier") from None
