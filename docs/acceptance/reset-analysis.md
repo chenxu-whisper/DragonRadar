@@ -63,6 +63,22 @@ implementation stages.
 The accepted populated-state captures are stored under
 `web/.temp/reset-analysis/`. They are local evidence and are not committed.
 
+### Post-acceptance P1 re-audit
+
+The four frontend P1 findings were re-audited against the current contracts.
+Ranking/exclusion semantics, OHLC legality, and legacy/reset sort isolation
+remain closed. Comparison validation now also rejects a shared curve axis that
+does not begin at `adjusted_start` or end at `adjusted_end`, while preserving
+valid paired internal gaps.
+
+| Check | Result |
+|---|---|
+| Focused analysis/state/API unit tests | 93 passed |
+| Full frontend unit suite | 294 passed |
+| Full reset Playwright suite | 51 passed |
+| Frontend production build and bundle gate | passed |
+| Follow-up code review | ready; no Critical, Important, or Minor findings |
+
 ## Commits
 
 - `8aaaeda` through `d29dd37`: Decimal analysis read models, publication-bound
@@ -73,6 +89,8 @@ The accepted populated-state captures are stored under
 - `8b9c9af`: reset analysis, comparison, and stock-history UI.
 - `76d8bcd`, `7c10d38`, and `aca047d`: fail-closed frontend response and
   ordering validation.
+- `2d1a6d9` and `324117e`: reject truncated comparison axes and align the
+  valid API fixture with the complete adjusted interval.
 
 ## Remaining Risk
 
