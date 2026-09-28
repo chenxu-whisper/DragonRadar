@@ -22,8 +22,10 @@ from dragon_radar.ai.repository import (
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
 AI_LEASE_COMPLETION_MARGIN = timedelta(seconds=1)
+AI_LEASE_INVOCATION_MARGIN = timedelta(seconds=1)
 DEFAULT_AI_LEASE_DURATION = timedelta(seconds=60)
 DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS = 30.0
+PROCESS_READY_TIMEOUT_SECONDS = 30.0
 PROCESS_TERMINATE_JOIN_SECONDS = 0.25
 PROCESS_KILL_JOIN_SECONDS = 0.25
 
@@ -32,20 +34,39 @@ class _ProviderCleanupError(Exception):
     """Raised when a provider process survives bounded forced cleanup."""
 
 
-def _provider_child(send, provider, task_type, manifest, limits) -> None:
+class _ProviderIPCError(RuntimeError):
+    """Raised when the provider process handshake cannot be completed."""
+
+
+def _provider_child(connection, provider, task_type, manifest) -> None:
     try:
+        connection.send(("ready", None))
+        command, payload = connection.recv()
+        if command != "go" or not isinstance(payload, dict):
+            raise ValueError("Invalid provider process command")
+        timeout_seconds = payload["timeout_seconds"]
+        limits = AIProviderLimits(
+            deadline=datetime.now(UTC) + timedelta(seconds=timeout_seconds),
+            timeout_seconds=timeout_seconds,
+            max_tokens=payload["max_tokens"],
+            max_cost=Decimal(payload["max_cost"]),
+        )
         value = provider.generate(task_type, manifest, limits)
-        result = AIProviderResult.model_validate(value)
-        send.send(("result", result.model_dump(mode="json")))
+        try:
+            result = AIProviderResult.model_validate(value)
+        except ValidationError:
+            connection.send(("failure", "result_limit_exceeded"))
+            return
+        connection.send(("result", result.model_dump(mode="json")))
     except ProviderUnavailable:
-        send.send(("failure", "provider_unavailable"))
+        connection.send(("failure", "provider_unavailable"))
     except Exception:
         try:
-            send.send(("failure", "provider_failed"))
+            connection.send(("failure", "provider_failed"))
         except Exception:
             pass
     finally:
-        send.close()
+        connection.close()
 
 
 def _stop_process(process) -> bool:
@@ -136,48 +157,69 @@ class AIWorker:
         self.concurrency = concurrency
 
     def _invoke(self, lease, manifest) -> tuple[AIProviderResult, object]:
-        limits = AIProviderLimits(
-            deadline=datetime.now(UTC) + timedelta(seconds=self.provider_timeout),
-            timeout_seconds=self.provider_timeout,
-            max_tokens=self.max_tokens,
-            max_cost=self.max_cost,
-        )
-        lease = self.repository.renew(lease, lease_for=self.lease_for)
         context = multiprocessing.get_context("spawn")
-        receive, send = context.Pipe(duplex=False)
+        parent, child = context.Pipe(duplex=True)
         process = context.Process(
             target=_provider_child,
             args=(
-                send,
+                child,
                 self.provider,
                 lease.job.task_type,
                 dict(manifest),
-                limits,
             ),
         )
         process.daemon = True
         try:
             process.start()
-            send.close()
-            if not receive.poll(self.provider_timeout):
-                if not _stop_process(process):
-                    raise _ProviderCleanupError
-                raise TimeoutError
-            kind, payload = receive.recv()
-            if not _stop_process(process):
-                raise _ProviderCleanupError
-        except (TimeoutError, _ProviderCleanupError):
-            raise
-        except (EOFError, OSError):
+            child.close()
+            try:
+                if not parent.poll(PROCESS_READY_TIMEOUT_SECONDS):
+                    raise RuntimeError("provider_failed")
+                ready = parent.recv()
+            except (EOFError, OSError):
+                raise _ProviderIPCError from None
+            if ready != ("ready", None):
+                raise RuntimeError("provider_failed")
+            invocation_lease = max(
+                self.lease_for,
+                timedelta(seconds=self.provider_timeout)
+                + AI_LEASE_COMPLETION_MARGIN
+                + AI_LEASE_INVOCATION_MARGIN,
+            )
+            lease = self.repository.renew(lease, lease_for=invocation_lease)
+            try:
+                parent.send(
+                    (
+                        "go",
+                        {
+                            "timeout_seconds": self.provider_timeout,
+                            "max_tokens": self.max_tokens,
+                            "max_cost": str(self.max_cost),
+                        },
+                    )
+                )
+                if not parent.poll(self.provider_timeout):
+                    raise TimeoutError
+                kind, payload = parent.recv()
+            except TimeoutError:
+                raise
+            except (EOFError, OSError):
+                raise _ProviderIPCError from None
+        except Exception:
             if not _stop_process(process):
                 raise _ProviderCleanupError from None
-            raise RuntimeError("provider_failed") from None
+            raise
+        else:
+            if not _stop_process(process):
+                raise _ProviderCleanupError
         finally:
-            receive.close()
-            send.close()
+            parent.close()
+            child.close()
         if kind == "failure":
             if payload == "provider_unavailable":
                 raise ProviderUnavailable
+            if payload == "result_limit_exceeded":
+                raise AIProviderResultLimitExceeded
             raise RuntimeError("provider_failed")
         return AIProviderResult.model_validate(payload), lease
 
@@ -234,7 +276,7 @@ class AIWorker:
             )
         except _ProviderCleanupError:
             raise
-        except ValidationError:
+        except (AIProviderResultLimitExceeded, ValidationError):
             return self._write(
                 self.repository.fail,
                 lease,

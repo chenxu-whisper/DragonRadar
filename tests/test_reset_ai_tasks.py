@@ -72,6 +72,18 @@ class UnsafeProvider:
         raise RuntimeError("Bearer secret-token raw provider stack")
 
 
+class InvalidResultProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def __init__(self, result):
+        self.result = result
+
+    def generate(self, task_type, manifest, limits):
+        return self.result
+
+
 class UnavailableCallProvider:
     name = "fake"
     model_version = "fake-v1"
@@ -81,6 +93,58 @@ class UnavailableCallProvider:
         from dragon_radar.ai.provider import ProviderUnavailable
 
         raise ProviderUnavailable
+
+
+class HandshakeProcess:
+    pid = None
+
+    def __init__(self, events=None, *, start_delay=0):
+        self.events = events
+        self.start_delay = start_delay
+        self.daemon = False
+        self.alive = False
+        self.started = False
+        self.stopped = False
+        self.closed = False
+        self.join_timeouts = []
+
+    def start(self):
+        time.sleep(self.start_delay)
+        self.pid = 123
+        self.alive = True
+        self.started = True
+        if self.events is not None:
+            self.events.append("start")
+
+    def is_alive(self):
+        return self.alive
+
+    def terminate(self):
+        self.alive = False
+        self.stopped = True
+
+    def kill(self):
+        self.alive = False
+        self.stopped = True
+
+    def join(self, timeout=None):
+        self.join_timeouts.append(timeout)
+        self.alive = False
+
+    def close(self):
+        self.closed = True
+
+
+class ClosableEndpoint:
+    def close(self):
+        pass
+
+
+def _handshake_context(parent, process):
+    return SimpleNamespace(
+        Pipe=lambda duplex: (parent, ClosableEndpoint()),
+        Process=lambda **kwargs: process,
+    )
 
 
 def _session(owners):
@@ -977,6 +1041,249 @@ def test_worker_renews_lease_to_cover_provider_deadline_and_persistence():
     )
 
 
+def test_provider_child_waits_for_go_before_starting_limits_and_provider():
+    from datetime import UTC, datetime
+
+    from dragon_radar.ai.worker import _provider_child
+
+    class CapturingProvider:
+        calls = 0
+        invoked_at = None
+        limits = None
+
+        def generate(self, task_type, manifest, limits):
+            self.calls += 1
+            self.invoked_at = datetime.now(UTC)
+            self.limits = limits
+            return {"content": {"text": "draft"}, "token_usage": 1, "cost": "0"}
+
+    class ChildConnection:
+        def __init__(self, provider):
+            self.provider = provider
+            self.sent = []
+            self.closed = False
+
+        def send(self, message):
+            self.sent.append(message)
+
+        def recv(self):
+            assert self.sent == [("ready", None)]
+            assert self.provider.calls == 0
+            time.sleep(0.05)
+            return (
+                "go",
+                {
+                    "timeout_seconds": 0.2,
+                    "max_tokens": 123,
+                    "max_cost": "4.50",
+                },
+            )
+
+        def close(self):
+            self.closed = True
+
+    provider = CapturingProvider()
+    connection = ChildConnection(provider)
+
+    _provider_child(connection, provider, "daily_review", {"input": {}})
+
+    assert provider.calls == 1
+    assert provider.limits.deadline >= provider.invoked_at + timedelta(seconds=0.19)
+    assert provider.limits.timeout_seconds == 0.2
+    assert provider.limits.max_tokens == 123
+    assert provider.limits.max_cost == Decimal("4.50")
+    assert connection.sent[-1][0] == "result"
+    assert connection.closed is True
+
+
+def test_worker_waits_for_delayed_ready_before_renewing_and_starting_timeout(
+    monkeypatch,
+):
+    from dragon_radar.ai.worker import (
+        PROCESS_READY_TIMEOUT_SECONDS,
+        AIWorker,
+    )
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+    events = []
+
+    class LeaseRepository:
+        renewed = None
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            return lease
+
+        def load_input(self, claimed):
+            return {"input": {}}
+
+        def renew(self, claimed, *, lease_for):
+            events.append("renew")
+            self.renewed = SimpleNamespace(job=claimed.job)
+            return self.renewed
+
+        def succeed(self, claimed, result, **metadata):
+            assert claimed is self.renewed
+            return SimpleNamespace(status="succeeded")
+
+    class ParentConnection:
+        def __init__(self):
+            self.poll_timeouts = []
+            self.receive_count = 0
+            self.go_messages = []
+
+        def poll(self, timeout):
+            self.poll_timeouts.append(timeout)
+            if len(self.poll_timeouts) == 1:
+                time.sleep(0.15)
+            return True
+
+        def recv(self):
+            self.receive_count += 1
+            if self.receive_count == 1:
+                events.append("ready")
+                return ("ready", None)
+            return (
+                "result",
+                {"content": {"text": "draft"}, "token_usage": 1, "cost": "0"},
+            )
+
+        def send(self, message):
+            events.append("go")
+            self.go_messages.append(message)
+
+        def close(self):
+            pass
+
+    parent = ParentConnection()
+    process = HandshakeProcess(events, start_delay=0.15)
+    context = _handshake_context(parent, process)
+    monkeypatch.setattr(
+        "dragon_radar.ai.worker.multiprocessing.get_context",
+        lambda method: context,
+    )
+
+    completed = AIWorker(
+        LeaseRepository(),
+        LimitsEchoProvider(),
+        worker_id="delayed-ready-worker",
+        lease_for=timedelta(seconds=2),
+        provider_timeout=0.1,
+    ).run_once()
+
+    assert completed.status == "succeeded"
+    assert events == ["start", "ready", "renew", "go"]
+    assert parent.poll_timeouts == [PROCESS_READY_TIMEOUT_SECONDS, 0.1]
+    assert parent.go_messages == [
+        (
+            "go",
+            {
+                "timeout_seconds": 0.1,
+                "max_tokens": 4096,
+                "max_cost": "10",
+            },
+        )
+    ]
+    assert process.closed is True
+
+
+def test_worker_stops_child_when_readiness_times_out(monkeypatch):
+    from dragon_radar.ai.worker import AIWorker
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        renewals = 0
+
+        def renew(self, claimed, *, lease_for):
+            self.renewals += 1
+            return claimed
+
+    class ParentConnection:
+        sends = 0
+
+        def poll(self, timeout):
+            return False
+
+        def send(self, message):
+            self.sends += 1
+
+        def close(self):
+            pass
+
+    repository = LeaseRepository()
+    parent = ParentConnection()
+    process = HandshakeProcess()
+    context = _handshake_context(parent, process)
+    monkeypatch.setattr(
+        "dragon_radar.ai.worker.multiprocessing.get_context",
+        lambda method: context,
+    )
+    worker = AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id="readiness-timeout-worker",
+        lease_for=timedelta(seconds=2),
+        provider_timeout=0.1,
+    )
+
+    with pytest.raises(RuntimeError, match="provider_failed"):
+        worker._invoke(lease, {"input": {}})
+
+    assert repository.renewals == 0
+    assert parent.sends == 0
+    assert process.stopped is True
+    assert process.join_timeouts == [0.25]
+    assert process.closed is True
+
+
+def test_worker_stops_child_without_go_when_lease_is_lost_after_ready(monkeypatch):
+    from dragon_radar.ai.worker import AIWorker
+    from dragon_radar.storage.repository import Conflict
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        def renew(self, claimed, *, lease_for):
+            assert process.started is True
+            raise Conflict("lease lost")
+
+    class ParentConnection:
+        sends = 0
+
+        def poll(self, timeout):
+            return True
+
+        def recv(self):
+            return ("ready", None)
+
+        def send(self, message):
+            self.sends += 1
+
+        def close(self):
+            pass
+
+    parent = ParentConnection()
+    process = HandshakeProcess()
+    context = _handshake_context(parent, process)
+    monkeypatch.setattr(
+        "dragon_radar.ai.worker.multiprocessing.get_context",
+        lambda method: context,
+    )
+    worker = AIWorker(
+        LeaseRepository(),
+        LimitsEchoProvider(),
+        worker_id="lease-lost-before-go-worker",
+    )
+
+    with pytest.raises(Conflict, match="lease lost"):
+        worker._invoke(lease, {"input": {}})
+
+    assert parent.sends == 0
+    assert process.stopped is True
+    assert process.join_timeouts == [0.25]
+    assert process.closed is True
+
+
 @pytest.mark.parametrize("conflict_at", ("load", "renew"))
 def test_worker_returns_none_when_lease_is_lost_before_provider_call(conflict_at):
     from dragon_radar.ai.worker import AIWorker
@@ -1279,7 +1586,7 @@ def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup
 
     assert worker.run_once().status == "pending"
     assert worker.run_once().status == "failed"
-    assert monotonic() - started < 2
+    assert monotonic() - started < 4
     failed = tasks.get(session.token, task.id)
     assert failed.attempt_count == 2
     assert failed.failure == {"code": "provider_timeout"}
@@ -1475,6 +1782,33 @@ def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
     assert "secret-token" not in serialized
     assert "RuntimeError" not in serialized
     assert failed.failure == {"code": "provider_failed"}
+
+
+@pytest.mark.parametrize(
+    "result",
+    (
+        {"content": {"text": "x" * 32769}, "token_usage": 1, "cost": "0"},
+        {"content": {"text": "missing usage and cost"}},
+    ),
+)
+def test_worker_does_not_retry_invalid_provider_result(ai_setup, result):
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="invalid-provider-result")
+
+    failed = AIWorker(
+        tasks,
+        InvalidResultProvider(result),
+        worker_id="invalid-result-worker",
+        max_attempts=3,
+    ).run_once()
+
+    assert failed.id == task.id
+    assert failed.status == "failed"
+    assert failed.attempt_count == 1
+    assert failed.failure == {"code": "result_limit_exceeded"}
+    assert tasks.claim("retry-worker") is None
 
 
 def test_worker_rejects_unpicklable_provider_before_claim_with_sanitized_error():
