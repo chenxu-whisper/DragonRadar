@@ -14,7 +14,8 @@ import pytest
 from factories import NOW, batch, grant
 from news_factories import ARTICLE_A, article_revision, event_evidence
 from pydantic import ValidationError
-from sqlalchemy import insert, inspect, select, text
+from sqlalchemy import insert, inspect, select, text, update
+from sqlalchemy.exc import IntegrityError
 
 
 def _session(owners):
@@ -142,9 +143,9 @@ def test_0010_migration_creates_ai_schema_and_updates_readiness(database):
         "ai_task_cancellations",
         "ai_task_reviews",
     } <= tables
-    columns = {
-        column["name"] for column in inspect(database.engine).get_columns("ai_tasks")
-    }
+    inspector = inspect(database.engine)
+    reflected_columns = inspector.get_columns("ai_tasks")
+    columns = {column["name"] for column in reflected_columns}
     assert {
         "owner_id",
         "input_manifest",
@@ -160,6 +161,33 @@ def test_0010_migration_creates_ai_schema_and_updates_readiness(database):
         "lease_token",
         "lease_expires_at",
     } <= columns
+    status_column = next(
+        column for column in reflected_columns if column["name"] == "status"
+    )
+    assert "pending" in str(status_column["default"])
+    claim_index = next(
+        index
+        for index in inspector.get_indexes("ai_tasks")
+        if index["name"] == "ai_tasks_claim"
+    )
+    assert "pending" in str(claim_index["dialect_options"]["postgresql_where"])
+    assert "queued" not in str(claim_index["dialect_options"]["postgresql_where"])
+
+
+def test_0010_ai_task_status_check_accepts_pending_and_rejects_queued(ai_setup):
+    from dragon_radar.ai.tables import ai_tasks
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="status-check")
+
+    assert task.status == "pending"
+    with pytest.raises(IntegrityError):
+        with tasks.database.engine.begin() as connection:
+            connection.execute(
+                update(ai_tasks).where(ai_tasks.c.id == task.id).values(status="queued")
+            )
+
+    assert tasks.get(session.token, task.id).status == "pending"
 
 
 def test_ai_models_are_strict_bounded_and_json_finite():
@@ -199,6 +227,8 @@ def test_submit_replays_same_payload_and_conflicts_on_key_reuse(ai_setup):
     replay = _submit(service, session, publication)
 
     assert replay == first
+    assert first.status == "pending"
+    assert replay.status == "pending"
     with pytest.raises(Conflict):
         _submit(
             service,
@@ -312,7 +342,7 @@ def test_ai_permission_is_required_at_submit_and_worker_read(ai_setup, repositor
     from dragon_radar.storage.repository import Forbidden
 
     tasks, service, _owners, session, publication = ai_setup
-    queued = _submit(service, session, publication, key="before-ai-revocation")
+    pending = _submit(service, session, publication, key="before-ai-revocation")
     lease = tasks.claim("permission-worker")
 
     repository.register_source(grant(ai=False))
@@ -322,7 +352,7 @@ def test_ai_permission_is_required_at_submit_and_worker_read(ai_setup, repositor
         _submit(service, session, publication, key="after-ai-revocation")
     with pytest.raises(Forbidden):
         tasks.load_input(lease)
-    assert tasks.get(session.token, queued.id).status == "running"
+    assert tasks.get(session.token, pending.id).status == "running"
 
 
 @pytest.mark.parametrize(
@@ -356,7 +386,7 @@ def test_four_task_types_are_accepted(ai_setup, task_type, task_input):
     )
 
     assert task.task_type == task_type
-    assert task.status == "queued"
+    assert task.status == "pending"
     assert task.verification_status == "pending"
     assert task.human_review_status == "unreviewed"
 
@@ -682,7 +712,7 @@ def test_worker_slow_call_does_not_overlap_retry_or_persist_late_result(ai_setup
         max_cost=Decimal("1"),
     )
 
-    assert worker.run_once().status == "queued"
+    assert worker.run_once().status == "pending"
     assert worker.run_once().status == "failed"
     assert monotonic() - started >= 0.25
     assert provider.max_active == 1
@@ -774,7 +804,7 @@ def test_get_adds_processing_signal_and_deterministic_template(ai_setup):
 
     tasks.clock = lambda: NOW + timedelta(seconds=120)
     templated = tasks.get(session.token, task.id)
-    assert templated.status == "queued"
+    assert templated.status == "pending"
     assert templated.content_draft.source == "deterministic_template"
     assert templated.content_draft.ai_generated is False
     assert "AI generated" not in templated.content_draft.model_dump_json()
@@ -986,7 +1016,65 @@ async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
     assert "owner_id" not in fetched.text
     assert bad.status_code == 400
     assert "secret-marker" not in bad.text
-    assert tasks.get(session.token, created.json()["task_id"]).status == "queued"
+    assert created.json()["status"] == "pending"
+    assert tasks.get(session.token, created.json()["task_id"]).status == "pending"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("path", "task_input"),
+    (
+        ("/api/ai/summarize", {"article_id": str(ARTICLE_A)}),
+        ("/api/ai/topic-suggest", {"date": NOW.date().isoformat()}),
+        (
+            "/api/ai/explain-stock",
+            {"security_id": "A", "date": NOW.date().isoformat()},
+        ),
+        (
+            "/api/ai/daily-review",
+            {"date": NOW.date().isoformat(), "notes_context": "notes"},
+        ),
+    ),
+)
+async def test_all_ai_submission_routes_and_replays_return_pending(
+    ai_setup, path, task_input
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+
+    _tasks, service, owners, session, publication = ai_setup
+    owner = create_owner_app(
+        repository=service.publications.market,
+        owner_repository=owners,
+        publication_repository=service.publications,
+        ai_service=service,
+    )
+    if "date" in task_input:
+        task_input = {
+            **task_input,
+            "date": publication.trade_date.isoformat(),
+        }
+    body = {
+        **task_input,
+        "snapshot_id": str(publication.id),
+        "as_of": publication.published_at.isoformat(),
+        "version": f"v{publication.version}",
+        "idempotency_key": f"http-{path.rsplit('/', 1)[-1]}",
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=owner),
+        base_url="https://localhost:8030",
+    ) as client:
+        created = await client.post(path, json=body, headers=_headers(session))
+        replay = await client.post(path, json=body, headers=_headers(session))
+
+    assert created.status_code == 200
+    assert created.json()["status"] == "pending"
+    assert replay.status_code == 200
+    assert replay.json()["task_id"] == created.json()["task_id"]
+    assert replay.json()["status"] == "pending"
 
 
 def test_ai_worker_cli_is_bounded_and_compose_is_internal():

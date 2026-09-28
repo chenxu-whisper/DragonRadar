@@ -20,7 +20,7 @@ from dragon_radar.domain.models import FrozenModel, UTCDateTime
 from dragon_radar.topics.models import ImmutableJsonObject
 
 TaskType = Literal["summarize", "topic_suggest", "explain_stock", "daily_review"]
-TaskStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
+TaskStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
 VerificationStatus = Literal["pending", "passed", "failed", "needs_human"]
 HumanReviewStatus = Literal["unreviewed", "accepted", "edited", "rejected"]
 DraftSource = Literal["deterministic_template", "provider", "human_edit"]

@@ -221,7 +221,7 @@ class AITaskRepository:
             attempt_count=row["attempt_count"],
             content_draft=self._draft(connection, row),
             processing_overdue=(
-                row["status"] in {"queued", "running"}
+                row["status"] in {"pending", "running"}
                 and now - row["created_at"] >= timedelta(seconds=60)
             ),
             model_version=row["model_version"],
@@ -271,7 +271,7 @@ class AITaskRepository:
                     as_of=submission.as_of,
                     version=submission.version,
                     input_manifest=stored_manifest,
-                    status="queued",
+                    status="pending",
                     verification_status="pending",
                     human_review_status="unreviewed",
                     attempt_count=0,
@@ -384,7 +384,7 @@ class AITaskRepository:
                 owner_id=owner.owner_id,
                 lock=True,
             )
-            if row["status"] not in {"queued", "running", "cancelled"}:
+            if row["status"] not in {"pending", "running", "cancelled"}:
                 raise Conflict("AI task can no longer be cancelled")
             now = self._now()
             connection.execute(
@@ -554,7 +554,7 @@ class AITaskRepository:
                         .where(
                             ai_tasks.c.available_at <= now,
                             or_(
-                                ai_tasks.c.status == "queued",
+                                ai_tasks.c.status == "pending",
                                 and_(
                                     ai_tasks.c.status == "running",
                                     ai_tasks.c.lease_expires_at <= now,
@@ -792,7 +792,7 @@ class AITaskRepository:
             row = self._active_lease(connection, lease)
             terminal = row["attempt_count"] >= max_attempts
             values = {
-                "status": "failed" if terminal else "queued",
+                "status": "failed" if terminal else "pending",
                 "verification_status": "failed" if terminal else "pending",
                 "lease_token": None,
                 "lease_owner": None,

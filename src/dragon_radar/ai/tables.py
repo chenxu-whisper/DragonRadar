@@ -42,7 +42,7 @@ ai_tasks = Table(
     Column("as_of", DateTime(timezone=True), nullable=False),
     Column("version", String(100), nullable=False),
     Column("input_manifest", JSONB, nullable=False),
-    Column("status", String(20), nullable=False),
+    Column("status", String(20), nullable=False, server_default="pending"),
     Column("verification_status", String(20), nullable=False),
     Column("human_review_status", String(20), nullable=False),
     Column("attempt_count", Integer, nullable=False),
@@ -65,7 +65,7 @@ ai_tasks = Table(
         "task_type IN ('summarize', 'topic_suggest', 'explain_stock', 'daily_review')"
     ),
     CheckConstraint(
-        "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')"
+        "status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')"
     ),
     CheckConstraint(
         "verification_status IN ('pending', 'passed', 'failed', 'needs_human')"
@@ -80,7 +80,7 @@ ai_tasks = Table(
     ),
     CheckConstraint("cost IS NULL OR (cost >= 0 AND cost <= 1000000)"),
     CheckConstraint(
-        "(status = 'queued' AND lease_token IS NULL AND lease_owner IS NULL "
+        "(status = 'pending' AND lease_token IS NULL AND lease_owner IS NULL "
         "AND lease_expires_at IS NULL AND completed_at IS NULL) OR "
         "(status = 'running' AND lease_token IS NOT NULL AND lease_owner IS NOT NULL "
         "AND lease_expires_at IS NOT NULL AND completed_at IS NULL) OR "
@@ -95,7 +95,7 @@ Index(
     "ai_tasks_claim",
     ai_tasks.c.available_at,
     ai_tasks.c.created_at,
-    postgresql_where=ai_tasks.c.status.in_(("queued", "running")),
+    postgresql_where=ai_tasks.c.status.in_(("pending", "running")),
 )
 
 ai_task_drafts = Table(
