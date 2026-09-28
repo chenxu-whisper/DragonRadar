@@ -52,6 +52,24 @@ Recorded: 2026-09-24
 The PostgreSQL suite ran against a fresh PostgreSQL 17 container and dedicated
 `dragon_test` database. Tests use synthetic rules and observations only.
 
+### Task 16 publication-read verification
+
+| Check | Result |
+|---|---|
+| Regulation/publication PostgreSQL suites | 235 passed |
+| Frontend unit suite | 291 passed |
+| Reset Playwright suite | 51 passed |
+| Production build | passed |
+| Default entry bundle | 314,955 / 315,000 bytes |
+| Targeted Ruff, compileall, and committed diff check | passed |
+| Specification review | approved |
+| Release code-quality review | ready; no Critical, Important, or Minor findings |
+
+The Task 16 API and UI read only the selected publication's frozen regulation
+result. Event-source completeness and event provenance are persisted and
+publication-sealed; calculation state cannot create a formal event. All UI
+examples remain synthetic and do not enable an official production rule.
+
 ## Production Enablement
 
 No formal regulation threshold is production-enabled by this task. Production
@@ -73,12 +91,15 @@ calculation state never creates a formal event.
 - `5153ad3`: sealed snapshot integrity and finite numeric contracts.
 - `4a8d083`: serialized publication sealing and indexed regulation bindings.
 - `99e09be`: preserved the frozen `0009_regulation` migration head.
+- `507e9d0`: scoped migration trigger checks to isolated schemas.
+- `d12a555..f647824`: delivered and hardened the Task 16 snapshot APIs,
+  three-region UI, event-source evidence, provenance sealing, legacy
+  compatibility, and complete reset E2E acceptance.
 
 Future AI migration `0010_ai_tasks` remains reserved and must use
 `0009d_reg_event_complete_set` as its `down_revision`.
-- `507e9d0`: scoped migration trigger checks to isolated schemas.
 
 ## Workspace Note
 
-The shared worktree retains unrelated unstaged changes that predate Task15.
-They were not reverted or included in Task15 commits.
+The shared worktree retains unrelated unstaged changes that predate Task15 and
+Task16. They were not reverted or included in the task commits.

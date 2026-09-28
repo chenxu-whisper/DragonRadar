@@ -478,12 +478,12 @@ ROLE_NAMES = {
 
 **文件：** 新建 `http/routes/regulation.py`、`tests/test_reset_regulation_api.py`、`web/tests/e2e/reset-regulation.spec.ts`；修改 `pages/Regulation.tsx`、`pages/SecurityDetail.tsx`、`http/app.py`。
 
-- [ ] 写失败用例：complete数据＋pending规则不得显示安全；无事件且来源完整显示空数组；来源缺失显示未知；计算triggered不转成正式restricted。
-- [ ] 运行对应pytest/E2E确认失败。
-- [ ] 注册接口15～16并渲染三个独立区域：数据完整性、数值计算状态、正式事件/限制；预警阈值与法定阈值分列，附原文/版本/有效期。
-- [ ] 证券抽屉显示正式事件数和来源完整性；不显示“安全再涨几板”或无风险表述。
-- [ ] 正式事件来源完整性持久化在监管快照；`unknown` 仍展示已列事件及已列数量，但总量保持未知；仅显式 `complete` 可声明零事件和完整总数。
-- [ ] 跑接口/E2E/构建并演示pending、approaching、triggered与正式event分离；提交 `feat: deliver regulation evidence views`。
+- [x] 写失败用例：complete数据＋pending规则不得显示安全；无事件且来源完整显示空数组；来源缺失显示未知；计算triggered不转成正式restricted。
+- [x] 运行对应pytest/E2E确认失败。
+- [x] 注册接口15～16并渲染三个独立区域：数据完整性、数值计算状态、正式事件/限制；预警阈值与法定阈值分列，附原文/版本/有效期。
+- [x] 证券抽屉显示正式事件数和来源完整性；不显示“安全再涨几板”或无风险表述。
+- [x] 正式事件来源完整性持久化在监管快照；`unknown` 仍展示已列事件及已列数量，但总量保持未知；仅显式 `complete` 可声明零事件和完整总数。
+- [x] 跑接口/E2E/构建并演示pending、approaching、triggered与正式event分离；提交 `feat: deliver regulation evidence views`。
 
 **完成条件：** 用户能辨认“数据不足”“计算接近提醒”和“已披露限制”的区别。
 
