@@ -185,10 +185,10 @@ def _submit(service, session, publication, **changes):
     return service.submit(session.token, session.csrf, **values)
 
 
-def test_ai_gap_migration_creates_schema_and_updates_readiness(database):
+def test_0010_migration_creates_ai_schema_and_updates_readiness(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0011_ai_task_gap_fixes"
+    assert SCHEMA_REVISION == "0010_ai_tasks"
     assert database.ready()
     tables = set(inspect(database.engine).get_table_names())
     assert {

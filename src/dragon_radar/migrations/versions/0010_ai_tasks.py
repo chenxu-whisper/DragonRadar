@@ -32,6 +32,7 @@ def upgrade():
                OR NEW.as_of IS DISTINCT FROM OLD.as_of
                OR NEW.version IS DISTINCT FROM OLD.version
                OR NEW.input_manifest IS DISTINCT FROM OLD.input_manifest
+               OR NEW.retrieval_version IS DISTINCT FROM OLD.retrieval_version
                OR NEW.created_at IS DISTINCT FROM OLD.created_at
             THEN
                 RAISE EXCEPTION 'AI task inputs are immutable';
