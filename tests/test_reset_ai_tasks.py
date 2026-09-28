@@ -1425,6 +1425,52 @@ def test_late_provider_completion_selects_template_without_prior_poll(ai_setup):
     assert drafts[1]["content"] == {"text": "Late provider draft."}
 
 
+def test_on_time_provider_completion_survives_poll_after_template_deadline(ai_setup):
+    from dragon_radar.ai.models import AIProviderResult
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="on-time-before-late-poll")
+    lease = tasks.claim(
+        "on-time-before-late-poll-worker",
+        lease_for=timedelta(seconds=300),
+    )
+    tasks.clock = lambda: NOW + timedelta(seconds=119)
+
+    completed = tasks.succeed(
+        lease,
+        AIProviderResult(
+            content={"text": "On-time provider draft."},
+            token_usage=4,
+            cost="0.25",
+        ),
+        provider="fake",
+        model_version="fake-v1",
+        prompt_version="prompt-v1",
+        latency_ms=119_000,
+        max_tokens=10,
+        max_cost=Decimal("1"),
+    )
+    assert completed.content_draft.source == "provider"
+
+    tasks.clock = lambda: NOW + timedelta(seconds=180)
+    fetched = tasks.get(session.token, task.id)
+
+    assert fetched.content_draft == completed.content_draft
+    with tasks.database.engine.connect() as connection:
+        drafts = (
+            connection.execute(
+                text(
+                    "SELECT revision, source, content FROM ai_task_drafts "
+                    "WHERE task_id = :task_id ORDER BY revision"
+                ),
+                {"task_id": task.id},
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["source"] for row in drafts] == ["provider"]
+
+
 def test_review_is_append_only_idempotent_and_revision_checked(ai_setup):
     from dragon_radar.storage.repository import Conflict
 
@@ -1732,6 +1778,7 @@ async def test_cancel_and_review_routes_return_original_command_receipts(ai_setu
         "revision",
         "idempotency_key",
         "verification_status",
+        "note",
     }
     assert edited.json() == {
         "task_id": str(reviewed_task.id),
@@ -1739,6 +1786,9 @@ async def test_cancel_and_review_routes_return_original_command_receipts(ai_setu
         "revision": 2,
         "idempotency_key": "edit-receipt",
         "verification_status": "needs_human",
+        "note": (
+            "人工编辑后对 revision=2 重新触发校验；与服务端 revision 不一致返回 409"
+        ),
     }
     assert edit_replay.json() == edited.json()
 

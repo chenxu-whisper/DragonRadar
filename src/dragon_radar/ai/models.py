@@ -199,6 +199,7 @@ class AIReviewReceipt(_StrictFrozenModel):
     revision: Annotated[int, Field(ge=1)]
     idempotency_key: SafeVersion
     verification_status: VerificationStatus
+    note: StrictStr
 
 
 __all__ = [

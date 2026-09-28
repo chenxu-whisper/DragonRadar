@@ -46,6 +46,13 @@ def _digest(value: Mapping) -> str:
     return hashlib.sha256(canonical_object(dict(value)).encode("ascii")).hexdigest()
 
 
+def _review_note(revision: int) -> str:
+    return (
+        f"人工编辑后对 revision={revision} 重新触发校验；"
+        "与服务端 revision 不一致返回 409"
+    )
+
+
 def _validate_latency(latency_ms: int | None, *, required: bool = False) -> None:
     if latency_ms is None:
         if required:
@@ -140,8 +147,15 @@ class AITaskRepository:
         }
 
     def _ensure_template(self, connection: Connection, row, now: datetime):
-        if row["status"] == "cancelled" or now - row["created_at"] < timedelta(
-            seconds=120
+        deadline = row["created_at"] + timedelta(seconds=120)
+        if (
+            row["status"] == "cancelled"
+            or now < deadline
+            or (
+                row["status"] == "succeeded"
+                and row["completed_at"] is not None
+                and row["completed_at"] < deadline
+            )
         ):
             return row
         template_revision = connection.scalar(
@@ -506,6 +520,7 @@ class AITaskRepository:
                     revision=command["resulting_revision"],
                     idempotency_key=command["idempotency_key"],
                     verification_status=command["verification_status"],
+                    note=_review_note(command["resulting_revision"]),
                 )
             row = self._task_row(
                 connection,
@@ -581,6 +596,7 @@ class AITaskRepository:
                 revision=resulting_revision,
                 idempotency_key=key,
                 verification_status=verification_status,
+                note=_review_note(resulting_revision),
             )
 
     def claim(
@@ -745,9 +761,9 @@ class AITaskRepository:
             raise ValueError("AI provider result exceeds configured limits")
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
-            row = self._ensure_template(connection, row, self._now())
-            revision = self._next_revision(connection, row["id"])
             now = self._now()
+            row = self._ensure_template(connection, row, now)
+            revision = self._next_revision(connection, row["id"])
             connection.execute(
                 insert(ai_task_drafts).values(
                     id=uuid4(),
