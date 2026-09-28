@@ -37,6 +37,19 @@ class AIProvider(Protocol):
         """Generate within the supplied wall-clock deadline and budget limits."""
 
 
+def validate_provider_metadata(
+    value: object, *, error: str = "Invalid AI provider metadata"
+) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 100
+        or value != value.strip()
+        or any(not 0x20 <= ord(character) <= 0x7E for character in value)
+    ):
+        raise ValueError(error)
+    return value
+
+
 def _integer(name: str, default: int, minimum: int, maximum: int) -> int:
     raw = os.getenv(name, str(default))
     try:
@@ -91,8 +104,7 @@ def load_provider_config() -> AIProviderConfig:
         ("DRAGON_AI_MODEL_VERSION", model or "unavailable"),
         ("DRAGON_AI_PROMPT_VERSION", prompt),
     ):
-        if not 1 <= len(value) <= 100:
-            raise ValueError(f"Invalid {name}")
+        validate_provider_metadata(value, error=f"Invalid {name}")
     return AIProviderConfig(
         provider=provider or "unavailable",
         model_version=model or "unavailable",
@@ -135,4 +147,5 @@ __all__ = [
     "UnavailableProvider",
     "load_provider_config",
     "provider_from_environment",
+    "validate_provider_metadata",
 ]

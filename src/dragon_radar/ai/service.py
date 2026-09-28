@@ -10,7 +10,11 @@ from dragon_radar.ai.models import (
     canonical_object,
 )
 from dragon_radar.ai.repository import AITaskRepository
-from dragon_radar.publication.models import PublishedSnapshot
+from dragon_radar.publication.models import (
+    DomainName,
+    PublicationResult,
+    PublishedSnapshot,
+)
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.storage.repository import Conflict, NotFound
 
@@ -51,16 +55,26 @@ class AIService:
         }
 
     @staticmethod
-    def _news(snapshot: PublishedSnapshot) -> dict:
-        result = snapshot.result("news")
+    def _domain_result(
+        snapshot: PublishedSnapshot,
+        domain: DomainName,
+    ) -> PublicationResult:
+        for result in snapshot.results:
+            if result.domain == domain:
+                return result
+        raise NotFound(f"Published {domain} input is unavailable")
+
+    @classmethod
+    def _news(cls, snapshot: PublishedSnapshot) -> dict:
+        result = cls._domain_result(snapshot, "news")
         payload = result.model_dump(mode="json")["payload"]
         if result.status != "ready" or not isinstance(payload.get("articles"), list):
             raise NotFound("Published news input is unavailable")
         return payload
 
-    @staticmethod
-    def _market(snapshot: PublishedSnapshot) -> dict:
-        result = snapshot.result("market")
+    @classmethod
+    def _market(cls, snapshot: PublishedSnapshot) -> dict:
+        result = cls._domain_result(snapshot, "market")
         payload = result.model_dump(mode="json")["payload"]
         if result.status != "ready":
             raise NotFound("Published market input is unavailable")

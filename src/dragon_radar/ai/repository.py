@@ -22,6 +22,7 @@ from dragon_radar.ai.models import (
     AITaskRecord,
     canonical_object,
 )
+from dragon_radar.ai.provider import validate_provider_metadata
 from dragon_radar.ai.tables import (
     ai_task_cancellations,
     ai_task_drafts,
@@ -769,7 +770,7 @@ class AITaskRepository:
     ) -> AITaskRecord:
         result = AIProviderResult.model_validate(result.model_dump())
         for value in (provider, model_version, prompt_version):
-            _identifier(value)
+            validate_provider_metadata(value)
         _validate_latency(latency_ms, required=True, result_limit=True)
         if type(max_tokens) is not int or max_tokens < 0:
             raise ValueError("Invalid AI token limit")

@@ -84,6 +84,45 @@ class InvalidResultProvider:
         return self.result
 
 
+class InvalidCostProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def __init__(self, cost):
+        self.cost = cost
+
+    def generate(self, task_type, manifest, limits):
+        return {"content": {"text": "draft"}, "token_usage": 1, "cost": self.cost}
+
+
+class ValidationExceptionProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def generate(self, task_type, manifest, limits):
+        from dragon_radar.ai.models import AIProviderResult
+
+        AIProviderResult.model_validate({})
+
+
+class MetadataProvider:
+    def __init__(
+        self,
+        *,
+        name="Azure OpenAI",
+        model_version="openai/gpt 4.1",
+        prompt_version="daily review/v2",
+    ):
+        self.name = name
+        self.model_version = model_version
+        self.prompt_version = prompt_version
+
+    def generate(self, task_type, manifest, limits):
+        return {"content": {"text": "draft"}, "token_usage": 1, "cost": "0"}
+
+
 class UnavailableCallProvider:
     name = "fake"
     model_version = "fake-v1"
@@ -648,6 +687,129 @@ def test_four_task_types_are_accepted(ai_setup, task_type, task_input):
     assert task.status == "pending"
     assert task.verification_status == "pending"
     assert task.human_review_status == "unreviewed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("path", "task_input", "missing_domain"),
+    (
+        ("/api/ai/summarize", {"article_id": str(ARTICLE_A)}, "news"),
+        ("/api/ai/topic-suggest", {"date": NOW.date().isoformat()}, "news"),
+        (
+            "/api/ai/explain-stock",
+            {"security_id": "A", "date": NOW.date().isoformat()},
+            "market",
+        ),
+        (
+            "/api/ai/daily-review",
+            {"date": NOW.date().isoformat(), "notes_context": "notes"},
+            "market",
+        ),
+    ),
+)
+async def test_ai_submission_route_returns_404_when_required_domain_is_absent(
+    ai_setup,
+    monkeypatch,
+    path,
+    task_input,
+    missing_domain,
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+    from dragon_radar.publication.models import PublishedSnapshot
+
+    _tasks, service, owners, session, publication = ai_setup
+    original_get = service.publications.get_ai_snapshot
+
+    def without_required_domain(connection, snapshot_id, *, ai_domains):
+        snapshot = original_get(connection, snapshot_id, ai_domains=ai_domains)
+        return PublishedSnapshot(
+            snapshot.publication,
+            snapshot.market_snapshot,
+            tuple(
+                result for result in snapshot.results if result.domain != missing_domain
+            ),
+        )
+
+    monkeypatch.setattr(
+        service.publications,
+        "get_ai_snapshot",
+        without_required_domain,
+    )
+    owner = create_owner_app(
+        repository=service.publications.market,
+        owner_repository=owners,
+        publication_repository=service.publications,
+        ai_service=service,
+    )
+    body = {
+        **task_input,
+        **(
+            {"date": publication.trade_date.isoformat()} if "date" in task_input else {}
+        ),
+        "snapshot_id": str(publication.id),
+        "as_of": publication.published_at.isoformat(),
+        "version": f"v{publication.version}",
+        "idempotency_key": f"missing-{missing_domain}-{path.rsplit('/', 1)[-1]}",
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=owner),
+        base_url="https://localhost:8030",
+    ) as client:
+        response = await client.post(path, json=body, headers=_headers(session))
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "Resource not found"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("path", "task_input"),
+    (
+        ("/api/ai/summarize", {"article_id": str(uuid4())}),
+        (
+            "/api/ai/explain-stock",
+            {"security_id": "MISSING", "date": NOW.date().isoformat()},
+        ),
+    ),
+)
+async def test_ai_submission_route_returns_404_when_requested_entry_is_absent(
+    ai_setup,
+    path,
+    task_input,
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+
+    _tasks, service, owners, session, publication = ai_setup
+    owner = create_owner_app(
+        repository=service.publications.market,
+        owner_repository=owners,
+        publication_repository=service.publications,
+        ai_service=service,
+    )
+    body = {
+        **task_input,
+        **(
+            {"date": publication.trade_date.isoformat()} if "date" in task_input else {}
+        ),
+        "snapshot_id": str(publication.id),
+        "as_of": publication.published_at.isoformat(),
+        "version": f"v{publication.version}",
+        "idempotency_key": f"missing-entry-{path.rsplit('/', 1)[-1]}",
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=owner),
+        base_url="https://localhost:8030",
+    ) as client:
+        response = await client.post(path, json=body, headers=_headers(session))
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "Resource not found"}
 
 
 def test_submission_rejects_mismatched_publication_coordinates(ai_setup):
@@ -1811,6 +1973,51 @@ def test_worker_does_not_retry_invalid_provider_result(ai_setup, result):
     assert tasks.claim("retry-worker") is None
 
 
+@pytest.mark.parametrize("cost", (None, {}, object()))
+def test_worker_does_not_retry_non_coercible_provider_cost(ai_setup, cost):
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(
+        service,
+        session,
+        publication,
+        key=f"invalid-provider-cost-{type(cost).__name__}",
+    )
+
+    failed = AIWorker(
+        tasks,
+        InvalidCostProvider(cost),
+        worker_id="invalid-cost-worker",
+        max_attempts=3,
+    ).run_once()
+
+    assert failed.id == task.id
+    assert failed.status == "failed"
+    assert failed.attempt_count == 1
+    assert failed.failure == {"code": "result_limit_exceeded"}
+    assert tasks.claim("retry-worker") is None
+
+
+def test_provider_thrown_validation_error_remains_retryable_provider_failure(ai_setup):
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="provider-validation-error")
+
+    pending = AIWorker(
+        tasks,
+        ValidationExceptionProvider(),
+        worker_id="provider-validation-error-worker",
+        max_attempts=3,
+    ).run_once()
+
+    assert pending.id == task.id
+    assert pending.status == "pending"
+    assert pending.attempt_count == 1
+    assert pending.failure == {"code": "provider_failed"}
+
+
 def test_worker_rejects_unpicklable_provider_before_claim_with_sanitized_error():
     from dragon_radar.ai.worker import AIWorker
 
@@ -1855,13 +2062,19 @@ def test_provider_config_is_server_only_and_missing_token_is_unavailable(monkeyp
     )
 
     monkeypatch.delenv("DRAGON_AI_TOKEN", raising=False)
-    monkeypatch.setenv("DRAGON_AI_PROVIDER", "configured-provider")
-    monkeypatch.setenv("DRAGON_AI_MODEL_VERSION", "secret-safe-model")
+    monkeypatch.setenv("DRAGON_AI_PROVIDER", "Azure OpenAI")
+    monkeypatch.setenv("DRAGON_AI_MODEL_VERSION", "openai/gpt 4.1")
+    monkeypatch.setenv("DRAGON_AI_PROMPT_VERSION", "daily review/v2")
     config = load_provider_config()
     provider = provider_from_environment(config)
 
     assert config.token is None
     assert config.concurrency >= 1
+    assert (
+        config.provider,
+        config.model_version,
+        config.prompt_version,
+    ) == ("Azure OpenAI", "openai/gpt 4.1", "daily review/v2")
     with pytest.raises(ProviderUnavailable):
         provider.generate(
             "daily_review",
@@ -1878,6 +2091,82 @@ def test_provider_config_is_server_only_and_missing_token_is_unavailable(monkeyp
     configured = load_provider_config()
     assert configured.token == "secret-token-value"
     assert "secret-token-value" not in repr(configured)
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "value"),
+    (
+        ("DRAGON_AI_PROVIDER", "unsafe\nprovider"),
+        ("DRAGON_AI_MODEL_VERSION", "模型/v1"),
+        ("DRAGON_AI_PROMPT_VERSION", "prompt\tv1"),
+    ),
+)
+def test_provider_config_rejects_unsafe_metadata_with_sanitized_error(
+    monkeypatch,
+    environment_name,
+    value,
+):
+    from dragon_radar.ai.provider import load_provider_config
+
+    monkeypatch.setenv(environment_name, value)
+
+    with pytest.raises(ValueError, match=f"^Invalid {environment_name}$") as raised:
+        load_provider_config()
+
+    assert value not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    (
+        ("name", "unsafe\nprovider"),
+        ("model_version", object()),
+        ("prompt_version", "prompt\tv1"),
+    ),
+)
+def test_worker_rejects_invalid_direct_provider_metadata_before_claim(
+    attribute,
+    value,
+):
+    from dragon_radar.ai.worker import AIWorker
+
+    class UntouchedRepository:
+        claims = 0
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            self.claims += 1
+
+    provider = MetadataProvider()
+    setattr(provider, attribute, value)
+    repository = UntouchedRepository()
+
+    with pytest.raises(
+        ValueError,
+        match="^Invalid AI provider metadata$",
+    ) as raised:
+        AIWorker(repository, provider, worker_id="invalid-provider-metadata")
+
+    assert repository.claims == 0
+    assert str(value) not in str(raised.value)
+
+
+def test_realistic_provider_metadata_persists(ai_setup):
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="realistic-provider-metadata")
+
+    completed = AIWorker(
+        tasks,
+        MetadataProvider(),
+        worker_id="realistic-metadata-worker",
+    ).run_once()
+
+    assert completed.id == task.id
+    assert completed.status == "succeeded"
+    assert completed.provider == "Azure OpenAI"
+    assert completed.model_version == "openai/gpt 4.1"
+    assert completed.prompt_version == "daily review/v2"
 
 
 def test_get_adds_processing_signal_and_deterministic_template(ai_setup):

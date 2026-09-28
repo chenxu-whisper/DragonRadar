@@ -14,7 +14,12 @@ from dragon_radar.ai.models import (
     AIProviderResult,
     AITaskRecord,
 )
-from dragon_radar.ai.provider import AIProvider, AIProviderLimits, ProviderUnavailable
+from dragon_radar.ai.provider import (
+    AIProvider,
+    AIProviderLimits,
+    ProviderUnavailable,
+    validate_provider_metadata,
+)
 from dragon_radar.ai.repository import (
     AIProviderResultLimitExceeded,
     AITaskRepository,
@@ -54,7 +59,7 @@ def _provider_child(connection, provider, task_type, manifest) -> None:
         value = provider.generate(task_type, manifest, limits)
         try:
             result = AIProviderResult.model_validate(value)
-        except ValidationError:
+        except (ValidationError, TypeError, ValueError):
             connection.send(("failure", "result_limit_exceeded"))
             return
         connection.send(("result", result.model_dump(mode="json")))
@@ -140,6 +145,16 @@ class AIWorker:
             or not Decimal("0") <= max_cost <= Decimal("1000000")
         ):
             raise ValueError("Invalid AI cost limit")
+        try:
+            metadata = (
+                provider.name,
+                provider.model_version,
+                provider.prompt_version,
+            )
+            for value in metadata:
+                validate_provider_metadata(value)
+        except Exception:
+            raise ValueError("Invalid AI provider metadata") from None
         try:
             ForkingPickler.dumps(provider)
         except Exception:
