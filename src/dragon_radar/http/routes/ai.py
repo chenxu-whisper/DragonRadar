@@ -84,6 +84,7 @@ def _safe_record(record: AITaskRecord) -> dict:
         "provider": record.provider,
         "token_usage": record.token_usage,
         "cost": record.cost,
+        "latency_ms": record.latency_ms,
         "failure": record.failure,
     }
 

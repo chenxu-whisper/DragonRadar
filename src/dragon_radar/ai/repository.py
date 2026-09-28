@@ -12,6 +12,7 @@ from sqlalchemy.engine import Connection
 
 from dragon_radar.ai.models import (
     AI_INPUT_DOMAINS,
+    MAX_PROVIDER_LATENCY_MS,
     AICancellationReceipt,
     AIDraft,
     AIProviderResult,
@@ -237,6 +238,7 @@ class AITaskRepository:
             provider=row["provider"],
             token_usage=row["token_usage"],
             cost=row["cost"],
+            latency_ms=row["latency_ms"],
             failure=row["failure"],
             created_at=row["created_at"],
             started_at=row["started_at"],
@@ -263,6 +265,7 @@ class AITaskRepository:
         )
         if existing is not None:
             return existing
+        self._lock(connection, f"ai-owner-capacity:{owner_id}")
         active_count = connection.scalar(
             select(func.count())
             .select_from(ai_tasks)
@@ -303,6 +306,7 @@ class AITaskRepository:
                     provider=None,
                     token_usage=None,
                     cost=None,
+                    latency_ms=None,
                     failure=None,
                     created_at=now,
                     started_at=None,
@@ -721,6 +725,7 @@ class AITaskRepository:
         provider: str,
         model_version: str,
         prompt_version: str,
+        latency_ms: int,
         max_tokens: int,
         max_cost: Decimal,
     ) -> AITaskRecord:
@@ -732,6 +737,8 @@ class AITaskRepository:
             or max_tokens < 0
             or result.token_usage > max_tokens
             or result.cost > max_cost
+            or type(latency_ms) is not int
+            or not 0 <= latency_ms <= MAX_PROVIDER_LATENCY_MS
         ):
             raise ValueError("AI provider result exceeds configured limits")
         with self.database.engine.begin() as connection:
@@ -756,6 +763,7 @@ class AITaskRepository:
             selected_revision = (
                 revision
                 if row["human_review_status"] == "unreviewed"
+                and row["selected_revision"] is None
                 else row["selected_revision"]
             )
             completed = (
@@ -773,6 +781,7 @@ class AITaskRepository:
                         provider=provider,
                         token_usage=result.token_usage,
                         cost=result.cost,
+                        latency_ms=latency_ms,
                         failure=None,
                         completed_at=now,
                     )

@@ -30,6 +30,7 @@ SafeVersion = Annotated[
 ]
 
 MAX_PROVIDER_CONTENT_BYTES = 32768
+MAX_PROVIDER_LATENCY_MS = 2_147_483_647
 MAX_NOTES_CONTEXT_CHARS = 20000
 AI_INPUT_DOMAINS = {
     "summarize": frozenset({"news"}),
@@ -171,6 +172,7 @@ class AITaskRecord(_StrictFrozenModel):
     provider: str | None = None
     token_usage: int | None = None
     cost: Decimal | None = None
+    latency_ms: Annotated[int, Field(ge=0, le=MAX_PROVIDER_LATENCY_MS)] | None = None
     failure: ImmutableJsonObject | None = None
     created_at: datetime
     started_at: datetime | None = None
@@ -212,6 +214,7 @@ __all__ = [
     "HumanReviewStatus",
     "MAX_NOTES_CONTEXT_CHARS",
     "MAX_PROVIDER_CONTENT_BYTES",
+    "MAX_PROVIDER_LATENCY_MS",
     "TaskStatus",
     "TaskType",
     "VerificationStatus",

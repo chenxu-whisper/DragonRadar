@@ -61,6 +61,7 @@ ai_tasks = Table(
     Column("provider", String(100)),
     Column("token_usage", BigInteger),
     Column("cost", Numeric(18, 6)),
+    Column("latency_ms", Integer),
     Column("failure", JSONB(none_as_null=True)),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("started_at", DateTime(timezone=True)),
@@ -84,6 +85,13 @@ ai_tasks = Table(
         "token_usage IS NULL OR (token_usage >= 0 AND token_usage <= 10000000)"
     ),
     CheckConstraint("cost IS NULL OR (cost >= 0 AND cost <= 1000000)"),
+    CheckConstraint(
+        "latency_ms IS NULL OR (latency_ms >= 0 AND latency_ms <= 2147483647)"
+    ),
+    CheckConstraint(
+        "latency_ms IS NULL OR status = 'succeeded'",
+        name="ai_tasks_success_latency",
+    ),
     CheckConstraint(
         "(status = 'pending' AND lease_token IS NULL AND lease_owner IS NULL "
         "AND lease_expires_at IS NULL AND completed_at IS NULL) OR "

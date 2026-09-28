@@ -41,9 +41,12 @@ def upgrade():
                 RAISE EXCEPTION 'AI task attempts cannot decrease';
             END IF;
             IF OLD.status IN ('succeeded', 'failed', 'cancelled')
-               AND NEW.status IS DISTINCT FROM OLD.status
+               AND (
+                   NEW.status IS DISTINCT FROM OLD.status
+                   OR NEW.latency_ms IS DISTINCT FROM OLD.latency_ms
+               )
             THEN
-                RAISE EXCEPTION 'AI task terminal status is immutable';
+                RAISE EXCEPTION 'AI task terminal state is immutable';
             END IF;
             RETURN NEW;
         END;

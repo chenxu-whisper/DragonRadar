@@ -8,7 +8,11 @@ from decimal import Decimal
 
 from pydantic import ValidationError
 
-from dragon_radar.ai.models import AIProviderResult, AITaskRecord
+from dragon_radar.ai.models import (
+    MAX_PROVIDER_LATENCY_MS,
+    AIProviderResult,
+    AITaskRecord,
+)
 from dragon_radar.ai.provider import AIProvider, AIProviderLimits, ProviderUnavailable
 from dragon_radar.ai.repository import AITaskRepository
 from dragon_radar.storage.repository import Forbidden, NotFound
@@ -16,30 +20,49 @@ from dragon_radar.storage.repository import Forbidden, NotFound
 AI_LEASE_COMPLETION_MARGIN = timedelta(seconds=1)
 DEFAULT_AI_LEASE_DURATION = timedelta(seconds=60)
 DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS = 30.0
+PROCESS_TERMINATE_JOIN_SECONDS = 0.25
+PROCESS_KILL_JOIN_SECONDS = 0.25
+
+
+class _ProviderCleanupError(Exception):
+    """Raised when a provider process survives bounded forced cleanup."""
 
 
 def _provider_child(send, provider, task_type, manifest, limits) -> None:
     try:
+        started_ns = time.monotonic_ns()
         value = provider.generate(task_type, manifest, limits)
+        latency_ms = min(
+            max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
+            MAX_PROVIDER_LATENCY_MS,
+        )
         result = AIProviderResult.model_validate(value)
-        send.send(("result", result.model_dump(mode="json")))
+        send.send(("result", result.model_dump(mode="json"), latency_ms))
     except ProviderUnavailable:
-        send.send(("failure", "provider_unavailable"))
+        send.send(("failure", "provider_unavailable", None))
     except Exception:
         try:
-            send.send(("failure", "provider_failed"))
+            send.send(("failure", "provider_failed", None))
         except Exception:
             pass
     finally:
         send.close()
 
 
-def _stop_process(process) -> None:
+def _stop_process(process) -> bool:
     if process.pid is None:
-        return
+        process.close()
+        return True
     if process.is_alive():
         process.terminate()
-    process.join()
+    process.join(PROCESS_TERMINATE_JOIN_SECONDS)
+    if process.is_alive():
+        process.kill()
+        process.join(PROCESS_KILL_JOIN_SECONDS)
+    stopped = not process.is_alive()
+    if stopped:
+        process.close()
+    return stopped
 
 
 def validate_ai_worker_timing(
@@ -124,14 +147,17 @@ class AIWorker:
             process.start()
             send.close()
             if not receive.poll(self.provider_timeout):
-                _stop_process(process)
+                if not _stop_process(process):
+                    raise _ProviderCleanupError
                 raise TimeoutError
-            kind, payload = receive.recv()
-            _stop_process(process)
-        except TimeoutError:
+            kind, payload, latency_ms = receive.recv()
+            if not _stop_process(process):
+                raise _ProviderCleanupError
+        except (TimeoutError, _ProviderCleanupError):
             raise
         except Exception:
-            _stop_process(process)
+            if not _stop_process(process):
+                raise _ProviderCleanupError from None
             raise RuntimeError("provider_failed") from None
         finally:
             receive.close()
@@ -140,7 +166,7 @@ class AIWorker:
             if payload == "provider_unavailable":
                 raise ProviderUnavailable
             raise RuntimeError("provider_failed")
-        return AIProviderResult.model_validate(payload), lease
+        return AIProviderResult.model_validate(payload), lease, latency_ms
 
     def run_once(self) -> AITaskRecord | None:
         lease = self.repository.claim(
@@ -157,7 +183,7 @@ class AIWorker:
         except NotFound:
             return self.repository.fail(lease, code="input_unavailable")
         try:
-            result, lease = self._invoke(lease, manifest)
+            result, lease, latency_ms = self._invoke(lease, manifest)
         except ProviderUnavailable:
             return self.repository.fail(lease, code="provider_unavailable")
         except TimeoutError:
@@ -166,6 +192,8 @@ class AIWorker:
                 code="provider_timeout",
                 max_attempts=self.max_attempts,
             )
+        except _ProviderCleanupError:
+            return self.repository.fail(lease, code="provider_timeout")
         except ValidationError:
             return self.repository.fail(lease, code="result_limit_exceeded")
         except Exception:
@@ -181,6 +209,7 @@ class AIWorker:
                 provider=self.provider.name,
                 model_version=self.provider.model_version,
                 prompt_version=self.provider.prompt_version,
+                latency_ms=latency_ms,
                 max_tokens=self.max_tokens,
                 max_cost=self.max_cost,
             )

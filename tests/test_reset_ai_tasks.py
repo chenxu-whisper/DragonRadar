@@ -16,7 +16,7 @@ from factories import NOW, batch, grant
 from news_factories import ARTICLE_A, article_revision, event_evidence
 from pydantic import ValidationError
 from sqlalchemy import insert, inspect, select, text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 
 class SlowMutatingProvider:
@@ -213,6 +213,7 @@ def test_0010_migration_creates_ai_schema_and_updates_readiness(database):
         "provider",
         "token_usage",
         "cost",
+        "latency_ms",
         "lease_token",
         "lease_expires_at",
     } <= columns
@@ -341,6 +342,40 @@ def test_submit_limits_active_tasks_after_allowing_replay(ai_setup):
     tasks.cancel(session.token, session.csrf, first.id, key="capacity-cancel")
     accepted = _submit(service, session, publication, key="capacity-after-cancel")
     assert accepted.status == "pending"
+
+
+def test_concurrent_distinct_keys_serialize_owner_capacity_check(ai_setup):
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FutureTimeout
+
+    from dragon_radar.ai.repository import (
+        MAX_ACTIVE_AI_TASKS_PER_OWNER,
+        AITaskRateLimited,
+    )
+
+    tasks, service, _owners, session, publication = ai_setup
+    for index in range(MAX_ACTIVE_AI_TASKS_PER_OWNER - 1):
+        _submit(service, session, publication, key=f"concurrent-capacity-{index}")
+
+    def submit(key):
+        try:
+            return _submit(service, session, publication, key=key).status
+        except AITaskRateLimited:
+            return "rate_limited"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with tasks.database.engine.begin() as connection:
+            tasks._lock(connection, f"ai-owner-capacity:{session.owner_id}")
+            futures = [
+                pool.submit(submit, "concurrent-capacity-a"),
+                pool.submit(submit, "concurrent-capacity-b"),
+            ]
+            for future in futures:
+                with pytest.raises(FutureTimeout):
+                    future.result(timeout=0.2)
+        outcomes = sorted(future.result(timeout=3) for future in futures)
+
+    assert outcomes == ["pending", "rate_limited"]
 
 
 @pytest.mark.anyio
@@ -603,6 +638,7 @@ def test_cancel_is_idempotent_and_terminal_against_late_success(ai_setup):
             provider="fake",
             model_version="fake-v1",
             prompt_version="prompt-v1",
+            latency_ms=1,
             max_tokens=10,
             max_cost=Decimal("1"),
         )
@@ -642,6 +678,7 @@ def test_expired_lease_recovers_and_stale_lease_cannot_mutate(ai_setup):
             provider="fake",
             model_version="fake-v1",
             prompt_version="prompt-v1",
+            latency_ms=1,
             max_tokens=10,
             max_cost=Decimal("1"),
         ),
@@ -708,6 +745,62 @@ def test_worker_supplies_immutable_provider_limits(ai_setup):
     assert limits.deadline >= started + timedelta(seconds=1.9)
     with pytest.raises(FrozenInstanceError):
         limits.max_tokens = 1
+
+
+def test_worker_persists_bounded_success_latency_and_leaves_failure_latency_null(
+    ai_setup,
+):
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    succeeded_task = _submit(service, session, publication, key="latency-success")
+    succeeded = AIWorker(
+        tasks,
+        LimitsEchoProvider(),
+        worker_id="latency-success-worker",
+        provider_timeout=2,
+    ).run_once()
+
+    assert succeeded.id == succeeded_task.id
+    assert type(succeeded.latency_ms) is int
+    assert 0 <= succeeded.latency_ms <= 2_147_483_647
+    assert tasks.get(session.token, succeeded.id).latency_ms == succeeded.latency_ms
+
+    failed_task = _submit(service, session, publication, key="latency-failure")
+    failed = AIWorker(
+        tasks,
+        UnsafeProvider(),
+        worker_id="latency-failure-worker",
+        max_attempts=1,
+    ).run_once()
+
+    assert failed.id == failed_task.id
+    assert failed.latency_ms is None
+    assert tasks.get(session.token, failed.id).latency_ms is None
+
+
+def test_completed_provider_latency_is_immutable(ai_setup):
+    from dragon_radar.ai.tables import ai_tasks
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    _submit(service, session, publication, key="immutable-latency")
+    completed = AIWorker(
+        tasks,
+        LimitsEchoProvider(),
+        worker_id="immutable-latency-worker",
+        provider_timeout=2,
+    ).run_once()
+
+    with pytest.raises(SQLAlchemyError):
+        with tasks.database.engine.begin() as connection:
+            connection.execute(
+                update(ai_tasks)
+                .where(ai_tasks.c.id == completed.id)
+                .values(latency_ms=completed.latency_ms + 1)
+            )
+
+    assert tasks.get(session.token, completed.id).latency_ms == completed.latency_ms
 
 
 @pytest.mark.parametrize(
@@ -875,6 +968,52 @@ def test_worker_timeout_is_wall_clock_bounded_and_child_cannot_mutate_late(
     assert tasks.get(session.token, task.id).content_draft is None
 
 
+def test_worker_cleanup_escalates_without_unbounded_join():
+    from time import monotonic, sleep
+
+    from dragon_radar.ai.worker import _stop_process
+
+    class TerminationResistantProcess:
+        pid = 123
+
+        def __init__(self):
+            self.alive = True
+            self.terminated = False
+            self.killed = False
+            self.closed = False
+            self.join_timeouts = []
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self.alive = False
+
+        def join(self, timeout=None):
+            self.join_timeouts.append(timeout)
+            sleep(0.3 if timeout is None else min(timeout, 0.01))
+
+        def close(self):
+            self.closed = True
+
+    process = TerminationResistantProcess()
+    started = monotonic()
+
+    stopped = _stop_process(process)
+
+    assert monotonic() - started < 0.5
+    assert stopped is True
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.closed is True
+    assert len(process.join_timeouts) == 2
+    assert all(timeout is not None for timeout in process.join_timeouts)
+
+
 def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
     from dragon_radar.ai.worker import AIWorker
 
@@ -1015,6 +1154,7 @@ def test_late_provider_draft_appends_and_does_not_override_human_edit(ai_setup):
         provider="fake",
         model_version="fake-v1",
         prompt_version="prompt-v1",
+        latency_ms=120_000,
         max_tokens=10,
         max_cost=Decimal("1"),
     )
@@ -1055,6 +1195,55 @@ def test_late_provider_draft_appends_and_does_not_override_human_edit(ai_setup):
         "provider",
         "human_edit",
     ]
+
+
+def test_late_provider_draft_does_not_replace_delivered_template_without_review(
+    ai_setup,
+):
+    from dragon_radar.ai.models import AIProviderResult
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="late-without-review")
+    lease = tasks.claim("late-without-review-worker", lease_for=timedelta(seconds=300))
+    tasks.clock = lambda: NOW + timedelta(seconds=120)
+    template = tasks.get(session.token, task.id).content_draft
+
+    completed = tasks.succeed(
+        lease,
+        AIProviderResult(
+            content={"text": "Late provider draft."},
+            token_usage=4,
+            cost="0.25",
+        ),
+        provider="fake",
+        model_version="fake-v1",
+        prompt_version="prompt-v1",
+        latency_ms=120_000,
+        max_tokens=10,
+        max_cost=Decimal("1"),
+    )
+
+    assert completed.status == "succeeded"
+    assert completed.content_draft == template
+    fetched = tasks.get(session.token, task.id)
+    assert fetched.content_draft == template
+    with tasks.database.engine.connect() as connection:
+        drafts = (
+            connection.execute(
+                text(
+                    "SELECT revision, source, content FROM ai_task_drafts "
+                    "WHERE task_id = :task_id ORDER BY revision"
+                ),
+                {"task_id": task.id},
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["source"] for row in drafts] == [
+        "deterministic_template",
+        "provider",
+    ]
+    assert drafts[1]["content"] == {"text": "Late provider draft."}
 
 
 def test_review_is_append_only_idempotent_and_revision_checked(ai_setup):
@@ -1185,6 +1374,7 @@ async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
     assert fetched.status_code == 200
     assert "owner_id" not in fetched.text
     assert fetched.json()["retrieval_version"] == "r1"
+    assert fetched.json()["latency_ms"] is None
     assert bad.status_code == 400
     assert attempted_override.status_code == 400
     assert "secret-marker" not in bad.text
