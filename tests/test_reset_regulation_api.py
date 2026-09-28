@@ -427,6 +427,64 @@ async def test_ready_regulation_without_event_source_evidence_remains_unknown(
     }
 
 
+async def test_legacy_event_without_provenance_remains_disclosed_and_unknown(
+    regulation_publication,
+):
+    publication, publications = regulation_publication
+    snapshot = publications.get_snapshot(publication.id)
+    regulation_result = snapshot.result("regulation")
+    result_data = regulation_result.model_dump(mode="json")
+    payload = result_data["payload"]
+    payload["events"] = [
+        {
+            key: value
+            for key, value in event.items()
+            if key not in {"source_id", "source_version"}
+        }
+        for event in payload["events"]
+    ]
+    legacy_result = PublicationResult.model_validate(
+        {
+            **result_data,
+            "payload": payload,
+        }
+    )
+    legacy_snapshot = PublishedSnapshot(
+        snapshot.publication,
+        snapshot.market_snapshot,
+        tuple(
+            legacy_result if result.domain == "regulation" else result
+            for result in snapshot.results
+        ),
+    )
+    params = {
+        "date": str(publication.trade_date),
+        "snapshot_id": str(publication.id),
+    }
+
+    async with await _client(_SnapshotRepository(legacy_snapshot)) as client:
+        status = await client.get("/api/regulation/status", params=params)
+        events = await client.get("/api/regulation/events", params=params)
+        stock = await client.get("/api/stock/A", params=params)
+
+    assert status.status_code == 200, status.text
+    assert events.status_code == 200, events.text
+    assert stock.status_code == 200, stock.text
+    disclosed = events.json()["data"]
+    assert disclosed["listed_count"] == 1
+    assert disclosed["total"] is None
+    assert disclosed["source_check"] == "unknown"
+    assert disclosed["events"][0]["event_id"] == "formal-monitoring-001"
+    assert disclosed["events"][0]["source_id"] is None
+    assert disclosed["events"][0]["source_version"] is None
+    assert status.json()["data"]["region3_events"] == disclosed["events"]
+    assert stock.json()["data"]["regulation"] == {
+        "formal_event_count": 1,
+        "event_source_completeness": "unknown",
+        "reason": "regulation_event_source_unknown",
+    }
+
+
 async def test_explicit_complete_event_source_can_report_zero(
     complete_regulation_publication,
 ):

@@ -72,7 +72,9 @@ def _models(value: object, model):
         raise DataUnavailable
     try:
         return tuple(
-            model.model_validate({key: item[key] for key in model.model_fields})
+            model.model_validate(
+                {key: item[key] for key in model.model_fields if key in item}
+            )
             for item in value
         )
     except (KeyError, ValidationError):
