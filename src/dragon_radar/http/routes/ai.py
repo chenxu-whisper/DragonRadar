@@ -63,7 +63,7 @@ def _no_query(request: Request) -> None:
 
 def _safe_record(record: AITaskRecord) -> dict:
     draft = (
-        record.content_draft.model_dump(mode="json")
+        record.content_draft.model_dump(mode="json")["content"]
         if record.content_draft is not None
         else None
     )

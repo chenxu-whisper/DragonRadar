@@ -30,19 +30,14 @@ class _ProviderCleanupError(Exception):
 
 def _provider_child(send, provider, task_type, manifest, limits) -> None:
     try:
-        started_ns = time.monotonic_ns()
         value = provider.generate(task_type, manifest, limits)
-        latency_ms = min(
-            max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
-            MAX_PROVIDER_LATENCY_MS,
-        )
         result = AIProviderResult.model_validate(value)
-        send.send(("result", result.model_dump(mode="json"), latency_ms))
+        send.send(("result", result.model_dump(mode="json")))
     except ProviderUnavailable:
-        send.send(("failure", "provider_unavailable", None))
+        send.send(("failure", "provider_unavailable"))
     except Exception:
         try:
-            send.send(("failure", "provider_failed", None))
+            send.send(("failure", "provider_failed"))
         except Exception:
             pass
     finally:
@@ -63,6 +58,13 @@ def _stop_process(process) -> bool:
     if stopped:
         process.close()
     return stopped
+
+
+def _elapsed_ms(started_ns: int) -> int:
+    return min(
+        max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
+        MAX_PROVIDER_LATENCY_MS,
+    )
 
 
 def validate_ai_worker_timing(
@@ -143,6 +145,7 @@ class AIWorker:
                 limits,
             ),
         )
+        process.daemon = True
         try:
             process.start()
             send.close()
@@ -150,7 +153,7 @@ class AIWorker:
                 if not _stop_process(process):
                     raise _ProviderCleanupError
                 raise TimeoutError
-            kind, payload, latency_ms = receive.recv()
+            kind, payload = receive.recv()
             if not _stop_process(process):
                 raise _ProviderCleanupError
         except (TimeoutError, _ProviderCleanupError):
@@ -166,7 +169,7 @@ class AIWorker:
             if payload == "provider_unavailable":
                 raise ProviderUnavailable
             raise RuntimeError("provider_failed")
-        return AIProviderResult.model_validate(payload), lease, latency_ms
+        return AIProviderResult.model_validate(payload), lease
 
     def run_once(self) -> AITaskRecord | None:
         lease = self.repository.claim(
@@ -182,26 +185,38 @@ class AIWorker:
             return self.repository.fail(lease, code="input_forbidden")
         except NotFound:
             return self.repository.fail(lease, code="input_unavailable")
+        started_ns = time.monotonic_ns()
         try:
-            result, lease, latency_ms = self._invoke(lease, manifest)
+            result, lease = self._invoke(lease, manifest)
         except ProviderUnavailable:
-            return self.repository.fail(lease, code="provider_unavailable")
+            return self.repository.fail(
+                lease,
+                code="provider_unavailable",
+                latency_ms=_elapsed_ms(started_ns),
+            )
         except TimeoutError:
             return self.repository.retry_or_fail(
                 lease,
                 code="provider_timeout",
                 max_attempts=self.max_attempts,
+                latency_ms=_elapsed_ms(started_ns),
             )
         except _ProviderCleanupError:
-            return self.repository.fail(lease, code="provider_timeout")
+            raise
         except ValidationError:
-            return self.repository.fail(lease, code="result_limit_exceeded")
+            return self.repository.fail(
+                lease,
+                code="result_limit_exceeded",
+                latency_ms=_elapsed_ms(started_ns),
+            )
         except Exception:
             return self.repository.retry_or_fail(
                 lease,
                 code="provider_failed",
                 max_attempts=self.max_attempts,
+                latency_ms=_elapsed_ms(started_ns),
             )
+        latency_ms = _elapsed_ms(started_ns)
         try:
             return self.repository.succeed(
                 lease,
@@ -214,7 +229,11 @@ class AIWorker:
                 max_cost=self.max_cost,
             )
         except ValueError:
-            return self.repository.fail(lease, code="result_limit_exceeded")
+            return self.repository.fail(
+                lease,
+                code="result_limit_exceeded",
+                latency_ms=latency_ms,
+            )
 
     def run_batch(self) -> tuple[AITaskRecord, ...]:
         with ThreadPoolExecutor(max_workers=self.concurrency) as executor:

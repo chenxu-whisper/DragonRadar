@@ -46,6 +46,15 @@ def _digest(value: Mapping) -> str:
     return hashlib.sha256(canonical_object(dict(value)).encode("ascii")).hexdigest()
 
 
+def _validate_latency(latency_ms: int | None, *, required: bool = False) -> None:
+    if latency_ms is None:
+        if required:
+            raise ValueError("Invalid AI provider latency")
+        return
+    if type(latency_ms) is not int or not 0 <= latency_ms <= MAX_PROVIDER_LATENCY_MS:
+        raise ValueError("Invalid AI provider latency")
+
+
 class AITaskRepository:
     def __init__(
         self,
@@ -135,31 +144,21 @@ class AITaskRepository:
             seconds=120
         ):
             return row
-        provider_exists = connection.scalar(
-            select(ai_task_drafts.c.id)
-            .where(
-                ai_task_drafts.c.task_id == row["id"],
-                ai_task_drafts.c.source == "provider",
-            )
-            .limit(1)
-        )
-        if provider_exists is not None:
-            return row
-        existing_template = connection.scalar(
-            select(ai_task_drafts.c.id)
+        template_revision = connection.scalar(
+            select(ai_task_drafts.c.revision)
             .where(
                 ai_task_drafts.c.task_id == row["id"],
                 ai_task_drafts.c.source == "deterministic_template",
             )
             .limit(1)
         )
-        if existing_template is None:
-            revision = self._next_revision(connection, row["id"])
+        if template_revision is None:
+            template_revision = self._next_revision(connection, row["id"])
             connection.execute(
                 insert(ai_task_drafts).values(
                     id=uuid4(),
                     task_id=row["id"],
-                    revision=revision,
+                    revision=template_revision,
                     source="deterministic_template",
                     content=self._template(row),
                     model_version=None,
@@ -170,11 +169,15 @@ class AITaskRepository:
                     created_at=now,
                 )
             )
+        if (
+            row["human_review_status"] == "unreviewed"
+            and row["selected_revision"] != template_revision
+        ):
             row = (
                 connection.execute(
                     update(ai_tasks)
                     .where(ai_tasks.c.id == row["id"])
-                    .values(selected_revision=revision)
+                    .values(selected_revision=template_revision)
                     .returning(ai_tasks)
                 )
                 .mappings()
@@ -732,17 +735,17 @@ class AITaskRepository:
         result = AIProviderResult.model_validate(result.model_dump())
         for value in (provider, model_version, prompt_version):
             _identifier(value)
+        _validate_latency(latency_ms, required=True)
         if (
             type(max_tokens) is not int
             or max_tokens < 0
             or result.token_usage > max_tokens
             or result.cost > max_cost
-            or type(latency_ms) is not int
-            or not 0 <= latency_ms <= MAX_PROVIDER_LATENCY_MS
         ):
             raise ValueError("AI provider result exceeds configured limits")
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
+            row = self._ensure_template(connection, row, self._now())
             revision = self._next_revision(connection, row["id"])
             now = self._now()
             connection.execute(
@@ -792,7 +795,13 @@ class AITaskRepository:
             )
             return self._record(connection, completed)
 
-    def fail(self, lease: AITaskLease, *, code: str) -> AITaskRecord:
+    def fail(
+        self,
+        lease: AITaskLease,
+        *,
+        code: str,
+        latency_ms: int | None = None,
+    ) -> AITaskRecord:
         if code not in {
             "provider_failed",
             "provider_timeout",
@@ -802,6 +811,7 @@ class AITaskRepository:
             "result_limit_exceeded",
         }:
             raise ValueError("Invalid sanitized AI failure code")
+        _validate_latency(latency_ms)
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
             completed = (
@@ -814,6 +824,7 @@ class AITaskRepository:
                         lease_token=None,
                         lease_owner=None,
                         lease_expires_at=None,
+                        latency_ms=latency_ms,
                         failure={"code": code},
                         completed_at=self._now(),
                     )
@@ -830,9 +841,11 @@ class AITaskRepository:
         *,
         code: str,
         max_attempts: int,
+        latency_ms: int,
     ) -> AITaskRecord:
         if code not in {"provider_timeout", "provider_failed"}:
             raise ValueError("Invalid retry failure code")
+        _validate_latency(latency_ms, required=True)
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
             terminal = row["attempt_count"] >= max_attempts
@@ -843,6 +856,7 @@ class AITaskRepository:
                 "lease_owner": None,
                 "lease_expires_at": None,
                 "available_at": self._now(),
+                "latency_ms": latency_ms,
                 "failure": {"code": code},
                 "completed_at": self._now() if terminal else None,
             }

@@ -12,7 +12,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from dragon_radar.ai.worker import (
     DEFAULT_AI_LEASE_DURATION,
-    DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS,
     validate_ai_worker_timing,
 )
 from dragon_radar.domain.models import MarketBatch, SourceGrant
@@ -274,12 +273,12 @@ def _parser() -> argparse.ArgumentParser:
     ai_worker.add_argument(
         "--provider-timeout-seconds",
         type=_ai_float,
-        default=DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS,
+        default=None,
     )
     ai_worker.add_argument(
         "--concurrency",
         type=lambda value: _ai_integer(value, 1, 8),
-        default=1,
+        default=None,
     )
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
@@ -291,8 +290,22 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     database = None
+    ai_config = None
     try:
         if args.command == "ai-worker":
+            from dragon_radar.ai.provider import load_provider_config
+
+            ai_config = load_provider_config()
+            args.provider_timeout_seconds = (
+                args.provider_timeout_seconds
+                if args.provider_timeout_seconds is not None
+                else ai_config.timeout_seconds
+            )
+            args.concurrency = (
+                args.concurrency
+                if args.concurrency is not None
+                else ai_config.concurrency
+            )
             validate_ai_worker_timing(
                 lease_for=timedelta(seconds=args.lease_seconds),
                 provider_timeout=args.provider_timeout_seconds,
@@ -539,16 +552,13 @@ def main(argv: list[str] | None = None) -> int:
                 "event_source_version": regulation_snapshot.event_source_version,
             }
         elif args.command == "ai-worker":
-            from dragon_radar.ai.provider import (
-                load_provider_config,
-                provider_from_environment,
-            )
+            from dragon_radar.ai.provider import provider_from_environment
             from dragon_radar.ai.repository import AITaskRepository
             from dragon_radar.ai.worker import AIWorker
             from dragon_radar.owner.repository import OwnerRepository
             from dragon_radar.publication.repository import PublicationRepository
 
-            config = load_provider_config()
+            assert ai_config is not None
             publications = PublicationRepository(database, repository)
             tasks = AITaskRepository(
                 database,
@@ -557,13 +567,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             AIWorker(
                 tasks,
-                provider_from_environment(config),
+                provider_from_environment(ai_config),
                 worker_id=args.worker_id,
                 lease_for=timedelta(seconds=args.lease_seconds),
                 provider_timeout=args.provider_timeout_seconds,
                 max_attempts=args.max_attempts,
-                max_tokens=config.max_tokens,
-                max_cost=config.max_cost,
+                max_tokens=ai_config.max_tokens,
+                max_cost=ai_config.max_cost,
                 concurrency=args.concurrency,
             ).run_forever(poll_seconds=args.poll_seconds)
             return 0

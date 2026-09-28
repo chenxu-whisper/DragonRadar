@@ -72,6 +72,17 @@ class UnsafeProvider:
         raise RuntimeError("Bearer secret-token raw provider stack")
 
 
+class UnavailableCallProvider:
+    name = "fake"
+    model_version = "fake-v1"
+    prompt_version = "prompt-v1"
+
+    def generate(self, task_type, manifest, limits):
+        from dragon_radar.ai.provider import ProviderUnavailable
+
+        raise ProviderUnavailable
+
+
 def _session(owners):
     code = owners.issue_pairing()
     return owners.exchange_pairing(code, "https://localhost:8030")
@@ -747,9 +758,7 @@ def test_worker_supplies_immutable_provider_limits(ai_setup):
         limits.max_tokens = 1
 
 
-def test_worker_persists_bounded_success_latency_and_leaves_failure_latency_null(
-    ai_setup,
-):
+def test_worker_persists_bounded_success_and_failure_latency(ai_setup):
     from dragon_radar.ai.worker import AIWorker
 
     tasks, service, _owners, session, publication = ai_setup
@@ -775,8 +784,51 @@ def test_worker_persists_bounded_success_latency_and_leaves_failure_latency_null
     ).run_once()
 
     assert failed.id == failed_task.id
-    assert failed.latency_ms is None
-    assert tasks.get(session.token, failed.id).latency_ms is None
+    assert type(failed.latency_ms) is int
+    assert 0 <= failed.latency_ms <= 2_147_483_647
+    assert tasks.get(session.token, failed.id).latency_ms == failed.latency_ms
+
+
+def test_worker_persists_bounded_timeout_latency(ai_setup):
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="latency-timeout")
+
+    failed = AIWorker(
+        tasks,
+        ShortSlowProvider(),
+        worker_id="latency-timeout-worker",
+        lease_for=timedelta(seconds=2),
+        provider_timeout=0.1,
+        max_attempts=1,
+    ).run_once()
+
+    assert failed.id == task.id
+    assert failed.failure == {"code": "provider_timeout"}
+    assert type(failed.latency_ms) is int
+    assert 0 <= failed.latency_ms <= 2_147_483_647
+    assert tasks.get(session.token, failed.id).latency_ms == failed.latency_ms
+
+
+def test_worker_fail_path_persists_bounded_provider_latency(ai_setup):
+    from dragon_radar.ai.worker import AIWorker
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="latency-unavailable")
+
+    failed = AIWorker(
+        tasks,
+        UnavailableCallProvider(),
+        worker_id="latency-unavailable-worker",
+        max_attempts=1,
+    ).run_once()
+
+    assert failed.id == task.id
+    assert failed.failure == {"code": "provider_unavailable"}
+    assert type(failed.latency_ms) is int
+    assert 0 <= failed.latency_ms <= 2_147_483_647
+    assert tasks.get(session.token, failed.id).latency_ms == failed.latency_ms
 
 
 def test_completed_provider_latency_is_immutable(ai_setup):
@@ -1014,6 +1066,87 @@ def test_worker_cleanup_escalates_without_unbounded_join():
     assert all(timeout is not None for timeout in process.join_timeouts)
 
 
+def test_worker_cleanup_failure_is_fatal_and_leaves_lease_running(monkeypatch):
+    from dragon_radar.ai.worker import AIWorker, _ProviderCleanupError
+
+    lease = SimpleNamespace(job=SimpleNamespace(task_type="daily_review"))
+
+    class LeaseRepository:
+        def __init__(self):
+            self.failures = []
+            self.retries = []
+
+        def claim(self, worker_id, *, lease_for, max_attempts):
+            return lease
+
+        def load_input(self, claimed):
+            return {"input": {}}
+
+        def renew(self, claimed, *, lease_for):
+            return claimed
+
+        def fail(self, claimed, *, code, **metadata):
+            self.failures.append((claimed, code, metadata))
+            return SimpleNamespace(status="failed")
+
+        def retry_or_fail(self, claimed, *, code, max_attempts, **metadata):
+            self.retries.append((claimed, code, max_attempts, metadata))
+            return SimpleNamespace(status="pending")
+
+    class PipeEnd:
+        def poll(self, timeout):
+            return False
+
+        def close(self):
+            pass
+
+    class StubbornProcess:
+        pid = 123
+
+        def __init__(self):
+            self.daemon = False
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    process = StubbornProcess()
+    context = SimpleNamespace(
+        Pipe=lambda duplex: (PipeEnd(), PipeEnd()),
+        Process=lambda **kwargs: process,
+    )
+    monkeypatch.setattr(
+        "dragon_radar.ai.worker.multiprocessing.get_context",
+        lambda method: context,
+    )
+    repository = LeaseRepository()
+    worker = AIWorker(
+        repository,
+        LimitsEchoProvider(),
+        worker_id="stubborn-cleanup-worker",
+        lease_for=timedelta(seconds=2),
+        provider_timeout=0.1,
+    )
+
+    with pytest.raises(_ProviderCleanupError):
+        worker.run_once()
+
+    assert process.daemon is True
+    assert repository.failures == []
+    assert repository.retries == []
+
+
 def test_worker_enforces_provider_result_caps_and_sanitizes_errors(ai_setup):
     from dragon_radar.ai.worker import AIWorker
 
@@ -1246,6 +1379,52 @@ def test_late_provider_draft_does_not_replace_delivered_template_without_review(
     assert drafts[1]["content"] == {"text": "Late provider draft."}
 
 
+def test_late_provider_completion_selects_template_without_prior_poll(ai_setup):
+    from dragon_radar.ai.models import AIProviderResult
+
+    tasks, service, _owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="late-without-poll")
+    lease = tasks.claim("late-without-poll-worker", lease_for=timedelta(seconds=300))
+    tasks.clock = lambda: NOW + timedelta(seconds=120)
+
+    completed = tasks.succeed(
+        lease,
+        AIProviderResult(
+            content={"text": "Late provider draft."},
+            token_usage=4,
+            cost="0.25",
+        ),
+        provider="fake",
+        model_version="fake-v1",
+        prompt_version="prompt-v1",
+        latency_ms=120_000,
+        max_tokens=10,
+        max_cost=Decimal("1"),
+    )
+
+    assert completed.status == "succeeded"
+    assert completed.content_draft.source == "deterministic_template"
+    assert completed.content_draft.ai_generated is False
+    assert tasks.get(session.token, task.id).content_draft == completed.content_draft
+    with tasks.database.engine.connect() as connection:
+        drafts = (
+            connection.execute(
+                text(
+                    "SELECT revision, source, content FROM ai_task_drafts "
+                    "WHERE task_id = :task_id ORDER BY revision"
+                ),
+                {"task_id": task.id},
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["source"] for row in drafts] == [
+        "deterministic_template",
+        "provider",
+    ]
+    assert drafts[1]["content"] == {"text": "Late provider draft."}
+
+
 def test_review_is_append_only_idempotent_and_revision_checked(ai_setup):
     from dragon_radar.storage.repository import Conflict
 
@@ -1380,6 +1559,39 @@ async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
     assert "secret-marker" not in bad.text
     assert created.json()["status"] == "pending"
     assert tasks.get(session.token, created.json()["task_id"]).status == "pending"
+
+
+@pytest.mark.anyio
+async def test_ai_task_route_returns_content_draft_payload_directly(ai_setup):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.owner.app import create_owner_app
+
+    tasks, service, owners, session, publication = ai_setup
+    task = _submit(service, session, publication, key="http-draft-payload")
+    tasks.clock = lambda: NOW + timedelta(seconds=120)
+    owner = create_owner_app(
+        repository=service.publications.market,
+        owner_repository=owners,
+        publication_repository=service.publications,
+        ai_service=service,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=owner),
+        base_url="https://localhost:8030",
+    ) as client:
+        fetched = await client.get(
+            f"/api/ai/task/{task.id}",
+            headers=_headers(session),
+        )
+
+    assert fetched.status_code == 200
+    draft = tasks.get(session.token, task.id).content_draft
+    expected = draft.model_dump(mode="json")["content"]
+    assert fetched.json()["content_draft"] == expected
+    assert "revision" not in fetched.json()["content_draft"]
+    assert "source" not in fetched.json()["content_draft"]
 
 
 @pytest.mark.anyio
@@ -1532,7 +1744,10 @@ async def test_cancel_and_review_routes_return_original_command_receipts(ai_setu
 
 
 def test_ai_worker_cli_is_bounded_and_compose_is_internal():
-    from dragon_radar.ai.worker import AI_LEASE_COMPLETION_MARGIN
+    from dragon_radar.ai.worker import (
+        AI_LEASE_COMPLETION_MARGIN,
+        DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS,
+    )
     from dragon_radar.cli import _parser
 
     defaults = _parser().parse_args(["ai-worker"])
@@ -1554,8 +1769,10 @@ def test_ai_worker_cli_is_bounded_and_compose_is_internal():
         ]
     )
     assert defaults.worker_id == "ai-worker-1"
+    assert defaults.provider_timeout_seconds is None
+    assert defaults.concurrency is None
     assert defaults.lease_seconds >= (
-        defaults.provider_timeout_seconds + AI_LEASE_COMPLETION_MARGIN.total_seconds()
+        DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS + AI_LEASE_COMPLETION_MARGIN.total_seconds()
     )
     assert vars(configured) == {
         "command": "ai-worker",
@@ -1599,6 +1816,67 @@ def test_ai_worker_cli_is_bounded_and_compose_is_internal():
     assert lease_seconds >= (
         timeout_seconds + AI_LEASE_COMPLETION_MARGIN.total_seconds()
     )
+
+
+def _capture_ai_worker_cli(monkeypatch, argv):
+    from dragon_radar.cli import main
+
+    captured = {}
+    database = SimpleNamespace(close=lambda: None)
+
+    class Worker:
+        def __init__(self, repository, provider, **options):
+            captured.update(options)
+
+        def run_forever(self, *, poll_seconds):
+            captured["poll_seconds"] = poll_seconds
+
+    monkeypatch.setenv("DRAGON_DATABASE_URL", "unused-test-database")
+    monkeypatch.setattr("dragon_radar.cli.Database", lambda: database)
+    monkeypatch.setattr("dragon_radar.cli.Repository", lambda value: object())
+    monkeypatch.setattr(
+        "dragon_radar.publication.repository.PublicationRepository",
+        lambda *args: object(),
+    )
+    monkeypatch.setattr(
+        "dragon_radar.owner.repository.OwnerRepository",
+        lambda *args: object(),
+    )
+    monkeypatch.setattr(
+        "dragon_radar.ai.repository.AITaskRepository",
+        lambda *args: object(),
+    )
+    monkeypatch.setattr(
+        "dragon_radar.ai.provider.provider_from_environment",
+        lambda config: object(),
+    )
+    monkeypatch.setattr("dragon_radar.ai.worker.AIWorker", Worker)
+
+    assert main(["ai-worker", *argv]) == 0
+    return captured
+
+
+def test_ai_worker_cli_uses_provider_config_when_flags_are_absent(monkeypatch):
+    monkeypatch.setenv("DRAGON_AI_TIMEOUT_SECONDS", "7.5")
+    monkeypatch.setenv("DRAGON_AI_CONCURRENCY", "4")
+
+    captured = _capture_ai_worker_cli(monkeypatch, [])
+
+    assert captured["provider_timeout"] == 7.5
+    assert captured["concurrency"] == 4
+
+
+def test_ai_worker_cli_flags_override_provider_config(monkeypatch):
+    monkeypatch.setenv("DRAGON_AI_TIMEOUT_SECONDS", "7.5")
+    monkeypatch.setenv("DRAGON_AI_CONCURRENCY", "4")
+
+    captured = _capture_ai_worker_cli(
+        monkeypatch,
+        ["--provider-timeout-seconds", "9", "--concurrency", "6"],
+    )
+
+    assert captured["provider_timeout"] == 9
+    assert captured["concurrency"] == 6
 
 
 def test_ai_worker_cli_rejects_unsafe_timing_before_database_with_sanitized_error(

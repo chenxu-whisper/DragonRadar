@@ -89,10 +89,6 @@ ai_tasks = Table(
         "latency_ms IS NULL OR (latency_ms >= 0 AND latency_ms <= 2147483647)"
     ),
     CheckConstraint(
-        "latency_ms IS NULL OR status = 'succeeded'",
-        name="ai_tasks_success_latency",
-    ),
-    CheckConstraint(
         "(status = 'pending' AND lease_token IS NULL AND lease_owner IS NULL "
         "AND lease_expires_at IS NULL AND completed_at IS NULL) OR "
         "(status = 'running' AND lease_token IS NOT NULL AND lease_owner IS NOT NULL "
