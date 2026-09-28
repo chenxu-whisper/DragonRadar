@@ -1973,7 +1973,7 @@ def test_worker_does_not_retry_invalid_provider_result(ai_setup, result):
     assert tasks.claim("retry-worker") is None
 
 
-@pytest.mark.parametrize("cost", (None, {}, object()))
+@pytest.mark.parametrize("cost", (None, {}, object(), "not-a-decimal"))
 def test_worker_does_not_retry_non_coercible_provider_cost(ai_setup, cost):
     from dragon_radar.ai.worker import AIWorker
 

@@ -4,7 +4,7 @@ import multiprocessing
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from multiprocessing.reduction import ForkingPickler
 
 from pydantic import ValidationError
@@ -59,7 +59,7 @@ def _provider_child(connection, provider, task_type, manifest) -> None:
         value = provider.generate(task_type, manifest, limits)
         try:
             result = AIProviderResult.model_validate(value)
-        except (ValidationError, TypeError, ValueError):
+        except (InvalidOperation, ValidationError, TypeError, ValueError):
             connection.send(("failure", "result_limit_exceeded"))
             return
         connection.send(("result", result.model_dump(mode="json")))
