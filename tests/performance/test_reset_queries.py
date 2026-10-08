@@ -252,12 +252,13 @@ def _path_label(path: str) -> str:
 
 async def _request(client: AsyncClient, path: str):
     started = time.perf_counter()
-    token = CURRENT_PUBLIC_PATH.set(_path_label(path))
+    label = _path_label(path)
+    token = CURRENT_PUBLIC_PATH.set(label)
     try:
         outgoing = client.build_request("GET", path, content=_EmptyRequestStream())
         outgoing.headers.pop("transfer-encoding", None)
         response = await client.send(outgoing)
-        return response.status_code, time.perf_counter() - started
+        return label, response.status_code, time.perf_counter() - started
     finally:
         CURRENT_PUBLIC_PATH.reset(token)
 
@@ -276,8 +277,23 @@ async def _run(
     responses = await asyncio.gather(*(_request(client, path) for path in requests))
     elapsed = time.perf_counter() - started
     cpu = time.process_time() - cpu_started
-    latencies = [latency for _status, latency in responses]
-    statuses = [status for status, _latency in responses]
+    latencies = [latency for _path, _status, latency in responses]
+    statuses = [status for _path, status, _latency in responses]
+    path_metrics = {}
+    for path in MEASURED_PATHS:
+        path_responses = [
+            (status, latency)
+            for response_path, status, latency in responses
+            if response_path == path
+        ]
+        path_latencies = [latency for _status, latency in path_responses]
+        path_metrics[path] = {
+            "request_count": len(path_responses),
+            "successful": sum(status == 200 for status, _latency in path_responses),
+            "p50_seconds": _percentile(path_latencies, 0.50),
+            "p95_seconds": _percentile(path_latencies, 0.95),
+            "max_seconds": max(path_latencies),
+        }
     peak, rss, memory_label = _memory_bytes()
     return {
         "round": round_number,
@@ -295,6 +311,7 @@ async def _run(
         "rss_bytes": rss,
         "memory_measurement": memory_label,
         "sql_statement_count": len(statements) - before_queries,
+        "path_metrics": path_metrics,
     }, latencies
 
 
@@ -474,7 +491,9 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
             "paths": list(MEASURED_PATHS),
             "request_count": len(warmup_responses),
             "concurrency": CONCURRENCY,
-            "successful": sum(status == 200 for status, _latency in warmup_responses),
+            "successful": sum(
+                status == 200 for _path, status, _latency in warmup_responses
+            ),
         }
         assert warmup["successful"] == CONCURRENCY
         state_before = _application_state(database)
@@ -497,7 +516,7 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         assert run["request_count"] == CONCURRENCY
         assert run["successful"] == CONCURRENCY
         assert run["error_rate"] == 0
-        assert run["p95_seconds"] <= P95_LIMIT_SECONDS
+        assert run["p95_seconds"] <= P95_LIMIT_SECONDS, run
         assert run["peak_memory_bytes"] > 0
         assert run["process_cpu_seconds"] >= 0
     assert state_after == state_before

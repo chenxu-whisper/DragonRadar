@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 from threading import RLock
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, literal_column, or_, select
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
 from dragon_radar.domain.quality import grant_allows_ai
@@ -35,7 +35,12 @@ from dragon_radar.publication.tables import (
 )
 from dragon_radar.regulation.repository import RegulationRepository
 from dragon_radar.roles.tables import role_runs
-from dragon_radar.storage.models import Snapshot, import_batches, snapshots
+from dragon_radar.storage.models import (
+    Snapshot,
+    import_batches,
+    snapshots,
+    source_grants,
+)
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
 from dragon_radar.topics.models import TopicBatch
 from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
@@ -194,9 +199,11 @@ class PublicationRepository:
         )
         self._market_archive_cache: OrderedDict[UUID, Mapping] = OrderedDict()
         self._result_rows_cache: OrderedDict[UUID, tuple[Mapping, ...]] = OrderedDict()
+        self._result_signatures: OrderedDict[UUID, tuple] = OrderedDict()
         self._published_snapshot_cache: OrderedDict[UUID, PublishedSnapshot] = (
             OrderedDict()
         )
+        self._published_snapshot_signatures: OrderedDict[UUID, tuple] = OrderedDict()
         self._market_batch_cache_lock = RLock()
 
     @staticmethod
@@ -245,17 +252,58 @@ class PublicationRepository:
 
     def _result_rows(self, connection, publication_ids: list[UUID]) -> dict:
         with self._market_batch_cache_lock:
-            cached = {
-                publication_id: self._result_rows_cache[publication_id]
+            candidate_ids = {
+                publication_id
                 for publication_id in publication_ids
                 if publication_id in self._result_rows_cache
+            }
+        if candidate_ids != set(publication_ids):
+            candidate_ids = set()
+        signature_rows = (
+            connection.execute(
+                select(
+                    publication_results.c.publication_id,
+                    publication_results.c.domain,
+                    literal_column("xmin::text").label("row_version"),
+                )
+                .where(publication_results.c.publication_id.in_(candidate_ids))
+                .order_by(
+                    publication_results.c.publication_id,
+                    publication_results.c.domain,
+                )
+            )
+            .mappings()
+            .all()
+            if candidate_ids
+            else []
+        )
+        signatures = {publication_id: [] for publication_id in candidate_ids}
+        for row in signature_rows:
+            signatures[row["publication_id"]].append(
+                (
+                    row["domain"],
+                    row["row_version"],
+                )
+            )
+        signatures = {
+            publication_id: tuple(rows) for publication_id, rows in signatures.items()
+        }
+        with self._market_batch_cache_lock:
+            cached = {
+                publication_id: self._result_rows_cache[publication_id]
+                for publication_id in candidate_ids
+                if self._result_signatures.get(publication_id)
+                == signatures[publication_id]
             }
         missing = set(publication_ids) - set(cached)
         grouped = {publication_id: [] for publication_id in missing}
         if missing:
             rows = (
                 connection.execute(
-                    select(publication_results)
+                    select(
+                        publication_results,
+                        literal_column("xmin::text").label("row_version"),
+                    )
                     .where(publication_results.c.publication_id.in_(missing))
                     .order_by(
                         publication_results.c.publication_id,
@@ -267,6 +315,10 @@ class PublicationRepository:
             )
             for row in rows:
                 grouped[row["publication_id"]].append(row)
+        loaded_signatures = {
+            publication_id: tuple((row["domain"], row["row_version"]) for row in rows)
+            for publication_id, rows in grouped.items()
+        }
         loaded = {
             publication_id: tuple(rows) for publication_id, rows in grouped.items()
         }
@@ -274,7 +326,12 @@ class PublicationRepository:
             for publication_id, rows in loaded.items():
                 self._result_rows_cache[publication_id] = rows
                 self._result_rows_cache.move_to_end(publication_id)
+                self._result_signatures[publication_id] = loaded_signatures[
+                    publication_id
+                ]
+                self._result_signatures.move_to_end(publication_id)
             self._trim(self._result_rows_cache)
+            self._trim(self._result_signatures)
         return {**cached, **loaded}
 
     @staticmethod
@@ -299,15 +356,23 @@ class PublicationRepository:
             return None
         dependencies = (
             connection.execute(
-                select(source_dependencies).where(
-                    source_dependencies.c.publication_id == record.id
+                select(
+                    source_dependencies,
+                    source_grants.c.grant.label("current_grant"),
+                )
+                .join(
+                    source_grants,
+                    source_grants.c.source_id == source_dependencies.c.source_id,
+                )
+                .where(
+                    source_dependencies.c.publication_id == record.id,
                 )
             )
             .mappings()
             .all()
         )
         if len(dependencies) != 1:
-            raise Forbidden("Publication market identity is invalid")
+            return None
         dependency = dependencies[0]
         market = cached.market_snapshot
         if (
@@ -328,7 +393,7 @@ class PublicationRepository:
             dependency["archive_id"],
         ):
             raise Forbidden("Publication inputs were withdrawn")
-        current = self.market._source(connection, source_id)
+        current = SourceGrant.model_validate(dependency["current_grant"])
         if not self.access_policy.allows(
             "market",
             source_id=source_id,
@@ -338,7 +403,19 @@ class PublicationRepository:
             raise Forbidden("Publication market source is not authorized")
         with self._market_batch_cache_lock:
             self._published_snapshot_cache.move_to_end(record.id)
-        return cached
+        rows = self._result_rows(connection, [record.id])[record.id]
+        with self._market_batch_cache_lock:
+            signature = self._result_signatures[record.id]
+            cached_signature = self._published_snapshot_signatures.get(record.id)
+        if cached_signature == signature:
+            return cached
+        refreshed = PublishedSnapshot(
+            record,
+            cached.market_snapshot,
+            tuple(self._result(row) for row in rows),
+        )
+        self._cache_snapshot(refreshed)
+        return refreshed
 
     def _cache_snapshot(self, snapshot: PublishedSnapshot) -> None:
         if not self._market_only(snapshot.publication):
@@ -346,7 +423,12 @@ class PublicationRepository:
         with self._market_batch_cache_lock:
             self._published_snapshot_cache[snapshot.id] = snapshot
             self._published_snapshot_cache.move_to_end(snapshot.id)
+            self._published_snapshot_signatures[snapshot.id] = self._result_signatures[
+                snapshot.id
+            ]
+            self._published_snapshot_signatures.move_to_end(snapshot.id)
             self._trim(self._published_snapshot_cache)
+            self._trim(self._published_snapshot_signatures)
 
     @staticmethod
     def _result(row: Mapping) -> PublicationResult:
