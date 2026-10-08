@@ -6,6 +6,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($PublicPort -eq $OwnerPort) {
+    throw "Reset ports must be different."
+}
 . (Join-Path $PSScriptRoot "private-common.ps1")
 $root = Split-Path -Parent $PSScriptRoot
 $state = Initialize-PrivateDirectory (Join-Path $root ".temp/reset-secrets")

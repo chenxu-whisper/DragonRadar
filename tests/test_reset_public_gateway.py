@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from factories import DAYS, NOW, batch, grant
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncByteStream, AsyncClient
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.publication.models import PublicationCommand
@@ -14,6 +14,18 @@ from dragon_radar.publication.service import PublicationService
 
 pytestmark = pytest.mark.anyio
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _EmptyRequestStream(AsyncByteStream):
+    async def __aiter__(self):
+        if False:
+            yield b""
+
+
+async def _empty_request(client, method, path):
+    request = client.build_request(method, path, content=_EmptyRequestStream())
+    request.headers.pop("transfer-encoding", None)
+    return await client.send(request)
 
 
 @pytest.fixture
@@ -224,15 +236,27 @@ async def test_public_app_is_distinct_read_only_and_spoofing_cannot_reach_owner(
             "Cookie": "__Host-dragon-private-session=spoof",
         },
     ) as client:
-        assert (await client.get("/health/live")).status_code == 200
-        assert (await client.get("/api/snapshots/list")).status_code == 200
-        assert (await client.head("/api/snapshots/list")).status_code == 200
+        assert (await _empty_request(client, "GET", "/health/live")).status_code == 200
+        assert (
+            await _empty_request(client, "GET", "/api/snapshots/list")
+        ).status_code == 200
+        assert (
+            await _empty_request(client, "HEAD", "/api/snapshots/list")
+        ).status_code == 200
         assert (await client.post("/api/snapshots/list")).status_code == 403
         assert (await client.post("/api/owner/v1/pair")).status_code == 403
-        assert (await client.get("/api/owner/v1/session")).status_code == 404
-        assert (await client.get("/api/ai/task/" + "0" * 36)).status_code == 404
-        assert (await client.get("/api/analysis/jobs")).status_code == 404
-        assert (await client.get("/api/not-published")).status_code == 404
+        assert (
+            await _empty_request(client, "GET", "/api/owner/v1/session")
+        ).status_code == 404
+        assert (
+            await _empty_request(client, "GET", "/api/ai/task/" + "0" * 36)
+        ).status_code == 404
+        assert (
+            await _empty_request(client, "GET", "/api/analysis/jobs")
+        ).status_code == 404
+        assert (
+            await _empty_request(client, "GET", "/api/not-published")
+        ).status_code == 404
 
     paths = {getattr(route, "path", "") for route in app.routes}
     assert not any(path.startswith("/api/owner/") for path in paths)
@@ -435,6 +459,166 @@ async def test_public_protocol_rejects_read_bodies_before_downstream(method, hea
     assert not called
 
 
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "http.request", "body": b"x", "more_body": False},
+        {"type": "http.request", "body": b"", "more_body": True},
+    ],
+)
+async def test_public_protocol_rejects_unadvertised_read_body_event(event):
+    from dragon_radar.http.public_app import PublicProtocolGate
+
+    called = False
+    sent = []
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal called
+        called = True
+
+    async def receive():
+        return event
+
+    async def send(message):
+        sent.append(message)
+
+    await PublicProtocolGate(downstream)(_scope(), receive, send)
+
+    assert sent[0]["status"] == 400
+    assert b'"code":"INVALID_REQUEST"' in sent[-1]["body"]
+    assert not called
+
+
+async def test_public_protocol_replays_verified_empty_event_once():
+    from dragon_radar.http.public_app import PublicProtocolGate
+
+    empty = {"type": "http.request", "body": b"", "more_body": False}
+    disconnected = {"type": "http.disconnect"}
+    events = iter((empty, disconnected))
+    receive_calls = 0
+    received = []
+
+    async def receive():
+        nonlocal receive_calls
+        receive_calls += 1
+        return next(events)
+
+    async def downstream(_scope, replay, send):
+        received.extend((await replay(), await replay()))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    await PublicProtocolGate(downstream)(_scope(), receive, send)
+
+    assert received == [empty, disconnected]
+    assert receive_calls == 2
+    assert sent[0]["status"] == 200
+
+
+async def test_public_protocol_stops_on_disconnect_before_downstream():
+    from dragon_radar.http.public_app import PublicProtocolGate
+
+    called = False
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal called
+        called = True
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    await PublicProtocolGate(downstream)(_scope(), receive, lambda _message: None)
+    assert not called
+
+
+async def test_public_protocol_propagates_cancel_while_reading_first_event():
+    from dragon_radar.http.public_app import PublicProtocolGate
+
+    entered_receive = asyncio.Event()
+    called = False
+
+    async def receive():
+        entered_receive.set()
+        await asyncio.Future()
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal called
+        called = True
+
+    task = asyncio.create_task(
+        PublicProtocolGate(downstream)(_scope(), receive, lambda _message: None)
+    )
+    await asyncio.wait_for(entered_receive.wait(), timeout=2)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not called
+
+
+async def test_receive_failure_cancels_children_releases_once_and_propagates():
+    from dragon_radar.http.public_app import DirectPeerConcurrencyLimit
+
+    downstream_started = asyncio.Event()
+    downstream_cleaned = asyncio.Event()
+
+    async def downstream(_scope, receive, _send):
+        downstream_started.set()
+        try:
+            await receive()
+        finally:
+            downstream_cleaned.set()
+
+    class CountingLimit(DirectPeerConcurrencyLimit):
+        release_count = 0
+
+        async def _release(self, peer):
+            self.release_count += 1
+            await super()._release(peer)
+
+    async def receive():
+        await downstream_started.wait()
+        raise RuntimeError("receive failed")
+
+    limited = CountingLimit(downstream, maximum=1)
+    with pytest.raises(RuntimeError, match="receive failed"):
+        await limited(_scope(), receive, lambda _message: None)
+
+    assert downstream_cleaned.is_set()
+    assert limited.release_count == 1
+    assert limited.active_peers == 0
+
+
+async def test_receive_cancellation_cancels_downstream_and_propagates():
+    from dragon_radar.http.public_app import DirectPeerConcurrencyLimit
+
+    downstream_started = asyncio.Event()
+    downstream_cleaned = asyncio.Event()
+
+    async def downstream(_scope, receive, _send):
+        downstream_started.set()
+        try:
+            await receive()
+        finally:
+            downstream_cleaned.set()
+
+    async def receive():
+        await downstream_started.wait()
+        raise asyncio.CancelledError
+
+    limited = DirectPeerConcurrencyLimit(downstream, maximum=1)
+    with pytest.raises(asyncio.CancelledError):
+        await limited(_scope(), receive, lambda _message: None)
+
+    assert downstream_cleaned.is_set()
+    assert limited.active_peers == 0
+
+
 @pytest.mark.parametrize("ending", ["exception", "cancel", "disconnect"])
 async def test_concurrency_slot_releases_after_abnormal_completion(ending):
     from dragon_radar.http.public_app import DirectPeerConcurrencyLimit
@@ -598,6 +782,7 @@ def test_reset_compose_and_caddy_static_isolation_contracts():
 def test_reset_start_script_and_running_documentation_contracts():
     script = (ROOT / "scripts/start-reset.ps1").read_text(encoding="utf-8")
     docs = (ROOT / "docs/reset-running.md").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "Initialize-PrivateDirectory" in script
     assert "RandomNumberGenerator" in script
     assert "compose.reset.yaml" in script
@@ -614,3 +799,4 @@ def test_reset_start_script_and_running_documentation_contracts():
         "model",
     ):
         assert phrase.lower() in docs.lower()
+    assert r".\tests\test_reset_start_script.ps1" in workflow

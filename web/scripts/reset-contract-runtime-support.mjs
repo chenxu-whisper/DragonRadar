@@ -1,13 +1,6 @@
 export function composeOverride({
-  publicPort,
-  ownerPort,
   publicEdgeSubnet,
 }) {
-  for (const port of [publicPort, ownerPort]) {
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new Error(`Invalid ephemeral port: ${port}`);
-    }
-  }
   const subnetMatch = publicEdgeSubnet?.match(
     /^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.0\/28$/,
   );
@@ -28,16 +21,22 @@ export function composeOverride({
 
   public-caddy:
     ports: !override
-      - "127.0.0.1:${publicPort}:8080"
+      - target: 8080
+        published: "0"
+        host_ip: 127.0.0.1
+        protocol: tcp
     networks:
       public-edge:
         ipv4_address: ${prefix}.2
 
   owner-caddy:
     environment:
-      DRAGON_OWNER_AUTHORITY: localhost:${ownerPort}
+      DRAGON_OWNER_AUTHORITY: localhost:8443
     ports: !override
-      - "127.0.0.1:${ownerPort}:8443"
+      - target: 8443
+        published: "0"
+        host_ip: 127.0.0.1
+        protocol: tcp
 
   owner-api:
     command:
@@ -47,9 +46,9 @@ export function composeOverride({
       - --port
       - "8001"
       - --origin
-      - "https://localhost:${ownerPort}"
+      - "https://localhost:8443"
     environment:
-      DRAGON_OWNER_AUTHORITY: localhost:${ownerPort}
+      DRAGON_OWNER_AUTHORITY: localhost:8443
 
 networks:
   public-edge:

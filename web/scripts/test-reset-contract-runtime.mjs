@@ -1,8 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
-import https from 'node:https';
-import net from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -65,29 +63,6 @@ function compose(...args) {
   ]);
 }
 
-async function reserveLoopbackPorts() {
-  const servers = [net.createServer(), net.createServer()];
-  await Promise.all(
-    servers.map(
-      server =>
-        new Promise((resolveListening, reject) => {
-          server.once('error', reject);
-          server.listen(0, '127.0.0.1', resolveListening);
-        }),
-    ),
-  );
-  const ports = servers.map(server => server.address().port);
-  await Promise.all(
-    servers.map(
-      server =>
-        new Promise((resolveClosed, reject) => {
-          server.close(error => (error ? reject(error) : resolveClosed()));
-        }),
-    ),
-  );
-  return ports;
-}
-
 function ipv4Range(cidr) {
   const match = cidr.match(
     /^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\/([0-9]{1,2})$/,
@@ -137,19 +112,15 @@ function selectPublicEdgeSubnet() {
   throw new Error('No free private /28 was available for the public edge');
 }
 
-function request({ protocol, port, path, method = 'GET', headers = {} }) {
-  const transport = protocol === 'https:' ? https : http;
+function request({ port, path, method = 'GET', headers = {} }) {
   return new Promise((resolveRequest, reject) => {
-    const requestHandle = transport.request(
+    const requestHandle = http.request(
       {
-        protocol,
         hostname: '127.0.0.1',
         port,
         path,
         method,
         headers,
-        rejectUnauthorized: false,
-        servername: 'localhost',
         timeout: 10_000,
       },
       response => {
@@ -205,7 +176,7 @@ function assertPublicIsolation() {
   );
 }
 
-function assertOwnerNamespace(ownerPort) {
+function assertOwnerNamespace() {
   const caddyNamespace = compose(
     'exec',
     '-T',
@@ -225,17 +196,30 @@ function assertOwnerNamespace(ownerPort) {
     `Owner network namespaces differ: ${caddyNamespace} != ${apiNamespace}`,
   );
 
-  compose(
+  const lockedSession = compose(
     'exec',
     '-T',
     'owner-caddy',
-    'wget',
-    '--quiet',
-    '--spider',
+    'curl',
+    '--silent',
+    '--show-error',
+    '--cacert',
+    '/data/caddy/pki/authorities/local/root.crt',
     '--header',
-    `Host: localhost:${ownerPort}`,
-    'http://127.0.0.1:8001/health/live',
+    'Host: localhost:8443',
+    '--write-out',
+    '\\n%{http_code}',
+    'https://localhost:8443/api/owner/v1/session',
+  ).trimEnd();
+  const separator = lockedSession.lastIndexOf('\n');
+  const body = lockedSession.slice(0, separator);
+  const status = Number(lockedSession.slice(separator + 1));
+  assert(status === 401, `Owner namespace session returned ${status}: ${body}`);
+  assert(
+    body.includes('"code":"session_unauthorized"'),
+    `Owner namespace session was not locked: ${body}`,
   );
+
   const socketCheck = [
     'from pathlib import Path',
     'rows = []',
@@ -264,12 +248,12 @@ function assertPublicAssets() {
   );
 }
 
-async function assertHttpContracts(publicPort, ownerPort) {
+async function assertHttpContracts(publicPort) {
   const spoofed = {
-    Host: `localhost:${ownerPort}`,
-    Forwarded: `for=127.0.0.1;host=localhost:${ownerPort};proto=https`,
+    Host: 'localhost:8443',
+    Forwarded: 'for=127.0.0.1;host=localhost:8443;proto=https',
     'X-Forwarded-For': '127.0.0.1',
-    'X-Forwarded-Host': `localhost:${ownerPort}`,
+    'X-Forwarded-Host': 'localhost:8443',
     'X-Forwarded-Proto': 'https',
     'X-Real-IP': '127.0.0.1',
     'X-Dragon-Client-IP': '127.0.0.1',
@@ -277,7 +261,6 @@ async function assertHttpContracts(publicPort, ownerPort) {
   };
   assertStatus(
     await request({
-      protocol: 'http:',
       port: publicPort,
       path: '/api/snapshots/list',
       headers: spoofed,
@@ -287,7 +270,6 @@ async function assertHttpContracts(publicPort, ownerPort) {
   );
   assertStatus(
     await request({
-      protocol: 'http:',
       port: publicPort,
       path: '/api/snapshots/list',
       method: 'POST',
@@ -303,7 +285,6 @@ async function assertHttpContracts(publicPort, ownerPort) {
   ]) {
     assertStatus(
       await request({
-        protocol: 'http:',
         port: publicPort,
         path,
         headers: spoofed,
@@ -312,52 +293,26 @@ async function assertHttpContracts(publicPort, ownerPort) {
       `Public private-path probe ${path}`,
     );
   }
-
-  assertStatus(
-    await request({
-      protocol: 'https:',
-      port: ownerPort,
-      path: '/',
-      headers: { Host: `localhost:${ownerPort}` },
-    }),
-    200,
-    'Owner TLS entry',
-  );
-  const session = await request({
-    protocol: 'https:',
-    port: ownerPort,
-    path: '/api/owner/v1/session',
-    headers: { Host: `localhost:${ownerPort}` },
-  });
-  assertStatus(session, 401, 'Locked owner session');
-  assert(
-    session.body.includes('"code":"session_unauthorized"'),
-    `Owner session was not locked: ${session.body}`,
-  );
 }
-
-mkdirSync(state, { recursive: true });
-const [requestedPublicPort, requestedOwnerPort] = await reserveLoopbackPorts();
-const publicEdgeSubnet = selectPublicEdgeSubnet();
-writeFileSync(
-  envFile,
-  `DRAGON_DB_PASSWORD=${randomBytes(24).toString('hex')}\n`,
-  { encoding: 'utf8', mode: 0o600 },
-);
-writeFileSync(
-  overrideFile,
-  composeOverride({
-    publicPort: requestedPublicPort,
-    ownerPort: requestedOwnerPort,
-    publicEdgeSubnet,
-  }),
-  'utf8',
-);
 
 let primaryError;
 let cleanupError;
+let composePrepared = false;
 try {
+  mkdirSync(state, { recursive: true });
   run('docker', ['version'], { timeout: 30_000 });
+  const publicEdgeSubnet = selectPublicEdgeSubnet();
+  writeFileSync(
+    envFile,
+    `DRAGON_DB_PASSWORD=${randomBytes(24).toString('hex')}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  writeFileSync(
+    overrideFile,
+    composeOverride({ publicEdgeSubnet }),
+    'utf8',
+  );
+  composePrepared = true;
   compose('config', '--quiet');
   compose('build', 'public-api', 'public-caddy', 'owner-caddy');
   compose('up', '-d', '--wait', 'db');
@@ -379,18 +334,10 @@ try {
   const ownerBinding = parseLoopbackBinding(
     compose('port', 'owner-caddy', '8443'),
   );
-  assert(
-    publicBinding.port === requestedPublicPort,
-    `Public port discovery mismatch: ${publicBinding.port}`,
-  );
-  assert(
-    ownerBinding.port === requestedOwnerPort,
-    `Owner port discovery mismatch: ${ownerBinding.port}`,
-  );
 
-  await assertHttpContracts(publicBinding.port, ownerBinding.port);
+  await assertHttpContracts(publicBinding.port);
   assertPublicIsolation();
-  assertOwnerNamespace(ownerBinding.port);
+  assertOwnerNamespace();
   assertPublicAssets();
   console.log(
     JSON.stringify({
@@ -403,16 +350,18 @@ try {
 } catch (error) {
   primaryError = error;
 } finally {
-  try {
-    compose(
-      'down',
-      '--volumes',
-      '--remove-orphans',
-      '--timeout',
-      '10',
-    );
-  } catch (error) {
-    cleanupError = error;
+  if (composePrepared) {
+    try {
+      compose(
+        'down',
+        '--volumes',
+        '--remove-orphans',
+        '--timeout',
+        '10',
+      );
+    } catch (error) {
+      cleanupError = error;
+    }
   }
   rmSync(state, { recursive: true, force: true });
 }

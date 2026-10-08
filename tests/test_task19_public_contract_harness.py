@@ -2,7 +2,7 @@
 
 import pytest
 from factories import DAYS, NOW, batch, grant
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncByteStream, AsyncClient
 from news_factories import article_revision, event_evidence, second_article
 from topic_factories import topic_batch
 
@@ -15,6 +15,12 @@ from dragon_radar.roles.materialize import RoleMaterializer
 from dragon_radar.topics.repository import TopicRepository
 
 pytestmark = pytest.mark.anyio
+
+
+class _EmptyRequestStream(AsyncByteStream):
+    async def __aiter__(self):
+        if False:
+            yield b""
 
 
 @pytest.fixture
@@ -92,7 +98,9 @@ async def _public_get(database, repository, path: str):
         transport=ASGITransport(app=app),
         base_url="http://public.example",
     ) as client:
-        response = await client.get(path)
+        request = client.build_request("GET", path, content=_EmptyRequestStream())
+        request.headers.pop("transfer-encoding", None)
+        response = await client.send(request)
     return response, public
 
 

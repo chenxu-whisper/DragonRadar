@@ -170,6 +170,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify Reset startup validation
+        shell: powershell
+        run: .\tests\test_reset_start_script.ps1
       - name: Verify Windows private-file protections
         shell: powershell
         run: .\tests\test_private_scripts.ps1

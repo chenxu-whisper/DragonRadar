@@ -153,14 +153,25 @@ class DirectPeerConcurrencyLimit:
         disconnect = asyncio.create_task(disconnected.wait())
         try:
             done, _pending = await asyncio.wait(
-                {application, disconnect},
+                {application, pump, disconnect},
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            if pump in done and (pump.cancelled() or pump.exception() is not None):
+                application.cancel()
+                disconnect.cancel()
+                await asyncio.gather(
+                    application,
+                    disconnect,
+                    return_exceptions=True,
+                )
+                await pump
+            if application in done:
+                await application
+                return
             if disconnect in done and not application.done():
                 application.cancel()
                 await asyncio.gather(application, return_exceptions=True)
                 return
-            await application
         finally:
             for task in (application, pump, disconnect):
                 if not task.done():
@@ -198,8 +209,33 @@ class PublicProtocolGate:
             )
             await response(scope, receive, send)
             return
+
+        first_event = await receive()
+        if first_event["type"] == "http.disconnect":
+            return
+        if first_event["type"] != "http.request":
+            return
+        if first_event.get("body", b"") or first_event.get("more_body", False):
+            response = error_response(
+                400,
+                "INVALID_REQUEST",
+                "GET and HEAD requests must not contain a body",
+            )
+            await response(scope, receive, send)
+            return
+
+        replay_event = first_event
+
+        async def replay_receive():
+            nonlocal replay_event
+            if replay_event is not None:
+                event = replay_event
+                replay_event = None
+                return event
+            return await receive()
+
         if method != "HEAD":
-            await self.app(scope, receive, send)
+            await self.app(scope, replay_receive, send)
             return
 
         head_scope = dict(scope)
@@ -210,7 +246,7 @@ class PublicProtocolGate:
                 message = {**message, "body": b""}
             await send(message)
 
-        await self.app(head_scope, receive, head_send)
+        await self.app(head_scope, replay_receive, head_send)
 
 
 def _repository(request: Request):
