@@ -5,6 +5,11 @@ import {
 } from '../../repositories/local/migrate';
 import { localRepository as repo, type LocalNote, type LocalWatch, type NoteContent, type StoredNoteContent } from '../../repositories/local/repository';
 import { registerLeaveGuard } from '../review/navigation';
+import type { AITask } from '../ai/client';
+import {
+  AdoptionCommandCache,
+  type AdoptionStrategy,
+} from './adoption-command';
 import { localNoteCommandSignature } from './note-command';
 import './local-review.css';
 
@@ -42,6 +47,7 @@ export default function LocalReview({
   const [decision, setDecision] = useState<ImportDecision | ''>('');
   const [preview, setPreview] = useState<ImportPlan>();
   const mounted = useRef(true), saving = useRef(false);
+  const adoptionCommands = useRef(new AdoptionCommandCache());
   const previewGeneration = useRef(0);
   const command = useRef<{ signature: string; id: string; key: string } | undefined>(undefined);
   const refresh = useCallback(async () => {
@@ -183,7 +189,8 @@ export default function LocalReview({
     text: string,
     context: {
       submittedEditorSignature: string;
-      strategy: 'replace' | 'merge' | 'save_as_new';
+      strategy: AdoptionStrategy;
+      task: AITask;
     },
   ) => {
     const currentSignature = JSON.stringify([
@@ -212,14 +219,18 @@ export default function LocalReview({
           ? `${content.content}\n\n${text}`
           : text,
       };
-    const result = await repo.putNote({
-      note_id: saveAsNew ? crypto.randomUUID() : selected?.note_id ?? crypto.randomUUID(),
-      key: crypto.randomUUID(),
-      expected_revision: saveAsNew ? 0 : selected?.revision ?? 0,
-      snapshot_id: selected?.snapshot_id ?? snapshot,
-      trade_date: selected?.trade_date ?? tradeDate,
-      security_id: selected?.security_id ?? security,
-      content: nextContent,
+    if (context.task.revision === null) throw new Error('AI 草稿修订无效，当前输入已保留。');
+    const result = await adoptionCommands.current.execute(repo, {
+      taskRevision: context.task.revision,
+      strategy: context.strategy,
+      payload: {
+        ...(saveAsNew || !selected ? {} : { note_id: selected.note_id }),
+        expected_revision: saveAsNew ? 0 : selected?.revision ?? 0,
+        snapshot_id: selected?.snapshot_id ?? snapshot,
+        trade_date: selected?.trade_date ?? tradeDate,
+        security_id: selected?.security_id ?? security,
+        content: nextContent,
+      },
     });
     if (result.current_revision && result.current_revision > result.revision) {
       throw new Error('采用命令已提交，但本地笔记已有更新；当前输入已保留，请对照。');

@@ -128,7 +128,8 @@ export function taskPresentation(task: AITask): TaskPresentation {
 export function draftToText(draft: AIDraftContent): string {
   const sections = [
     ...draft.facts.map(item => `事实：${item.text}`),
-    ...draft.inferences.map(item => `推断：${item.text}（解释置信度 ${item.confidence}）`),
+    ...draft.inferences.map(item =>
+      `推断：${item.text}（解释置信度 ${item.confidence.value}）`),
     ...draft.missing_evidence.map(item =>
       `缺失证据：${item.text}${item.reason ? `（${item.reason}）` : ''}`),
   ];

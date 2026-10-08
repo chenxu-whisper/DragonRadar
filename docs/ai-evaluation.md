@@ -17,9 +17,15 @@ uv run python scripts/evaluate_ai.py --manifest tests/fixtures/ai_eval/manifest.
 
 ## 外部评估要求
 
-候选版本必须提供至少 100 个真实 `label_source: human` 样本，并同时包含互不重叠的
-`development` 与 `frozen_test`。相同 `input_hash` 不得跨分组出现。每个样本必须绑定
-清单级 model、prompt、retrieval 与 dataset 版本，不允许混用版本结果。
+候选版本必须提供至少 100 个真实人工样本，并同时包含互不重叠的 `development` 与
+`frozen_test`。`dragon-radar-ai-eval/v2` 的每个样本必须包含不可变 `lineage`：
+dataset、model、prompt、retrieval 版本以及输入、输出 SHA-256；还必须包含
+`label_provenance`：人工标注者、标注时间、证明编号、证明人和证明时间。缺失或无效证明
+使清单无效，工具不会替用户补造证明。
+
+相同 `sample_id` 不得跨分组出现，输入或输出 lineage 哈希也不得跨分组复用。报告分别
+计算并门禁 `development` 与 `frozen_test`，任一分组不达标都会阻断发布；开发集结果
+不能稀释或掩盖冻结测试集失败。
 
 发布阈值：
 
@@ -35,11 +41,14 @@ uv run python scripts/evaluate_ai.py --manifest tests/fixtures/ai_eval/manifest.
 
 服务端只接受 `facts / inferences / missing_evidence / citations` 结构。事实必须解析到任务
 创建时保存的不可变输入清单，校验 evidence ID、JSON Pointer、来源身份、可用时间和
-精确值。数值计算只运行服务端白名单函数并按来源精度比较。模型提供的
+精确值。显示文本中的数值先独立分词，再以 `Decimal` 精确值、精度和单位对照引用证据
+或白名单复算结果；不使用子串或浮点比较。数值计算只运行服务端白名单函数。模型提供的
 `verified`、工具调用、网络或写入动作字段不构成证据，并触发失败。
 
-置信度仅表示解释置信度，范围为 0 到 1；界面不得把它称为上涨概率。引用中的原始文本
-不会按脆弱关键词拦截，动作和指令边界由结构字段约束。
+推断必须有非空、有效且已引用的 `evidence_ids`。`claim.kind` 与
+`confidence.kind/value` 是结构字段；只接受 0 到 1 的 explanatory confidence，不接受
+概率式 confidence。监管结论必须由监管来源证据支持。界面不得把解释置信度称为上涨
+概率；引用中的原始文本不会按脆弱关键词拦截，动作和指令边界由结构字段约束。
 
 ## 发布、回滚与留痕
 

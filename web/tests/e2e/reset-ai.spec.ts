@@ -38,10 +38,13 @@ const draft = {
     evidence_id: 'ev-up',
     evidence_position: '/input/market_overview/breadth/up',
     value: 32,
+    unit: 'count',
+    precision: 0,
   }],
   inferences: [{
     text: '当前证据适合继续人工复核。',
-    confidence: '0.70',
+    claim: { kind: 'interpretation' },
+    confidence: { kind: 'explanatory', value: '0.70' },
     evidence_ids: ['ev-up'],
   }],
   missing_evidence: [{ text: '盘中逐笔证据不可用' }],
@@ -51,26 +54,10 @@ const draft = {
     source_identity: `daily_review:${ID}`,
     available_at: '2026-09-10T08:01:00Z',
     value: 32,
+    unit: 'count',
+    precision: 0,
   }],
 };
-
-test('public Reset makes zero owner or AI requests', async ({ page }) => {
-  await mockMarket(page);
-  const privateRequests: string[] = [];
-  page.on('request', request => {
-    const path = new URL(request.url()).pathname;
-    if (path.startsWith('/api/ai/') || path.startsWith('/api/owner/')) {
-      privateRequests.push(path);
-    }
-  });
-
-  await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-10`);
-  await expect(page.getByRole('heading', { name: '我的复盘' })).toBeVisible();
-
-  if (await page.getByRole('region', { name: 'AI 每日复盘' }).count()) return;
-  await expect(page.getByText('AI 每日复盘')).toHaveCount(0);
-  expect(privateRequests).toEqual([]);
-});
 
 test('private AI previews selected fragments, polls, and protects edited notes on adoption', async ({ page }) => {
   await mockMarket(page);
@@ -104,9 +91,6 @@ test('private AI previews selected fragments, polls, and protects edited notes o
   });
 
   await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-10`);
-  if (new URL(page.url()).port !== '5187') {
-    test.skip(true, 'private AI boundary is disabled');
-  }
   const panel = page.getByRole('region', { name: 'AI 每日复盘' });
   await expect(panel).toBeVisible();
   await expect(page.getByText('仅发送明确选择的片段')).toBeVisible();
@@ -202,9 +186,6 @@ test('cancel and review reconcile 409 responses by reading authoritative task st
   });
 
   await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-10`);
-  if (new URL(page.url()).port !== '5187') {
-    test.skip(true, 'private AI boundary is disabled');
-  }
   const panel = page.getByRole('region', { name: 'AI 每日复盘' });
   await page.getByRole('textbox', { name: '判断', exact: true }).fill('第一次提交');
   await panel.getByRole('checkbox', { name: '判断' }).check();

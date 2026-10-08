@@ -19,9 +19,13 @@ _FACT_FIELDS = {
     "evidence_id",
     "evidence_position",
     "value",
+    "unit",
+    "precision",
     "recomputation",
 }
-_INFERENCE_FIELDS = {"text", "confidence", "evidence_ids"}
+_INFERENCE_FIELDS = {"text", "claim", "confidence", "evidence_ids"}
+_CLAIM_FIELDS = {"kind"}
+_CONFIDENCE_FIELDS = {"kind", "value"}
 _MISSING_FIELDS = {"text", "reason"}
 _CITATION_FIELDS = {
     "evidence_id",
@@ -29,7 +33,10 @@ _CITATION_FIELDS = {
     "source_identity",
     "available_at",
     "value",
+    "unit",
+    "precision",
 }
+_CITATION_REQUIRED_FIELDS = _CITATION_FIELDS - {"unit", "precision"}
 _RECOMPUTATION_FIELDS = {"function", "evidence_ids", "result"}
 _DANGEROUS_FIELD_PARTS = {
     "action",
@@ -50,6 +57,10 @@ _FORGED_VALIDATION_FIELDS = {
     "verified",
 }
 _DECIMAL = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.(\d+))?$")
+_DISPLAYED_DECIMAL = re.compile(
+    r"(?<![\w.-])-?(?:0|[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*)"
+    r"(?:\.(\d+))?(?![\w-]|\.\d)"
+)
 
 
 @dataclass(frozen=True)
@@ -159,6 +170,31 @@ def _precision(value: object) -> int | None:
     return len(match.group(1) or "") if match else None
 
 
+def _displayed_decimals(text: str) -> list[tuple[Decimal, int]]:
+    values: list[tuple[Decimal, int]] = []
+    for match in _DISPLAYED_DECIMAL.finditer(text):
+        value = _decimal(match.group(0).replace(",", ""))
+        if value is not None:
+            values.append((value, len(match.group(1) or "")))
+    return values
+
+
+def _numeric_metadata(value: Mapping) -> tuple[Decimal, int, str] | None:
+    number = _decimal(value.get("value"))
+    if number is None:
+        return None
+    precision = value.get("precision")
+    unit = value.get("unit")
+    if (
+        type(precision) is not int
+        or not 0 <= precision <= 12
+        or not isinstance(unit, str)
+        or not unit
+    ):
+        return None
+    return number, precision, unit
+
+
 def recompute_claim(
     function: str,
     values: Sequence[Decimal],
@@ -265,7 +301,7 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
 
     citations_by_reference: dict[tuple[str, str], Mapping] = {}
     for citation in output["citations"]:
-        if set(citation) != _CITATION_FIELDS:
+        if not _CITATION_REQUIRED_FIELDS <= set(citation) <= _CITATION_FIELDS:
             _append(errors, "citation_invalid")
             continue
         evidence_id = citation.get("evidence_id")
@@ -289,6 +325,12 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
                 _append(errors, "future_evidence")
         if not _equal_json(citation.get("value"), entry["value"]):
             _append(errors, "citation_value_mismatch")
+        entry_numeric = _numeric_metadata(entry)
+        if entry_numeric is not None and (
+            citation.get("precision") != entry_numeric[1]
+            or citation.get("unit") != entry_numeric[2]
+        ):
+            _append(errors, "citation_numeric_metadata_mismatch")
         citations_by_reference[(evidence_id, position)] = citation
 
     for fact in output["facts"]:
@@ -316,13 +358,8 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
             _append(errors, "cited_value_mismatch")
         if not isinstance(text, str) or not text.strip():
             _append(errors, "fact_invalid")
-        elif (
-            fact.get("recomputation") is None
-            and isinstance(entry["value"], (str, int))
-            and str(entry["value"]) not in text
-        ):
-            _append(errors, "fact_text_unsupported")
         recomputation = fact.get("recomputation")
+        numeric_support: tuple[Decimal, int, str] | None = None
         if recomputation is not None:
             if (
                 not isinstance(recomputation, Mapping)
@@ -370,29 +407,114 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
                 else:
                     if recomputation.get("result") != result:
                         _append(errors, "recomputation_mismatch")
-                    if isinstance(text, str) and result not in text:
-                        _append(errors, "fact_text_unsupported")
+                    units = {
+                        evidence[argument_id].get("unit")
+                        for argument_id in ids
+                        if isinstance(argument_id, str) and argument_id in evidence
+                    }
+                    function = recomputation.get("function")
+                    if (
+                        function in {"identity", "sum", "difference"}
+                        and len(units) == 1
+                    ):
+                        result_unit = units.pop()
+                    elif function == "ratio":
+                        result_unit = "ratio"
+                    elif function == "percent_change":
+                        result_unit = "fraction"
+                    else:
+                        result_unit = None
+                    result_number = _decimal(result)
+                    if (
+                        result_number is None
+                        or not isinstance(result_unit, str)
+                        or not result_unit
+                    ):
+                        _append(errors, "recomputation_invalid")
+                    else:
+                        numeric_support = (
+                            result_number,
+                            _precision(result) or 0,
+                            result_unit,
+                        )
+        else:
+            numeric_support = _numeric_metadata(entry)
+            if _decimal(entry.get("value")) is not None and numeric_support is None:
+                _append(errors, "manifest_numeric_metadata_invalid")
+        if numeric_support is not None:
+            if (
+                fact.get("precision") != numeric_support[1]
+                or fact.get("unit") != numeric_support[2]
+            ):
+                _append(errors, "numeric_claim_metadata_mismatch")
+            if isinstance(text, str) and any(
+                token != numeric_support[:2] for token in _displayed_decimals(text)
+            ):
+                _append(errors, "fact_text_unsupported")
+            elif isinstance(text, str) and not _displayed_decimals(text):
+                _append(errors, "fact_text_unsupported")
+        elif isinstance(text, str) and isinstance(entry.get("value"), str):
+            evidence_tokens = set(_displayed_decimals(entry["value"]))
+            if any(token not in evidence_tokens for token in _displayed_decimals(text)):
+                _append(errors, "fact_text_unsupported")
 
     for inference in output["inferences"]:
         if set(inference) != _INFERENCE_FIELDS:
             _append(errors, "inference_invalid")
             continue
-        confidence = _decimal(inference.get("confidence"))
+        claim = inference.get("claim")
+        confidence_metadata = inference.get("confidence")
+        claim_kind = (
+            claim.get("kind")
+            if isinstance(claim, Mapping) and set(claim) == _CLAIM_FIELDS
+            else None
+        )
+        confidence_kind = (
+            confidence_metadata.get("kind")
+            if isinstance(confidence_metadata, Mapping)
+            and set(confidence_metadata) == _CONFIDENCE_FIELDS
+            else None
+        )
+        confidence = (
+            _decimal(confidence_metadata.get("value"))
+            if isinstance(confidence_metadata, Mapping)
+            else None
+        )
         ids = inference.get("evidence_ids")
+        if isinstance(ids, (list, tuple)) and not ids:
+            _append(errors, "inference_evidence_absent")
+        if confidence_kind == "probability":
+            _append(errors, "probability_confidence_forbidden")
+        valid_ids = (
+            isinstance(ids, (list, tuple))
+            and bool(ids)
+            and all(isinstance(item, str) and item for item in ids)
+            and len(set(ids)) == len(ids)
+            and all(item in evidence for item in ids)
+        )
         if (
             not isinstance(inference.get("text"), str)
             or not inference["text"].strip()
+            or claim_kind not in {"interpretation", "regulatory_conclusion"}
+            or confidence_kind != "explanatory"
             or confidence is None
             or not Decimal(0) <= confidence <= Decimal(1)
-            or not isinstance(ids, (list, tuple))
-            or any(item not in evidence for item in ids)
+            or not valid_ids
         ):
             _append(errors, "inference_invalid")
-        elif any(
+        elif valid_ids and any(
             not any(reference[0] == item for reference in citations_by_reference)
             for item in ids
         ):
             _append(errors, "inference_citation_absent")
+        if claim_kind == "regulatory_conclusion" and (
+            not valid_ids
+            or not any(
+                evidence[item]["source_identity"].startswith("regulation:")
+                for item in ids
+            )
+        ):
+            _append(errors, "unsupported_regulatory_conclusion")
 
     for missing in output["missing_evidence"]:
         if (
@@ -434,11 +556,33 @@ def build_manifest_evidence(
     default_identity = f"{task_type}:{snapshot_id}"
     entries: list[dict] = []
 
+    def scalar_unit(key: str, parent: Mapping | None) -> str:
+        if parent is not None:
+            direct = parent.get(f"{key}_unit")
+            if isinstance(direct, str) and direct:
+                return direct
+            if key in {"open", "high", "low", "close", "last", "previous_close"}:
+                price_unit = parent.get("price_unit")
+                if isinstance(price_unit, str) and price_unit:
+                    return price_unit
+            if key == "volume":
+                volume_unit = parent.get("volume_unit")
+                if isinstance(volume_unit, str) and volume_unit:
+                    return volume_unit
+            if key in {"amount", "market_cap", "seal_amount"}:
+                amount_unit = parent.get("amount_unit")
+                if isinstance(amount_unit, str) and amount_unit:
+                    return amount_unit
+            if key.endswith(("ratio", "_rate", "_share")):
+                return "fraction"
+        return "count" if key.endswith(("count", "_days")) else "dimensionless"
+
     def visit(
         value: object,
         path: list[str],
         available_at: str,
         source_identity: str,
+        parent: Mapping | None = None,
     ) -> None:
         if isinstance(value, Mapping):
             local_available = next(
@@ -458,6 +602,8 @@ def build_manifest_evidence(
                     f"news:{value['source']}:{value['source_version']}:"
                     f"{source_revision or 'unknown-revision'}"
                 )
+            elif "regulation" in path:
+                local_identity = f"regulation:{snapshot_id}:{publication['version']}"
             elif isinstance(value.get("security_id"), str):
                 local_identity = (
                     f"market:{snapshot_id}:{value['security_id']}:"
@@ -471,6 +617,7 @@ def build_manifest_evidence(
                     [*path, str(key)],
                     local_available,
                     local_identity,
+                    value,
                 )
             return
         if isinstance(value, (list, tuple)):
@@ -498,6 +645,7 @@ def build_manifest_evidence(
         precision = _precision(value)
         if precision is not None:
             entry["precision"] = precision
+            entry["unit"] = scalar_unit(path[-1], parent)
         entries.append(entry)
 
     visit(

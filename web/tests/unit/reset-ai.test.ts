@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
@@ -14,6 +15,8 @@ import {
   pollDecision,
   taskPresentation,
 } from '../../src/features/ai/tasks';
+import { AdoptionCommandCache } from '../../src/features/local-review/adoption-command';
+import { LocalRepository, type SaveNote } from '../../src/repositories/local/repository';
 
 const task = {
   task_id: '00000000-0000-4000-8000-000000000001',
@@ -163,9 +166,167 @@ describe('dedicated AI client', () => {
       forged: true,
     })).toThrow('receipt');
   });
+
+  test('requires exact numeric and structured inference metadata', () => {
+    const content = {
+      facts: [{
+        text: 'The published close was 12.30.',
+        evidence_id: 'ev-close',
+        evidence_position: '/input/stock/close',
+        value: '12.30',
+        unit: 'currency/share',
+        precision: 2,
+      }],
+      inferences: [{
+        text: 'The evidence supports owner review.',
+        claim: { kind: 'interpretation' },
+        confidence: { kind: 'explanatory', value: '0.70' },
+        evidence_ids: ['ev-close'],
+      }],
+      missing_evidence: [],
+      citations: [{
+        evidence_id: 'ev-close',
+        evidence_position: '/input/stock/close',
+        source_identity: 'market:TEST001:v1',
+        available_at: '2026-09-10T08:01:00Z',
+        value: '12.30',
+        unit: 'currency/share',
+        precision: 2,
+      }],
+    };
+    const complete = {
+      ...task,
+      status: 'succeeded',
+      verification_status: 'passed',
+      content_draft: content,
+      revision: 1,
+      content_draft_source: 'provider',
+      content_draft_created_at: '2026-09-10T08:01:02Z',
+      ai_generated: true,
+    };
+
+    expect(validateTask(complete).content_draft).toEqual(content);
+    expect(() => validateTask({
+      ...complete,
+      content_draft: {
+        ...content,
+        facts: [{
+          text: 'The published close was 12.30.',
+          evidence_id: 'ev-close',
+          evidence_position: '/input/stock/close',
+          value: '12.30',
+        }],
+      },
+    })).toThrow('AI task response');
+    expect(() => validateTask({
+      ...complete,
+      content_draft: {
+        ...content,
+        inferences: [{
+          text: 'Legacy scalar confidence.',
+          confidence: '0.70',
+          evidence_ids: ['ev-close'],
+        }],
+      },
+    })).toThrow('AI task response');
+  });
 });
 
 describe('AI task and notes state', () => {
+  const adoptionPayload = {
+    expected_revision: 0,
+    snapshot_id: 'snapshot-1',
+    trade_date: '2026-09-10',
+    security_id: 'TEST001',
+    content: {
+      title: 'AI draft',
+      content: 'Exact payload',
+      judgment: '',
+      evidence: '',
+      invalid_condition: '',
+      verify_date: '',
+    },
+  };
+
+  test('replays the exact adoption command after a lost response without duplication', async () => {
+    const repo = new LocalRepository(`adoption-${crypto.randomUUID()}`);
+    const commands = new AdoptionCommandCache();
+    const sent: SaveNote[] = [];
+    let loseResponse = true;
+    const transport = {
+      putNote: async (command: SaveNote) => {
+        sent.push(command);
+        const result = await repo.putNote(command);
+        if (loseResponse) {
+          loseResponse = false;
+          throw new Error('response lost after commit');
+        }
+        return result;
+      },
+    };
+
+    await expect(commands.execute(transport, {
+      taskRevision: 7,
+      strategy: 'save_as_new',
+      payload: adoptionPayload,
+    })).rejects.toThrow('response lost');
+    const replay = await commands.execute(transport, {
+      taskRevision: 7,
+      strategy: 'save_as_new',
+      payload: adoptionPayload,
+    });
+
+    expect(sent[1]).toEqual(sent[0]);
+    expect(replay.revision).toBe(1);
+    expect(await repo.revisions(sent[0].note_id)).toHaveLength(1);
+    repo.close();
+  });
+
+  test('changes adoption identity when revision, strategy, or exact payload changes', async () => {
+    const commands = new AdoptionCommandCache();
+    const sent: SaveNote[] = [];
+    const uncertain = {
+      putNote: async (command: SaveNote) => {
+        sent.push(command);
+        throw new Error('uncertain');
+      },
+    };
+    const run = (taskRevision: number, strategy: 'replace' | 'merge', content: string) =>
+      commands.execute(uncertain, {
+        taskRevision,
+        strategy,
+        payload: {
+          ...adoptionPayload,
+          content: { ...adoptionPayload.content, content },
+        },
+      }).catch(() => undefined);
+
+    await run(1, 'replace', 'same');
+    await run(1, 'replace', 'same');
+    await run(2, 'replace', 'same');
+    await run(2, 'merge', 'same');
+    await run(2, 'merge', 'changed');
+    const { security_id: _securityId, ...withoutSecurity } = adoptionPayload;
+    await commands.execute(uncertain, {
+      taskRevision: 3,
+      strategy: 'replace',
+      payload: withoutSecurity,
+    }).catch(() => undefined);
+    await commands.execute(uncertain, {
+      taskRevision: 3,
+      strategy: 'replace',
+      payload: { ...withoutSecurity, security_id: undefined },
+    }).catch(() => undefined);
+
+    expect(sent[1]).toEqual(sent[0]);
+    for (const command of sent.slice(2)) {
+      expect(command.note_id).not.toBe(sent[0].note_id);
+      expect(command.key).not.toBe(sent[0].key);
+    }
+    expect(sent[6].note_id).not.toBe(sent[5].note_id);
+    expect(sent[6].key).not.toBe(sent[5].key);
+  });
+
   test('keeps polling terminal success until the selected draft is returned', () => {
     expect(pollDecision({ ...task, status: 'succeeded' })).toEqual({
       poll: true,

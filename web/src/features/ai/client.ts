@@ -9,6 +9,8 @@ export interface AIFact {
   evidence_id: string;
   evidence_position: string;
   value: unknown;
+  unit?: string;
+  precision?: number;
   recomputation?: {
     function: string;
     evidence_ids: string[];
@@ -18,7 +20,13 @@ export interface AIFact {
 
 export interface AIInference {
   text: string;
-  confidence: string;
+  claim: {
+    kind: 'interpretation' | 'regulatory_conclusion';
+  };
+  confidence: {
+    kind: 'explanatory';
+    value: string;
+  };
   evidence_ids: string[];
 }
 
@@ -33,6 +41,8 @@ export interface AICitation {
   source_identity: string;
   available_at: string;
   value: unknown;
+  unit?: string;
+  precision?: number;
 }
 
 export interface AIDraftContent {
@@ -136,12 +146,41 @@ function exactKeys(value: Record<string, unknown>, required: string[]): boolean 
     && required.every(key => Object.hasOwn(value, key));
 }
 
+function exactOptionalKeys(
+  value: Record<string, unknown>,
+  required: string[],
+  optional: string[],
+): boolean {
+  const keys = Object.keys(value);
+  return required.every(key => Object.hasOwn(value, key))
+    && keys.every(key => required.includes(key) || optional.includes(key));
+}
+
+function numericMetadata(value: Record<string, unknown>): boolean {
+  const hasUnit = Object.hasOwn(value, 'unit');
+  const hasPrecision = Object.hasOwn(value, 'precision');
+  const isNumeric = Number.isSafeInteger(value.value)
+    || (typeof value.value === 'string'
+      && /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value.value));
+  return hasUnit === hasPrecision && (!isNumeric || hasUnit) && (!hasUnit || (
+    typeof value.unit === 'string'
+    && value.unit.length > 0
+    && Number.isSafeInteger(value.precision)
+    && Number(value.precision) >= 0
+    && Number(value.precision) <= 12
+  ));
+}
+
 function validDraft(value: unknown): value is AIDraftContent {
   if (!record(value) || !exactKeys(value, ['facts', 'inferences', 'missing_evidence', 'citations'])) return false;
   if (!Array.isArray(value.facts) || !value.facts.every(item => {
     if (!record(item)
-      || !(exactKeys(item, ['text', 'evidence_id', 'evidence_position', 'value'])
-        || exactKeys(item, ['text', 'evidence_id', 'evidence_position', 'value', 'recomputation']))
+      || !exactOptionalKeys(
+        item,
+        ['text', 'evidence_id', 'evidence_position', 'value'],
+        ['unit', 'precision', 'recomputation'],
+      )
+      || !numericMetadata(item)
       || typeof item.text !== 'string'
       || typeof item.evidence_id !== 'string'
       || typeof item.evidence_position !== 'string') return false;
@@ -155,11 +194,20 @@ function validDraft(value: unknown): value is AIDraftContent {
   })) return false;
   if (!Array.isArray(value.inferences) || !value.inferences.every(item =>
     record(item)
-    && exactKeys(item, ['text', 'confidence', 'evidence_ids'])
+    && exactKeys(item, ['text', 'claim', 'confidence', 'evidence_ids'])
     && typeof item.text === 'string'
-    && typeof item.confidence === 'string'
+    && record(item.claim)
+    && exactKeys(item.claim, ['kind'])
+    && ['interpretation', 'regulatory_conclusion'].includes(String(item.claim.kind))
+    && record(item.confidence)
+    && exactKeys(item.confidence, ['kind', 'value'])
+    && item.confidence.kind === 'explanatory'
+    && typeof item.confidence.value === 'string'
+    && /^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(item.confidence.value)
     && Array.isArray(item.evidence_ids)
-    && item.evidence_ids.every(id => typeof id === 'string'))) return false;
+    && item.evidence_ids.length > 0
+    && new Set(item.evidence_ids).size === item.evidence_ids.length
+    && item.evidence_ids.every(id => typeof id === 'string' && id.length > 0))) return false;
   if (!Array.isArray(value.missing_evidence) || !value.missing_evidence.every(item =>
     record(item)
     && (exactKeys(item, ['text']) || exactKeys(item, ['text', 'reason']))
@@ -167,7 +215,12 @@ function validDraft(value: unknown): value is AIDraftContent {
     && (item.reason === undefined || typeof item.reason === 'string'))) return false;
   return Array.isArray(value.citations) && value.citations.every(item =>
     record(item)
-    && exactKeys(item, ['evidence_id', 'evidence_position', 'source_identity', 'available_at', 'value'])
+    && exactOptionalKeys(
+      item,
+      ['evidence_id', 'evidence_position', 'source_identity', 'available_at', 'value'],
+      ['unit', 'precision'],
+    )
+    && numericMetadata(item)
     && typeof item.evidence_id === 'string'
     && typeof item.evidence_position === 'string'
     && typeof item.source_identity === 'string'

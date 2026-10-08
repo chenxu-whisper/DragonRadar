@@ -30,8 +30,9 @@ import {
   type NoteField,
   type NoteFields,
 } from './tasks';
+import type { AdoptionStrategy } from '../local-review/adoption-command';
 
-export type AdoptionStrategy = 'replace' | 'merge' | 'save_as_new';
+export type { AdoptionStrategy } from '../local-review/adoption-command';
 
 export interface TaskPanelProps {
   taskType: AITaskType;
@@ -214,7 +215,8 @@ export function TaskPanel(props: TaskPanelProps) {
         facts: [],
         inferences: [{
           text: editText,
-          confidence: '0.50',
+          claim: { kind: 'interpretation' },
+          confidence: { kind: 'explanatory', value: '0.50' },
           evidence_ids: task.content_draft.citations.map(item => item.evidence_id),
         }],
         missing_evidence: task.content_draft.missing_evidence,
@@ -338,7 +340,7 @@ export function TaskPanel(props: TaskPanelProps) {
       {task.content_draft.inferences.length > 0 && <section><h4>推断</h4><ul>
         {task.content_draft.inferences.map((item, index) =>
           <li key={`${item.text}:${index}`}>{item.text}
-            <small>解释置信度 {item.confidence}</small></li>)}
+            <small>解释置信度 {item.confidence.value}</small></li>)}
       </ul></section>}
       {task.content_draft.missing_evidence.length > 0 && <section><h4>缺失证据</h4><ul>
         {task.content_draft.missing_evidence.map((item, index) =>

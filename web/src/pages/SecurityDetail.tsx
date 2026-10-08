@@ -11,6 +11,11 @@ import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/l
 import { newsListPath } from '../features/news/api';
 import type { NewsListResponse } from '../features/news/types';
 import { localRepository } from '../repositories/local/repository';
+import type { AITask } from '../features/ai/client';
+import {
+  AdoptionCommandCache,
+  type AdoptionStrategy,
+} from '../features/local-review/adoption-command';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
@@ -27,6 +32,7 @@ const yesNo = (value: boolean | null) => value === null ? '—' : value ? '是' 
 function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, ReviewActions, patch }: {
   state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent; patch: Patch;
 }) {
+  const adoptionCommands = useRef(new AdoptionCommandCache());
   const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
     ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
     : null, state.snapshot, refreshToken);
@@ -109,21 +115,27 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       lineStyle: { color: '#1759ad', width: 2 },
     }],
   }), [canDrawCandles, rawData]);
-  const adoptExplanation = async (text: string) => {
-    const result = await localRepository.putNote({
-      note_id: crypto.randomUUID(),
-      key: crypto.randomUUID(),
-      expected_revision: 0,
-      snapshot_id: state.snapshot,
-      trade_date: state.date,
-      security_id: id,
-      content: {
-        title: `AI 个股解释 · ${modernData?.name || id}`.slice(0, 100),
-        content: text,
-        judgment: '',
-        evidence: '',
-        invalid_condition: '',
-        verify_date: '',
+  const adoptExplanation = async (
+    text: string,
+    context: { strategy: AdoptionStrategy; task: AITask },
+  ) => {
+    if (context.task.revision === null) throw new Error('AI 草稿修订无效，未保存。');
+    const result = await adoptionCommands.current.execute(localRepository, {
+      taskRevision: context.task.revision,
+      strategy: context.strategy,
+      payload: {
+        expected_revision: 0,
+        snapshot_id: state.snapshot,
+        trade_date: state.date,
+        security_id: id,
+        content: {
+          title: `AI 个股解释 · ${modernData?.name || id}`.slice(0, 100),
+          content: text,
+          judgment: '',
+          evidence: '',
+          invalid_condition: '',
+          verify_date: '',
+        },
       },
     });
     return `已保存 · revision ${result.revision} · 回读验证通过`;

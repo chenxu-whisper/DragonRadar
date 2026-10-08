@@ -1,5 +1,5 @@
 import { ExternalLink, FileText, Link2, Search } from 'lucide-react';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 
 import { Pager, ResourceStatus, type Patch } from '../components/Common';
 import {
@@ -14,6 +14,11 @@ import type {
 } from '../features/news/types';
 import { useResource } from '../hooks/useResource';
 import { localRepository } from '../repositories/local/repository';
+import type { AITask } from '../features/ai/client';
+import {
+  AdoptionCommandCache,
+  type AdoptionStrategy,
+} from '../features/local-review/adoption-command';
 import type { ResearchState } from '../state';
 
 const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
@@ -59,21 +64,29 @@ function ArticleDetail({
   publicationAsOf?: string;
   publicationVersion?: string;
 }) {
-  const adopt = async (text: string, label: string) => {
-    const result = await localRepository.putNote({
-      note_id: crypto.randomUUID(),
-      key: crypto.randomUUID(),
-      expected_revision: 0,
-      snapshot_id: state.snapshot,
-      trade_date: state.date,
-      security_id: article.securities[0]?.security_id,
-      content: {
-        title: `${label} · ${article.title}`.slice(0, 100),
-        content: text,
-        judgment: '',
-        evidence: '',
-        invalid_condition: '',
-        verify_date: '',
+  const adoptionCommands = useRef(new AdoptionCommandCache());
+  const adopt = async (
+    text: string,
+    label: string,
+    context: { strategy: AdoptionStrategy; task: AITask },
+  ) => {
+    if (context.task.revision === null) throw new Error('AI 草稿修订无效，未保存。');
+    const result = await adoptionCommands.current.execute(localRepository, {
+      taskRevision: context.task.revision,
+      strategy: context.strategy,
+      payload: {
+        expected_revision: 0,
+        snapshot_id: state.snapshot,
+        trade_date: state.date,
+        security_id: article.securities[0]?.security_id,
+        content: {
+          title: `${label} · ${article.title}`.slice(0, 100),
+          content: text,
+          judgment: '',
+          evidence: '',
+          invalid_condition: '',
+          verify_date: '',
+        },
       },
     });
     return `已保存 · revision ${result.revision} · 回读验证通过`;
@@ -104,7 +117,7 @@ function ArticleDetail({
           version={publicationVersion}
           date={state.date}
           articleId={article.article_id}
-          onAdopt={(text) => adopt(text, 'AI 消息摘要')}
+          onAdopt={(text, context) => adopt(text, 'AI 消息摘要', context)}
         />
         <AITaskPanel
           taskType="topic_suggest"
@@ -113,7 +126,7 @@ function ArticleDetail({
           version={publicationVersion}
           date={state.date}
           articleId={article.article_id}
-          onAdopt={(text) => adopt(text, 'AI 题材建议')}
+          onAdopt={(text, context) => adopt(text, 'AI 题材建议', context)}
         />
       </Suspense>
     </div>}

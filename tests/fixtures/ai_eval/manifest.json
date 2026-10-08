@@ -1,5 +1,5 @@
 {
-  "schema_version": "dragon-radar-ai-eval/v1",
+  "schema_version": "dragon-radar-ai-eval/v2",
   "dataset_version": "external-human-pending",
   "model_version": "not-evaluated",
   "prompt_version": "prompt-v1",

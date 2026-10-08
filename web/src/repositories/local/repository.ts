@@ -45,7 +45,7 @@ export interface LocalImportWrites {
 export interface LocalImportPlan extends LocalImportWrites {
   expected_state: LocalBackupState;
 }
-interface SaveNote {
+export interface SaveNote {
   note_id: string; expected_revision: number; key: string; snapshot_id: string;
   trade_date?: string | null; security_id?: string | null; content: NoteContent;
 }

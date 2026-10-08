@@ -46,6 +46,7 @@ def _manifest() -> dict:
                 "available_at": NOW.isoformat(),
                 "value": "12.30",
                 "precision": 2,
+                "unit": "currency/share",
             },
             {
                 "evidence_id": "stock-summary",
@@ -66,12 +67,15 @@ def _output() -> dict:
                 "evidence_id": "stock-close",
                 "evidence_position": "/input/stock/close",
                 "value": "12.30",
+                "precision": 2,
+                "unit": "currency/share",
             }
         ],
         "inferences": [
             {
                 "text": "The snapshot supports further owner review.",
-                "confidence": "0.70",
+                "claim": {"kind": "interpretation"},
+                "confidence": {"kind": "explanatory", "value": "0.70"},
                 "evidence_ids": ["stock-close"],
             }
         ],
@@ -83,6 +87,8 @@ def _output() -> dict:
                 "source_identity": "market:TEST001:v1",
                 "available_at": NOW.isoformat(),
                 "value": "12.30",
+                "precision": 2,
+                "unit": "currency/share",
             }
         ],
     }
@@ -147,6 +153,88 @@ def test_verification_requires_citations_for_inference_evidence():
     assert "inference_citation_absent" in result.error_codes
 
 
+def test_numeric_claim_tokens_do_not_use_substring_support():
+    from dragon_radar.ai.verification import verify_output
+
+    manifest = _manifest()
+    manifest["input"]["stock"]["close"] = "2"
+    manifest["evidence"][0].update(value="2", precision=0, unit="count")
+    output = _output()
+    output["facts"][0].update(
+        text="The published count was 12.",
+        value="2",
+        precision=0,
+        unit="count",
+    )
+    output["citations"][0]["value"] = "2"
+    output["citations"][0].update(precision=0, unit="count")
+
+    result = verify_output(manifest, output)
+
+    assert result.status == "failed"
+    assert "fact_text_unsupported" in result.error_codes
+
+
+def test_numeric_claim_requires_exact_unit_and_precision_metadata():
+    from dragon_radar.ai.verification import verify_output
+
+    manifest = _manifest()
+    manifest["evidence"][0]["unit"] = "currency/share"
+    output = _output()
+    output["facts"][0].update(precision=1, unit="currency")
+    output["citations"][0].update(precision=2, unit="currency/share")
+
+    result = verify_output(manifest, output)
+
+    assert result.status == "failed"
+    assert "numeric_claim_metadata_mismatch" in result.error_codes
+
+    output["facts"][0].update(precision=2, unit="currency/share")
+    assert verify_output(manifest, output).status == "passed"
+
+
+def test_inference_requires_nonempty_evidence_and_structured_confidence():
+    from dragon_radar.ai.verification import verify_output
+
+    output = _output()
+    output["inferences"][0] = {
+        "text": "The snapshot supports further owner review.",
+        "claim": {"kind": "interpretation"},
+        "confidence": {"kind": "explanatory", "value": "0.70"},
+        "evidence_ids": [],
+    }
+
+    empty = verify_output(_manifest(), output)
+    assert empty.status == "failed"
+    assert "inference_evidence_absent" in empty.error_codes
+
+    output["inferences"][0]["evidence_ids"] = [{"invalid": "unhashable"}]
+    malformed = verify_output(_manifest(), output)
+    assert malformed.status == "failed"
+    assert "inference_invalid" in malformed.error_codes
+
+    output["inferences"][0]["evidence_ids"] = ["stock-close"]
+    assert verify_output(_manifest(), output).status == "passed"
+
+
+def test_inference_rejects_probability_confidence_and_unsupported_regulation():
+    from dragon_radar.ai.verification import verify_output
+
+    output = _output()
+    output["inferences"][0] = {
+        "text": "This is structured metadata, not text classification.",
+        "claim": {"kind": "regulatory_conclusion"},
+        "confidence": {"kind": "probability", "value": "0.70"},
+        "evidence_ids": ["stock-close"],
+    }
+
+    result = verify_output(_manifest(), output)
+
+    assert result.status == "failed"
+    assert "probability_confidence_forbidden" in result.error_codes
+    assert "unsupported_regulatory_conclusion" in result.error_codes
+
+
 def test_verification_recomputes_whitelisted_numeric_claims_at_source_precision():
     from dragon_radar.ai.verification import recompute_claim, verify_output
 
@@ -160,6 +248,7 @@ def test_verification_recomputes_whitelisted_numeric_claims_at_source_precision(
             "available_at": NOW.isoformat(),
             "value": "10.00",
             "precision": 2,
+            "unit": "currency/share",
         }
     )
     output = _output()
@@ -168,6 +257,8 @@ def test_verification_recomputes_whitelisted_numeric_claims_at_source_precision(
         "evidence_id": "stock-close",
         "evidence_position": "/input/stock/close",
         "value": "12.30",
+        "precision": 2,
+        "unit": "currency/share",
         "recomputation": {
             "function": "difference",
             "evidence_ids": ["stock-close", "stock-previous-close"],
@@ -181,6 +272,8 @@ def test_verification_recomputes_whitelisted_numeric_claims_at_source_precision(
             "source_identity": "market:TEST001:v1",
             "available_at": NOW.isoformat(),
             "value": "10.00",
+            "precision": 2,
+            "unit": "currency/share",
         }
     )
 
@@ -316,8 +409,33 @@ def test_manifest_evidence_uses_most_specific_source_identity():
     assert title["source_identity"] == ("news:official-exchange:feed-v3:revision-2")
 
 
+def test_manifest_regulation_evidence_is_not_reclassified_as_market():
+    from dragon_radar.ai.verification import build_manifest_evidence
+
+    publication = _manifest()["publication"]
+    evidence = build_manifest_evidence(
+        "daily_review",
+        publication,
+        {
+            "regulation": {
+                "events": [{"security_id": "TEST001", "event_id": "formal-event-1"}]
+            }
+        },
+    )
+
+    event = next(
+        item
+        for item in evidence
+        if item["evidence_position"] == "/input/regulation/events/0/event_id"
+    )
+    assert event["source_identity"].startswith("regulation:")
+
+
 def _valid_output_for_task(task) -> dict:
     evidence = task.input_manifest["evidence"][0]
+    numeric_metadata = {
+        key: evidence[key] for key in ("precision", "unit") if key in evidence
+    }
     return {
         "facts": [
             {
@@ -325,6 +443,7 @@ def _valid_output_for_task(task) -> dict:
                 "evidence_id": evidence["evidence_id"],
                 "evidence_position": evidence["evidence_position"],
                 "value": evidence["value"],
+                **numeric_metadata,
             }
         ],
         "inferences": [],
@@ -338,7 +457,10 @@ def _valid_output_for_task(task) -> dict:
                     "source_identity",
                     "available_at",
                     "value",
+                    "precision",
+                    "unit",
                 )
+                if key in evidence
             }
         ],
     }
@@ -431,7 +553,7 @@ def test_late_provider_result_never_replaces_selected_human_revision(
 
 def _evaluation_manifest(samples: list[dict]) -> dict:
     return {
-        "schema_version": "dragon-radar-ai-eval/v1",
+        "schema_version": "dragon-radar-ai-eval/v2",
         "dataset_version": "external-human-test-v1",
         "model_version": "model-v1",
         "prompt_version": "prompt-v1",
@@ -445,11 +567,22 @@ def _evaluation_sample(index: int, split: str) -> dict:
     return {
         "sample_id": f"sample-{index}",
         "split": split,
-        "label_source": "human",
-        "input_hash": f"{index:064x}",
-        "model_version": "model-v1",
-        "prompt_version": "prompt-v1",
-        "retrieval_version": "r1",
+        "lineage": {
+            "dataset_version": "external-human-test-v1",
+            "model_version": "model-v1",
+            "prompt_version": "prompt-v1",
+            "retrieval_version": "r1",
+            "input_hash": f"{index:064x}",
+            "output_hash": f"{index + 1000:064x}",
+        },
+        "label_provenance": {
+            "source": "human",
+            "annotator_id": f"annotator-{index % 2}",
+            "labeled_at": NOW.isoformat(),
+            "attestation_id": f"attestation-{index}",
+            "attested_by": f"reviewer-{index % 3}",
+            "attested_at": NOW.isoformat(),
+        },
         "fact_labels": [{"supported": True}],
         "numeric_consistent": True,
         "recomputation_consistent": True,
@@ -468,13 +601,13 @@ def test_evaluation_enforces_human_count_thresholds_and_split_separation():
         _evaluation_sample(index, "development" if index < 50 else "frozen_test")
         for index in range(100)
     ]
-    samples[-1]["input_hash"] = samples[0]["input_hash"]
+    samples[-1]["lineage"]["input_hash"] = samples[0]["lineage"]["input_hash"]
     leaked = evaluate_manifest(_evaluation_manifest(samples))
     assert leaked["release_status"] == "blocked"
-    assert "split_leakage" in leaked["blocking_reasons"]
+    assert "lineage_leakage" in leaked["blocking_reasons"]
 
     separated = deepcopy(samples)
-    separated[-1]["input_hash"] = f"{999:064x}"
+    separated[-1]["lineage"]["input_hash"] = f"{999:064x}"
     separated[-1]["numeric_consistent"] = False
     below_gate = evaluate_manifest(_evaluation_manifest(separated))
     assert below_gate["release_status"] == "blocked"
@@ -495,6 +628,55 @@ def test_evaluation_enforces_human_count_thresholds_and_split_separation():
     assert "safety_hard_failures_above_zero" in hard_failure["blocking_reasons"]
 
 
+def test_evaluation_requires_human_label_attestation_and_sample_lineage():
+    evaluate_manifest = _evaluator().evaluate_manifest
+
+    sample = _evaluation_sample(0, "development")
+    sample["label_provenance"].pop("attestation_id")
+    with pytest.raises(ValueError, match="label provenance"):
+        evaluate_manifest(_evaluation_manifest([sample]))
+
+    sample = _evaluation_sample(0, "development")
+    sample["lineage"].pop("output_hash")
+    with pytest.raises(ValueError, match="lineage"):
+        evaluate_manifest(_evaluation_manifest([sample]))
+
+
+def test_evaluation_detects_sample_and_output_lineage_leakage():
+    evaluate_manifest = _evaluator().evaluate_manifest
+
+    development = _evaluation_sample(0, "development")
+    frozen = _evaluation_sample(1, "frozen_test")
+    frozen["sample_id"] = development["sample_id"]
+    frozen["lineage"]["output_hash"] = development["lineage"]["output_hash"]
+
+    report = evaluate_manifest(_evaluation_manifest([development, frozen]))
+
+    assert "sample_leakage" in report["blocking_reasons"]
+    assert "lineage_leakage" in report["blocking_reasons"]
+    assert report["leakage"]["sample_count"] == 1
+    assert report["leakage"]["lineage_count"] == 1
+
+
+def test_frozen_gate_is_reported_and_cannot_be_hidden_by_good_development():
+    evaluate_manifest = _evaluator().evaluate_manifest
+    samples = [
+        _evaluation_sample(index, "development" if index < 50 else "frozen_test")
+        for index in range(100)
+    ]
+    samples[-1]["numeric_consistent"] = False
+
+    report = evaluate_manifest(_evaluation_manifest(samples))
+
+    assert report["splits"]["development"]["release_status"] == "eligible"
+    assert report["splits"]["frozen_test"]["release_status"] == "blocked"
+    assert (
+        "numeric_recomputation_consistency_below_100_percent"
+        in report["splits"]["frozen_test"]["blocking_reasons"]
+    )
+    assert report["release_status"] == "blocked"
+
+
 def test_checked_in_evaluation_manifest_truthfully_blocks_release():
     evaluate_file = _evaluator().evaluate_file
 
@@ -510,3 +692,25 @@ def test_checked_in_evaluation_manifest_truthfully_blocks_release():
         "prompt": "prompt-v1",
         "retrieval": "r1",
     }
+
+
+def test_private_deployment_build_enables_reset_and_ai():
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "deploy/private.Dockerfile").read_text(encoding="utf-8")
+
+    assert "ENV VITE_PRIVATE_REVIEW=1" in dockerfile
+    assert "ENV VITE_RESET_WORKBENCH=1" in dockerfile
+    assert "ENV VITE_PRIVATE_AI=1" in dockerfile
+
+
+def test_ai_playwright_configs_use_explicit_public_and_private_flags():
+    root = Path(__file__).resolve().parents[1] / "web"
+    private = (root / "playwright.ai.config.ts").read_text(encoding="utf-8")
+    public = (root / "playwright.ai-public.config.ts").read_text(encoding="utf-8")
+
+    assert "VITE_RESET_WORKBENCH: '1'" in private
+    assert "VITE_PRIVATE_AI: '1'" in private
+    assert "testMatch: 'reset-ai.spec.ts'" in private
+    assert "VITE_RESET_WORKBENCH: '1'" in public
+    assert "VITE_PRIVATE_AI: '0'" in public
+    assert "reset-ai-public.spec.ts" in public
