@@ -4,7 +4,7 @@ import { ID, mockMarket } from '../fixtures/market';
 const NOTE = '20000000-0000-4000-8000-000000000001';
 const DATE = '2026-09-10';
 const SECURITY = 'TEST001';
-const CANONICAL_SEARCH = `?view=overview&snapshot=${ID}&date=${DATE}&sort=security_id&order=asc&page=1&page_size=50&n=20&security=${SECURITY}&return_view=overview`;
+const CANONICAL_SEARCH = `?view=overview&snapshot=${ID}&date=${DATE}&sort=security_id&order=asc&page=1&page_size=50&n=20&security=${SECURITY}&return_view=overview&role=trend_leader`;
 
 interface HistoryObservation {
   calls: ('push' | 'replace')[];

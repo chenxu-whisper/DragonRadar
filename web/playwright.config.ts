@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  testIgnore: ['**/reset-ai.spec.ts', '**/reset-ai-public.spec.ts'],
+  testIgnore: '**/reset-*.spec.ts',
   outputDir: './.temp/playwright/results',
   fullyParallel: true,
   workers: 2,

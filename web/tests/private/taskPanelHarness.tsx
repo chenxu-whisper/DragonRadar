@@ -95,9 +95,11 @@ export async function mountTaskPanelHarness(operation: Operation): Promise<void>
   const root: Root = createRoot(host);
   let adoption: PendingAdoption | undefined;
   let snapshotId = firstSnapshot;
+  const originalFetch = window.fetch.bind(window);
 
   window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === 'string' ? input : input.toString();
+    if (!path.startsWith('/api/ai/')) return originalFetch(input, init);
     if (path === '/api/ai/topic-suggest' && operation !== 'submit') {
       return Promise.resolve(response(task(operation === 'cancel' ? 'running' : 'succeeded')));
     }

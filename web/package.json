@@ -12,6 +12,7 @@
     "check:bundle": "node scripts/check-default-bundle.mjs",
     "test": "vitest run && node --test scripts/*.test.mjs",
     "test:e2e": "playwright test --config playwright.config.ts",
+    "test:e2e:reset": "playwright test --config playwright.reset.config.ts",
     "test:e2e:private": "playwright test --config playwright.private.config.ts",
     "test:e2e:ai:public": "playwright test --config playwright.ai-public.config.ts",
     "test:e2e:ai:private": "playwright test --config playwright.ai.config.ts",

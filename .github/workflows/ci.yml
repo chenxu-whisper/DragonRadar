@@ -41,10 +41,8 @@ jobs:
       - run: uv run python -m compileall -q src tests
       - run: uv build --out-dir .temp/dist
 
-  web:
+  web_quality:
     runs-on: ubuntu-latest
-    env:
-      PLAYWRIGHT_CHANNEL: chromium
     defaults:
       run:
         working-directory: web
@@ -58,11 +56,101 @@ jobs:
       - run: npm run build
       - run: npm run check:bundle
       - run: VITE_PRIVATE_REVIEW=1 npm run build
+
+  web_e2e_legacy:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+  web_e2e_reset:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:reset
+
+  web_e2e_private:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e:private
+
+  web_e2e_ai_public:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e:ai:public
+
+  web_e2e_ai_private:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e:ai:private
+
+  web_production_isolation:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e:production-isolation
 
   private_scripts:
