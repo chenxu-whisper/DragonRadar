@@ -90,3 +90,29 @@ uv run pytest tests/test_reset_public_gateway.py -q
 Expected public behavior is `200` for health and authorized published reads,
 `403` for every write method, and `404` for owner, AI, administration,
 ingestion, publication mutation, and private analysis-job paths.
+
+## Task20 Base Acceptance
+
+Use only a disposable PostgreSQL database named `dragon_test`. The performance
+test creates and removes an isolated schema and writes evidence under `.temp/`.
+
+```powershell
+$env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-local-only@127.0.0.1:55432/dragon_test"
+uv run pytest -q -rs tests/performance/test_reset_queries.py
+uv run python scripts/verify_reset.py --performance-evidence .temp/acceptance/reset-performance.json --output .temp/acceptance/reset-base.json
+
+Set-Location web
+npm test
+npm run build
+npm run check:bundle
+npm run test:e2e:reset
+```
+
+`verify_reset.py` exits `2` when performance evidence is missing and `1` when
+evidence is invalid. A valid synthetic run exits `0` while its JSON report
+still records real input, official rules, model evaluation, public-sharing
+permit, and the 20-trading-day shadow run as independent not-run/blocked gates.
+It never treats absent Docker, PostgreSQL, or real-data evidence as a pass.
+
+Recovery behavior and observed synthetic metrics are recorded in
+[`docs/acceptance/reset-base.md`](acceptance/reset-base.md).

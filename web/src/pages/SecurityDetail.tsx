@@ -10,6 +10,7 @@ import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch 
 import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/labels';
 import { newsListPath } from '../features/news/api';
 import type { NewsListResponse } from '../features/news/types';
+import { CsvExportButton } from '../export/CsvExportButton';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
@@ -145,6 +146,61 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         ? modernData.roles.map(role => `${roleLabel(role.role_type)}：${evidenceStatusLabel(role.evidence_status)}`).join('；')
         : '暂无角色证据'}</p>
       {modernData.role_reason && <p className="detail-reasons">角色状态：{reasonLabel(modernData.role_reason)}</p>}
+      <CsvExportButton
+        scope="stock-current-filter"
+        label="导出当前筛选 CSV"
+        envelope={rawKline.data || modern.data!}
+        filters={{
+          security_id: id,
+          start: rawData?.adjusted_start ?? null,
+          end: rawData?.adjusted_end ?? null,
+          adjustment: rawData?.adjustment ?? null,
+        }}
+        columns={[
+          { key: 'record_type', header: 'record_type' },
+          { key: 'security_id', header: 'security_id' },
+          { key: 'row_trade_date', header: 'row_trade_date' },
+          { key: 'last', header: 'last' },
+          { key: 'change_ratio', header: 'change_ratio' },
+          { key: 'open', header: 'open' },
+          { key: 'high', header: 'high' },
+          { key: 'low', header: 'low' },
+          { key: 'close', header: 'close' },
+          { key: 'volume', header: 'volume' },
+          { key: 'amount', header: 'amount' },
+          { key: 'roles', header: 'roles' },
+          { key: 'formal_event_count', header: 'formal_event_count' },
+        ]}
+        rows={[
+          {
+            snapshot_id: modern.data!.snapshot_id,
+            record_type: 'quote',
+            security_id: modernData.security_id,
+            row_trade_date: modern.data!.trade_date,
+            last: modernData.quote.last,
+            change_ratio: modernData.quote.change_ratio,
+            open: null,
+            high: null,
+            low: null,
+            close: null,
+            volume: null,
+            amount: modernData.quote.amount,
+            roles: modernData.roles.map(role => role.role_type).join('|'),
+            formal_event_count: modernData.regulation.formal_event_count,
+          },
+          ...(rawData?.points || []).map(point => ({
+            snapshot_id: rawKline.data!.snapshot_id,
+            record_type: 'kline',
+            security_id: rawData!.security_id,
+            row_trade_date: point.trade_date,
+            last: null,
+            change_ratio: null,
+            ...point,
+            roles: '',
+            formal_event_count: null,
+          })),
+        ]}
+      />
       {rawData && <>
         <p className="muted">未复权价格 · 实际区间 {rawData.adjusted_start} 至 {rawData.adjusted_end} · 缺失处不连线</p>
         <Chart

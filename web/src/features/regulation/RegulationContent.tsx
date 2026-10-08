@@ -16,6 +16,7 @@ import type {
   RegulationStatusResponse,
   ReviewSwitch,
 } from './types';
+import { CsvExportButton } from '../../export/CsvExportButton';
 
 const completenessLabels: Record<CompletenessState, string> = {
   complete: '完整',
@@ -84,7 +85,48 @@ export function RegulationContent({
         <p className="eyebrow">数据完整性 / 数值计算 / 正式披露</p>
         <h1>监管</h1>
       </div>
-      <p className="muted">仅使用当前发布快照，不在读取时重算</p>
+      <div><p className="muted">仅使用当前发布快照，不在读取时重算</p>
+        {data && status.data && <CsvExportButton
+          scope="regulation-current-filter"
+          label="导出当前筛选 CSV"
+          envelope={status.data}
+          filters={{ date: state.date }}
+          columns={[
+            { key: 'record_type', header: 'record_type' },
+            { key: 'rule_id', header: 'rule_id' },
+            { key: 'record_rule_version', header: 'record_rule_version' },
+            { key: 'security_id', header: 'security_id' },
+            { key: 'state', header: 'state' },
+            { key: 'value', header: 'value' },
+            { key: 'effective_from', header: 'effective_from' },
+            { key: 'effective_to', header: 'effective_to' },
+          ]}
+          rows={[
+            ...data.region2_calc_state.map(item => ({
+              snapshot_id: status.data!.snapshot_id,
+              record_type: 'calculation',
+              rule_id: item.rule_id,
+              record_rule_version: item.rule_version,
+              security_id: item.security_id,
+              state: item.state,
+              value: item.computed_value,
+              effective_from: item.effective_from,
+              effective_to: item.effective_to,
+            })),
+            ...(eventData?.events || []).map(item => ({
+              snapshot_id: status.data!.snapshot_id,
+              record_type: 'event',
+              rule_id: item.rule_id,
+              record_rule_version: item.rule_version,
+              security_id: item.security_id,
+              state: item.display_state,
+              value: item.event_type,
+              effective_from: item.effective_from,
+              effective_to: item.effective_to,
+            })),
+          ]}
+        />}
+      </div>
     </div>
     <p className="notice regulation-scope" role="note">
       合成规则仅用于测试，不代表生产监管规则支持。

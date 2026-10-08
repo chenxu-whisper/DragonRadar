@@ -5,6 +5,7 @@ import type { ResetRankData, Snapshot, WorkbenchEnvelope } from '../../types';
 import { Exclusions, Pager, ResourceStatus, SearchForm, TableScroll, type Patch } from '../../components/Common';
 import { IntervalForm } from '../../components/IntervalForm';
 import { analysisRange, analysisSort } from './query';
+import { CsvExportButton } from '../../export/CsvExportButton';
 
 export interface ResetAnalysisProps {
   state: ResearchState;
@@ -76,7 +77,39 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
         <span>{response.data.window_days} 日区间 · 基准收益 {ratio(response.data.benchmark_return)}</span>
         <span>有效 {response.coverage.valid} / 应有 {response.coverage.expected} · 排除 {response.coverage.excluded} · 缺失 {response.coverage.missing}</span>
       </div>
-      <div className="section-heading"><h2>涨幅排行</h2><span className="muted">空值不参与有效排序，以 — 展示</span></div>
+      <div className="section-heading"><h2>涨幅排行</h2><div>
+        <span className="muted">空值不参与有效排序，以 — 展示</span>
+        <CsvExportButton
+          scope="analysis-current-page"
+          label="导出当前页 CSV"
+          envelope={response}
+          filters={{
+            start: response.data.adjusted_start,
+            end: response.data.adjusted_end,
+            q: state.q,
+            sort: analysisSort(state.sort),
+            order: state.order,
+            page: state.page,
+            page_size: state.page_size,
+            adjustment: state.adj,
+          }}
+          columns={[
+            { key: 'rank', header: 'rank' },
+            { key: 'security_id', header: 'security_id' },
+            { key: 'name', header: 'name' },
+            { key: 'topics', header: 'topics' },
+            { key: 'return_ratio', header: 'return_ratio' },
+            { key: 'excess_return_ratio', header: 'excess_return_ratio' },
+            { key: 'max_drawdown_ratio', header: 'max_drawdown_ratio' },
+            { key: 'amount_change_ratio', header: 'amount_change_ratio' },
+          ]}
+          rows={visible.map(item => ({
+            snapshot_id: response.snapshot_id,
+            ...item,
+            topics: item.topics.map(topic => `${topic.topic_id}:${topic.name}`).join('|'),
+          }))}
+        />
+      </div></div>
       <SearchForm value={state.q} onSearch={q => patch({ q, page: 1 })} />
       <TableScroll label="涨幅排行">
         <table aria-label="涨幅排行" className="responsive-record-table analysis-ranking">

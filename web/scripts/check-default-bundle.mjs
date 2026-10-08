@@ -43,7 +43,7 @@ for (const file of new Set([...staticAssets, ...allScripts])) {
     if (source.includes(marker)) throw new Error(`Default static asset contains private marker "${marker}": ${file}`);
   }
 }
-const entryBudget = process.env.VITE_PUBLIC_SHARING === '1' ? 320_000 : 315_100;
+const entryBudget = process.env.VITE_PUBLIC_SHARING === '1' ? 320_000 : 315_500;
 if (entryBytes > entryBudget) {
   throw new Error(`Entry is ${entryBytes} bytes; budget is ${entryBudget} bytes`);
 }

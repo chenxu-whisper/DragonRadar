@@ -5,7 +5,6 @@ import type { Envelope, Overview as Breadth, ResetHeatmap, ResetOverview, ResetS
 import type { ResearchState } from '../state';
 import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
-
 interface Props {
   state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, sector: string | undefined, trigger: HTMLElement) => void;
   compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>; reset?: boolean;
@@ -81,6 +80,13 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
               <button aria-pressed={state.market_filter === 'flat'} onClick={() => patch({ market_filter: 'flat' })}>平盘 {overview.breadth.flat}</button>
             </div>
             <SearchForm value={state.q} onSearch={q => patch({ q, page: 1 })} />
+            <div className="toolbar">
+              <button type="button" disabled={!selectedMembers.length} onClick={() => {
+                void import('../export/overview').then(module => module.downloadOverviewCsv(
+                  resetOverview.data!, state.market_filter, state.q, direction, selectedMembers,
+                ));
+              }}>导出当前筛选 CSV</button>
+            </div>
             <div className="filter-context" role="region" aria-label="证券筛选结果">
               <strong>{memberContext}</strong>
               <ul className="filter-members">{selectedMembers.map(item =>

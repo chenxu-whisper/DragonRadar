@@ -14,6 +14,7 @@ import type {
 } from '../features/news/types';
 import { useResource } from '../hooks/useResource';
 import type { ResearchState } from '../state';
+import { CsvExportButton } from '../export/CsvExportButton';
 
 const NewsAITools = import.meta.env.VITE_PRIVATE_AI === '1'
   ? lazy(() => import('../features/ai/NewsAITools'))
@@ -169,7 +170,35 @@ export function News({
   return <>
     <div className="page-heading">
       <div><p className="eyebrow">消息来源 / 时点证据</p><h1>消息</h1></div>
-      {data && <p className="muted">{data.total} 篇文章 · {data.event_count} 个事件</p>}
+      {data && <div>
+        <p className="muted">{data.total} 篇文章 · {data.event_count} 个事件</p>
+        <CsvExportButton
+          scope="news-current-page"
+          label="导出当前页 CSV"
+          envelope={list.data!}
+          filters={{
+            news_type: state.news_type,
+            news_source: state.news_source,
+            q: state.q,
+            page: data.page,
+            page_size: data.size,
+          }}
+          columns={[
+            { key: 'article_id', header: 'article_id' },
+            { key: 'article_type', header: 'article_type' },
+            { key: 'source', header: 'source' },
+            { key: 'source_version', header: 'source_version' },
+            { key: 'title', header: 'title' },
+            { key: 'published_at', header: 'published_at' },
+            { key: 'available_at', header: 'available_at' },
+            { key: 'revision', header: 'revision' },
+          ]}
+          rows={data.articles.map(article => ({
+            snapshot_id: list.data!.snapshot_id,
+            ...article,
+          }))}
+        />
+      </div>}
     </div>
     <div className="news-controls">
       <label>消息类型<select

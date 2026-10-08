@@ -62,6 +62,10 @@ describe('前端发布门禁', () => {
       web_e2e_ai_public: ['npm run test:e2e:ai:public'],
       web_e2e_ai_private: ['npm run test:e2e:ai:private'],
       web_production_isolation: ['npm run test:e2e:production-isolation'],
+      reset_performance: [
+        'uv run pytest -q -rs tests/performance/test_reset_queries.py',
+        'uv run python scripts/verify_reset.py --performance-evidence .temp/acceptance/reset-performance.json --output .temp/acceptance/reset-base.json',
+      ],
     };
 
     for (const [name, commands] of Object.entries(jobs)) {

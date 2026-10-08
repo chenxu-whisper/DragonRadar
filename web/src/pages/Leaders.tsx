@@ -22,6 +22,7 @@ import {
 } from '../features/roles/labels';
 import type { ResearchState } from '../state';
 import type { ResetHeatmap, WorkbenchEnvelope } from '../types';
+import { CsvExportButton } from '../export/CsvExportButton';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 export interface LeadersProps {
@@ -106,7 +107,26 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
 
   return <>
     <div className="page-heading leaders-heading"><div><p className="eyebrow">梯队结构 / 角色证据</p><h1>梯队</h1></div>
-      <span className="muted">{candidateResult.value?.rule_version || '规则版本未知'}</span></div>
+      <div><span className="muted">{candidateResult.value?.rule_version || '规则版本未知'}</span>
+        {candidateResult.value?.rule_version && candidateData && <CsvExportButton
+          scope="leaders-current-filter"
+          label="导出当前筛选 CSV"
+          envelope={candidateResult.value as RoleEnvelope<unknown> & { rule_version: string }}
+          filters={{ date: state.date, sector: state.sector, role: state.role }}
+          columns={[
+            { key: 'rank', header: 'rank' },
+            { key: 'security_id', header: 'security_id' },
+            { key: 'name', header: 'name' },
+            { key: 'sector_id', header: 'sector_id' },
+            { key: 'boards', header: 'boards' },
+            { key: 'evidence_status', header: 'evidence_status' },
+          ]}
+          rows={candidateData.candidates.map(item => ({
+            snapshot_id: candidateResult.value!.snapshot_id,
+            ...item,
+          }))}
+        />}
+      </div></div>
     <div className="leaders-controls" aria-label="梯队筛选">
       <label>交易日期<input type="date" value={state.date} onChange={event => patch({ date: event.target.value, snapshot: '' })} /></label>
       <label>题材<select aria-label="题材筛选" value={state.sector} onChange={event => patch({ sector: event.target.value })}>
