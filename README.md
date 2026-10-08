@@ -83,8 +83,10 @@ uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/rese
 ```
 
 `--mode focused` 只运行 CSV、Reset 验收、恢复、性能与 Python 静态门禁，
-缺少完整门禁时必然返回阻塞；`--mode validate --evidence <path>` 只消费并
-校验 v2 封闭证据结构。验证器要求完整且不重复的门禁 ID、精确允许的
+缺少完整门禁时必然返回阻塞。已有证据只能使用
+`--validate-existing <path>` 校验 v2 封闭证据结构；即使完整性校验通过也返回
+exit 3，且 integrity-only (`INTEGRITY_ONLY`) evidence cannot satisfy automated
+acceptance。验证器要求完整且不重复的门禁 ID、精确允许的
 argv/cwd/环境类别、正通过数、零失败与零跳过、日志及性能原始产物 SHA-256，
 并从原始字段推导状态和性能结论，不接受调用方填写状态自证通过。
 `tested_commit` 必须等于当前 `HEAD`；仅当当前 `HEAD` 只改动

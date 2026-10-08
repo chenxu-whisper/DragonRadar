@@ -111,7 +111,12 @@ jobs:
         working-directory: web
       - run: npx playwright install --with-deps chromium
         working-directory: web
+      - name: Prepare Task20 private TLS gateway
+        run: ./scripts/task20-private-tls.sh setup
       - run: uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
+      - name: Tear down Task20 private TLS gateway
+        if: always()
+        run: ./scripts/task20-private-tls.sh teardown
       - uses: actions/upload-artifact@v4
         if: always()
         with:
