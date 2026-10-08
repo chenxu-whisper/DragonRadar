@@ -524,12 +524,12 @@ ROLE_NAMES = {
 
 **文件：** 新建 `src/dragon_radar/http/public_app.py`、`access.py`、`tests/test_reset_public_gateway.py`、`compose.reset.yaml`、`deploy/{public,owner}.Caddyfile`、`scripts/start-reset.ps1`；修改 `owner/app.py`；新建 `docs/reset-running.md`。
 
-- [ ] 写失败用例：公网伪造Host/Forwarded/Cookie不能访问owner；写请求403；local_display=true而sharing=false的数据不可公开；第21个同IP并发请求受限。
-- [ ] 运行 `uv run pytest tests/test_reset_public_gateway.py -q` 确认失败。
-- [ ] public_app只装配白名单已发布GET/HEAD；不mount owner，不代理私有路径；对所有结果执行公开许可过滤，不能只依赖本地展示许可。
-- [ ] owner API在私有网络命名空间绑定127.0.0.1:8001，私有Caddy入口仅映射宿主127.0.0.1；公开Caddy与owner网络隔离。保留本机握手/HttpOnly/SameSite=Strict/CSRF和TLS。
-- [ ] 按可信连接来源做并发计数，不信任任意客户端X-Forwarded-For；统一20并发/IP、超额429，并在响应/取消时释放计数。
-- [ ] Compose内从公开服务尝试私有连接必须失败；测试错误与构建产物不含凭证，前端公开构建不初始化owner资料空间；提交 `feat: isolate public reads from owner operations`。
+- [x] 写失败用例：公网伪造Host/Forwarded/Cookie不能访问owner；写请求403；local_display=true而sharing=false的数据不可公开；第21个同IP并发请求受限。
+- [x] 运行 `uv run pytest tests/test_reset_public_gateway.py -q` 确认失败。
+- [x] public_app只装配白名单已发布GET/HEAD；不mount owner，不代理私有路径；对所有结果执行公开许可过滤，不能只依赖本地展示许可。
+- [x] owner API在私有网络命名空间绑定127.0.0.1:8001，私有Caddy入口仅映射宿主127.0.0.1；公开Caddy与owner网络隔离。保留本机握手/HttpOnly/SameSite=Strict/CSRF和TLS。
+- [x] 按可信连接来源做并发计数，不信任任意客户端X-Forwarded-For；统一20并发/IP、超额429，并在响应/取消时释放计数。
+- [x] Compose内从公开服务尝试私有连接必须失败；测试错误与构建产物不含凭证，前端公开构建不初始化owner资料空间；提交 `feat: isolate public reads from owner operations`。
 
 **完成条件：** 本机开发可用与公开部署许可分开验收；本任务准备部署配置，不自动将站点发布公网。
 
