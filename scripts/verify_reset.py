@@ -275,6 +275,17 @@ def _artifact(path: Path) -> dict[str, Any]:
     }
 
 
+def _snapshot_artifact(source: Path, destination_dir: Path) -> dict[str, Any]:
+    content = source.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    destination = destination_dir / f"reset-performance-{digest}.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_file() and destination.read_bytes() != content:
+        raise RuntimeError("Content-addressed evidence artifact collision")
+    destination.write_bytes(content)
+    return _artifact(destination)
+
+
 def _run_command(
     gate: str,
     index: int,
@@ -401,9 +412,13 @@ def _load_performance() -> tuple[dict[str, Any] | None, list[str]]:
     return value, errors
 
 
-def _performance_observations(value: dict[str, Any]) -> dict[str, Any]:
+def _performance_observations(
+    value: dict[str, Any], evidence_dir: Path
+) -> dict[str, Any]:
     return {
-        "artifact": _artifact(PERFORMANCE_ARTIFACT),
+        "artifact": _snapshot_artifact(
+            PERFORMANCE_ARTIFACT, evidence_dir / "artifacts"
+        ),
         "runs": value["runs"],
         "fixture": value["fixture"],
         "environment": value.get("environment"),
@@ -476,7 +491,9 @@ def _run_gates(mode: str, evidence_dir: Path) -> dict[str, Any]:
                 record["status"] = "fail"
                 record["errors"] = performance_errors
             elif performance_value is not None:
-                record["observations"] = _performance_observations(performance_value)
+                record["observations"] = _performance_observations(
+                    performance_value, evidence_dir
+                )
         elif gate == "public_no_write" and performance_value is not None:
             record["observations"] = _public_observations(performance_value)
             if performance_errors:

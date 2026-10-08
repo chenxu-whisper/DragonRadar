@@ -131,6 +131,20 @@ def test_count_parser_uses_test_count_from_ansi_colored_output():
     assert count_output(output, 0)["passed"] == 14
 
 
+def test_evidence_artifact_snapshot_is_immutable_and_content_addressed(tmp_path):
+    snapshot_artifact = runpy.run_path(str(SCRIPT))["_snapshot_artifact"]
+    source = tmp_path / "performance.json"
+    source.write_bytes(b'{"run":"first"}')
+
+    recorded = snapshot_artifact(source, tmp_path / "artifacts")
+    source.write_bytes(b'{"run":"overwritten"}')
+    snapshot = Path(recorded["path"])
+
+    assert snapshot.read_bytes() == b'{"run":"first"}'
+    assert snapshot.name == f"reset-performance-{recorded['sha256']}.json"
+    assert recorded["bytes"] == len(b'{"run":"first"}')
+
+
 def test_default_full_mode_cannot_self_certify_from_performance_json(tmp_path):
     performance = tmp_path / "performance.json"
     performance.write_text('{"runs":[]}', encoding="utf-8")
