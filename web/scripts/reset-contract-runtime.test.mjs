@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   composeOverride,
+  ownerTransportRequestOptions,
   parseLoopbackBinding,
 } from './reset-contract-runtime-support.mjs';
 
@@ -51,6 +52,21 @@ test('parseLoopbackBinding accepts only a discovered loopback host binding', () 
   }
 });
 
+test('owner transport request connects to the published port with trusted authority', () => {
+  const options = ownerTransportRequestOptions({
+    connectPort: 49152,
+    ca: 'test-owner-ca',
+  });
+
+  assert.equal(options.hostname, '127.0.0.1');
+  assert.equal(options.port, 49152);
+  assert.notEqual(options.port, 8443);
+  assert.equal(options.servername, 'localhost');
+  assert.equal(options.headers.Host, 'localhost:8443');
+  assert.equal(options.path, '/api/owner/v1/session');
+  assert.equal(options.ca, 'test-owner-ca');
+});
+
 test('runtime setup is cleanup-bounded and does not reserve host ports', () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const source = readFileSync(
@@ -62,8 +78,17 @@ test('runtime setup is cleanup-bounded and does not reserve host ports', () => {
   assert.ok(source.indexOf('try {') < source.indexOf('mkdirSync(state'));
   assert.match(source, /compose\('port', 'public-caddy', '8080'\)/);
   assert.match(source, /compose\('port', 'owner-caddy', '8443'\)/);
-  assert.match(source, /https:\/\/localhost:8443\/api\/owner\/v1\/session/);
-  assert.match(source, /Host: localhost:8443/);
+  assert.match(source, /import https from 'node:https'/);
+  assert.match(
+    source,
+    /ownerTransportRequestOptions\(\{\s*connectPort: ownerBinding\.port,\s*ca: ownerCa/,
+  );
+  assert.match(source, /assertOwnerTransport\(ownerBinding/);
+  assert.doesNotMatch(
+    source,
+    /owner:\s*`https:\/\/\$\{ownerBinding\.host\}:\$\{ownerBinding\.port\}`/,
+  );
+  assert.match(source, /publishedMapping:/);
 });
 
 test('CI runs the contract runtime harness as an independent strict Linux job', () => {

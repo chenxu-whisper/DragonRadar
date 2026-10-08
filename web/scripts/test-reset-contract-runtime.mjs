@@ -1,12 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import {
   composeOverride,
+  ownerTransportRequestOptions,
   parseLoopbackBinding,
 } from './reset-contract-runtime-support.mjs';
 
@@ -147,6 +149,51 @@ function assertStatus(response, expected, label) {
     response.status === expected,
     `${label} returned ${response.status}, expected ${expected}: ${response.body}`,
   );
+}
+
+function httpsRequest(options) {
+  return new Promise((resolveRequest, reject) => {
+    const requestHandle = https.request(options, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => {
+        resolveRequest({
+          status: response.statusCode,
+          body: Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    });
+    requestHandle.on('timeout', () => {
+      requestHandle.destroy(
+        new Error(`Request timed out: ${options.method} ${options.path}`),
+      );
+    });
+    requestHandle.on('error', reject);
+    requestHandle.end();
+  });
+}
+
+async function assertOwnerTransport(ownerBinding, ownerCa) {
+  const response = await httpsRequest(
+    ownerTransportRequestOptions({
+      connectPort: ownerBinding.port,
+      ca: ownerCa,
+    }),
+  );
+  assertStatus(response, 401, 'Published owner transport session');
+  let body;
+  try {
+    body = JSON.parse(response.body);
+  } catch {
+    throw new Error(
+      `Published owner transport returned invalid JSON: ${response.body}`,
+    );
+  }
+  assert(
+    body.code === 'session_unauthorized',
+    `Published owner transport returned an unexpected code: ${response.body}`,
+  );
+  return { status: response.status, code: body.code };
 }
 
 function assertPublicIsolation() {
@@ -334,14 +381,31 @@ try {
   const ownerBinding = parseLoopbackBinding(
     compose('port', 'owner-caddy', '8443'),
   );
+  const ownerCa = compose(
+    'exec',
+    '-T',
+    'owner-caddy',
+    'cat',
+    '/data/caddy/pki/authorities/local/root.crt',
+  );
 
   await assertHttpContracts(publicBinding.port);
+  const ownerTransport = await assertOwnerTransport(ownerBinding, ownerCa);
   assertPublicIsolation();
   assertOwnerNamespace();
   assertPublicAssets();
   console.log(
     JSON.stringify({
-      owner: `https://${ownerBinding.host}:${ownerBinding.port}`,
+      ownerTransport: {
+        authority: 'https://localhost:8443',
+        code: ownerTransport.code,
+        hostHeader: 'localhost:8443',
+        publishedMapping:
+          `${ownerBinding.host}:${ownerBinding.port}->owner-caddy:8443`,
+        status: ownerTransport.status,
+        testedFrom: 'host',
+        tlsServername: 'localhost',
+      },
       project,
       public: `http://${publicBinding.host}:${publicBinding.port}`,
       status: 'passed',

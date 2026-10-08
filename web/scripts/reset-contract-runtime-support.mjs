@@ -68,3 +68,18 @@ export function parseLoopbackBinding(output) {
   }
   return { host: '127.0.0.1', port };
 }
+
+export function ownerTransportRequestOptions({ connectPort, ca }) {
+  return {
+    hostname: '127.0.0.1',
+    port: connectPort,
+    path: '/api/owner/v1/session',
+    method: 'GET',
+    servername: 'localhost',
+    ca,
+    headers: {
+      Host: 'localhost:8443',
+    },
+    timeout: 10_000,
+  };
+}
