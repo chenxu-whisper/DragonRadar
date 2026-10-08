@@ -11,9 +11,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Protocol
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_SCHEMA = "dragon-radar.task20-evidence"
@@ -63,22 +67,47 @@ SUMMARY_COUNT = re.compile(r"(?<![\w-])(\d+)\s+(passed|failed|skipped)\b")
 TAP_COUNT = re.compile(r"^#\s+(pass|fail|skipped)\s+(\d+)\s*$", re.MULTILINE)
 
 
+@dataclass(frozen=True)
+class CommandSpec:
+    command: tuple[str, ...]
+    cwd: str
+    timeout_seconds: int
+    environment_class: str
+    environment_overrides: tuple[tuple[str, str], ...] = ()
+    requires_test_counts: bool = True
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "environment_overrides":
+            return dict(self.environment_overrides)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except AttributeError:
+            return default
+
+
 def _spec(
     command: list[str],
     *,
     cwd: str = ".",
     timeout: int = 900,
     environment_class: str = "default",
-) -> dict[str, Any]:
-    return {
-        "command": command,
-        "cwd": cwd,
-        "timeout_seconds": timeout,
-        "environment_class": environment_class,
-    }
+    environment_overrides: Mapping[str, str] | None = None,
+    requires_test_counts: bool = True,
+) -> CommandSpec:
+    return CommandSpec(
+        command=tuple(command),
+        cwd=cwd,
+        timeout_seconds=timeout,
+        environment_class=environment_class,
+        environment_overrides=tuple(sorted((environment_overrides or {}).items())),
+        requires_test_counts=requires_test_counts,
+    )
 
 
-GATE_SPECS: dict[str, list[dict[str, Any]]] = {
+_GATE_SPECS: dict[str, list[CommandSpec]] = {
     "csv_units": [
         _spec(
             [
@@ -152,21 +181,40 @@ GATE_SPECS: dict[str, list[dict[str, Any]]] = {
         )
     ],
     "full_backend": [_spec(["uv", "run", "pytest", "-q", "-rs"], timeout=2400)],
-    "ruff_lint": [_spec(["uv", "run", "ruff", "check", "."])],
-    "ruff_format": [_spec(["uv", "run", "ruff", "format", "--check", "."])],
+    "ruff_lint": [
+        _spec(["uv", "run", "ruff", "check", "."], requires_test_counts=False)
+    ],
+    "ruff_format": [
+        _spec(
+            ["uv", "run", "ruff", "format", "--check", "."],
+            requires_test_counts=False,
+        )
+    ],
     "compileall": [
-        _spec(["uv", "run", "python", "-m", "compileall", "-q", "src", "tests"])
+        _spec(
+            ["uv", "run", "python", "-m", "compileall", "-q", "src", "tests"],
+            requires_test_counts=False,
+        )
     ],
     "frontend_tests": [_spec(["npm", "test"], cwd="web", timeout=1200)],
-    "frontend_builds": [_spec(["npm", "run", "build"], cwd="web")],
-    "frontend_bundle": [_spec(["npm", "run", "check:bundle"], cwd="web")],
+    "frontend_builds": [
+        _spec(["npm", "run", "build"], cwd="web", requires_test_counts=False)
+    ],
+    "frontend_bundle": [
+        _spec(
+            ["npm", "run", "check:bundle"],
+            cwd="web",
+            requires_test_counts=False,
+        )
+    ],
     "frontend_private_build": [
         _spec(
             ["npm", "run", "build"],
             cwd="web",
             environment_class="private-review",
+            environment_overrides={"VITE_PRIVATE_REVIEW": "1"},
+            requires_test_counts=False,
         )
-        | {"environment_overrides": {"VITE_PRIVATE_REVIEW": "1"}},
     ],
     "frontend_e2e_legacy": [_spec(["npm", "run", "test:e2e"], cwd="web", timeout=1200)],
     "frontend_e2e_reset": [
@@ -183,9 +231,17 @@ GATE_SPECS: dict[str, list[dict[str, Any]]] = {
         _spec(["npm", "run", "test:e2e:production-isolation"], cwd="web")
     ],
     "frontend_contract_runtime": [
-        _spec(["npm", "run", "test:contract-runtime"], cwd="web", timeout=1800)
+        _spec(
+            ["npm", "run", "test:contract-runtime"],
+            cwd="web",
+            timeout=1800,
+        )
     ],
 }
+GATE_SPECS: Mapping[str, tuple[CommandSpec, ...]] = MappingProxyType(
+    {gate: tuple(specs) for gate, specs in _GATE_SPECS.items()}
+)
+del _GATE_SPECS
 FOCUSED_GATES = {
     "csv_units",
     "reset_acceptance_e2e",
@@ -197,6 +253,82 @@ FOCUSED_GATES = {
     "ruff_format",
     "compileall",
 }
+
+
+@dataclass(frozen=True)
+class RunResult:
+    started_at: datetime
+    ended_at: datetime
+    exit_status: int
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class ExecutionEvidence:
+    manifest: dict[str, Any]
+
+
+class Runner(Protocol):
+    def run(
+        self,
+        *,
+        argv: tuple[str, ...],
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout_seconds: int,
+    ) -> RunResult: ...
+
+
+class SubprocessRunner:
+    def run(
+        self,
+        *,
+        argv: tuple[str, ...],
+        cwd: Path,
+        environment: Mapping[str, str],
+        timeout_seconds: int,
+    ) -> RunResult:
+        started_at = datetime.now(UTC)
+        try:
+            executable = shutil.which(argv[0])
+            process_argv = (executable, *argv[1:]) if executable is not None else argv
+            completed = subprocess.run(
+                process_argv,
+                cwd=cwd,
+                env=dict(environment),
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=timeout_seconds,
+            )
+            return RunResult(
+                started_at=started_at,
+                ended_at=datetime.now(UTC),
+                exit_status=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+        except subprocess.TimeoutExpired as error:
+            stdout = error.stdout if isinstance(error.stdout, bytes) else b""
+            stderr = error.stderr if isinstance(error.stderr, bytes) else b""
+            return RunResult(
+                started_at=started_at,
+                ended_at=datetime.now(UTC),
+                exit_status=124,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=True,
+            )
+        except OSError as error:
+            return RunResult(
+                started_at=started_at,
+                ended_at=datetime.now(UTC),
+                exit_status=127,
+                stdout=b"",
+                stderr=f"{type(error).__name__}: {error}\n".encode(),
+            )
 
 
 def _redact(value: str) -> str:
@@ -252,7 +384,12 @@ def _commit() -> dict[str, Any]:
     }
 
 
-def _counts(output: str, exit_status: int) -> dict[str, int]:
+def _counts(
+    output: str,
+    exit_status: int,
+    *,
+    fallback_from_exit: bool = True,
+) -> dict[str, int]:
     output = ANSI_ESCAPE.sub("", output)
     counts = {"passed": 0, "failed": 0, "skipped": 0}
     for number, label in SUMMARY_COUNT.findall(output):
@@ -260,7 +397,14 @@ def _counts(output: str, exit_status: int) -> dict[str, int]:
     for label, number in TAP_COUNT.findall(output):
         normalized = "failed" if label == "fail" else label
         counts[normalized] = max(counts[normalized], int(number))
-    if not any(counts.values()):
+    for line in output.splitlines():
+        try:
+            native = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(native, dict) and native.get("status") in {"passed", "failed"}:
+            counts[native["status"]] = max(counts[native["status"]], 1)
+    if fallback_from_exit and not any(counts.values()):
         counts["passed" if exit_status == 0 else "failed"] = 1
     counts["output_lines"] = len(output.splitlines())
     return counts
@@ -282,15 +426,60 @@ def _artifact(path: Path) -> dict[str, Any]:
     }
 
 
+def _atomic_write(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _snapshot_artifact(source: Path, destination_dir: Path) -> dict[str, Any]:
     content = source.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
     destination = destination_dir / f"reset-performance-{digest}.json"
-    destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file() and destination.read_bytes() != content:
         raise RuntimeError("Content-addressed evidence artifact collision")
-    destination.write_bytes(content)
+    if not destination.is_file():
+        _atomic_write(destination, content)
     return _artifact(destination)
+
+
+def _command_result_errors(
+    result: RunResult,
+    *,
+    requires_test_counts: bool,
+) -> list[str]:
+    errors: list[str] = []
+    if result.ended_at < result.started_at:
+        errors.append("Command end time precedes its start time.")
+    if result.exit_status != 0:
+        errors.append("Command exit status is non-zero.")
+    if result.timed_out:
+        errors.append("Command timed out.")
+    if requires_test_counts:
+        output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+        counts = _counts(
+            output,
+            result.exit_status,
+            fallback_from_exit=False,
+        )
+        if counts["passed"] <= 0 or counts["failed"] != 0 or counts["skipped"] != 0:
+            errors.append(
+                "Command-native output requires positive passes with zero "
+                "failures/skips."
+            )
+    return errors
 
 
 def _run_command(
@@ -298,50 +487,49 @@ def _run_command(
     index: int,
     spec: dict[str, Any],
     evidence_dir: Path,
+    runner: Runner,
 ) -> dict[str, Any]:
     cwd = ROOT / spec["cwd"]
-    command = list(spec["command"])
-    executable = shutil.which(command[0])
+    command = tuple(spec["command"])
     process_environment = os.environ.copy()
     process_environment.update(spec.get("environment_overrides", {}))
-    timed_out = False
     try:
-        result = subprocess.run(
-            [executable, *command[1:]] if executable else command,
+        result = runner.run(
+            argv=command,
             cwd=cwd,
-            env=process_environment,
-            text=True,
-            capture_output=True,
-            check=False,
-            shell=False,
-            timeout=spec["timeout_seconds"],
+            environment=process_environment,
+            timeout_seconds=spec["timeout_seconds"],
         )
-        exit_status = result.returncode
-        output = _redact((result.stdout or "") + (result.stderr or ""))
-    except subprocess.TimeoutExpired as error:
-        timed_out = True
-        exit_status = 124
-        stdout = (
-            error.stdout.decode() if isinstance(error.stdout, bytes) else error.stdout
-        )
-        stderr = (
-            error.stderr.decode() if isinstance(error.stderr, bytes) else error.stderr
-        )
-        output = _redact((stdout or "") + (stderr or "") + "\nCOMMAND TIMED OUT\n")
-    except OSError as error:
-        exit_status = 127
-        output = f"{type(error).__name__}: {error}\n"
-    log_path = evidence_dir / "logs" / f"{gate}-{index}.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(output, encoding="utf-8")
+    except (StopIteration, AssertionError) as error:
+        raise RuntimeError(
+            f"Runner did not execute allowlisted command {gate}[{index}]."
+        ) from error
+    stdout_path = evidence_dir / "logs" / f"{gate}-{index}.stdout.log"
+    stderr_path = evidence_dir / "logs" / f"{gate}-{index}.stderr.log"
+    _atomic_write(stdout_path, result.stdout)
+    _atomic_write(stderr_path, result.stderr)
+    output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+    requires_test_counts = spec.get("requires_test_counts", True)
+    errors = _command_result_errors(
+        result,
+        requires_test_counts=requires_test_counts,
+    )
     return {
-        "argv": command,
+        "argv": list(command),
         "cwd": spec["cwd"],
         "environment_class": spec["environment_class"],
-        "exit_status": exit_status,
-        "timed_out": timed_out,
-        "observed_counts": _counts(output, exit_status),
-        "artifact": _artifact(log_path),
+        "started_at": result.started_at.isoformat(),
+        "ended_at": result.ended_at.isoformat(),
+        "exit_status": result.exit_status,
+        "timed_out": result.timed_out,
+        "observed_counts": _counts(
+            output,
+            result.exit_status,
+            fallback_from_exit=not requires_test_counts,
+        ),
+        "stdout_artifact": _artifact(stdout_path),
+        "stderr_artifact": _artifact(stderr_path),
+        "errors": errors,
     }
 
 
@@ -484,8 +672,11 @@ def _async_observations(value: dict[str, Any]) -> dict[str, Any]:
     return dict(value["async_work"])
 
 
-def _run_gates(mode: str, evidence_dir: Path) -> dict[str, Any]:
-    environment = _environment()
+def _execute_gates(
+    mode: str,
+    evidence_dir: Path,
+    runner: Runner,
+) -> list[dict[str, Any]]:
     selected = set(REQUIRED_GATES) if mode == "full" else FOCUSED_GATES
     records: list[dict[str, Any]] = []
     performance_commands: list[dict[str, Any]] | None = None
@@ -500,7 +691,7 @@ def _run_gates(mode: str, evidence_dir: Path) -> dict[str, Any]:
             commands = performance_commands
         else:
             commands = [
-                _run_command(gate, index, spec, evidence_dir)
+                _run_command(gate, index, spec, evidence_dir, runner)
                 for index, spec in enumerate(GATE_SPECS[gate], start=1)
             ]
         record = {
@@ -522,16 +713,28 @@ def _run_gates(mode: str, evidence_dir: Path) -> dict[str, Any]:
         elif gate == "recovery_drills":
             record["observations"] = {"drills": list(RECOVERY_DRILLS)}
         records.append(record)
+    return records
+
+
+def _run_gates(
+    mode: str,
+    evidence_dir: Path,
+    runner: Runner | None = None,
+) -> ExecutionEvidence:
+    environment = _environment()
+    records = _execute_gates(mode, evidence_dir, runner or SubprocessRunner())
     commit = _commit()
-    return {
-        "schema": EVIDENCE_SCHEMA,
-        "schema_version": EVIDENCE_SCHEMA_VERSION,
-        "mode": mode,
-        "generated_at": datetime.now(UTC).isoformat(),
-        "tested_commit": commit["tested_commit"],
-        "environment": environment,
-        "records": records,
-    }
+    return ExecutionEvidence(
+        {
+            "schema": EVIDENCE_SCHEMA,
+            "schema_version": EVIDENCE_SCHEMA_VERSION,
+            "mode": mode,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "tested_commit": commit["tested_commit"],
+            "environment": environment,
+            "records": records,
+        }
+    )
 
 
 def _resolve_artifact(path_value: str) -> Path:
@@ -580,7 +783,7 @@ def _artifact_value(value: Any, label: str) -> tuple[Any, list[str]]:
 
 
 def _validate_command(value: Any, spec: dict[str, Any]) -> list[str]:
-    required = {
+    legacy_required = {
         "argv",
         "cwd",
         "environment_class",
@@ -589,10 +792,27 @@ def _validate_command(value: Any, spec: dict[str, Any]) -> list[str]:
         "observed_counts",
         "artifact",
     }
+    executed_required = {
+        "argv",
+        "cwd",
+        "environment_class",
+        "started_at",
+        "ended_at",
+        "exit_status",
+        "timed_out",
+        "observed_counts",
+        "stdout_artifact",
+        "stderr_artifact",
+        "errors",
+    }
+    actual_fields = set(value) if isinstance(value, dict) else set()
+    required = (
+        legacy_required if actual_fields == legacy_required else executed_required
+    )
     errors = _exact_fields(value, required, "Command evidence")
     if errors:
         return errors
-    if value["argv"] != spec["command"]:
+    if value["argv"] != list(spec["command"]):
         errors.append("Command argv is not the exact allowlisted argument array.")
     if value["cwd"] != spec["cwd"]:
         errors.append("Command cwd is not allowlisted.")
@@ -610,12 +830,61 @@ def _validate_command(value: Any, spec: dict[str, Any]) -> list[str]:
         errors.append("Command exit status is non-zero.")
     if value["timed_out"] is not False:
         errors.append("Command timed out.")
-    if not count_errors and (
-        counts["passed"] <= 0 or counts["failed"] != 0 or counts["skipped"] != 0
+    requires_test_counts = spec.get("requires_test_counts", True)
+    if (
+        requires_test_counts
+        and not count_errors
+        and (counts["passed"] <= 0 or counts["failed"] != 0 or counts["skipped"] != 0)
     ):
         errors.append("Command requires positive passes with zero failures/skips.")
-    content, artifact_errors = _artifact_value(value["artifact"], "Command artifact")
-    errors.extend(artifact_errors)
+    if required == legacy_required:
+        content, artifact_errors = _artifact_value(
+            value["artifact"], "Command artifact"
+        )
+        errors.extend(artifact_errors)
+    else:
+        stdout, stdout_errors = _artifact_value(
+            value["stdout_artifact"], "Command stdout artifact"
+        )
+        stderr, stderr_errors = _artifact_value(
+            value["stderr_artifact"], "Command stderr artifact"
+        )
+        errors.extend(stdout_errors)
+        errors.extend(stderr_errors)
+        content = (
+            stdout + stderr
+            if isinstance(stdout, bytes) and isinstance(stderr, bytes)
+            else None
+        )
+        try:
+            started_at = datetime.fromisoformat(value["started_at"])
+            ended_at = datetime.fromisoformat(value["ended_at"])
+            if started_at.tzinfo is None or ended_at.tzinfo is None:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append("Command timestamps are invalid.")
+        else:
+            if content is not None:
+                derived_errors = _command_result_errors(
+                    RunResult(
+                        started_at=started_at,
+                        ended_at=ended_at,
+                        exit_status=value["exit_status"],
+                        stdout=stdout,
+                        stderr=stderr,
+                        timed_out=value["timed_out"],
+                    ),
+                    requires_test_counts=requires_test_counts,
+                )
+                if value["errors"] != derived_errors:
+                    errors.append(
+                        "Command errors do not match captured Runner results."
+                    )
+                errors.extend(derived_errors)
+        if not isinstance(value["errors"], list) or any(
+            not isinstance(item, str) for item in value["errors"]
+        ):
+            errors.append("Command errors are invalid.")
     if content is not None and not count_errors:
         try:
             derived_counts = _counts(content.decode("utf-8"), value["exit_status"])
@@ -737,7 +1006,11 @@ def _commit_relation(tested_commit: Any) -> tuple[bool, str | None]:
     )
 
 
-def _validate_manifest(value: Any) -> tuple[dict[str, Any], int]:
+def _validate_manifest(
+    value: Any,
+    *,
+    trust: str = "INTEGRITY_ONLY",
+) -> tuple[dict[str, Any], int]:
     manifest_fields = {
         "schema",
         "schema_version",
@@ -867,6 +1140,7 @@ def _validate_manifest(value: Any) -> tuple[dict[str, Any], int]:
             "mode": manifest.get("mode"),
             "tested_commit": manifest.get("tested_commit"),
             "commit_relation": commit_relation,
+            "trust": trust,
         },
     }
     reasons = {
@@ -883,6 +1157,14 @@ def _validate_manifest(value: Any) -> tuple[dict[str, Any], int]:
     return report, exit_status
 
 
+def _validate_execution(
+    evidence: ExecutionEvidence,
+) -> tuple[dict[str, Any], int]:
+    if type(evidence) is not ExecutionEvidence:
+        raise TypeError("Automated acceptance requires in-process execution evidence.")
+    return _validate_manifest(evidence.manifest, trust="EXECUTED")
+
+
 def _load_manifest(path: Path) -> tuple[Any, str | None]:
     try:
         return json.loads(path.read_text(encoding="utf-8")), None
@@ -890,48 +1172,81 @@ def _load_manifest(path: Path) -> tuple[Any, str | None]:
         return {}, f"Evidence could not be read: {type(error).__name__}."
 
 
+def _integrity_only_report(
+    report: dict[str, Any],
+    validation_exit_status: int,
+    load_error: str | None,
+) -> tuple[dict[str, Any], int]:
+    integrity_passed = validation_exit_status == 0 and load_error is None
+    report["integrity_validation"] = {
+        "status": "pass" if integrity_passed else "fail",
+        "reason": (
+            "Existing evidence is internally consistent but has no execution "
+            "provenance."
+            if integrity_passed
+            else load_error or "Existing evidence failed integrity validation."
+        ),
+    }
+    report["automated_acceptance"] = {
+        "status": "unverified",
+        "reason": (
+            "UNVERIFIED/INTEGRITY_ONLY evidence cannot satisfy automated acceptance."
+        ),
+    }
+    report.setdefault("source", {})["trust"] = "INTEGRITY_ONLY"
+    return report, 3 if integrity_passed else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=("full", "focused", "validate"),
+        choices=("full", "focused"),
         default="full",
         help=(
             "full is the default acceptance run; focused can only produce "
             "partial evidence."
         ),
     )
-    parser.add_argument("--evidence", type=Path)
+    parser.add_argument(
+        "--validate-existing",
+        type=Path,
+        help=(
+            "Check existing evidence integrity without granting automated acceptance."
+        ),
+    )
     parser.add_argument("--evidence-dir", type=Path, default=Path(".temp/acceptance"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.mode == "validate":
-        if args.evidence is None:
-            parser.error("--evidence is required with --mode validate")
-        manifest, load_error = _load_manifest(args.evidence)
+    integrity_only = args.validate_existing is not None
+    if integrity_only:
+        if args.mode != "full":
+            parser.error("--mode cannot be combined with --validate-existing")
+        manifest, load_error = _load_manifest(args.validate_existing)
+        report, exit_status = _validate_manifest(manifest)
+        report, exit_status = _integrity_only_report(report, exit_status, load_error)
     else:
-        if args.evidence is not None:
-            parser.error("--evidence is only valid with --mode validate")
         evidence_dir = (
             args.evidence_dir
             if args.evidence_dir.is_absolute()
             else ROOT / args.evidence_dir
         )
-        manifest = _run_gates(args.mode, evidence_dir)
+        execution = _run_gates(args.mode, evidence_dir)
         raw_path = evidence_dir / "task20-command-evidence.json"
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_path.write_text(
-            json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
-            encoding="utf-8",
+        _atomic_write(
+            raw_path,
+            (
+                json.dumps(
+                    execution.manifest,
+                    ensure_ascii=True,
+                    indent=2,
+                )
+                + "\n"
+            ).encode(),
         )
-        load_error = None
-    report, exit_status = _validate_manifest(manifest)
-    if load_error:
-        report["automated_acceptance"] = {"status": "fail", "reason": load_error}
-        exit_status = 1
+        report, exit_status = _validate_execution(execution)
     rendered = json.dumps(report, ensure_ascii=True, indent=2) + "\n"
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered, encoding="utf-8")
+    _atomic_write(args.output, rendered.encode())
     sys.stdout.write(rendered)
     return exit_status
 

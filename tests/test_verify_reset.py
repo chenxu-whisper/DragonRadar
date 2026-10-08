@@ -4,6 +4,8 @@ import runpy
 import subprocess
 import sys
 from copy import deepcopy
+from dataclasses import FrozenInstanceError, dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,33 @@ VERIFIER = runpy.run_path(str(SCRIPT))
 REQUIRED_GATES = tuple(VERIFIER["REQUIRED_GATES"])
 GATE_SPECS = VERIFIER["GATE_SPECS"]
 RECOVERY_DRILLS = tuple(VERIFIER["RECOVERY_DRILLS"])
+
+
+@dataclass(frozen=True)
+class FakeRunResult:
+    started_at: datetime
+    ended_at: datetime
+    exit_status: int
+    stdout: bytes
+    stderr: bytes = b""
+    timed_out: bool = False
+
+
+class RecordingRunner:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.calls = []
+
+    def run(self, *, argv, cwd, environment, timeout_seconds):
+        self.calls.append(
+            {
+                "argv": argv,
+                "cwd": cwd,
+                "environment": environment,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return next(self.results)
 
 
 def invoke(tmp_path, *args):
@@ -207,6 +236,63 @@ def test_count_parser_uses_test_count_from_ansi_colored_output():
     assert count_output(output, 0)["passed"] == 14
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("passed", {"passed": 1, "failed": 0}),
+        ("failed", {"passed": 0, "failed": 1}),
+    ],
+)
+def test_count_parser_uses_machine_readable_status(status, expected):
+    count_output = VERIFIER["_counts"]
+
+    counts = count_output(
+        json.dumps({"project": "task20", "status": status}),
+        0,
+        fallback_from_exit=False,
+    )
+
+    assert counts["passed"] == expected["passed"]
+    assert counts["failed"] == expected["failed"]
+
+
+def test_allowlisted_command_graph_is_immutable():
+    with pytest.raises(TypeError):
+        GATE_SPECS["full_backend"] = ()
+    with pytest.raises(FrozenInstanceError):
+        GATE_SPECS["full_backend"][0].timeout_seconds = 1
+    assert isinstance(GATE_SPECS["full_backend"][0]["command"], tuple)
+
+
+def test_subprocess_runner_resolves_windows_command_shim(monkeypatch, tmp_path):
+    runner = VERIFIER["SubprocessRunner"]()
+    run = VERIFIER["SubprocessRunner"].run
+    calls = []
+
+    monkeypatch.setattr(
+        run.__globals__["shutil"],
+        "which",
+        lambda command: "C:/Program Files/nodejs/npm.cmd",
+    )
+
+    def completed(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"ok", b"")
+
+    monkeypatch.setattr(run.__globals__["subprocess"], "run", completed)
+
+    result = runner.run(
+        argv=("npm", "--version"),
+        cwd=tmp_path,
+        environment={},
+        timeout_seconds=5,
+    )
+
+    assert calls[0][0] == ("C:/Program Files/nodejs/npm.cmd", "--version")
+    assert calls[0][1]["shell"] is False
+    assert result.exit_status == 0
+
+
 def test_evidence_artifact_snapshot_is_immutable_and_content_addressed(tmp_path):
     snapshot_artifact = VERIFIER["_snapshot_artifact"]
     source = tmp_path / "performance.json"
@@ -243,16 +329,16 @@ def test_validate_mode_requires_every_task20_gate_and_never_marks_development_pa
 
     result, output = invoke(
         tmp_path,
-        "--mode",
-        "validate",
-        "--evidence",
+        "--validate-existing",
         str(evidence),
     )
 
-    assert result.returncode == 2
+    assert result.returncode != 0
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["overall_status"] == "blocked"
-    assert report["automated_acceptance"]["status"] == "blocked"
+    assert report["automated_acceptance"]["status"] == "unverified"
+    assert report["integrity_validation"]["status"] == "fail"
+    assert report["source"]["trust"] == "INTEGRITY_ONLY"
     assert "development_complete" not in report
     assert report["gates"]["full_backend"]["status"] == "missing"
     assert set(report["gates"]) == set(REQUIRED_GATES)
@@ -360,9 +446,7 @@ def test_validate_mode_rejects_adversarial_evidence(tmp_path, mutation, gate):
 
     result, output = invoke(
         tmp_path,
-        "--mode",
-        "validate",
-        "--evidence",
+        "--validate-existing",
         str(evidence),
     )
 
@@ -392,22 +476,22 @@ def test_parent_commit_is_allowed_only_for_strict_evidence_only_head():
     ) == (False, None)
 
 
-def test_complete_hashed_evidence_passes_automation_but_external_gates_block(
+def test_fabricated_all_pass_json_is_integrity_only_and_cannot_pass_acceptance(
     tmp_path,
 ):
     evidence = write_manifest(tmp_path, evidence_manifest(tmp_path))
 
     result, output = invoke(
         tmp_path,
-        "--mode",
-        "validate",
-        "--evidence",
+        "--validate-existing",
         str(evidence),
     )
 
-    assert result.returncode == 0
+    assert result.returncode != 0
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["automated_acceptance"]["status"] == "pass"
+    assert report["automated_acceptance"]["status"] == "unverified"
+    assert report["integrity_validation"]["status"] == "pass"
+    assert report["source"]["trust"] == "INTEGRITY_ONLY"
     assert report["overall_status"] == "blocked"
     assert report["real_input"]["status"] == "blocked"
     assert report["official_rules"]["status"] == "blocked"
@@ -425,3 +509,136 @@ def test_complete_hashed_evidence_passes_automation_but_external_gates_block(
     assert report["source"]["tested_commit"] == git_head()
     assert report["source"]["commit_relation"] == "HEAD"
     assert "postgresql+psycopg://" not in result.stdout
+
+
+def test_self_hashed_logs_and_fake_exit_zero_remain_unverified(tmp_path):
+    manifest = evidence_manifest(tmp_path)
+    for item in manifest["records"]:
+        for command in item["commands"]:
+            command["exit_status"] = 0
+            command["timed_out"] = False
+            command["observed_counts"] = {
+                "passed": 1,
+                "failed": 0,
+                "skipped": 0,
+                "output_lines": 1,
+            }
+    evidence = write_manifest(tmp_path, manifest)
+
+    result, output = invoke(tmp_path, "--validate-existing", str(evidence))
+
+    assert result.returncode != 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["automated_acceptance"]["status"] == "unverified"
+    assert report["source"]["trust"] == "INTEGRITY_ONLY"
+
+
+def test_execution_mode_invokes_exact_allowlisted_graph_and_uses_runner_results(
+    tmp_path,
+):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 10, 8, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+            stderr=f"runner-stderr-{index}\n".encode(),
+        )
+        for index in range(len(specs))
+    ]
+    runner = RecordingRunner(results)
+
+    records = execute("full", tmp_path, runner)
+
+    assert [call["argv"] for call in runner.calls] == [
+        tuple(spec["command"]) for spec in specs
+    ]
+    assert len(records) == len(REQUIRED_GATES)
+    first = records[0]["commands"][0]
+    assert first["started_at"] == started.isoformat()
+    assert first["ended_at"] == (started + timedelta(seconds=1)).isoformat()
+    assert Path(first["stdout_artifact"]["path"]).read_bytes() == b"1 passed\n"
+    assert Path(first["stderr_artifact"]["path"]).read_bytes() == b"runner-stderr-0\n"
+
+
+def test_execution_rejects_omitted_command_result(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    runner = RecordingRunner([])
+
+    with pytest.raises(RuntimeError, match="did not execute"):
+        execute("full", tmp_path, runner)
+
+
+def test_execution_rejects_exit_zero_with_failed_native_output(tmp_path):
+    validate_result = VERIFIER["_command_result_errors"]
+    result = FakeRunResult(
+        started_at=datetime(2026, 10, 8, tzinfo=UTC),
+        ended_at=datetime(2026, 10, 8, 0, 0, 1, tzinfo=UTC),
+        exit_status=0,
+        stdout=b"1 failed\n",
+    )
+
+    errors = validate_result(result, requires_test_counts=True)
+
+    assert any("native output" in error for error in errors)
+
+
+def test_execution_rejects_exit_zero_without_native_output():
+    validate_result = VERIFIER["_command_result_errors"]
+    result = FakeRunResult(
+        started_at=datetime(2026, 10, 8, tzinfo=UTC),
+        ended_at=datetime(2026, 10, 8, 0, 0, 1, tzinfo=UTC),
+        exit_status=0,
+        stdout=b"",
+    )
+
+    errors = validate_result(result, requires_test_counts=True)
+
+    assert any("native output" in error for error in errors)
+
+
+def test_full_execution_manifest_passes_only_in_execution_context(
+    tmp_path, monkeypatch
+):
+    run_gates = VERIFIER["_run_gates"]
+    validate_execution = VERIFIER["_validate_execution"]
+    performance_path = tmp_path / "reset-performance.json"
+    performance_path.write_text(json.dumps(performance_raw()), encoding="utf-8")
+    monkeypatch.setitem(
+        run_gates.__globals__,
+        "PERFORMANCE_ARTIFACT",
+        performance_path,
+    )
+    command_count = sum(
+        len(GATE_SPECS[gate])
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+    )
+    started = datetime(2026, 10, 8, tzinfo=UTC)
+    runner = RecordingRunner(
+        [
+            FakeRunResult(
+                started_at=started + timedelta(seconds=index),
+                ended_at=started + timedelta(seconds=index + 1),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for index in range(command_count)
+        ]
+    )
+
+    execution = run_gates("full", tmp_path, runner)
+    report, exit_status = validate_execution(execution)
+
+    assert exit_status == 0
+    assert report["automated_acceptance"]["status"] == "pass"
+    assert report["source"]["trust"] == "EXECUTED"
+    assert all(item["status"] == "pass" for item in report["gates"].values())

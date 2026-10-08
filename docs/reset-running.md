@@ -101,30 +101,46 @@ $env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-lo
 uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
 ```
 
-The default `full` mode executes every required Task20 command from a static
-argument allowlist with `shell=False` and bounded timeouts. Evidence schema v2
-is closed: gate IDs must be complete and unique, each argv/cwd/environment
-class must exactly match its static specification, passed counts must be
-positive, and failed/skipped counts must be zero. Log and raw performance
-artifacts are bound by size and SHA-256. Gate status and performance/no-write
-observations are derived by the validator; claimed status fields are rejected.
+The default `full` mode is the only automated acceptance path. It executes
+every required Task20 command from an immutable argument allowlist through the
+production subprocess Runner, using argv arrays, `shell=False`, and bounded
+timeouts. The Runner captures start/end timestamps, exit status, stdout, and
+stderr. Each exact byte stream is written atomically and then bound by size and
+SHA-256. Test counts come from captured command-native summaries; performance,
+no-write, and asynchronous-work metrics come from the machine-readable
+performance artifact. Callers cannot provide command results, exit statuses,
+counts, logs, or gate statuses to this mode.
+
+Evidence schema v2 is closed: gate IDs must be complete and unique, each
+argv/cwd/environment class must exactly match its static specification,
+required test counts must be positive, and failed/skipped counts must be zero.
+Gate status and observations are derived by the verifier.
 
 Use `--mode focused` for a shorter local diagnostic run. Because it omits full
 backend and frontend gates, its overall automated status remains blocked.
-Use `--mode validate --evidence <path>` to validate independently generated
-command evidence. Validation checks referenced artifacts, hashes, and derived
-performance arithmetic; it does not execute command text from evidence.
+Use `--validate-existing <path>` only to inspect an existing evidence bundle:
+
+```powershell
+uv run python scripts/verify_reset.py --validate-existing .temp/acceptance/task20-command-evidence.json --output .temp/acceptance/integrity.json
+```
+
+This mode checks schema, artifacts, hashes, command allowlist metadata, and
+derived arithmetic, but it does not execute commands. Its report is always
+`UNVERIFIED/INTEGRITY_ONLY`, automated acceptance is always `unverified`, and
+its process exit is always nonzero even when integrity checks pass.
 
 `tested_commit` must equal the current `HEAD`. It may equal `HEAD^` only when
 the current commit changes paths exclusively under `docs/acceptance/`,
 `evidence/`, or `.github/evidence/`; the validation report then records the
 `HEAD^` relation. README or general runtime-document changes do not qualify.
 
-Exit `0` means all automated gates passed, while the report's overall status
-still remains blocked until real input, official rules, real model evaluation,
-public-sharing permission and at least 20 real trading-day shadow evidence are
-supplied. Exit `1` means evidence failed; exit `2` means required evidence is
-missing. CI runs `--mode full` and uploads `.temp/acceptance/` even on failure.
+In execution mode, exit `0` means all automated gates passed, while the
+report's overall status still remains blocked until real input, official
+rules, real model evaluation, public-sharing permission, and at least 20 real
+trading-day shadow evidence are supplied. Exit `1` means executed evidence
+failed; exit `2` means required executed evidence is missing. Integrity-only
+mode uses nonzero exit `3` when its checks pass. CI runs `--mode full` and
+uploads `.temp/acceptance/` even on failure.
 
 Recovery behavior and observed synthetic metrics are recorded in
 [`docs/acceptance/reset-base.md`](acceptance/reset-base.md).
