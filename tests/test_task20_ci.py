@@ -7,6 +7,12 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SETUP_SCRIPT = ROOT / "scripts" / "task20-private-tls.sh"
 
 
+def test_task20_shell_script_is_checked_out_with_lf_endings():
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+    assert "*.sh text eol=lf" in attributes.splitlines()
+
+
 def test_task20_workflow_prepares_tls_before_verifier_and_always_tears_down():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     task20 = workflow[
