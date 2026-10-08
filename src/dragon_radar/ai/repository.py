@@ -29,6 +29,7 @@ from dragon_radar.ai.tables import (
     ai_task_reviews,
     ai_tasks,
 )
+from dragon_radar.ai.verification import verify_output
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound, _identifier
 
 MAX_ACTIVE_AI_TASKS_PER_OWNER = 8
@@ -144,23 +145,24 @@ class AITaskRepository:
         task_type = row["task_type"].replace("_", " ")
         publication = row["input_manifest"]["publication"]
         return {
-            "kind": "deterministic_template",
-            "ai_generated": False,
-            "title": f"Deterministic {task_type} draft",
-            "snapshot_id": publication["snapshot_id"],
-            "as_of": publication["as_of"],
-            "sections": [
+            "facts": [],
+            "inferences": [],
+            "missing_evidence": [
                 {
-                    "heading": "Published input",
                     "text": (
-                        "This template is derived from the selected published snapshot."
+                        f"AI {task_type} output was not selected within 120 seconds."
                     ),
+                    "reason": "deterministic_template_selected",
                 },
                 {
-                    "heading": "Owner review",
-                    "text": "Complete and verify this draft before using it.",
+                    "text": (
+                        "Complete an owner review against the published snapshot "
+                        f"{publication['snapshot_id']} at {publication['as_of']}."
+                    ),
+                    "reason": "owner_review_required",
                 },
             ],
+            "citations": [],
         }
 
     def _ensure_template(self, connection: Connection, row, now: datetime):
@@ -561,7 +563,18 @@ class AITaskRepository:
             verification_status = row["verification_status"]
             if decision == "edit":
                 resulting_revision = self._next_revision(connection, row["id"])
-                verification_status = "needs_human"
+                verification = verify_output(row["input_manifest"], stored_edit)
+                structured = isinstance(stored_edit, Mapping) and set(stored_edit) == {
+                    "facts",
+                    "inferences",
+                    "missing_evidence",
+                    "citations",
+                }
+                verification_status = (
+                    verification.status
+                    if structured or verification.safety_failure
+                    else "needs_human"
+                )
                 draft_id = uuid4()
                 connection.execute(
                     insert(ai_task_drafts).values(
@@ -599,7 +612,9 @@ class AITaskRepository:
             }
             if decision == "edit":
                 values["selected_revision"] = resulting_revision
-                values["verification_status"] = "needs_human"
+                values["verification_status"] = verification_status
+            elif decision == "accept" and row["verification_status"] == "failed":
+                raise Conflict("Failed verification cannot be accepted")
             row = (
                 connection.execute(
                     update(ai_tasks)
@@ -788,6 +803,7 @@ class AITaskRepository:
             row = self._active_lease(connection, lease)
             now = self._now()
             row = self._ensure_template(connection, row, now)
+            verification = verify_output(row["input_manifest"], result.content)
             revision = self._next_revision(connection, row["id"])
             connection.execute(
                 insert(ai_task_drafts).values(
@@ -810,12 +826,18 @@ class AITaskRepository:
                 and row["selected_revision"] is None
                 else row["selected_revision"]
             )
+            selected_verification = (
+                verification.status
+                if selected_revision == revision
+                else row["verification_status"]
+            )
             completed = (
                 connection.execute(
                     update(ai_tasks)
                     .where(ai_tasks.c.id == row["id"])
                     .values(
                         status="succeeded",
+                        verification_status=selected_verification,
                         lease_token=None,
                         lease_owner=None,
                         lease_expires_at=None,

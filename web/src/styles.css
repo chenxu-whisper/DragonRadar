@@ -218,6 +218,29 @@ body:has(dialog[open]) { overflow: hidden; }
 .news-list-row strong { margin-block: 4px; overflow-wrap: anywhere; }
 .news-detail { min-width: 0; padding-left: 24px; border-left: 1px solid var(--line); }
 .news-detail h2 { font-size: 21px; line-height: 1.45; overflow-wrap: anywhere; }
+.ai-entry-group { display: grid; gap: 18px; margin-block: 20px; }
+.ai-task-panel { border-block: 1px solid var(--line); padding-block: 16px; margin-block: 18px; min-width: 0; }
+.ai-task-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.ai-task-heading h3 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 16px; }
+.ai-task-heading > span, .ai-provenance { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.ai-note-selection { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+.ai-note-selection legend { font-weight: 600; margin-bottom: 8px; }
+.ai-note-selection > div:first-of-type { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.ai-note-selection label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
+.ai-note-selection input[type="checkbox"] { width: 18px; height: 18px; }
+.ai-scope-preview { margin-top: 12px; padding: 12px 0; border-block: 1px solid var(--line); }
+.ai-scope-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; margin: 8px 0; max-height: 240px; overflow: auto; }
+.ai-scope-preview small { color: var(--muted); }
+.ai-task-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ai-task-state { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-block: 12px; font-size: 13px; }
+.ai-task-state strong { color: var(--blue); }
+.ai-draft { overflow-wrap: anywhere; }
+.ai-draft h4 { margin-bottom: 6px; }
+.ai-draft ul { margin-top: 0; padding-inline-start: 22px; }
+.ai-draft li small { display: block; color: var(--muted); }
+.ai-edit { display: grid; gap: 8px; margin-top: 12px; }
+.ai-edit label { display: grid; gap: 6px; font-weight: 600; }
+.ai-edit textarea { width: 100%; min-width: 0; resize: vertical; font: inherit; line-height: 1.6; padding: 9px 10px; border: 1px solid #aab6c4; border-radius: 4px; }
 .news-metadata { margin-top: 16px; }
 .news-source-link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .news-summary { padding: 14px 0; border-block: 1px solid var(--line); font-size: 15px; line-height: 1.75; }

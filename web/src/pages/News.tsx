@@ -1,5 +1,5 @@
 import { ExternalLink, FileText, Link2, Search } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 
 import { Pager, ResourceStatus, type Patch } from '../components/Common';
 import {
@@ -13,8 +13,12 @@ import type {
   NewsType,
 } from '../features/news/types';
 import { useResource } from '../hooks/useResource';
+import { localRepository } from '../repositories/local/repository';
 import type { ResearchState } from '../state';
 
+const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
+  ? lazy(() => import('../features/ai/TaskPanel'))
+  : null;
 const TYPE_LABELS: Record<Exclude<NewsType, ''>, string> = {
   news: '新闻',
   announcement: '公告',
@@ -38,15 +42,42 @@ interface NewsProps {
   patch: Patch;
   refreshToken: number;
   open: (id: string, sector: string | undefined, trigger: HTMLElement) => void;
+  publicationAsOf?: string;
+  publicationVersion?: string;
 }
 
 function ArticleDetail({
   article,
   open,
+  state,
+  publicationAsOf,
+  publicationVersion,
 }: {
   article: NewsArticle;
   open: NewsProps['open'];
+  state: ResearchState;
+  publicationAsOf?: string;
+  publicationVersion?: string;
 }) {
+  const adopt = async (text: string, label: string) => {
+    const result = await localRepository.putNote({
+      note_id: crypto.randomUUID(),
+      key: crypto.randomUUID(),
+      expected_revision: 0,
+      snapshot_id: state.snapshot,
+      trade_date: state.date,
+      security_id: article.securities[0]?.security_id,
+      content: {
+        title: `${label} · ${article.title}`.slice(0, 100),
+        content: text,
+        judgment: '',
+        evidence: '',
+        invalid_condition: '',
+        verify_date: '',
+      },
+    });
+    return `已保存 · revision ${result.revision} · 回读验证通过`;
+  };
   return <section className="news-detail" aria-label="消息详情">
     <p className="eyebrow">{TYPE_LABELS[article.article_type]} · {article.source} / {article.source_version}</p>
     <h2>{article.title}</h2>
@@ -64,6 +95,28 @@ function ArticleDetail({
     {article.content
       ? <div className="news-content"><FileText size={18} /><p>{article.content}</p></div>
       : <p className="notice news-license"><strong>未获正文展示许可</strong>{article.summary ? '，仅展示授权摘要' : ''}</p>}
+    {AITaskPanel && publicationAsOf && publicationVersion && <div className="ai-entry-group">
+      <Suspense fallback={<p role="status">正在加载 AI 工具…</p>}>
+        <AITaskPanel
+          taskType="summarize"
+          snapshotId={state.snapshot}
+          asOf={publicationAsOf}
+          version={publicationVersion}
+          date={state.date}
+          articleId={article.article_id}
+          onAdopt={(text) => adopt(text, 'AI 消息摘要')}
+        />
+        <AITaskPanel
+          taskType="topic_suggest"
+          snapshotId={state.snapshot}
+          asOf={publicationAsOf}
+          version={publicationVersion}
+          date={state.date}
+          articleId={article.article_id}
+          onAdopt={(text) => adopt(text, 'AI 题材建议')}
+        />
+      </Suspense>
+    </div>}
 
     <section aria-label="事件新颖性证据">
       <h3>事件新颖性：{article.is_novel_event ? '新颖事件' : '非新颖事件'}</h3>
@@ -102,7 +155,14 @@ function ArticleDetail({
   </section>;
 }
 
-export function News({ state, patch, refreshToken, open }: NewsProps) {
+export function News({
+  state,
+  patch,
+  refreshToken,
+  open,
+  publicationAsOf,
+  publicationVersion,
+}: NewsProps) {
   const [query, setQuery] = useState(state.q);
   useEffect(() => setQuery(state.q), [state.q]);
   const request = {
@@ -208,7 +268,13 @@ export function News({ state, patch, refreshToken, open }: NewsProps) {
         />
       </section>
       {selected
-        ? <ArticleDetail article={selected} open={open} />
+        ? <ArticleDetail
+          article={selected}
+          open={open}
+          state={state}
+          publicationAsOf={publicationAsOf}
+          publicationVersion={publicationVersion}
+        />
         : <section className="news-detail empty" aria-label="消息详情">
           <h2>选择一篇消息</h2><p>详情严格绑定当前快照，不读取最新文章表。</p>
         </section>}

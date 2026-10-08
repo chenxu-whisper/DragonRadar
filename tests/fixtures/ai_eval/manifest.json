@@ -1,0 +1,9 @@
+{
+  "schema_version": "dragon-radar-ai-eval/v1",
+  "dataset_version": "external-human-pending",
+  "model_version": "not-evaluated",
+  "prompt_version": "prompt-v1",
+  "retrieval_version": "r1",
+  "release_status": "blocked",
+  "samples": []
+}

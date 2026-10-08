@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { exportLocalBackup, importLocalBackup, previewLocalBackup } from '../../repositories/local/backup';
 import {
   BACKUP_LIMITS, type ImportDecision, type ImportPlan,
@@ -8,6 +8,9 @@ import { registerLeaveGuard } from '../review/navigation';
 import { localNoteCommandSignature } from './note-command';
 import './local-review.css';
 
+const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
+  ? lazy(() => import('../ai/TaskPanel'))
+  : null;
 const empty = (): NoteContent => ({ title: '', content: '', judgment: '', evidence: '', invalid_condition: '', verify_date: '' });
 const editable = (content: StoredNoteContent): NoteContent => ({
   title: content.title, content: content.content, judgment: content.judgment ?? '',
@@ -17,8 +20,11 @@ const editable = (content: StoredNoteContent): NoteContent => ({
 const message = (error: unknown) => error instanceof Error ? error.message : '本地保存失败，当前输入已保留';
 
 export default function LocalReview({
-  snapshot = '', tradeDate = '', security = '',
-}: { snapshot?: string; tradeDate?: string; security?: string }) {
+  snapshot = '', tradeDate = '', security = '', asOf = '', version = '',
+}: {
+  snapshot?: string; tradeDate?: string; security?: string;
+  asOf?: string; version?: string;
+}) {
   const [notes, setNotes] = useState<LocalNote[]>([]);
   const [watchlist, setWatchlist] = useState<LocalWatch[]>([]);
   const [selected, setSelected] = useState<LocalNote>();
@@ -173,12 +179,80 @@ export default function LocalReview({
       setStatus(`已导出 ${backup.counts.notes} 条笔记和 ${backup.counts.revisions} 个修订。`);
     } catch (failure) { setError(message(failure)); }
   };
+  const adoptAIDraft = async (
+    text: string,
+    context: {
+      submittedEditorSignature: string;
+      strategy: 'replace' | 'merge' | 'save_as_new';
+    },
+  ) => {
+    const currentSignature = JSON.stringify([
+      content.title,
+      content.content,
+      content.judgment,
+      content.evidence,
+      content.invalid_condition,
+      content.verify_date,
+    ]);
+    if (context.strategy === 'replace'
+      && context.submittedEditorSignature
+      && currentSignature !== context.submittedEditorSignature) {
+      throw new Error('编辑器已在提交后变化，当前输入已保留。');
+    }
+    const saveAsNew = context.strategy === 'save_as_new';
+    const nextContent: NoteContent = saveAsNew
+      ? {
+        ...empty(),
+        title: `AI 每日复盘 ${tradeDate || ''}`.trim(),
+        content: text,
+      }
+      : {
+        ...content,
+        content: context.strategy === 'merge' && content.content.trim()
+          ? `${content.content}\n\n${text}`
+          : text,
+      };
+    const result = await repo.putNote({
+      note_id: saveAsNew ? crypto.randomUUID() : selected?.note_id ?? crypto.randomUUID(),
+      key: crypto.randomUUID(),
+      expected_revision: saveAsNew ? 0 : selected?.revision ?? 0,
+      snapshot_id: selected?.snapshot_id ?? snapshot,
+      trade_date: selected?.trade_date ?? tradeDate,
+      security_id: selected?.security_id ?? security,
+      content: nextContent,
+    });
+    if (result.current_revision && result.current_revision > result.revision) {
+      throw new Error('采用命令已提交，但本地笔记已有更新；当前输入已保留，请对照。');
+    }
+    await refresh();
+    if (!saveAsNew) {
+      setSelected(result);
+      setContent(editable(result.content));
+      setDirty(false);
+    }
+    return `已保存 · revision ${result.revision} · 回读验证通过`;
+  };
   const canSave = Boolean(selected?.snapshot_id || snapshot);
 
   return <div className="local-review">
     <div className="page-heading"><div><p className="eyebrow">本机资料 · 浏览器保存</p><h1>我的复盘</h1></div>
-      <span className="muted">无需登录 · 笔记与自选不上传</span></div>
-    <p className="muted">此浏览器保存你的判断。清除网站数据会删除本地记录；服务断开不影响保存。</p>
+      <span className="muted">{AITaskPanel
+        ? '所有者 AI · 仅发送明确选择的片段'
+        : '无需登录 · 笔记与自选不上传'}</span></div>
+    <p className="muted">此浏览器保存你的判断。清除网站数据会删除本地记录；服务断开不影响保存。
+      {AITaskPanel ? ' 未选择的笔记字段与自选列表不会发送。' : ''}</p>
+    {AITaskPanel && snapshot && tradeDate && asOf && version && <Suspense fallback={<p role="status">正在加载 AI 复盘工具…</p>}>
+      <AITaskPanel
+        taskType="daily_review"
+        snapshotId={snapshot}
+        asOf={asOf}
+        version={version}
+        date={tradeDate}
+        securityId={security || undefined}
+        note={content}
+        onAdopt={adoptAIDraft}
+      />
+    </Suspense>}
     <section className="local-backup" aria-label="备份与恢复">
       <div className="toolbar">
         <button type="button" onClick={() => void downloadBackup()} disabled={busy}>导出本机备份</button>

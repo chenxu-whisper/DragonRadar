@@ -10,11 +10,15 @@ import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch 
 import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/labels';
 import { newsListPath } from '../features/news/api';
 import type { NewsListResponse } from '../features/news/types';
+import { localRepository } from '../repositories/local/repository';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const EvidencePanel = resetEnabled
   ? lazy(async () => ({ default: (await import('../features/roles/EvidencePanel')).EvidencePanel }))
+  : null;
+const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
+  ? lazy(() => import('../features/ai/TaskPanel'))
   : null;
 const displayNumber = (value: number | null) =>
   value === null ? '—' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value);
@@ -105,6 +109,25 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       lineStyle: { color: '#1759ad', width: 2 },
     }],
   }), [canDrawCandles, rawData]);
+  const adoptExplanation = async (text: string) => {
+    const result = await localRepository.putNote({
+      note_id: crypto.randomUUID(),
+      key: crypto.randomUUID(),
+      expected_revision: 0,
+      snapshot_id: state.snapshot,
+      trade_date: state.date,
+      security_id: id,
+      content: {
+        title: `AI 个股解释 · ${modernData?.name || id}`.slice(0, 100),
+        content: text,
+        judgment: '',
+        evidence: '',
+        invalid_condition: '',
+        verify_date: '',
+      },
+    });
+    return `已保存 · revision ${result.revision} · 回读验证通过`;
+  };
   return <>
     {resetEnabled
       ? <>
@@ -116,6 +139,17 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
     {modernData && <>
       <div className="detail-heading"><h2>{modernData.name || '名称未知'}</h2><span>{modernData.security_id}</span></div>
       {ReviewActions && <ReviewActions snapshot={state.snapshot} security={id} />}
+      {AITaskPanel && snapshot && <Suspense fallback={<p role="status">正在加载 AI 个股解释…</p>}>
+        <AITaskPanel
+          taskType="explain_stock"
+          snapshotId={state.snapshot}
+          asOf={snapshot.result.published_at}
+          version={`v${snapshot.result.revision}`}
+          date={state.date}
+          securityId={id}
+          onAdopt={adoptExplanation}
+        />
+      </Suspense>}
       <dl className="quote">
         <div><dt>最新价</dt><dd>{modernData.quote.last ?? '—'}</dd></div>
         <div><dt>日涨跌幅</dt><dd><Percent value={modernData.quote.change_ratio === null ? null : String(modernData.quote.change_ratio)} /></dd></div>

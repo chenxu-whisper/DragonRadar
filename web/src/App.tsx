@@ -197,6 +197,8 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
                 snapshot={state.snapshot || undefined}
                 tradeDate={verifiedSnapshotTradeDate(state.snapshot, selectedSummary)}
                 security={state.security || undefined}
+                asOf={selectedSummary?.result.published_at}
+                version={selectedSummary ? `v${selectedSummary.result.revision}` : undefined}
               />
             </Suspense></LazyLoadBoundary>
           </section>
@@ -213,7 +215,14 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled} />}
             {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} snapshot={snapshot} reset={resetEnabled} ReviewActions={ActiveReviewActions} />}
             {News && state.view === 'news' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载消息…</p>}>
-              <News state={state} patch={patch} refreshToken={refreshToken} open={open} />
+              <News
+                state={state}
+                patch={patch}
+                refreshToken={refreshToken}
+                open={open}
+                publicationAsOf={snapshot.result.published_at}
+                publicationVersion={`v${snapshot.result.revision}`}
+              />
             </Suspense></LazyLoadBoundary>}
             {Leaders && state.view === 'leaders' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载梯队…</p>}>
               <Leaders state={state} patch={patch} open={open} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />

@@ -10,6 +10,7 @@ from dragon_radar.ai.models import (
     canonical_object,
 )
 from dragon_radar.ai.repository import AITaskRepository
+from dragon_radar.ai.verification import build_manifest_evidence
 from dragon_radar.publication.models import (
     DomainName,
     PublicationResult,
@@ -148,6 +149,11 @@ class AIService:
             "publication": self._publication_manifest(snapshot),
             "input": selected_input,
         }
+        manifest["evidence"] = build_manifest_evidence(
+            submission.task_type,
+            manifest["publication"],
+            selected_input,
+        )
         canonical_object(manifest)
         return manifest
 
