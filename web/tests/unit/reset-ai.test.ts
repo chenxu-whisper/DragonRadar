@@ -327,11 +327,31 @@ describe('AI task and notes state', () => {
     expect(sent[6].key).not.toBe(sent[5].key);
   });
 
-  test('keeps polling terminal success until the selected draft is returned', () => {
-    expect(pollDecision({ ...task, status: 'succeeded' })).toEqual({
+  test('schedules another task GET only while the task is active', () => {
+    expect(pollDecision({ ...task, status: 'pending' })).toEqual({
       poll: true,
       delayMs: 1000,
     });
+    expect(pollDecision(task)).toEqual({ poll: true, delayMs: 1000 });
+    expect(
+      pollDecision({
+        ...task,
+        status: 'failed',
+        verification_status: 'failed',
+        failure: { code: 'PROVIDER_FAILED', message: 'provider failed' },
+      }),
+    ).toEqual({ poll: false, delayMs: 0 });
+    expect(pollDecision({ ...task, status: 'succeeded' })).toEqual({
+      poll: false,
+      delayMs: 0,
+    });
+    expect(pollDecision({ ...task, status: 'cancelled' })).toEqual({
+      poll: false,
+      delayMs: 0,
+    });
+  });
+
+  test('does not schedule another task GET after content is returned', () => {
     expect(
       pollDecision({
         ...task,
@@ -348,10 +368,6 @@ describe('AI task and notes state', () => {
         ai_generated: true,
       }),
     ).toEqual({ poll: false, delayMs: 0 });
-    expect(pollDecision({ ...task, status: 'cancelled' })).toEqual({
-      poll: false,
-      delayMs: 0,
-    });
   });
 
   test('distinguishes overdue processing, deterministic content and three statuses', () => {

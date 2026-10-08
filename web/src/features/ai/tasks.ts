@@ -82,9 +82,11 @@ export function adoptionConflict(
 }
 
 export function pollDecision(task: AITask): { poll: boolean; delayMs: number } {
-  if (task.status === 'cancelled') return { poll: false, delayMs: 0 };
   if (task.content_draft) return { poll: false, delayMs: 0 };
-  return { poll: true, delayMs: 1000 };
+  if (task.status === 'pending' || task.status === 'running') {
+    return { poll: true, delayMs: 1000 };
+  }
+  return { poll: false, delayMs: 0 };
 }
 
 export interface TaskPresentation {
