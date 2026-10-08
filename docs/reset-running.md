@@ -98,21 +98,25 @@ test creates and removes an isolated schema and writes evidence under `.temp/`.
 
 ```powershell
 $env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-local-only@127.0.0.1:55432/dragon_test"
-uv run pytest -q -rs tests/performance/test_reset_queries.py
-uv run python scripts/verify_reset.py --performance-evidence .temp/acceptance/reset-performance.json --output .temp/acceptance/reset-base.json
-
-Set-Location web
-npm test
-npm run build
-npm run check:bundle
-npm run test:e2e:reset
+uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
 ```
 
-`verify_reset.py` exits `2` when performance evidence is missing and `1` when
-evidence is invalid. A valid synthetic run exits `0` while its JSON report
-still records real input, official rules, model evaluation, public-sharing
-permit, and the 20-trading-day shadow run as independent not-run/blocked gates.
-It never treats absent Docker, PostgreSQL, or real-data evidence as a pass.
+The default `full` mode executes every required Task20 command from a static
+argument allowlist with `shell=False` and bounded timeouts. It records command
+arguments, exit status, observed counts, environment, log path, size and
+SHA-256. A missing, skipped, failed or timed-out required command cannot pass.
+
+Use `--mode focused` for a shorter local diagnostic run. Because it omits full
+backend and frontend gates, its overall automated status remains blocked.
+Use `--mode validate --evidence <path>` to validate independently generated
+command evidence. Validation checks referenced artifacts and hashes; it does
+not execute command text from evidence.
+
+Exit `0` means all automated gates passed, while the report's overall status
+still remains blocked until real input, official rules, real model evaluation,
+public-sharing permission and at least 20 real trading-day shadow evidence are
+supplied. Exit `1` means evidence failed; exit `2` means required evidence is
+missing. CI runs `--mode full` and uploads `.temp/acceptance/` even on failure.
 
 Recovery behavior and observed synthetic metrics are recorded in
 [`docs/acceptance/reset-base.md`](acceptance/reset-base.md).

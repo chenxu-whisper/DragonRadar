@@ -75,18 +75,17 @@ docker stop dragon-radar-foundation-test-db
 
 上述明文密码仅用于隔离的测试数据库。正常运行的 Compose 实例必须另设强密码。
 
-Task20 的 CSV、七流程 Reset 验收、性能证据与基础验证命令为：
+Task20 默认由有界编排器执行完整后端、前端、性能、恢复与证据校验：
 
 ```powershell
 $env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-local-only@127.0.0.1:55432/dragon_test"
-uv run pytest -q -rs tests/performance/test_reset_queries.py
-uv run python scripts/verify_reset.py --performance-evidence .temp/acceptance/reset-performance.json --output .temp/acceptance/reset-base.json
-Set-Location web
-npm test
-npm run build
-npm run check:bundle
-npm run test:e2e:reset
+uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
 ```
+
+`--mode focused` 只运行 CSV、Reset 验收、恢复、性能与 Python 静态门禁，
+缺少完整门禁时必然返回阻塞；`--mode validate --evidence <path>` 只消费并
+校验已有的逐命令日志、计数、环境与 SHA-256 证据。默认 `full` 不接受调用方
+填写的性能 JSON 自证通过。
 
 实测合成结果、恢复演练和独立阻塞门禁见
 [Reset 基础验收](docs/acceptance/reset-base.md)。真实输入、正式规则、真实模型评测、
