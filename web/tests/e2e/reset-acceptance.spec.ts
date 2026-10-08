@@ -31,6 +31,153 @@ async function expectNoPageOverflow(page: Page) {
   )).toBe(true);
 }
 
+type AcceptanceView =
+  | 'overview'
+  | 'news'
+  | 'leaders'
+  | 'analysis'
+  | 'stock'
+  | 'regulation'
+  | 'review';
+
+const responsiveViews: {
+  view: AcceptanceView;
+  heading: string;
+  url: string;
+  meaningful: (page: Page) => ReturnType<Page['locator']>;
+}[] = [
+  {
+    view: 'overview',
+    heading: '市场总览',
+    url: `/?view=overview&snapshot=${ID}&date=2026-09-10`,
+    meaningful: page => page.getByRole('region', { name: '证券筛选结果' }),
+  },
+  {
+    view: 'news',
+    heading: '消息',
+    url: `/?view=news&snapshot=${NEWS_SNAPSHOT}&date=2026-09-10`,
+    meaningful: page => page.getByRole('button', { name: '导出当前页 CSV' }),
+  },
+  {
+    view: 'leaders',
+    heading: '梯队',
+    url: `/?view=leaders&snapshot=${ID}&date=2026-09-10`,
+    meaningful: page => page.getByRole('combobox', { name: '角色筛选' }),
+  },
+  {
+    view: 'analysis',
+    heading: '涨幅分析',
+    url: `/?view=analysis&snapshot=${ID}&date=2026-09-10`,
+    meaningful: page => page.getByRole('table', { name: '涨幅排行' }),
+  },
+  {
+    view: 'stock',
+    heading: '证券详情',
+    url: `/stock/TEST001?snapshot=${ID}&date=2026-09-10`,
+    meaningful: page => page.getByText('TEST001', { exact: true }).first(),
+  },
+  {
+    view: 'regulation',
+    heading: '监管',
+    url: `/?view=regulation&snapshot=${ID}&date=2026-09-10`,
+    meaningful: page => page.getByRole('region', { name: '数据完整性' }),
+  },
+  {
+    view: 'review',
+    heading: '我的复盘',
+    url: `/?view=review&snapshot=${ID}&date=2026-09-10`,
+    meaningful: page => page.getByRole('region', { name: '备份与恢复' }),
+  },
+];
+
+async function mockResponsiveView(page: Page, view: AcceptanceView) {
+  if (view === 'news') {
+    await mockNews(page);
+    return;
+  }
+  if (view === 'leaders') {
+    await mockLeaders(page);
+    return;
+  }
+  if (view === 'regulation') {
+    await mockRegulation(page);
+    return;
+  }
+  await mockMarket(page);
+  if (view === 'analysis') {
+    await page.route('**/api/rank/range?**', route => route.fulfill({
+      json: {
+        ...resetSummary(snapshot),
+        coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
+        rule_version: 'analysis-v1',
+        basis: {
+          unit: 'ratio',
+          currency: 'CNY',
+          price_type: 'raw',
+          benchmark: 'B000300',
+        },
+        data: {
+          window_days: 20,
+          adjusted_start: sessions[0],
+          adjusted_end: sessions.at(-1),
+          benchmark_return: 0.02,
+          ranking: [{
+            rank: 1,
+            security_id: 'TEST001',
+            name: '合成测试证券1',
+            topics: [],
+            topic_status: 'available',
+            topic_reasons: [],
+            reasons: [],
+            return_ratio: 0.1,
+            excess_return_ratio: 0.08,
+            max_drawdown_ratio: 0.02,
+            amount_change_ratio: 0.03,
+          }],
+          exclusions: [],
+        },
+      },
+    }));
+  }
+}
+
+for (const item of responsiveViews) {
+  for (const width of [375, 1440]) {
+    test(`${item.view} is readable and functional at ${width}px and 200% zoom`, async ({ page }) => {
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 1000 });
+      await mockResponsiveView(page, item.view);
+      await page.goto(item.url);
+
+      const heading = page.getByRole('heading', { name: item.heading, exact: true });
+      await expect(heading).toBeVisible();
+      await expect(item.meaningful(page)).toBeVisible();
+      const session = await page.context().newCDPSession(page);
+      await session.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
+      expect(await page.evaluate(() => window.visualViewport?.scale)).toBe(2);
+      await expect(heading).toBeVisible();
+      await expect(heading).toBeInViewport();
+      await expect(item.meaningful(page)).toBeVisible();
+      const readability = await heading.evaluate(element => {
+        const style = getComputedStyle(element);
+        const bounds = element.getBoundingClientRect();
+        return {
+          fontSize: Number.parseFloat(style.fontSize),
+          width: bounds.width,
+          height: bounds.height,
+          clipped: element.scrollWidth > element.clientWidth
+            || element.scrollHeight > element.clientHeight,
+        };
+      });
+      expect(readability.fontSize).toBeGreaterThanOrEqual(16);
+      expect(readability.width).toBeGreaterThan(40);
+      expect(readability.height).toBeGreaterThan(20);
+      expect(readability.clipped).toBe(false);
+      await expectNoPageOverflow(page);
+      await session.detach();
+    });
+  }
+}
+
 test('overview at 375px exports the current filter with immutable metadata', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await mockMarket(page);

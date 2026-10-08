@@ -1,71 +1,39 @@
+import hashlib
 import json
+import runpy
 import subprocess
 import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "verify_reset.py"
+REQUIRED_GATES = {
+    "csv_units",
+    "reset_acceptance_e2e",
+    "recovery_drills",
+    "performance",
+    "public_no_write",
+    "async_over_five_seconds",
+    "full_backend",
+    "ruff_lint",
+    "ruff_format",
+    "compileall",
+    "frontend_tests",
+    "frontend_builds",
+    "frontend_bundle",
+    "frontend_e2e_legacy",
+    "frontend_e2e_reset",
+    "frontend_e2e_private",
+    "frontend_e2e_ai_public",
+    "frontend_e2e_ai_private",
+    "frontend_e2e_production_isolation",
+    "frontend_contract_runtime",
+}
 
 
-def performance_evidence():
-    state = {"publications": {"rows": 1, "row_versions": 1}}
-    run = {
-        "cache_condition": "warm_process_and_warmed_database",
-        "request_count": 20,
-        "concurrency": 20,
-        "successful": 20,
-        "error_rate": 0,
-        "p50_seconds": 0.1,
-        "p95_seconds": 0.2,
-        "max_seconds": 0.3,
-        "process_cpu_seconds": 0.1,
-        "peak_memory_bytes": 1000,
-        "sql_statement_count": 40,
-    }
-    return {
-        "fixture": {
-            "kind": "synthetic",
-            "counts": {"securities": 1, "trading_sessions": 4, "publications": 1},
-            "data_volume": {
-                "market_archive_bytes": 100,
-                "publication_payload_bytes": 200,
-            },
-            "projected_owner_work_seconds": ">5",
-            "owner_execution": "queued_async",
-        },
-        "environment": {
-            "python": "3.12",
-            "postgresql": "17",
-            "os_cold_cache_controlled": False,
-        },
-        "runs": [
-            {
-                **run,
-                "cache_condition": (
-                    "cold_process_first_concurrent_run_db_cache_uncontrolled"
-                ),
-            },
-            run,
-        ],
-        "public_state_before": state,
-        "public_state_after": state,
-        "explain_analyze_buffers": [{"Plan": {"Node Type": "Index Scan"}}],
-    }
-
-
-def invoke(tmp_path, evidence=None):
-    evidence_path = tmp_path / "performance.json"
-    if evidence is not None:
-        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+def invoke(tmp_path, *args):
     output = tmp_path / "report.json"
     result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--performance-evidence",
-            str(evidence_path),
-            "--output",
-            str(output),
-        ],
+        [sys.executable, str(SCRIPT), *args, "--output", str(output)],
         cwd=SCRIPT.parents[1],
         text=True,
         capture_output=True,
@@ -74,85 +42,187 @@ def invoke(tmp_path, evidence=None):
     return result, output
 
 
-def test_verifier_emits_machine_report_and_honest_blocked_external_gates(tmp_path):
-    result, output = invoke(tmp_path, performance_evidence())
+def command_record(tmp_path, gate, *, skipped=0, exit_status=0):
+    log = tmp_path / f"{gate}.log"
+    log.write_text(f"{gate}: independently generated output\n", encoding="utf-8")
+    observations = {"gate": gate}
+    if gate == "performance":
+        observations["runs"] = [
+            {"cache_condition": "cold", "p95_seconds": 0.2},
+            {"cache_condition": "warm", "p95_seconds": 0.1},
+        ]
+    elif gate == "public_no_write":
+        observations.update(
+            sql_write_count=0,
+            fingerprints_equal=True,
+            application_table_count=42,
+        )
+    elif gate == "async_over_five_seconds":
+        observations.update(
+            worker_elapsed_seconds=5.1,
+            submission_seconds=0.1,
+            status="succeeded",
+            synthetic=True,
+        )
+    elif gate == "recovery_drills":
+        observations["drills"] = [
+            "snapshot_revision_and_pinned_rollback",
+            "withdrawal_and_revocation",
+            "source_failure",
+            "local_backup_restore",
+            "owner_session_expiry_and_revoke",
+            "ai_off",
+        ]
+    return {
+        "status": "pass",
+        "commands": [
+            {
+                "command": ["recorded", gate],
+                "cwd": ".",
+                "exit_status": exit_status,
+                "timed_out": False,
+                "observed_counts": {
+                    "passed": 1,
+                    "failed": int(exit_status != 0),
+                    "skipped": skipped,
+                    "output_lines": 1,
+                },
+                "artifact": {
+                    "path": str(log),
+                    "sha256": hashlib.sha256(log.read_bytes()).hexdigest(),
+                    "bytes": log.stat().st_size,
+                },
+                "environment": {
+                    "platform": "test",
+                    "python": "3.12",
+                    "node": "22",
+                    "postgresql": "17",
+                },
+            }
+        ],
+        "observations": observations,
+    }
+
+
+def evidence_manifest(tmp_path):
+    records = {gate: command_record(tmp_path, gate) for gate in sorted(REQUIRED_GATES)}
+    return {
+        "schema": "dragon-radar.task20-evidence.v1",
+        "mode": "full",
+        "commit": {"value": "98e1142969ba2bb96bc44d386cf6ec4ad31babb8"},
+        "records": records,
+    }
+
+
+def write_manifest(tmp_path, manifest):
+    path = tmp_path / "evidence.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
+
+
+def test_count_parser_uses_test_count_from_ansi_colored_output():
+    count_output = runpy.run_path(str(SCRIPT))["_counts"]
+    output = (
+        "\x1b[32m1 passed\x1b[39m\n"
+        "\x1b[2mTests\x1b[22m \x1b[1m\x1b[32m14 passed\x1b[39m"
+    )
+
+    assert count_output(output, 0)["passed"] == 14
+
+
+def test_default_full_mode_cannot_self_certify_from_performance_json(tmp_path):
+    performance = tmp_path / "performance.json"
+    performance.write_text('{"runs":[]}', encoding="utf-8")
+
+    result, output = invoke(tmp_path, "--performance-evidence", str(performance))
+
+    assert result.returncode != 0
+    assert not output.exists()
+    assert "--performance-evidence" in result.stderr
+
+
+def test_validate_mode_requires_every_task20_gate_and_never_marks_development_pass(
+    tmp_path,
+):
+    manifest = evidence_manifest(tmp_path)
+    manifest["records"].pop("full_backend")
+    evidence = write_manifest(tmp_path, manifest)
+
+    result, output = invoke(
+        tmp_path,
+        "--mode",
+        "validate",
+        "--evidence",
+        str(evidence),
+    )
+
+    assert result.returncode == 2
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["overall_status"] == "blocked"
+    assert report["automated_acceptance"]["status"] == "blocked"
+    assert "development_complete" not in report
+    assert report["gates"]["full_backend"]["status"] == "missing"
+    assert set(report["gates"]) == REQUIRED_GATES
+
+
+def test_validate_mode_rejects_skips_failures_missing_fields_and_bad_artifact_hash(
+    tmp_path,
+):
+    mutations = (
+        lambda record: record["commands"][0]["observed_counts"].update(skipped=1),
+        lambda record: record["commands"][0].update(exit_status=1),
+        lambda record: record["commands"][0].pop("environment"),
+        lambda record: record["commands"][0]["artifact"].update(sha256="0" * 64),
+    )
+    for index, mutate in enumerate(mutations):
+        case = tmp_path / str(index)
+        case.mkdir()
+        manifest = evidence_manifest(case)
+        mutate(manifest["records"]["full_backend"])
+        evidence = write_manifest(case, manifest)
+
+        result, output = invoke(
+            case,
+            "--mode",
+            "validate",
+            "--evidence",
+            str(evidence),
+        )
+
+        assert result.returncode == 1
+        report = json.loads(output.read_text(encoding="utf-8"))
+        assert report["gates"]["full_backend"]["status"] == "fail"
+        assert report["automated_acceptance"]["status"] == "fail"
+
+
+def test_complete_hashed_evidence_passes_automation_but_external_gates_block(
+    tmp_path,
+):
+    evidence = write_manifest(tmp_path, evidence_manifest(tmp_path))
+
+    result, output = invoke(
+        tmp_path,
+        "--mode",
+        "validate",
+        "--evidence",
+        str(evidence),
+    )
 
     assert result.returncode == 0
-    report = json.loads(result.stdout)
-    assert json.loads(output.read_text(encoding="utf-8")) == report
-    assert report["development_complete"]["status"] == "pass"
-    assert report["synthetic_regression"]["status"] == "pass"
-    assert report["real_input"]["status"] == "not_run"
-    assert report["official_rules"]["status"] == "not_run"
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["automated_acceptance"]["status"] == "pass"
+    assert report["overall_status"] == "blocked"
+    assert report["real_input"]["status"] == "blocked"
+    assert report["official_rules"]["status"] == "blocked"
     assert report["real_model_evaluation"]["status"] == "blocked"
     assert report["public_sharing_permit"]["status"] == "blocked"
     assert report["shadow_run_20_trading_days"]["status"] == "blocked"
-    assert report["overall_status"] == "blocked"
-    assert report["performance"]["runs"][0]["request_count"] == 20
-    assert report["performance"]["no_public_writes"] is True
-    assert report["record"]["command"] == [
-        "python",
-        "scripts/verify_reset.py",
-        "--performance-evidence",
-        "<path>",
-        "--output",
-        "<path>",
-    ]
+    for gate in REQUIRED_GATES:
+        assert report["gates"][gate]["status"] == "pass"
+        command = report["gates"][gate]["commands"][0]
+        assert command["command"]
+        assert command["exit_status"] == 0
+        assert command["observed_counts"]["skipped"] == 0
+        assert command["artifact"]["sha256"]
+        assert command["environment"]
     assert "postgresql+psycopg://" not in result.stdout
-    assert (
-        "Synthetic checks passed; external acceptance remains blocked." in result.stderr
-    )
-
-
-def test_verifier_never_turns_missing_or_skipped_database_evidence_into_pass(tmp_path):
-    stale = tmp_path / "report.json"
-    stale.write_text('{"overall_status":"pass"}', encoding="utf-8")
-    missing, output = invoke(tmp_path)
-    assert missing.returncode == 2
-    assert not output.exists()
-    assert json.loads(missing.stdout)["synthetic_regression"]["status"] == "missing"
-
-    evidence = performance_evidence()
-    evidence["runs"][0]["successful"] = 0
-    evidence["runs"][0]["error_rate"] = 1
-    failed, _output = invoke(tmp_path, evidence)
-    assert failed.returncode == 1
-    assert json.loads(failed.stdout)["synthetic_regression"]["status"] == "fail"
-
-
-def test_verifier_rejects_changed_state_bad_latency_and_incomplete_metrics(tmp_path):
-    for mutate in (
-        lambda evidence: evidence.update(public_state_after={}),
-        lambda evidence: evidence["runs"][1].update(p95_seconds=2.01),
-        lambda evidence: evidence["runs"][1].pop("peak_memory_bytes"),
-        lambda evidence: evidence.update(explain_analyze_buffers=[]),
-    ):
-        evidence = performance_evidence()
-        mutate(evidence)
-        result, _output = invoke(tmp_path, evidence)
-        assert result.returncode == 1
-        assert json.loads(result.stdout)["synthetic_regression"]["status"] == "fail"
-
-
-def test_verifier_fails_closed_for_malformed_shapes_and_metric_types(tmp_path):
-    for evidence in (
-        {"fixture": "bad", "runs": "bad"},
-        {
-            **performance_evidence(),
-            "public_state_before": None,
-            "public_state_after": None,
-        },
-        {
-            **performance_evidence(),
-            "runs": [
-                performance_evidence()["runs"][0],
-                {
-                    **performance_evidence()["runs"][1],
-                    "p95_seconds": "fast",
-                },
-            ],
-        },
-    ):
-        result, _output = invoke(tmp_path, evidence)
-        assert result.returncode == 1
-        assert json.loads(result.stdout)["synthetic_regression"]["status"] == "fail"

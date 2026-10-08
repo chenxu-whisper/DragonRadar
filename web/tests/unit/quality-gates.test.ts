@@ -64,7 +64,9 @@ describe('前端发布门禁', () => {
       web_production_isolation: ['npm run test:e2e:production-isolation'],
       reset_performance: [
         'uv run pytest -q -rs tests/performance/test_reset_queries.py',
-        'uv run python scripts/verify_reset.py --performance-evidence .temp/acceptance/reset-performance.json --output .temp/acceptance/reset-base.json',
+      ],
+      task20_acceptance: [
+        'uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json',
       ],
     };
 
@@ -79,5 +81,10 @@ describe('前端发布门禁', () => {
         .filter(line => line.trim() === `- run: ${command}`)).toHaveLength(1);
     });
     expect(workflow).not.toContain('npx playwright test --config');
+    expect(workflow).not.toContain('--performance-evidence');
+    const acceptance = workflowJob(workflow, 'task20_acceptance');
+    expect(acceptance).toContain('npm ci --ignore-scripts');
+    expect(acceptance).toContain('npx playwright install --with-deps chromium');
+    expect(acceptance).toContain('name: reset-task20-evidence');
   });
 });

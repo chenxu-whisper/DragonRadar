@@ -1010,7 +1010,8 @@ async def test_published_analysis_gets_only_project_archived_jsonb(monkeypatch):
         "reason": "seal_event_missing",
     }
     assert stock["regulation"] == {
-        "active_events": None,
+        "formal_event_count": None,
+        "event_source_completeness": "unknown",
         "reason": "regulation_disabled",
     }
 
@@ -1498,7 +1499,8 @@ async def test_stock_roles_are_always_an_array_when_domain_is_unavailable(role_s
     assert data["roles"] == []
     assert data["role_reason"] == f"role_{role_status}"
     assert data["regulation"] == {
-        "active_events": None,
+        "formal_event_count": None,
+        "event_source_completeness": "unknown",
         "reason": "regulation_disabled",
     }
 
