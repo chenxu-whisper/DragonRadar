@@ -508,13 +508,13 @@ ROLE_NAMES = {
 
 **文件：** 新建 `ai/verification.py`、`web/src/features/ai/{client,tasks}.ts`、`TaskPanel.tsx`、`tests/test_reset_ai_verification.py`、`web/tests/e2e/reset-ai.spec.ts`、`scripts/evaluate_ai.py`、`tests/fixtures/ai_eval/manifest.json`；修改消息/详情/复盘页面；新建 `docs/ai-evaluation.md`。
 
-- [ ] 写失败用例：引用不存在、数字不匹配、未来证据、提示注入要求写库/调用未授权工具均被拒；人工编辑后新revision须重新校验；迟到内容不覆盖已编辑正文。
-- [ ] 运行对应pytest/E2E确认失败。
-- [ ] 输出facts/inferences/missing_evidence/citations分层；可计算值走服务端白名单复算；有引用位置才能称原文支持，confidence不是上涨概率。
-- [ ] 前端只上传用户显式选中的笔记片段，发送前显示范围；远程任务审核不自动覆盖本地笔记，只有用户“采用草稿”后走Task04保存。
-- [ ] 准备至少100条人工标注样本，分开发集和冻结测试集；评测要求原子事实支持率≥95%、数字与确定性复算一致率100%，安全硬失败为0。样本不能由模型自产自评后当人工标注。
-- [ ] 运行 `uv run python scripts/evaluate_ai.py --manifest tests/fixtures/ai_eval/manifest.json`，输出模型/提示词/检索版本、分集结果和失败样例；未获得真实模型或人工样本时记录发布阻塞。
-- [ ] 提交 `feat: verify AI evidence and protect local drafts`。
+- [x] 写失败用例：引用不存在、数字不匹配、未来证据、提示注入要求写库/调用未授权工具均被拒；人工编辑后新revision须重新校验；迟到内容不覆盖已编辑正文。
+- [x] 运行对应pytest/E2E确认失败。
+- [x] 输出facts/inferences/missing_evidence/citations分层；可计算值走服务端白名单复算；有引用位置才能称原文支持，confidence不是上涨概率。
+- [x] 前端只上传用户显式选中的笔记片段，发送前显示范围；远程任务审核不自动覆盖本地笔记，只有用户“采用草稿”后走Task04保存。
+- [ ] 准备至少100条人工标注样本，分开发集和冻结测试集；评测要求原子事实支持率≥95%、数字与确定性复算一致率100%，安全硬失败为0。样本不能由模型自产自评后当人工标注。（外部门禁：当前0条真实人工样本，发布状态保持blocked。）
+- [x] 运行 `uv run python scripts/evaluate_ai.py --manifest tests/fixtures/ai_eval/manifest.json`，输出模型/提示词/检索版本、分集结果和失败样例；未获得真实模型或人工样本时记录发布阻塞。
+- [x] 提交 `feat: verify AI evidence and protect local drafts`。
 
 **完成条件：** AI可以单独关闭；真实模型发布是否通过有独立证据，不用模拟provider测试替代。
 
