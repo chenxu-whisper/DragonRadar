@@ -48,13 +48,13 @@ function compose(project, files, ...args) {
   ]);
 }
 
-function writeEnvironment(privatePort) {
+function writeEnvironment(privatePort, publishedPort = 0) {
   writeFileSync(
     envFile,
     [
       `DRAGON_DB_PASSWORD=${password}`,
       `DRAGON_PRIVATE_PORT=${privatePort}`,
-      'DRAGON_PRIVATE_PUBLISHED_PORT=0',
+      `DRAGON_PRIVATE_PUBLISHED_PORT=${publishedPort}`,
       'DRAGON_WEB_PORT=0',
       `DRAGON_E2E_STATE_DIR=${state.replaceAll('\\', '/')}`,
       '',
@@ -110,13 +110,13 @@ async function testPrivate() {
       'web',
       8443,
     );
-    writeEnvironment(port);
+    writeEnvironment(port, port);
     writeFileSync(authorityFile, `localhost:${port}\n`, 'utf8');
 
     compose(privateProject, files, 'up', '-d', '--wait', 'db');
     compose(privateProject, files, 'run', '--rm', 'api', 'migrate');
     compose(privateProject, files, 'run', '--rm', 'api', 'owner-init');
-    compose(privateProject, files, 'up', '-d', '--wait', 'api');
+    compose(privateProject, files, 'up', '-d', '--wait', '--no-recreate', 'api');
 
     const { context, page } = await launchPage(`https://localhost:${port}`);
     try {

@@ -1,7 +1,7 @@
 """Distinct public sharing application with an explicit published-read allowlist."""
 
 import asyncio
-import contextlib
+import ipaddress
 import os
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -52,13 +52,23 @@ PUBLIC_READ_PATHS = frozenset(
 
 
 class DirectPeerConcurrencyLimit:
-    """Bound every HTTP path, including health, by the ASGI direct peer address."""
+    """Bound every HTTP path by a verified real-client address."""
 
-    def __init__(self, app, maximum: int = 20):
+    def __init__(
+        self,
+        app,
+        maximum: int = 20,
+        trusted_proxy_cidr: str | None = None,
+    ):
         if type(maximum) is not int or maximum < 1:
             raise ValueError("maximum must be a positive integer")
         self.app = app
         self.maximum = maximum
+        self.trusted_proxy = (
+            ipaddress.ip_network(trusted_proxy_cidr, strict=False)
+            if trusted_proxy_cidr
+            else None
+        )
         self._counts: dict[str, int] = {}
         self._lock = asyncio.Lock()
 
@@ -82,14 +92,35 @@ class DirectPeerConcurrencyLimit:
             else:
                 del self._counts[peer]
 
+    def _client_key(self, scope) -> str:
+        client = scope.get("client")
+        direct = client[0] if client and client[0] else "<unknown>"
+        try:
+            direct_ip = ipaddress.ip_address(direct)
+        except ValueError:
+            return direct
+        if self.trusted_proxy is None or direct_ip not in self.trusted_proxy:
+            return str(direct_ip)
+        values = [
+            value
+            for name, value in scope.get("headers", ())
+            if name.lower() == b"x-dragon-client-ip"
+        ]
+        if len(values) != 1:
+            return str(direct_ip)
+        try:
+            forwarded = values[0].decode("ascii").strip()
+            return str(ipaddress.ip_address(forwarded))
+        except (UnicodeDecodeError, ValueError):
+            return str(direct_ip)
+
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        client = scope.get("client")
-        peer = client[0] if client and client[0] else "<unknown>"
+        peer = self._client_key(scope)
         if not await self._acquire(peer):
-            body = b'{"code":"too_many_requests","message":"Too many requests"}'
+            body = b'{"code":"RATE_LIMITED","message":"Too many requests"}'
             await send(
                 {
                     "type": "http.response.start",
@@ -98,21 +129,23 @@ class DirectPeerConcurrencyLimit:
                         (b"content-type", b"application/json"),
                         (b"content-length", str(len(body)).encode("ascii")),
                         (b"cache-control", b"no-store"),
+                        (b"retry-after", b"1"),
                     ],
                 }
             )
             await send({"type": "http.response.body", "body": body})
             return
 
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
         disconnected = asyncio.Event()
 
         async def pump_receive():
             while True:
                 message = await receive()
-                await queue.put(message)
                 if message["type"] == "http.disconnect":
                     disconnected.set()
+                await queue.put(message)
+                if message["type"] == "http.disconnect":
                     return
 
         application = asyncio.create_task(self.app(scope, queue.get, send))
@@ -125,15 +158,19 @@ class DirectPeerConcurrencyLimit:
             )
             if disconnect in done and not application.done():
                 application.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await application
+                await asyncio.gather(application, return_exceptions=True)
                 return
             await application
         finally:
             for task in (application, pump, disconnect):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(pump, disconnect, return_exceptions=True)
+            await asyncio.gather(
+                application,
+                pump,
+                disconnect,
+                return_exceptions=True,
+            )
             await self._release(peer)
 
 
@@ -150,6 +187,15 @@ class PublicProtocolGate:
         method = scope["method"]
         if method not in {"GET", "HEAD"}:
             response = error_response(403, "FORBIDDEN", "Read-only public API")
+            await response(scope, receive, send)
+            return
+        header_names = {name.lower() for name, _value in scope.get("headers", ())}
+        if {b"content-length", b"transfer-encoding"} & header_names:
+            response = error_response(
+                400,
+                "INVALID_REQUEST",
+                "GET and HEAD requests must not contain a body",
+            )
             await response(scope, receive, send)
             return
         if method != "HEAD":
@@ -243,7 +289,7 @@ def create_public_app(
 
     @app.get("/api/snapshots/{snapshot_id}")
     def get_snapshot_summary(snapshot_id: UUID, request: Request):
-        snapshot = _repository(request).get_snapshot(snapshot_id)
+        snapshot = _repository(request).get_published_snapshot(snapshot_id)
         if snapshot is None:
             raise NotFound("Snapshot not found")
         return DecimalJSONResponse(snapshot_summary(snapshot))
@@ -267,5 +313,9 @@ def create_public_app(
         raise RuntimeError("Public read route allowlist is incomplete")
 
     app.add_middleware(PublicProtocolGate)
-    app.add_middleware(DirectPeerConcurrencyLimit, maximum=20)
+    app.add_middleware(
+        DirectPeerConcurrencyLimit,
+        maximum=20,
+        trusted_proxy_cidr=os.getenv("DRAGON_TRUSTED_PROXY_CIDR"),
+    )
     return app

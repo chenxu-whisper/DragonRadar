@@ -1,83 +1,66 @@
-"""Fail-closed public access to explicitly shared unified publications."""
+"""Narrow public facade over publication-layer sharing authorization."""
 
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 
-from sqlalchemy import select
-
-from dragon_radar.domain.models import SourceGrant
-from dragon_radar.publication.repository import (
-    PublicationRepository,
-    _publication,
+from dragon_radar.publication.access import (
+    PublicSharingAccessPolicy,
+    grant_allows_public_sharing,
 )
-from dragon_radar.publication.tables import publications
-from dragon_radar.storage.repository import Forbidden, Repository, _uuid
+from dragon_radar.publication.repository import PublicationRepository
+from dragon_radar.storage.repository import Repository
+
+__all__ = [
+    "PublicPublicationRepository",
+    "grant_allows_public_sharing",
+    "public_publication_repository",
+]
 
 
-def grant_allows_public_sharing(
-    grant: SourceGrant,
-    *,
-    source_id: str,
-    now: datetime,
-) -> bool:
-    """Require current provenance approval and the independent sharing right."""
-    if now.tzinfo is None or now.utcoffset() is None:
-        raise ValueError("operation time requires a timezone")
-    return bool(
-        grant.source_id == source_id
-        and grant.approved
-        and grant.reference
-        and grant.starts_at is not None
-        and grant.expires_at is not None
-        and grant.starts_at <= now < grant.expires_at
-        and grant.sharing
-    )
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
-class PublicPublicationRepository(PublicationRepository):
-    """Published read facade with current sharing checks and no legacy fallback."""
+class PublicPublicationRepository:
+    """Expose published reads without the legacy snapshot fallback."""
 
     def __init__(
         self,
         database,
         market_repository: Repository | None = None,
         *,
-        clock=None,
+        clock: Callable[[], datetime] | None = None,
     ):
-        super().__init__(database, market_repository, clock=clock)
-
-    def _authorized_snapshot(self, record, dependencies, grants, **kwargs):
-        source_ids = {dependency["source_id"] for dependency in dependencies}
-        operation_now = self.clock()
-        if not source_ids or not all(
-            grant_allows_public_sharing(
-                grants[source_id],
-                source_id=source_id,
-                now=operation_now,
-            )
-            for source_id in source_ids
-        ):
-            raise Forbidden("Publication is not authorized for public sharing")
-        return super()._authorized_snapshot(
-            record,
-            dependencies,
-            grants,
-            require_local_display=False,
-            **kwargs,
+        repository_clock = clock or _utc_now
+        self._repository = PublicationRepository(
+            database,
+            market_repository,
+            clock=repository_clock,
+            access_policy=PublicSharingAccessPolicy(repository_clock),
         )
+        self.database = database
+
+    def get_published_snapshot(self, snapshot_id):
+        return self._repository.get_published_snapshot(snapshot_id)
 
     def get_snapshot(self, snapshot_id):
-        snapshot_id = _uuid(snapshot_id)
-        with self.database.engine.begin() as connection:
-            row = (
-                connection.execute(
-                    select(publications).where(publications.c.id == snapshot_id)
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return None
-            record = _publication(row)
-            if record.status != "published":
-                raise Forbidden("Publication is not available")
-            return self._authorized_records(connection, [row])[0]
+        return self.get_published_snapshot(snapshot_id)
+
+    def list_snapshots(self, **filters):
+        return self._repository.list_snapshots(**filters)
+
+    def list_results(self, publication_id):
+        return self._repository.list_results(publication_id)
+
+
+def public_publication_repository(
+    database,
+    market_repository: Repository | None = None,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> PublicPublicationRepository:
+    return PublicPublicationRepository(
+        database,
+        market_repository,
+        clock=clock,
+    )

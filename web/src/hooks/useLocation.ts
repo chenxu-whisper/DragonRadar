@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { parseState, stateSearch, type ResearchState, type View } from '../state';
 import { allowNavigation } from '../features/review/navigation';
 
-export function useLocation(allowPrivate = false, reset = false) {
-  const read = useCallback(() => parseState(window.location.search, allowPrivate, reset, window.location.pathname), [allowPrivate, reset]);
+export function useLocation(allowPrivate = false, reset = false, allowResetReview = true) {
+  const read = useCallback(() => parseState(window.location.search, allowPrivate, reset, window.location.pathname, allowResetReview), [allowPrivate, reset, allowResetReview]);
   const urlFor = useCallback((state: ResearchState) => {
     const path = reset ? state.view === 'stock' && state.security ? `/stock/${encodeURIComponent(state.security)}` : '/' : '';
-    return `${path}${stateSearch(state, allowPrivate, reset)}${window.location.hash}`;
-  }, [allowPrivate, reset]);
+    return `${path}${stateSearch(state, allowPrivate, reset, allowResetReview)}${window.location.hash}`;
+  }, [allowPrivate, reset, allowResetReview]);
   const [location, setLocation] = useState(read);
   const pages = useRef<Partial<Record<View, ResearchState>>>({});
   useEffect(() => {
@@ -43,7 +43,7 @@ export function useLocation(allowPrivate = false, reset = false) {
     return true;
   }, [read, urlFor, reset]);
   const destination = (view: View): ResearchState => ({
-    ...(pages.current[view] || parseState('', allowPrivate, reset).state),
+    ...(pages.current[view] || parseState('', allowPrivate, reset, '', allowResetReview).state),
     view, snapshot: location.state.snapshot, date: location.state.date, security: '',
   });
   return { ...location, patch, destination, urlFor };

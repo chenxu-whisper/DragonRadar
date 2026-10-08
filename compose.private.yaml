@@ -11,13 +11,15 @@ services:
     restart: unless-stopped
 
   api:
-    command: ["serve-owner", "--host", "0.0.0.0", "--port", "8000", "--origin", "https://localhost:${DRAGON_PRIVATE_PORT:-8030}"]
+    command: ["serve-owner", "--host", "127.0.0.1", "--port", "8001", "--origin", "https://localhost:${DRAGON_PRIVATE_PORT:-8030}"]
+    network_mode: service:web
+    networks: !reset []
     environment:
       DRAGON_OWNER_AUTHORITY: localhost:${DRAGON_PRIVATE_PORT:-8030}
     volumes:
       - ./.temp/private-secrets:/run/dragon-owner
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, urllib.request; request=urllib.request.Request('http://127.0.0.1:8000/health/ready', headers={'Host': os.environ['DRAGON_OWNER_AUTHORITY']}); urllib.request.urlopen(request, timeout=3)"]
+      test: ["CMD", "python", "-c", "import os, urllib.request; request=urllib.request.Request('http://127.0.0.1:8001/health/ready', headers={'Host': os.environ['DRAGON_OWNER_AUTHORITY']}); urllib.request.urlopen(request, timeout=3)"]
 
   web:
     build:
@@ -30,9 +32,6 @@ services:
     volumes:
       - private_caddy_data:/data
       - private_caddy_config:/config
-    depends_on:
-      api:
-        condition: service_healthy
     networks: [backend, private_local]
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent --show-error --max-time 3 --cacert /data/caddy/pki/authorities/local/root.crt --header \"Host: $$DRAGON_OWNER_AUTHORITY\" https://localhost:8443/health/ready"]

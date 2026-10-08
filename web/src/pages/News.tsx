@@ -1,5 +1,5 @@
 import { ExternalLink, FileText, Link2, Search } from 'lucide-react';
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 
 import { Pager, ResourceStatus, type Patch } from '../components/Common';
 import {
@@ -13,16 +13,10 @@ import type {
   NewsType,
 } from '../features/news/types';
 import { useResource } from '../hooks/useResource';
-import { localRepository } from '../repositories/local/repository';
-import type { AITask } from '../features/ai/client';
-import {
-  AdoptionCommandCache,
-  type AdoptionStrategy,
-} from '../features/local-review/adoption-command';
 import type { ResearchState } from '../state';
 
-const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
-  ? lazy(() => import('../features/ai/TaskPanel'))
+const NewsAITools = import.meta.env.VITE_PRIVATE_AI === '1'
+  ? lazy(() => import('../features/ai/NewsAITools'))
   : null;
 const TYPE_LABELS: Record<Exclude<NewsType, ''>, string> = {
   news: '新闻',
@@ -64,45 +58,6 @@ function ArticleDetail({
   publicationAsOf?: string;
   publicationVersion?: string;
 }) {
-  const adoptionCommands = useRef(new AdoptionCommandCache());
-  useEffect(
-    () => () => adoptionCommands.current.dispose(),
-    [],
-  );
-  const adopt = async (
-    text: string,
-    label: string,
-    context: {
-      strategy: AdoptionStrategy;
-      task: AITask;
-      date: string;
-      securityId?: string;
-      signal: AbortSignal;
-    },
-  ) => {
-    if (context.task.revision === null) throw new Error('AI 草稿修订无效，未保存。');
-    if (context.signal.aborted) throw new DOMException('采用操作已取消', 'AbortError');
-    const result = await adoptionCommands.current.execute(localRepository, {
-      taskRevision: context.task.revision,
-      strategy: context.strategy,
-      payload: {
-        expected_revision: 0,
-        snapshot_id: context.task.snapshot_id,
-        trade_date: context.date,
-        security_id: context.securityId,
-        content: {
-          title: `${label} · ${article.title}`.slice(0, 100),
-          content: text,
-          judgment: '',
-          evidence: '',
-          invalid_condition: '',
-          verify_date: '',
-        },
-      },
-    });
-    if (context.signal.aborted) throw new DOMException('采用操作已取消', 'AbortError');
-    return `已保存 · revision ${result.revision} · 回读验证通过`;
-  };
   return <section className="news-detail" aria-label="消息详情">
     <p className="eyebrow">{TYPE_LABELS[article.article_type]} · {article.source} / {article.source_version}</p>
     <h2>{article.title}</h2>
@@ -120,30 +75,16 @@ function ArticleDetail({
     {article.content
       ? <div className="news-content"><FileText size={18} /><p>{article.content}</p></div>
       : <p className="notice news-license"><strong>未获正文展示许可</strong>{article.summary ? '，仅展示授权摘要' : ''}</p>}
-    {AITaskPanel && publicationAsOf && publicationVersion && <div className="ai-entry-group">
+    {NewsAITools && publicationAsOf && publicationVersion &&
       <Suspense fallback={<p role="status">正在加载 AI 工具…</p>}>
-        <AITaskPanel
-          taskType="summarize"
-          snapshotId={state.snapshot}
-          asOf={publicationAsOf}
-          version={publicationVersion}
-          date={state.date}
-          articleId={article.article_id}
-          securityId={article.securities[0]?.security_id}
-          onAdopt={(text, context) => adopt(text, 'AI 消息摘要', context)}
-        />
-        <AITaskPanel
-          taskType="topic_suggest"
-          snapshotId={state.snapshot}
-          asOf={publicationAsOf}
-          version={publicationVersion}
-          date={state.date}
-          articleId={article.article_id}
-          securityId={article.securities[0]?.security_id}
-          onAdopt={(text, context) => adopt(text, 'AI 题材建议', context)}
+        <NewsAITools
+          article={article}
+          state={state}
+          publicationAsOf={publicationAsOf}
+          publicationVersion={publicationVersion}
         />
       </Suspense>
-    </div>}
+    }
 
     <section aria-label="事件新颖性证据">
       <h3>事件新颖性：{article.is_novel_event ? '新颖事件' : '非新颖事件'}</h3>

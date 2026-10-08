@@ -20,7 +20,7 @@ export function validDate(value: string): boolean {
     Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 
-export function parseState(search: string, allowPrivate = false, reset = false, pathname = ''): { state: ResearchState; notices: string[] } {
+export function parseState(search: string, allowPrivate = false, reset = false, pathname = '', allowResetReview = true): { state: ResearchState; notices: string[] } {
   const p = new URLSearchParams(search);
   const notices: string[] = [];
   const invalid = () => { if (!notices.includes('无效的网址参数已重置，请检查研究条件。')) notices.push('无效的网址参数已重置，请检查研究条件。'); };
@@ -54,7 +54,7 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   if (compare.some(v => !v || v.length > 200)) { invalid(); compare = []; }
   const page_size = integer('page_size', 50, 100);
   if (![20, 50, 100].includes(page_size)) invalid();
-  const views: readonly View[] = reset ? ['overview', 'analysis', 'stock', 'review', 'news', 'leaders', 'regulation']
+  const views: readonly View[] = reset ? ['overview', 'analysis', 'stock', ...(allowResetReview ? ['review' as const] : []), 'news', 'leaders', 'regulation']
     : allowPrivate ? ['overview', 'analysis', 'stock', 'review'] : ['overview', 'analysis', 'stock'];
   let view = choice('view', views, 'overview');
   let pathSecurity: string | undefined;
@@ -103,8 +103,10 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   }, notices };
 }
 
-export function stateSearch(state: ResearchState, allowPrivate = false, reset = false): string {
-  const allowed = reset || ['overview', 'analysis', 'stock'].includes(state.view) || (allowPrivate && state.view === 'review');
+export function stateSearch(state: ResearchState, allowPrivate = false, reset = false, allowResetReview = true): string {
+  const allowed = (reset && (allowResetReview || state.view !== 'review'))
+    || ['overview', 'analysis', 'stock'].includes(state.view)
+    || (allowPrivate && state.view === 'review');
   const normalized = { ...state, view: allowed ? state.view : 'overview', note: allowPrivate ? state.note : '' };
   const p = new URLSearchParams();
   const keys: (keyof ResearchState)[] = [

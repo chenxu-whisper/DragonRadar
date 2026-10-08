@@ -183,8 +183,8 @@ def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
     if args.command != "serve-owner":
         raise ValueError("Invalid owner command")
     validate_origin(args.origin)
-    if not 1 <= args.port <= 65535:
-        raise ValueError("Invalid port")
+    if args.host != "127.0.0.1" or args.port != 8001:
+        raise ValueError("Owner service must bind to 127.0.0.1:8001")
     import uvicorn
 
     from dragon_radar.owner.app import create_owner_app

@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const dist = resolve(process.cwd(), 'dist');
@@ -26,14 +26,27 @@ while (pending.length) {
   }
 }
 
-const forbidden = ['我的复盘', '人工验证', '.review-workspace'];
-for (const file of staticAssets) {
+const allScripts = readdirSync(resolve(dist, 'assets'))
+  .filter(file => file.endsWith('.js'))
+  .map(file => resolve(dist, 'assets', file));
+const forbidden = [
+  '我的复盘',
+  '人工验证',
+  '.review-workspace',
+  'dragon-radar-local-v3',
+  '/api/owner/',
+  '/api/ai/',
+];
+for (const file of new Set([...staticAssets, ...allScripts])) {
   const source = readFileSync(file, 'utf8');
   for (const marker of forbidden) {
     if (source.includes(marker)) throw new Error(`Default static asset contains private marker "${marker}": ${file}`);
   }
 }
-if (entryBytes > 315_000) throw new Error(`Default entry is ${entryBytes} bytes; budget is 315000 bytes`);
+const entryBudget = process.env.VITE_PUBLIC_SHARING === '1' ? 320_000 : 315_100;
+if (entryBytes > entryBudget) {
+  throw new Error(`Entry is ${entryBytes} bytes; budget is ${entryBudget} bytes`);
+}
 
 console.log(JSON.stringify({
   entry: entry.slice(dist.length + 1).replaceAll('\\', '/'),

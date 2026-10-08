@@ -7,12 +7,16 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
-from dragon_radar.domain.quality import grant_allows_ai, grant_allows_display
+from dragon_radar.domain.quality import grant_allows_ai
 from dragon_radar.news.tables import (
     news_article_revisions,
     news_event_articles,
     news_snapshot_items,
     news_snapshots,
+)
+from dragon_radar.publication.access import (
+    LocalPublicationAccessPolicy,
+    PublicationAccessPolicy,
 )
 from dragon_radar.publication.models import (
     Publication,
@@ -32,7 +36,6 @@ from dragon_radar.roles.tables import role_runs
 from dragon_radar.storage.models import import_batches, snapshots
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
 from dragon_radar.topics.models import TopicBatch
-from dragon_radar.topics.repository import TopicRepository
 from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
 
 
@@ -173,10 +176,12 @@ class PublicationRepository:
         market_repository: Repository | None = None,
         *,
         clock: Callable[[], datetime] | None = None,
+        access_policy: PublicationAccessPolicy | None = None,
     ):
         self.database = database
         self.clock = clock or (lambda: datetime.now(UTC))
         self.market = market_repository or Repository(database, clock=self.clock)
+        self.access_policy = access_policy or LocalPublicationAccessPolicy(self.clock)
         self.regulations = RegulationRepository(
             database,
             self.market,
@@ -222,7 +227,6 @@ class PublicationRepository:
         result_rows,
         active_withdrawal_sources,
         withdrawn_publications,
-        require_local_display=True,
     ) -> PublishedSnapshot:
         source_ids = {row["source_id"] for row in dependencies}
         if source_ids & active_withdrawal_sources:
@@ -263,8 +267,13 @@ class PublicationRepository:
         if market_archive is None:
             raise Forbidden("Publication market identity is invalid")
         market_batch = MarketBatch.model_validate_json(market_archive["canonical_json"])
-        if require_local_display:
-            self.market._authorize(grants[market_row["source_id"]], market_batch)
+        if not self.access_policy.allows(
+            "market",
+            source_id=market_row["source_id"],
+            current=grants[market_row["source_id"]],
+            embedded=market_batch.grant,
+        ):
+            raise Forbidden("Publication market source is not authorized")
         if "market" in ai_domains and not grant_allows_ai(
             market_batch.grant,
             source_id=market_row["source_id"],
@@ -295,13 +304,13 @@ class PublicationRepository:
             topic_batch = TopicBatch.model_validate_json(
                 topic_archive["canonical_json"]
             )
-            if require_local_display and not TopicRepository._authorized(
-                grants[topic_row["source_id"]],
-                topic_batch.grant,
-                topic_row["source_id"],
-                self.clock(),
+            if not self.access_policy.allows(
+                "topic",
+                source_id=topic_row["source_id"],
+                current=grants[topic_row["source_id"]],
+                embedded=topic_batch.grant,
             ):
-                raise Forbidden("Source is not locally authorized")
+                raise Forbidden("Publication topic source is not authorized")
             if "topic" in ai_domains and not grant_allows_ai(
                 topic_batch.grant,
                 source_id=topic_row["source_id"],
@@ -389,15 +398,13 @@ class PublicationRepository:
                 ):
                     raise Forbidden("Publication news lineage is invalid")
                 embedded = SourceGrant.model_validate(revision["embedded_grant"])
-                if require_local_display and not all(
-                    grant_allows_display(
-                        grant,
-                        source_id=revision["source_id"],
-                        now=self.clock(),
-                    )
-                    for grant in (grants[revision["source_id"]], embedded)
+                if not self.access_policy.allows(
+                    "news",
+                    source_id=revision["source_id"],
+                    current=grants[revision["source_id"]],
+                    embedded=embedded,
                 ):
-                    raise Forbidden("Source is not locally authorized")
+                    raise Forbidden("Publication news source is not authorized")
                 if "news" in ai_domains and not grant_allows_ai(
                     embedded,
                     source_id=revision["source_id"],
@@ -471,12 +478,13 @@ class PublicationRepository:
             for dependency in regulation_dependencies:
                 if dependency["archive_type"] != "regulation_event_snapshot":
                     continue
-                if require_local_display and not grant_allows_display(
-                    grants[dependency["source_id"]],
+                if not self.access_policy.allows(
+                    "regulation",
                     source_id=dependency["source_id"],
-                    now=self.clock(),
+                    current=grants[dependency["source_id"]],
+                    embedded=None,
                 ):
-                    raise Forbidden("Regulation event source is not locally authorized")
+                    raise Forbidden("Publication regulation source is not authorized")
         elif regulation_dependencies:
             raise Forbidden("Publication regulation lineage is invalid")
 
@@ -500,8 +508,13 @@ class PublicationRepository:
                 if archive is None or archive["source_id"] != dependency["source_id"]:
                     raise Forbidden("Publication role lineage is invalid")
                 batch = MarketBatch.model_validate_json(archive["canonical_json"])
-                if require_local_display:
-                    self.market._authorize(grants[dependency["source_id"]], batch)
+                if not self.access_policy.allows(
+                    "market",
+                    source_id=dependency["source_id"],
+                    current=grants[dependency["source_id"]],
+                    embedded=batch.grant,
+                ):
+                    raise Forbidden("Publication role source is not authorized")
                 if "role" in ai_domains and not grant_allows_ai(
                     batch.grant,
                     source_id=dependency["source_id"],
@@ -513,13 +526,13 @@ class PublicationRepository:
                 if archive is None or archive["source_id"] != dependency["source_id"]:
                     raise Forbidden("Publication role lineage is invalid")
                 batch = TopicBatch.model_validate_json(archive["canonical_json"])
-                if require_local_display and not TopicRepository._authorized(
-                    grants[dependency["source_id"]],
-                    batch.grant,
-                    dependency["source_id"],
-                    self.clock(),
+                if not self.access_policy.allows(
+                    "topic",
+                    source_id=dependency["source_id"],
+                    current=grants[dependency["source_id"]],
+                    embedded=batch.grant,
                 ):
-                    raise Forbidden("Source is not locally authorized")
+                    raise Forbidden("Publication role source is not authorized")
                 if "role" in ai_domains and not grant_allows_ai(
                     batch.grant,
                     source_id=dependency["source_id"],
@@ -949,6 +962,25 @@ class PublicationRepository:
             [row],
             ai_domains=frozenset(ai_domains),
         )[0]
+
+    def get_published_snapshot(
+        self, snapshot_id: UUID | str
+    ) -> PublishedSnapshot | None:
+        """Read only a unified publication; never fall back to legacy snapshots."""
+        snapshot_id = _uuid(snapshot_id)
+        with self.database.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(publications).where(publications.c.id == snapshot_id)
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return None
+            if row["status"] != "published":
+                raise Forbidden("Publication is not available")
+            return self._authorized_records(connection, [row])[0]
 
     def get_snapshot(self, snapshot_id: UUID | str):
         snapshot_id = _uuid(snapshot_id)

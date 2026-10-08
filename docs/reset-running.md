@@ -22,6 +22,14 @@ operations. It listens on `127.0.0.1:8001` inside the owner Caddy network
 namespace and has no directly published host port. Public containers have no
 network or DNS path to that namespace.
 
+The public edge uses the fixed `172.30.19.0/28` Compose subnet: Caddy is
+`172.30.19.2` and the API is `172.30.19.3`. The API trusts the dedicated
+`X-Dragon-Client-IP` header only when its direct peer is Caddy's `.2` address.
+Caddy removes inbound `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, and
+`X-Dragon-*` values before setting that one header from the actual remote host.
+Change the subnet only as one reviewed Compose, Caddy, API, test, and
+documentation update.
+
 External data permits and model permits remain blocked until configured
 explicitly. Startup does not import data, register source grants, configure an
 AI provider, or enable a model token.

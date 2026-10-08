@@ -24,43 +24,43 @@ https://localhost:8443 {
 			method GET HEAD
 			path /health/live /health/ready
 		}
-		reverse_proxy @health api:8000
+		reverse_proxy @health 127.0.0.1:8001
 
 		@resetRead {
 			method GET HEAD
 			path_regexp resetRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment|heatmap)|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
 		}
-		reverse_proxy @resetRead api:8000
+		reverse_proxy @resetRead 127.0.0.1:8001
 
 		@aiRead {
 			method GET HEAD
 			path_regexp aiRead ^/api/ai/task/[0-9a-fA-F-]{36}$
 		}
-		reverse_proxy @aiRead api:8000
+		reverse_proxy @aiRead 127.0.0.1:8001
 
 		@aiWrite {
 			method POST
 			path_regexp aiWrite ^/api/ai/(summarize|topic-suggest|explain-stock|daily-review|task/[0-9a-fA-F-]{36}/(cancel|review))$
 		}
-		reverse_proxy @aiWrite api:8000
+		reverse_proxy @aiWrite 127.0.0.1:8001
 
 		@session {
 			method GET HEAD
 			path /api/owner/v1/session
 		}
-		reverse_proxy @session api:8000
+		reverse_proxy @session 127.0.0.1:8001
 
 		@pair {
 			method POST
 			path /api/owner/v1/pair
 		}
-		reverse_proxy @pair api:8000
+		reverse_proxy @pair 127.0.0.1:8001
 
 		@logout {
 			method DELETE
 			path /api/owner/v1/session
 		}
-		reverse_proxy @logout api:8000
+		reverse_proxy @logout 127.0.0.1:8001
 
 		@api path /api/* /health/*
 		respond @api 404

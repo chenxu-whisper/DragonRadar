@@ -10,20 +10,14 @@ import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch 
 import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/labels';
 import { newsListPath } from '../features/news/api';
 import type { NewsListResponse } from '../features/news/types';
-import { localRepository } from '../repositories/local/repository';
-import type { AITask } from '../features/ai/client';
-import {
-  AdoptionCommandCache,
-  type AdoptionStrategy,
-} from '../features/local-review/adoption-command';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const EvidencePanel = resetEnabled
   ? lazy(async () => ({ default: (await import('../features/roles/EvidencePanel')).EvidencePanel }))
   : null;
-const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
-  ? lazy(() => import('../features/ai/TaskPanel'))
+const SecurityAITools = import.meta.env.VITE_PRIVATE_AI === '1'
+  ? lazy(() => import('../features/ai/SecurityAITools'))
   : null;
 const displayNumber = (value: number | null) =>
   value === null ? '—' : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value);
@@ -32,11 +26,6 @@ const yesNo = (value: boolean | null) => value === null ? '—' : value ? '是' 
 function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, ReviewActions, patch }: {
   state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent; patch: Patch;
 }) {
-  const adoptionCommands = useRef(new AdoptionCommandCache());
-  useEffect(
-    () => () => adoptionCommands.current.dispose(),
-    [],
-  );
   const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
     ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
     : null, state.snapshot, refreshToken);
@@ -119,39 +108,6 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       lineStyle: { color: '#1759ad', width: 2 },
     }],
   }), [canDrawCandles, rawData]);
-  const adoptExplanation = async (
-    text: string,
-    context: {
-      strategy: AdoptionStrategy;
-      task: AITask;
-      date: string;
-      securityId?: string;
-      signal: AbortSignal;
-    },
-  ) => {
-    if (context.task.revision === null) throw new Error('AI 草稿修订无效，未保存。');
-    if (context.signal.aborted) throw new DOMException('采用操作已取消', 'AbortError');
-    const result = await adoptionCommands.current.execute(localRepository, {
-      taskRevision: context.task.revision,
-      strategy: context.strategy,
-      payload: {
-        expected_revision: 0,
-        snapshot_id: context.task.snapshot_id,
-        trade_date: context.date,
-        security_id: context.securityId,
-        content: {
-          title: `AI 个股解释 · ${modernData?.name || id}`.slice(0, 100),
-          content: text,
-          judgment: '',
-          evidence: '',
-          invalid_condition: '',
-          verify_date: '',
-        },
-      },
-    });
-    if (context.signal.aborted) throw new DOMException('采用操作已取消', 'AbortError');
-    return `已保存 · revision ${result.revision} · 回读验证通过`;
-  };
   return <>
     {resetEnabled
       ? <>
@@ -163,15 +119,14 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
     {modernData && <>
       <div className="detail-heading"><h2>{modernData.name || '名称未知'}</h2><span>{modernData.security_id}</span></div>
       {ReviewActions && <ReviewActions snapshot={state.snapshot} security={id} />}
-      {AITaskPanel && snapshot && <Suspense fallback={<p role="status">正在加载 AI 个股解释…</p>}>
-        <AITaskPanel
-          taskType="explain_stock"
+      {SecurityAITools && snapshot && <Suspense fallback={<p role="status">正在加载 AI 个股解释…</p>}>
+        <SecurityAITools
           snapshotId={state.snapshot}
           asOf={snapshot.result.published_at}
           version={`v${snapshot.result.revision}`}
           date={state.date}
           securityId={id}
-          onAdopt={adoptExplanation}
+          securityName={modernData.name}
         />
       </Suspense>}
       <dl className="quote">

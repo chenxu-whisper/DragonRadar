@@ -22,10 +22,14 @@ services:
     command: ["serve-public", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       DRAGON_DATABASE_URL: postgresql+psycopg://dragon_radar:${DRAGON_DB_PASSWORD:?Set a strong database password}@db:5432/dragon_radar
+      DRAGON_TRUSTED_PROXY_CIDR: 172.30.19.2/32
     depends_on:
       db:
         condition: service_healthy
-    networks: [public-data, public-edge]
+    networks:
+      public-data:
+      public-edge:
+        ipv4_address: 172.30.19.3
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
       interval: 10s
@@ -44,7 +48,9 @@ services:
     depends_on:
       public-api:
         condition: service_healthy
-    networks: [public-edge]
+    networks:
+      public-edge:
+        ipv4_address: 172.30.19.2
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:8080/health/ready"]
       interval: 10s
@@ -138,6 +144,9 @@ networks:
   public-data:
     internal: true
   public-edge:
+    ipam:
+      config:
+        - subnet: 172.30.19.0/28
   owner-data:
     internal: true
   owner-edge:

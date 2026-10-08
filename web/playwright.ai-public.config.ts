@@ -20,6 +20,7 @@ export default defineConfig({
     command: 'npm run dev -- --port 5188',
     env: {
       VITE_RESET_WORKBENCH: '1',
+      VITE_PUBLIC_SHARING: '1',
       VITE_PRIVATE_REVIEW: '0',
       VITE_PRIVATE_AI: '0',
     },

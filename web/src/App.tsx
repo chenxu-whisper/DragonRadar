@@ -13,11 +13,22 @@ import type { Patch } from './components/Common';
 import { IntervalForm } from './components/IntervalForm';
 import { Overview } from './pages/Overview';
 import { Analysis } from './pages/Analysis';
-import { verifiedSnapshotTradeDate } from './features/local-review/note-command';
 import type { LeadersProps } from './pages/Leaders';
 import type { SecurityDrawerProps, SecurityPageProps } from './pages/SecurityDetail';
 
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
+const publicSharing = import.meta.env.VITE_PUBLIC_SHARING === '1';
+const localReviewEnabled = resetEnabled && !publicSharing;
+const resetNavigation = [
+  { view: 'overview', text: '总览', Icon: BarChart3 },
+  { view: 'news', text: '消息', Icon: Newspaper },
+  { view: 'leaders', text: '梯队', Icon: Layers },
+  { view: 'analysis', text: '涨幅', Icon: ChartNoAxesCombined },
+  { view: 'regulation', text: '监管', Icon: ShieldCheck },
+  ...(!publicSharing
+    ? [{ view: 'review', text: '我的复盘', Icon: NotebookPen } as const]
+    : []),
+] as const;
 type ResetSnapshot = WorkbenchEnvelope<ResetSnapshotData>;
 type ResetSnapshotList = WorkbenchEnvelope<{ snapshots: ResetSnapshot[] }>;
 
@@ -37,10 +48,10 @@ function legacySnapshot(value: ResetSnapshot): Snapshot {
     },
   };
 }
-const LocalReview = import.meta.env.VITE_RESET_WORKBENCH === '1'
+const LocalReview = localReviewEnabled
   ? lazy(() => import('./features/local-review/LocalReview'))
   : null;
-const LocalReviewActions = import.meta.env.VITE_RESET_WORKBENCH === '1'
+const LocalReviewActions = localReviewEnabled
   ? lazy(() => import('./features/local-review/LocalReviewActions'))
   : null;
 const Leaders = import.meta.env.VITE_RESET_WORKBENCH === '1'
@@ -81,9 +92,9 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const PrivateToolbar = privateFeatures?.Toolbar;
   const PrivateWorkspace = privateFeatures?.Workspace;
   const ReviewActions = privateFeatures?.ReviewActions;
-  const { state, patch, destination, urlFor } = useLocation(privateEnabled, resetEnabled);
+  const { state, patch, destination, urlFor } = useLocation(privateEnabled, resetEnabled, localReviewEnabled);
   const { denied, retry } = useAccess();
-  const [notice, setNotice] = useState(() => parseState(window.location.search, privateEnabled, resetEnabled, window.location.pathname).notices.join(' '));
+  const [notice, setNotice] = useState(() => parseState(window.location.search, privateEnabled, resetEnabled, window.location.pathname, localReviewEnabled).notices.join(' '));
   const [menu, setMenu] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [drawer, setDrawer] = useState<{ id: string; sector?: string; trigger: HTMLElement; context: string } | null>(null);
@@ -110,7 +121,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     return () => window.removeEventListener('private-open-note', openNote);
   }, [patch, privateEnabled]);
   useEffect(() => {
-    if (!resetEnabled) return;
+    if (!localReviewEnabled) return;
     const openReview = (event: Event) => {
       setDrawer(null);
       patch({
@@ -157,14 +168,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         <button className="mobile-menu" aria-expanded={menu} aria-controls="primary-nav" aria-label={menu ? '收起导航' : '展开导航'} onClick={() => setMenu(v => !v)}>{menu ? <ChevronLeft size={20} /> : <Menu size={20} />}</button>
       </div>
       <nav id="primary-nav" aria-label="主导航">
-        {resetEnabled ? ([
-          { view: 'overview', text: '总览', Icon: BarChart3 },
-          { view: 'news', text: '消息', Icon: Newspaper },
-          { view: 'leaders', text: '梯队', Icon: Layers },
-          { view: 'analysis', text: '涨幅', Icon: ChartNoAxesCombined },
-          { view: 'regulation', text: '监管', Icon: ShieldCheck },
-          { view: 'review', text: '我的复盘', Icon: NotebookPen },
-        ] as const).map(({ view, text, Icon }) =>
+        {resetEnabled ? resetNavigation.map(({ view, text, Icon }) =>
           <a key={view} href={urlFor(destination(view))} aria-current={state.view === view ? 'page' : undefined} onClick={event => {
             if (shouldHandleSpaClick(event)) { event.preventDefault(); if (patch(destination(view))) setMenu(false); }
           }}><Icon size={19} /><span>{text}</span></a>)
@@ -195,7 +199,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载本地复盘…</p>}>
               <LocalReview
                 snapshot={state.snapshot || undefined}
-                tradeDate={verifiedSnapshotTradeDate(state.snapshot, selectedSummary)}
+                tradeDate={selectedSummary?.snapshot_id === state.snapshot ? selectedSummary.trade_date : undefined}
                 security={state.security || undefined}
                 asOf={selectedSummary?.result.published_at}
                 version={selectedSummary ? `v${selectedSummary.result.revision}` : undefined}

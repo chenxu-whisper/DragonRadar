@@ -19,13 +19,29 @@
 			method GET HEAD
 			path /health/live /health/ready
 		}
-		reverse_proxy @health public-api:8000
+		reverse_proxy @health public-api:8000 {
+			header_up -Forwarded
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Dragon-*
+			header_up X-Dragon-Client-IP {http.request.remote.host}
+		}
 
 		@publishedRead {
 			method GET HEAD
 			path_regexp publishedRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment|heatmap)|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
 		}
-		reverse_proxy @publishedRead public-api:8000
+		reverse_proxy @publishedRead public-api:8000 {
+			header_up -Forwarded
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Dragon-*
+			header_up X-Dragon-Client-IP {http.request.remote.host}
+		}
 
 		@api path /api/* /health/*
 		respond @api 404
