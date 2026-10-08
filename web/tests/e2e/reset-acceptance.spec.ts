@@ -412,6 +412,7 @@ test('stock detail exports its current raw date window without page overflow', a
   await page.setViewportSize({ width: 375, height: 812 });
   await page.goto(`/stock/TEST001?snapshot=${ID}&date=2026-09-10`);
   await expect(page.getByRole('heading', { name: '证券详情' })).toBeVisible();
+  await expect(page.getByText(/^未复权价格 · 实际区间/)).toBeVisible();
   await expectNoPageOverflow(page);
   const pending = page.waitForEvent('download');
   await page.getByRole('button', { name: '导出当前筛选 CSV' }).click();

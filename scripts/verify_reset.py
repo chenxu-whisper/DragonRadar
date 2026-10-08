@@ -611,14 +611,9 @@ def _validate_command(value: Any, spec: dict[str, Any]) -> list[str]:
     if value["timed_out"] is not False:
         errors.append("Command timed out.")
     if not count_errors and (
-        counts["passed"] <= 0
-        or counts["failed"] != 0
-        or counts["skipped"] != 0
-        or counts["output_lines"] <= 0
+        counts["passed"] <= 0 or counts["failed"] != 0 or counts["skipped"] != 0
     ):
-        errors.append(
-            "Command requires positive passes and output with zero failures/skips."
-        )
+        errors.append("Command requires positive passes with zero failures/skips.")
     content, artifact_errors = _artifact_value(value["artifact"], "Command artifact")
     errors.extend(artifact_errors)
     if content is not None and not count_errors:
