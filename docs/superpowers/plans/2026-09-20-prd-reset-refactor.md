@@ -493,12 +493,12 @@ ROLE_NAMES = {
 
 **文件：** 新建 `ai/{models,tables,repository,service,worker,provider}.py`、迁移 `0010_ai_tasks.py`、`http/routes/ai.py`、`tests/test_reset_ai_tasks.py`；修改 `owner/app.py`、`cli.py`、`storage/database.py`、`compose.yaml`。
 
-- [ ] 写失败用例：guest无法触发或读取任务；另一owner不能读task_id；同幂等键不同payload409；取消重复幂等；取消后迟到结果不复活任务。
-- [ ] 运行 `uv run pytest tests/test_reset_ai_tasks.py -q` 确认失败。
-- [ ] 注册接口19～25；输入固定snapshot/as_of/version；任务存主体、输入manifest、四功能类型、状态、验证状态、人工审核状态、模型/提示词版本和费用。
-- [ ] worker使用数据库租约原子领取任务，重启可恢复，provider超时不无限重试；从服务配置读取Token/并发/单次费用上限，默认未配置provider则不可用。
-- [ ] 60秒提示仍在处理；120秒前台交付确定性模板，迟到内容另存草稿版本；模板不伪装成AI成功。
-- [ ] 验证取消/超时/重启/跨主体读取与错误脱敏；提交 `feat: add bounded asynchronous AI tasks`。
+- [x] 写失败用例：guest无法触发或读取任务；另一owner不能读task_id；同幂等键不同payload409；取消重复幂等；取消后迟到结果不复活任务。
+- [x] 运行 `uv run pytest tests/test_reset_ai_tasks.py -q` 确认失败。
+- [x] 注册接口19～25；输入固定snapshot/as_of/version；任务存主体、输入manifest、四功能类型、状态、验证状态、人工审核状态、模型/提示词版本和费用。
+- [x] worker使用数据库租约原子领取任务，重启可恢复，provider超时不无限重试；从服务配置读取Token/并发/单次费用上限，默认未配置provider则不可用。
+- [x] 60秒提示仍在处理；120秒前台交付确定性模板，迟到内容另存草稿版本；模板不伪装成AI成功。
+- [x] 验证取消/超时/重启/跨主体读取与错误脱敏；提交 `feat: add bounded asynchronous AI tasks`。
 
 **完成条件：** 四入口异步可观测，模型断线不会阻塞页面或本地笔记。
 
