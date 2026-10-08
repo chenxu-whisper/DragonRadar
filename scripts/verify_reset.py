@@ -31,6 +31,7 @@ REQUIRED_GATES = (
     "frontend_tests",
     "frontend_builds",
     "frontend_bundle",
+    "frontend_private_build",
     "frontend_e2e_legacy",
     "frontend_e2e_reset",
     "frontend_e2e_private",
@@ -150,15 +151,15 @@ GATE_SPECS: dict[str, list[dict[str, Any]]] = {
         _spec(["uv", "run", "python", "-m", "compileall", "-q", "src", "tests"])
     ],
     "frontend_tests": [_spec(["npm", "test"], cwd="web", timeout=1200)],
-    "frontend_builds": [
-        _spec(["npm", "run", "build"], cwd="web"),
+    "frontend_builds": [_spec(["npm", "run", "build"], cwd="web")],
+    "frontend_bundle": [_spec(["npm", "run", "check:bundle"], cwd="web")],
+    "frontend_private_build": [
         _spec(
             ["npm", "run", "build"],
             cwd="web",
         )
         | {"environment_overrides": {"VITE_PRIVATE_REVIEW": "1"}},
     ],
-    "frontend_bundle": [_spec(["npm", "run", "check:bundle"], cwd="web")],
     "frontend_e2e_legacy": [_spec(["npm", "run", "test:e2e"], cwd="web", timeout=1200)],
     "frontend_e2e_reset": [
         _spec(["npm", "run", "test:e2e:reset"], cwd="web", timeout=1200)

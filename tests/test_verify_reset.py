@@ -20,6 +20,7 @@ REQUIRED_GATES = {
     "frontend_tests",
     "frontend_builds",
     "frontend_bundle",
+    "frontend_private_build",
     "frontend_e2e_legacy",
     "frontend_e2e_reset",
     "frontend_e2e_private",

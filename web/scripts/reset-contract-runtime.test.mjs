@@ -93,7 +93,10 @@ test('runtime setup is cleanup-bounded and does not reserve host ports', () => {
 
 test('CI runs the contract runtime harness as an independent strict Linux job', () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
+  const workflow = readFileSync(
+    resolve(root, '.github/workflows/ci.yml'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
   const job = workflow.match(
     /\n  reset_contract_runtime:\n(?<body>[\s\S]*?)(?=\n  [a-zA-Z0-9_]+:\n|$)/,
   )?.groups?.body;
