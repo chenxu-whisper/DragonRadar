@@ -30,9 +30,27 @@ export function klineRange(window: Pick<WindowState, 'start' | 'end'>, sessions:
   return { start: selected[0], end: selected.at(-1)! };
 }
 
+export interface AnalysisSortDescriptor {
+  requestField: 'return' | 'excess_return' | 'drawdown' | 'amount_change';
+  direction: 'asc' | 'desc';
+}
+
+const analysisSorts: Partial<Record<Sort, AnalysisSortDescriptor>> = {
+  interval_return: { requestField: 'return', direction: 'desc' },
+  excess_return: { requestField: 'excess_return', direction: 'desc' },
+  maximum_drawdown: { requestField: 'drawdown', direction: 'asc' },
+  amount: { requestField: 'amount_change', direction: 'desc' },
+  amount_change: { requestField: 'amount_change', direction: 'desc' },
+};
+const defaultAnalysisSort: AnalysisSortDescriptor = {
+  requestField: 'return',
+  direction: 'desc',
+};
+
+export function analysisSortDescriptor(sort: Sort): AnalysisSortDescriptor {
+  return analysisSorts[sort] ?? defaultAnalysisSort;
+}
+
 export function analysisSort(sort: Sort): 'return' | 'excess_return' | 'drawdown' | 'amount_change' {
-  if (sort === 'excess_return') return 'excess_return';
-  if (sort === 'maximum_drawdown') return 'drawdown';
-  if (sort === 'amount' || sort === 'amount_change') return 'amount_change';
-  return 'return';
+  return analysisSortDescriptor(sort).requestField;
 }

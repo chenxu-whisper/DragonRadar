@@ -65,6 +65,27 @@ describe('Reset CSV export contract', () => {
     expect(csv.split('\r\n')[1]).toContain(`'${value}`.replace(/\n/g, '\n'));
   });
 
+  test.each([
+    ['=filter', 'ordinary'],
+    ['ordinary', '\t+filter-value'],
+    ['@key', '-filter-value'],
+  ])('forces formula-like filter key/value %j=%j to text', (key, value) => {
+    const formulaSafe = (part: string) => /^[\u0000-\u0020]*[=+\-@]/.test(part)
+      ? `'${part}`
+      : part;
+    const csv = buildCsv({
+      ...input([{ snapshot_id: metadata.snapshot_id, name: 'safe', value: 1 }]),
+      metadata: {
+        ...metadata,
+        filters: { [key]: value },
+      },
+    });
+
+    expect(csv.split('\r\n')[1]).toContain(
+      `${formulaSafe(key)}=${formulaSafe(value)}`,
+    );
+  });
+
   test('does not alter ordinary Unicode, numeric values, or null', () => {
     const csv = buildCsv(input([
       { snapshot_id: metadata.snapshot_id, name: '普通中文', value: -3.25 },

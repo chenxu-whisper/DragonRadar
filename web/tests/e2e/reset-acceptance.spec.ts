@@ -21,13 +21,45 @@ async function downloadText(download: Download): Promise<string> {
 async function expectNoPageOverflow(page: Page) {
   expect(await page.evaluate(() => {
     const root = document.documentElement;
+    const rootBounds = root.getBoundingClientRect();
+    const containedByScrollWrapper = (element: HTMLElement) => {
+      const wrapper = element.closest<HTMLElement>('.table-scroll, .index-strip');
+      if (!wrapper || wrapper === element || getComputedStyle(element).position === 'fixed') {
+        return false;
+      }
+      const bounds = wrapper.getBoundingClientRect();
+      const overflow = getComputedStyle(wrapper).overflowX;
+      return ['auto', 'scroll'].includes(overflow)
+        && wrapper.scrollWidth > wrapper.clientWidth + 1
+        && bounds.left >= rootBounds.left - 1
+        && bounds.right <= rootBounds.right + 1;
+    };
+    const visuallyClipped = (element: HTMLElement) => {
+      let ancestor = element.parentElement;
+      while (ancestor && ancestor !== document.body) {
+        const style = getComputedStyle(ancestor);
+        if (
+          style.overflow === 'hidden'
+          && (style.clip !== 'auto' || style.clipPath !== 'none')
+        ) {
+          return true;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      return false;
+    };
+    const elements = [...document.querySelectorAll<HTMLElement>('body *')];
     return {
       width: root.clientWidth,
       scroll: root.scrollWidth,
-      offenders: [...document.querySelectorAll<HTMLElement>('body *')]
+      offenders: elements
         .filter(element => (
-          element.getBoundingClientRect().right > root.clientWidth + 1
-          && !element.closest('.table-scroll, .index-strip')
+          (
+            element.getBoundingClientRect().left < rootBounds.left - 1
+            || element.getBoundingClientRect().right > rootBounds.right + 1
+          )
+          && !containedByScrollWrapper(element)
+          && !visuallyClipped(element)
         ))
         .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)
         .slice(0, 8)
@@ -36,14 +68,18 @@ async function expectNoPageOverflow(page: Page) {
           parentClassName: element.parentElement?.className,
           tag: element.tagName,
           text: element.textContent?.slice(0, 40),
+          left: element.getBoundingClientRect().left,
           right: element.getBoundingClientRect().right,
           scrollWidth: element.scrollWidth,
         })),
     };
-  })).toEqual(expect.objectContaining({
+  })).toEqual({
     width: expect.any(Number),
+    scroll: expect.any(Number),
     offenders: [],
-  }));
+  });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth))
+    .toBe(await page.evaluate(() => document.documentElement.clientWidth));
 }
 
 async function expectUnobscured(locator: Locator) {

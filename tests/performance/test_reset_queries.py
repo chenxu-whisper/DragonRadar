@@ -8,12 +8,13 @@ import os
 import platform
 import re
 import time
-import tracemalloc
 from contextvars import ContextVar
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from factories import DAYS, NOW, batch, grant
+from factories import NOW, bar, batch, grant, state
 from httpx import ASGITransport, AsyncByteStream, AsyncClient
 from sqlalchemy import event, inspect, text
 
@@ -23,6 +24,7 @@ from dragon_radar.analysis_jobs.worker import (
     AnalysisJobWorker,
     materialize_custom_analysis,
 )
+from dragon_radar.domain.models import ExchangeCalendar
 from dragon_radar.http.access import public_publication_repository
 from dragon_radar.http.public_app import create_public_app
 from dragon_radar.owner.repository import OwnerRepository
@@ -33,16 +35,25 @@ from dragon_radar.publication.service import PublicationService
 pytestmark = pytest.mark.anyio
 
 CONCURRENCY = 20
+MEASURED_ROUNDS = 3
+SECURITY_COUNT = 100
+SESSION_COUNT = 61
 P95_LIMIT_SECONDS = 2.0
 FIXTURE_COUNTS = {
-    "securities": 1,
+    "securities": SECURITY_COUNT,
     "security_read_model_rows": 0,
-    "trading_sessions": 4,
+    "trading_sessions": SESSION_COUNT,
     "publications": 1,
     "owner_sessions": 1,
     "analysis_jobs": 1,
     "completed_analysis_jobs": 1,
 }
+MEASURED_PATHS = (
+    "/api/snapshots/{id}",
+    "/api/market/overview",
+    "/api/rank/range",
+    "/api/stock/{id}",
+)
 CURRENT_PUBLIC_PATH: ContextVar[str] = ContextVar(
     "task20_current_public_path", default="unattributed"
 )
@@ -70,6 +81,65 @@ def anyio_backend():
 
 def _shared_grant():
     return grant(sharing=True, reference="task20-synthetic-public-fixture")
+
+
+def _sessions(count: int = SESSION_COUNT) -> tuple[date, ...]:
+    values = []
+    current = date(2026, 9, 8)
+    while len(values) < count:
+        if current.weekday() < 5:
+            values.append(current)
+        current -= timedelta(days=1)
+    return tuple(reversed(values))
+
+
+def _performance_batch():
+    sessions = _sessions()
+    security_ids = tuple(f"S{index:03d}" for index in range(SECURITY_COUNT))
+    identities = tuple(
+        state(
+            security_id,
+            effective_from=sessions[0],
+            available_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+        for security_id in security_ids
+    ) + (
+        state(
+            "B000300",
+            name="Synthetic Benchmark",
+            security_type="index",
+            effective_from=sessions[0],
+            available_at=datetime(2026, 5, 1, tzinfo=UTC),
+        ),
+    )
+    bars = []
+    for session_index, session in enumerate(sessions):
+        for security_index, security_id in enumerate((*security_ids, "B000300")):
+            close = (
+                Decimal("100")
+                + Decimal(session_index) / Decimal("10")
+                + Decimal(security_index) / Decimal("100")
+            )
+            bars.append(
+                bar(
+                    security_id,
+                    trade_date=session,
+                    close=close,
+                    amount=Decimal("1000000") + Decimal(session_index * 1000),
+                )
+            )
+    return batch(
+        trade_date=sessions[-1],
+        as_of=NOW,
+        calendar=ExchangeCalendar(
+            exchange="TEST",
+            version="c1",
+            sessions=sessions,
+        ),
+        expected_security_ids=security_ids,
+        security_states=identities,
+        bars=tuple(bars),
+    )
 
 
 def _application_state(database):
@@ -155,46 +225,63 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[max(0, math.ceil(percentile * len(ordered)) - 1)]
 
 
+def _request_paths(publication_id, sessions, security_id):
+    return (
+        f"/api/snapshots/{publication_id}",
+        f"/api/market/overview?snapshot_id={publication_id}",
+        (
+            f"/api/rank/range?snapshot_id={publication_id}"
+            f"&start={sessions[0]}&end={sessions[-1]}"
+            "&benchmark=B000300&adj=raw&sort=return"
+        ),
+        f"/api/stock/{security_id}?snapshot_id={publication_id}",
+    )
+
+
+def _path_label(path: str) -> str:
+    if path.startswith("/api/snapshots/"):
+        return "/api/snapshots/{id}"
+    if path.startswith("/api/market/overview"):
+        return "/api/market/overview"
+    if path.startswith("/api/rank/range"):
+        return "/api/rank/range"
+    if path.startswith("/api/stock/"):
+        return "/api/stock/{id}"
+    raise AssertionError(f"Unexpected measured path: {path}")
+
+
+async def _request(client: AsyncClient, path: str):
+    started = time.perf_counter()
+    token = CURRENT_PUBLIC_PATH.set(_path_label(path))
+    try:
+        outgoing = client.build_request("GET", path, content=_EmptyRequestStream())
+        outgoing.headers.pop("transfer-encoding", None)
+        response = await client.send(outgoing)
+        return response.status_code, time.perf_counter() - started
+    finally:
+        CURRENT_PUBLIC_PATH.reset(token)
+
+
 async def _run(
     client: AsyncClient,
-    publication_id,
+    paths: tuple[str, ...],
     statements: list[dict],
-    cache_condition: str,
+    round_number: int,
 ):
-    paths = [
-        "/api/snapshots/list?limit=100&offset=0"
-        if index % 2 == 0
-        else f"/api/snapshots/{publication_id}"
-        for index in range(CONCURRENCY)
-    ]
-
-    async def request(path):
-        started = time.perf_counter()
-        label = (
-            "/api/snapshots/list"
-            if path.startswith("/api/snapshots/list")
-            else "/api/snapshots/{id}"
-        )
-        token = CURRENT_PUBLIC_PATH.set(label)
-        try:
-            outgoing = client.build_request("GET", path, content=_EmptyRequestStream())
-            outgoing.headers.pop("transfer-encoding", None)
-            response = await client.send(outgoing)
-            return response.status_code, time.perf_counter() - started
-        finally:
-            CURRENT_PUBLIC_PATH.reset(token)
+    requests = tuple(paths[index % len(paths)] for index in range(CONCURRENCY))
 
     before_queries = len(statements)
     cpu_started = time.process_time()
     started = time.perf_counter()
-    responses = await asyncio.gather(*(request(path) for path in paths))
+    responses = await asyncio.gather(*(_request(client, path) for path in requests))
     elapsed = time.perf_counter() - started
     cpu = time.process_time() - cpu_started
     latencies = [latency for _status, latency in responses]
     statuses = [status for status, _latency in responses]
     peak, rss, memory_label = _memory_bytes()
     return {
-        "cache_condition": cache_condition,
+        "round": round_number,
+        "cache_condition": "post_warmup_caches_uncontrolled",
         "request_count": len(responses),
         "concurrency": CONCURRENCY,
         "successful": sum(status == 200 for status in statuses),
@@ -208,7 +295,7 @@ async def _run(
         "rss_bytes": rss,
         "memory_measurement": memory_label,
         "sql_statement_count": len(statements) - before_queries,
-    }
+    }, latencies
 
 
 def _statement_verb(statement: str) -> str:
@@ -225,7 +312,7 @@ def _statement_verb(statement: str) -> str:
 def _measured_path_explains(database, captured):
     explains = {}
     with database.engine.connect() as connection:
-        for path in ("/api/snapshots/list", "/api/snapshots/{id}"):
+        for path in MEASURED_PATHS:
             candidates = [
                 item
                 for item in captured
@@ -255,14 +342,15 @@ def _measured_path_explains(database, captured):
 
 async def test_reset_public_queries_meet_budget_and_do_not_write(database, repository):
     embedded = _shared_grant()
+    fixture = _performance_batch().model_copy(update={"grant": embedded})
+    sessions = fixture.calendar.sessions
+    security_id = fixture.expected_security_ids[0]
     market = repository.publish(
-        repository.import_batch(
-            batch(grant=embedded), key="task20-performance-market"
-        ).id
+        repository.import_batch(fixture, key="task20-performance-market").id
     )
     publication = PublicationService(database, repository, clock=lambda: NOW).publish(
         PublicationCommand(
-            trade_date=DAYS[-1],
+            trade_date=sessions[-1],
             market_snapshot_id=market.id,
             disabled_domains=("topic", "news", "regulation", "role"),
         ),
@@ -288,11 +376,11 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         session.csrf,
         AnalysisJobCommand(
             snapshot_id=publication.id,
-            start=DAYS[0],
-            end=DAYS[-1],
+            start=sessions[0],
+            end=sessions[-1],
             benchmark="B000300",
             adjustment="raw",
-            symbols=("A",),
+            symbols=(security_id,),
         ),
         key="task20-actual-over-five-seconds",
     )
@@ -318,7 +406,7 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
             "security_read_model_rows": connection.scalar(
                 text("SELECT count(*) FROM security")
             ),
-            "trading_sessions": len(DAYS),
+            "trading_sessions": len(sessions),
             "publications": connection.scalar(
                 text("SELECT count(*) FROM publications")
             ),
@@ -352,7 +440,8 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
     assert counts == FIXTURE_COUNTS
     assert all(value and value > 0 for value in volume.values())
 
-    state_before = _application_state(database)
+    paths = _request_paths(publication.id, sessions, security_id)
+    assert tuple(_path_label(path) for path in paths) == MEASURED_PATHS
     captured = []
 
     def capture_query(_conn, _cursor, statement, parameters, _context, _executemany):
@@ -365,39 +454,46 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
             }
         )
 
-    event.listen(database.engine, "before_cursor_execute", capture_query)
-    tracemalloc.start()
-    try:
-        public = public_publication_repository(database, repository, clock=lambda: NOW)
-        app = create_public_app(repository=public)
-        assert not any(
-            getattr(route, "path", "").startswith("/api/analysis/jobs")
-            for route in app.router.routes
+    public = public_publication_repository(database, repository, clock=lambda: NOW)
+    app = create_public_app(repository=public)
+    assert not any(
+        getattr(route, "path", "").startswith("/api/analysis/jobs")
+        for route in app.router.routes
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://public.example",
+    ) as client:
+        warmup_requests = tuple(
+            paths[index % len(paths)] for index in range(CONCURRENCY)
         )
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://public.example",
-        ) as client:
-            cold = await _run(
-                client,
-                publication.id,
-                captured,
-                "cold_process_first_concurrent_run_db_cache_uncontrolled",
-            )
-            warm = await _run(
-                client,
-                publication.id,
-                captured,
-                "warm_process_and_warmed_database",
-            )
-        python_peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
-        event.remove(database.engine, "before_cursor_execute", capture_query)
+        warmup_responses = await asyncio.gather(
+            *(_request(client, path) for path in warmup_requests)
+        )
+        warmup = {
+            "paths": list(MEASURED_PATHS),
+            "request_count": len(warmup_responses),
+            "concurrency": CONCURRENCY,
+            "successful": sum(status == 200 for status, _latency in warmup_responses),
+        }
+        assert warmup["successful"] == CONCURRENCY
+        state_before = _application_state(database)
+        event.listen(database.engine, "before_cursor_execute", capture_query)
+        try:
+            measured = [
+                await _run(client, paths, captured, round_number)
+                for round_number in range(1, MEASURED_ROUNDS + 1)
+            ]
+            runs = [item[0] for item in measured]
+            all_latencies = [
+                latency for _run_metrics, latencies in measured for latency in latencies
+            ]
+        finally:
+            event.remove(database.engine, "before_cursor_execute", capture_query)
     measured_path_explains = _measured_path_explains(database, captured)
     state_after = _application_state(database)
 
-    for run in (cold, warm):
+    for run in runs:
         assert run["request_count"] == CONCURRENCY
         assert run["successful"] == CONCURRENCY
         assert run["error_rate"] == 0
@@ -405,6 +501,23 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         assert run["peak_memory_bytes"] > 0
         assert run["process_cpu_seconds"] >= 0
     assert state_after == state_before
+    aggregate = {
+        "round_count": len(runs),
+        "request_count": sum(run["request_count"] for run in runs),
+        "successful": sum(run["successful"] for run in runs),
+        "error_rate": (
+            sum(run["request_count"] - run["successful"] for run in runs)
+            / sum(run["request_count"] for run in runs)
+        ),
+        "p50_seconds": _percentile(all_latencies, 0.50),
+        "p95_seconds": _percentile(all_latencies, 0.95),
+        "max_seconds": max(all_latencies),
+        "wall_seconds": sum(run["wall_seconds"] for run in runs),
+        "process_cpu_seconds": sum(run["process_cpu_seconds"] for run in runs),
+    }
+    assert aggregate["request_count"] == MEASURED_ROUNDS * CONCURRENCY
+    assert aggregate["successful"] == aggregate["request_count"]
+    assert aggregate["p95_seconds"] <= P95_LIMIT_SECONDS
 
     evidence = {
         "fixture": {
@@ -419,9 +532,11 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
             "platform": platform.platform(),
             "postgresql": db_version,
             "os_cold_cache_controlled": False,
+            "cache_claim": "warmup_then_measured_caches_uncontrolled",
         },
-        "runs": [cold, warm],
-        "python_tracemalloc_peak_bytes": python_peak,
+        "warmup": warmup,
+        "runs": runs,
+        "aggregate": aggregate,
         "async_work": {
             "synthetic": True,
             "label": "controlled_worker_delay",
@@ -461,10 +576,10 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
     } & {statement["verb"] for statement in evidence["public_sql_statements"]}
     assert evidence["application_state_before"] == evidence["application_state_after"]
     assert len(evidence["application_state_before"]) > 8
-    assert set(evidence["measured_path_explains"]) == {
-        "/api/snapshots/list",
-        "/api/snapshots/{id}",
-    }
+    assert set(evidence["measured_path_explains"]) == set(MEASURED_PATHS)
+    assert {item["path"] for item in evidence["public_sql_statements"]} == set(
+        MEASURED_PATHS
+    )
     assert all(run["rss_bytes"] > 0 for run in evidence["runs"])
     artifact = Path(".temp/acceptance/reset-performance.json")
     artifact.parent.mkdir(parents=True, exist_ok=True)

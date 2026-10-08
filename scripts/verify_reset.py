@@ -384,6 +384,59 @@ def _commit() -> dict[str, Any]:
     }
 
 
+def _repository_state_from_status(
+    head: str | None,
+    status_lines: list[str],
+) -> dict[str, Any]:
+    disallowed = [
+        line
+        for line in status_lines
+        if not line.replace("\\", "/").startswith("?? .temp/")
+    ]
+    return {
+        "head": head,
+        "tracked_clean": not disallowed,
+        "disallowed_changes": disallowed,
+    }
+
+
+def _repository_state() -> dict[str, Any]:
+    head = _git_value("rev-parse", "HEAD")
+    status = _git_value("status", "--porcelain=v1", "--untracked-files=all")
+    if status is None:
+        return _repository_state_from_status(
+            head,
+            ["git status failed"],
+        )
+    return _repository_state_from_status(head, status.splitlines())
+
+
+def _repository_errors(before: Any, after: Any) -> list[str]:
+    expected = {"head", "tracked_clean", "disallowed_changes"}
+    errors = [
+        *_exact_fields(before, expected, "Repository preflight"),
+        *_exact_fields(after, expected, "Repository postflight"),
+    ]
+    if errors:
+        return errors
+    for label, state in (("preflight", before), ("postflight", after)):
+        if not isinstance(state["head"], str) or not re.fullmatch(
+            r"[0-9a-f]{40}", state["head"]
+        ):
+            errors.append(f"Repository {label} HEAD is invalid.")
+        if state["tracked_clean"] is not True:
+            errors.append(f"Repository {label} is not clean.")
+        if not isinstance(state["disallowed_changes"], list) or any(
+            not isinstance(item, str) for item in state["disallowed_changes"]
+        ):
+            errors.append(f"Repository {label} changes are invalid.")
+        elif state["disallowed_changes"]:
+            errors.append(f"Repository {label} has disallowed changes.")
+    if before["head"] != after["head"]:
+        errors.append("Repository HEAD changed during verification.")
+    return errors
+
+
 def _counts(
     output: str,
     exit_status: int,
@@ -535,16 +588,30 @@ def _run_command(
 
 def _performance_errors(value: Any) -> list[str]:
     errors: list[str] = []
+    measured_paths = {
+        "/api/snapshots/{id}",
+        "/api/market/overview",
+        "/api/rank/range",
+        "/api/stock/{id}",
+    }
     if not isinstance(value, dict):
         return ["Performance artifact is not an object."]
     runs = value.get("runs")
-    if not isinstance(runs, list) or len(runs) != 2:
-        errors.append("Exactly two cold/warm performance runs are required.")
+    if not isinstance(runs, list) or len(runs) < 2:
+        errors.append("Multiple measured performance rounds are required.")
     else:
         for index, run in enumerate(runs):
             if not isinstance(run, dict):
                 errors.append(f"Performance run {index} is malformed.")
                 continue
+            if (
+                run.get("round") != index + 1
+                or "cold" in str(run.get("cache_condition", "")).lower()
+                or run.get("cache_condition") != "post_warmup_caches_uncontrolled"
+            ):
+                errors.append(
+                    f"Performance run {index} has an unsupported cold/cache claim."
+                )
             if (
                 run.get("request_count") != 20
                 or run.get("concurrency") != 20
@@ -579,6 +646,65 @@ def _performance_errors(value: Any) -> list[str]:
         errors.append("Performance fixture must be labelled synthetic.")
     elif not fixture.get("counts") or not fixture.get("data_volume"):
         errors.append("Performance fixture counts and data volume are required.")
+    else:
+        counts = fixture["counts"]
+        if (
+            not isinstance(counts, dict)
+            or type(counts.get("securities")) is not int
+            or counts["securities"] < 100
+            or type(counts.get("trading_sessions")) is not int
+            or counts["trading_sessions"] < 60
+        ):
+            errors.append(
+                "Performance fixture requires at least 100 securities and "
+                "60 trading sessions."
+            )
+    environment = value.get("environment")
+    if (
+        not isinstance(environment, dict)
+        or environment.get("os_cold_cache_controlled") is not False
+        or environment.get("cache_claim") != "warmup_then_measured_caches_uncontrolled"
+    ):
+        errors.append("Performance environment makes an unsupported cache claim.")
+    warmup = value.get("warmup")
+    if (
+        not isinstance(warmup, dict)
+        or set(warmup.get("paths", [])) != measured_paths
+        or warmup.get("request_count") != 20
+        or warmup.get("concurrency") != 20
+        or warmup.get("successful") != 20
+    ):
+        errors.append("Performance warmup does not cover every measured path.")
+    aggregate = value.get("aggregate")
+    if not isinstance(aggregate, dict):
+        errors.append("Aggregate performance metrics are missing.")
+    elif isinstance(runs, list) and all(isinstance(run, dict) for run in runs):
+        expected_requests = sum(run.get("request_count", 0) for run in runs)
+        expected_successful = sum(run.get("successful", 0) for run in runs)
+        if (
+            aggregate.get("round_count") != len(runs)
+            or aggregate.get("request_count") != expected_requests
+            or aggregate.get("successful") != expected_successful
+            or aggregate.get("error_rate")
+            != (
+                (expected_requests - expected_successful) / expected_requests
+                if expected_requests
+                else None
+            )
+        ):
+            errors.append("Aggregate performance counts are inconsistent.")
+        p50 = aggregate.get("p50_seconds")
+        p95 = aggregate.get("p95_seconds")
+        maximum = aggregate.get("max_seconds")
+        if (
+            not all(type(item) in (int, float) for item in (p50, p95, maximum))
+            or not 0 <= p50 <= p95 <= maximum
+            or p95 > 2
+        ):
+            errors.append("Aggregate performance exceeds the P95 budget.")
+        for field in ("wall_seconds", "process_cpu_seconds"):
+            if type(aggregate.get(field)) not in (int, float) or aggregate[field] < 0:
+                errors.append(f"Aggregate performance lacks {field}.")
     async_work = value.get("async_work")
     if not isinstance(async_work, dict):
         errors.append("Async workload evidence is missing.")
@@ -603,6 +729,8 @@ def _performance_errors(value: Any) -> list[str]:
         for item in statements
     ):
         errors.append("A public request executed write or DDL SQL.")
+    elif {item.get("path") for item in statements} != measured_paths:
+        errors.append("Measured SQL does not cover every public path.")
     before = value.get("application_state_before")
     after = value.get("application_state_after")
     if not isinstance(before, dict) or not before or before != after:
@@ -610,7 +738,7 @@ def _performance_errors(value: Any) -> list[str]:
     explains = value.get("measured_path_explains")
     if (
         not isinstance(explains, dict)
-        or set(explains) != {"/api/snapshots/list", "/api/snapshots/{id}"}
+        or set(explains) != measured_paths
         or any(not item for item in explains.values())
     ):
         errors.append("Measured-path EXPLAIN ANALYZE BUFFERS evidence is incomplete.")
@@ -645,7 +773,9 @@ def _performance_observations(
         "raw_artifact": _snapshot_artifact(
             PERFORMANCE_ARTIFACT, evidence_dir / "artifacts"
         ),
+        "warmup": value["warmup"],
         "runs": value["runs"],
+        "aggregate": value["aggregate"],
         "fixture": value["fixture"],
         "environment": value.get("environment"),
     }
@@ -721,9 +851,14 @@ def _run_gates(
     evidence_dir: Path,
     runner: Runner | None = None,
 ) -> ExecutionEvidence:
+    repository_before = _repository_state()
+    preflight_errors = _repository_errors(repository_before, repository_before)
+    if preflight_errors:
+        raise RuntimeError("Repository preflight failed: " + " ".join(preflight_errors))
     environment = _environment()
     records = _execute_gates(mode, evidence_dir, runner or SubprocessRunner())
     commit = _commit()
+    repository_after = _repository_state()
     return ExecutionEvidence(
         {
             "schema": EVIDENCE_SCHEMA,
@@ -732,6 +867,10 @@ def _run_gates(
             "generated_at": datetime.now(UTC).isoformat(),
             "tested_commit": commit["tested_commit"],
             "environment": environment,
+            "repository": {
+                "before": repository_before,
+                "after": repository_after,
+            },
             "records": records,
         }
     )
@@ -899,7 +1038,14 @@ def _validate_command(value: Any, spec: dict[str, Any]) -> list[str]:
 def _raw_performance(observations: Any) -> tuple[dict[str, Any] | None, list[str]]:
     errors = _exact_fields(
         observations,
-        {"raw_artifact", "runs", "fixture", "environment"},
+        {
+            "raw_artifact",
+            "warmup",
+            "runs",
+            "aggregate",
+            "fixture",
+            "environment",
+        },
         "Performance observations",
     )
     if errors:
@@ -919,7 +1065,7 @@ def _raw_performance(observations: Any) -> tuple[dict[str, Any] | None, list[str
         ]
     errors.extend(_performance_errors(raw))
     if isinstance(raw, dict):
-        for field in ("runs", "fixture", "environment"):
+        for field in ("warmup", "runs", "aggregate", "fixture", "environment"):
             if observations[field] != raw.get(field):
                 errors.append(f"Performance {field} does not match the raw artifact.")
     return raw if isinstance(raw, dict) else None, errors
@@ -1018,6 +1164,7 @@ def _validate_manifest(
         "generated_at",
         "tested_commit",
         "environment",
+        "repository",
         "records",
     }
     global_errors = _exact_fields(value, manifest_fields, "Evidence manifest")
@@ -1040,6 +1187,17 @@ def _validate_manifest(
         "Evidence environment",
     )
     global_errors.extend(environment_errors)
+    repository = manifest.get("repository")
+    repository_errors = _exact_fields(
+        repository,
+        {"before", "after"},
+        "Repository evidence",
+    )
+    global_errors.extend(repository_errors)
+    if not repository_errors:
+        global_errors.extend(
+            _repository_errors(repository["before"], repository["after"])
+        )
     commit_ok, commit_relation = _commit_relation(manifest.get("tested_commit"))
     if not commit_ok:
         global_errors.append(

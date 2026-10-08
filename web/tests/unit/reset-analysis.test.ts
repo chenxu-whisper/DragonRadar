@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { analysisRange, analysisSort, klineRange } from '../../src/features/analysis/query';
+import {
+  analysisRange,
+  analysisSort,
+  analysisSortDescriptor,
+  klineRange,
+} from '../../src/features/analysis/query';
 import {
   validateCurvesResponse,
   validateKlineResponse,
@@ -120,6 +125,21 @@ describe('reset analysis query projection', () => {
   ] as const)('maps %s to backend sort %s', (sort, expected) => {
     expect(analysisSort(sort)).toBe(expected);
   });
+
+  it.each([
+    ['interval_return', 'return', 'desc'],
+    ['excess_return', 'excess_return', 'desc'],
+    ['maximum_drawdown', 'drawdown', 'asc'],
+    ['amount_change', 'amount_change', 'desc'],
+  ] as const)(
+    'uses one descriptor for %s request and CSV sort metadata',
+    (sort, requestField, direction) => {
+      expect(analysisSortDescriptor(sort)).toEqual({
+        requestField,
+        direction,
+      });
+    },
+  );
 });
 
 describe('reset analysis response validation', () => {

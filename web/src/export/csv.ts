@@ -40,8 +40,14 @@ function required(value: string, name: string): string {
   return value;
 }
 
+function formulaSafe(value: string): string {
+  return unsafeFormula.test(value) ? `'${value}` : value;
+}
+
 function filters(value: CsvMetadata['filters']): string {
-  return Object.keys(value).sort().map(key => `${key}=${value[key] ?? ''}`).join(';');
+  return Object.keys(value).sort().map(key => (
+    `${formulaSafe(key)}=${formulaSafe(String(value[key] ?? ''))}`
+  )).join(';');
 }
 
 function cell(value: unknown): string {
@@ -50,7 +56,7 @@ function cell(value: unknown): string {
     throw new Error('CSV cells must be strings, numbers, booleans, or null');
   }
   let text = String(value);
-  if (typeof value === 'string' && unsafeFormula.test(text)) text = `'${text}`;
+  if (typeof value === 'string') text = formulaSafe(text);
   return /[\u0000-\u001f",]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 

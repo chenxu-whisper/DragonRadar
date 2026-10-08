@@ -1005,6 +1005,47 @@ def test_unified_read_holds_all_source_locks_through_result_assembly(
     assert source_lock_order == sorted(source_lock_order)
 
 
+def test_published_reads_parse_each_immutable_market_archive_once(
+    publication,
+    database,
+    repository,
+    monkeypatch,
+):
+    from dragon_radar.domain.models import MarketBatch
+
+    service, command = publication
+    record = service.publish(command, key="cached-market-archive")
+    selection = PublicationRepository(database, repository, clock=lambda: NOW)
+    original = MarketBatch.model_validate_json
+    calls = []
+    selects = {"import_batches": 0, "publication_results": 0}
+
+    def parse(value):
+        calls.append(value)
+        return original(value)
+
+    def count_payload_reads(
+        _conn, _cursor, statement, _parameters, _context, _executemany
+    ):
+        normalized = " ".join(statement.split())
+        for table in selects:
+            if f"FROM {table}" in normalized:
+                selects[table] += 1
+
+    monkeypatch.setattr(MarketBatch, "model_validate_json", parse)
+    event.listen(database.engine, "before_cursor_execute", count_payload_reads)
+    try:
+        assert selection.get_published_snapshot(record.id).id == record.id
+        assert selection.get_published_snapshot(record.id).id == record.id
+    finally:
+        event.remove(database.engine, "before_cursor_execute", count_payload_reads)
+    assert len(calls) == 1
+    assert selects == {"import_batches": 1, "publication_results": 1}
+    repository.register_source(grant(local_display=False))
+    with pytest.raises(Forbidden):
+        selection.get_published_snapshot(record.id)
+
+
 def _clone_publication_with_dependencies(
     database,
     record,

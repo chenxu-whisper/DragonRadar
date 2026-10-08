@@ -97,25 +97,8 @@ def command_record(tmp_path, gate, index, spec, *, skipped=0, exit_status=0):
 def performance_raw():
     runs = [
         {
-            "cache_condition": (
-                "cold_process_first_concurrent_run_db_cache_uncontrolled"
-            ),
-            "request_count": 20,
-            "concurrency": 20,
-            "successful": 20,
-            "error_rate": 0.0,
-            "p50_seconds": 0.1,
-            "p95_seconds": 0.2,
-            "max_seconds": 0.3,
-            "wall_seconds": 0.4,
-            "process_cpu_seconds": 0.2,
-            "peak_memory_bytes": 100,
-            "rss_bytes": 100,
-            "memory_measurement": "test",
-            "sql_statement_count": 2,
-        },
-        {
-            "cache_condition": "warm_process_and_warmed_database",
+            "round": index,
+            "cache_condition": "post_warmup_caches_uncontrolled",
             "request_count": 20,
             "concurrency": 20,
             "successful": 20,
@@ -125,20 +108,47 @@ def performance_raw():
             "max_seconds": 0.25,
             "wall_seconds": 0.35,
             "process_cpu_seconds": 0.15,
-            "peak_memory_bytes": 90,
-            "rss_bytes": 90,
+            "peak_memory_bytes": 100,
+            "rss_bytes": 100,
             "memory_measurement": "test",
-            "sql_statement_count": 2,
-        },
+            "sql_statement_count": 4,
+        }
+        for index in range(1, 4)
     ]
     return {
         "fixture": {
             "kind": "synthetic",
-            "counts": {"securities": 1},
+            "counts": {"securities": 100, "trading_sessions": 61},
             "data_volume": {"market_archive_bytes": 1},
         },
-        "environment": {"postgresql": "17"},
+        "environment": {
+            "postgresql": "17",
+            "os_cold_cache_controlled": False,
+            "cache_claim": "warmup_then_measured_caches_uncontrolled",
+        },
+        "warmup": {
+            "paths": [
+                "/api/snapshots/{id}",
+                "/api/market/overview",
+                "/api/rank/range",
+                "/api/stock/{id}",
+            ],
+            "request_count": 20,
+            "concurrency": 20,
+            "successful": 20,
+        },
         "runs": runs,
+        "aggregate": {
+            "round_count": 3,
+            "request_count": 60,
+            "successful": 60,
+            "error_rate": 0.0,
+            "p50_seconds": 0.08,
+            "p95_seconds": 0.15,
+            "max_seconds": 0.25,
+            "wall_seconds": 1.05,
+            "process_cpu_seconds": 0.45,
+        },
         "async_work": {
             "synthetic": True,
             "label": "controlled_worker_delay",
@@ -148,16 +158,22 @@ def performance_raw():
             "status": "succeeded",
         },
         "public_sql_statements": [
-            {"path": "/api/snapshots/list", "verb": "SELECT"},
-            {"path": "/api/snapshots/{id}", "verb": "SELECT"},
-            {"path": "/api/snapshots/list", "verb": "SELECT"},
-            {"path": "/api/snapshots/{id}", "verb": "SELECT"},
+            {"path": path, "verb": "SELECT"}
+            for _round in range(3)
+            for path in (
+                "/api/snapshots/{id}",
+                "/api/market/overview",
+                "/api/rank/range",
+                "/api/stock/{id}",
+            )
         ],
         "application_state_before": {"table": {"rows": 1, "fingerprint": "a"}},
         "application_state_after": {"table": {"rows": 1, "fingerprint": "a"}},
         "measured_path_explains": {
-            "/api/snapshots/list": {"plan": ["index"]},
             "/api/snapshots/{id}": {"plan": ["index"]},
+            "/api/market/overview": {"plan": ["index"]},
+            "/api/rank/range": {"plan": ["index"]},
+            "/api/stock/{id}": {"plan": ["index"]},
         },
     }
 
@@ -185,13 +201,15 @@ def evidence_manifest(tmp_path):
         if gate == "performance":
             observations = {
                 "raw_artifact": artifact(raw_path),
+                "warmup": raw["warmup"],
                 "runs": raw["runs"],
+                "aggregate": raw["aggregate"],
                 "fixture": raw["fixture"],
                 "environment": raw["environment"],
             }
         elif gate == "public_no_write":
             observations = {
-                "sql_statement_count": 4,
+                "sql_statement_count": len(raw["public_sql_statements"]),
                 "sql_write_count": 0,
                 "fingerprints_equal": True,
                 "application_table_count": 1,
@@ -215,6 +233,18 @@ def evidence_manifest(tmp_path):
             "python": "3.12",
             "node": "22",
             "postgresql_evidence_available": True,
+        },
+        "repository": {
+            "before": {
+                "head": git_head(),
+                "tracked_clean": True,
+                "disallowed_changes": [],
+            },
+            "after": {
+                "head": git_head(),
+                "tracked_clean": True,
+                "disallowed_changes": [],
+            },
         },
         "records": records,
     }
@@ -264,6 +294,69 @@ def test_allowlisted_command_graph_is_immutable():
     assert isinstance(GATE_SPECS["full_backend"][0]["command"], tuple)
 
 
+@pytest.mark.parametrize(
+    ("status_lines", "expected_changes"),
+    [
+        ([], []),
+        (["?? .temp/acceptance/result.json"], []),
+        (["?? .temp/result.json", "?? docs/untracked.md"], ["?? docs/untracked.md"]),
+        ([" M src/dragon_radar/api.py"], [" M src/dragon_radar/api.py"]),
+        ([" M .temp/tracked.json"], [" M .temp/tracked.json"]),
+    ],
+)
+def test_repository_state_ignores_only_untracked_temp(status_lines, expected_changes):
+    classify = VERIFIER["_repository_state_from_status"]
+
+    state = classify("1" * 40, status_lines)
+
+    assert state["tracked_clean"] is (not expected_changes)
+    assert state["disallowed_changes"] == expected_changes
+
+
+def test_repository_evidence_requires_stable_clean_head():
+    errors = VERIFIER["_repository_errors"]
+    clean = {
+        "head": "1" * 40,
+        "tracked_clean": True,
+        "disallowed_changes": [],
+    }
+
+    assert errors(clean, clean) == []
+    assert any(
+        "HEAD changed" in error for error in errors(clean, {**clean, "head": "2" * 40})
+    )
+    assert any(
+        "not clean" in error
+        for error in errors(
+            clean,
+            {
+                **clean,
+                "tracked_clean": False,
+                "disallowed_changes": [" M README.md"],
+            },
+        )
+    )
+
+
+def test_execution_refuses_dirty_repository_before_running(tmp_path, monkeypatch):
+    run_gates = VERIFIER["_run_gates"]
+    monkeypatch.setitem(
+        run_gates.__globals__,
+        "_repository_state",
+        lambda: {
+            "head": git_head(),
+            "tracked_clean": False,
+            "disallowed_changes": [" M README.md"],
+        },
+    )
+    runner = RecordingRunner([])
+
+    with pytest.raises(RuntimeError, match="preflight.*not clean"):
+        run_gates("focused", tmp_path, runner)
+
+    assert runner.calls == []
+
+
 def test_subprocess_runner_resolves_windows_command_shim(monkeypatch, tmp_path):
     runner = VERIFIER["SubprocessRunner"]()
     run = VERIFIER["SubprocessRunner"].run
@@ -305,6 +398,25 @@ def test_evidence_artifact_snapshot_is_immutable_and_content_addressed(tmp_path)
     assert snapshot.read_bytes() == b'{"run":"first"}'
     assert snapshot.name == f"reset-performance-{recorded['sha256']}.json"
     assert recorded["bytes"] == len(b'{"run":"first"}')
+
+
+def test_performance_contract_requires_realistic_warmed_multi_round_fixture():
+    errors = VERIFIER["_performance_errors"]
+    valid = performance_raw()
+
+    assert errors(valid) == []
+
+    undersized = deepcopy(valid)
+    undersized["fixture"]["counts"]["securities"] = 99
+    assert any("100 securities" in error for error in errors(undersized))
+
+    false_cold = deepcopy(valid)
+    false_cold["runs"][0]["cache_condition"] = "cold_process"
+    assert any("cold" in error.lower() for error in errors(false_cold))
+
+    no_aggregate = deepcopy(valid)
+    del no_aggregate["aggregate"]
+    assert any("aggregate" in error.lower() for error in errors(no_aggregate))
 
 
 def test_default_full_mode_cannot_self_certify_from_performance_json(tmp_path):
@@ -616,6 +728,16 @@ def test_full_execution_manifest_passes_only_in_execution_context(
         run_gates.__globals__,
         "PERFORMANCE_ARTIFACT",
         performance_path,
+    )
+    clean_repository = {
+        "head": git_head(),
+        "tracked_clean": True,
+        "disallowed_changes": [],
+    }
+    monkeypatch.setitem(
+        run_gates.__globals__,
+        "_repository_state",
+        lambda: deepcopy(clean_repository),
     )
     command_count = sum(
         len(GATE_SPECS[gate])

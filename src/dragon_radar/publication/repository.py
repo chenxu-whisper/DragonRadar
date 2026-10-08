@@ -1,7 +1,9 @@
 """Authorized reads for immutable unified publications."""
 
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
+from threading import RLock
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -33,7 +35,7 @@ from dragon_radar.publication.tables import (
 )
 from dragon_radar.regulation.repository import RegulationRepository
 from dragon_radar.roles.tables import role_runs
-from dragon_radar.storage.models import import_batches, snapshots
+from dragon_radar.storage.models import Snapshot, import_batches, snapshots
 from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
 from dragon_radar.topics.models import TopicBatch
 from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
@@ -187,6 +189,164 @@ class PublicationRepository:
             self.market,
             clock=self.clock,
         )
+        self._market_batch_cache: OrderedDict[tuple[UUID, str], MarketBatch] = (
+            OrderedDict()
+        )
+        self._market_archive_cache: OrderedDict[UUID, Mapping] = OrderedDict()
+        self._result_rows_cache: OrderedDict[UUID, tuple[Mapping, ...]] = OrderedDict()
+        self._published_snapshot_cache: OrderedDict[UUID, PublishedSnapshot] = (
+            OrderedDict()
+        )
+        self._market_batch_cache_lock = RLock()
+
+    @staticmethod
+    def _trim(cache: OrderedDict, maximum: int = 32) -> None:
+        while len(cache) > maximum:
+            cache.popitem(last=False)
+
+    def _market_batch(self, archive: Mapping) -> MarketBatch:
+        key = (archive["id"], archive["payload_hash"])
+        with self._market_batch_cache_lock:
+            cached = self._market_batch_cache.get(key)
+            if cached is not None:
+                self._market_batch_cache.move_to_end(key)
+                return cached
+            parsed = MarketBatch.model_validate_json(archive["canonical_json"])
+            self._market_batch_cache[key] = parsed
+            self._trim(self._market_batch_cache, maximum=16)
+            return parsed
+
+    def _market_archives(self, connection, archive_ids: set[UUID]) -> dict:
+        with self._market_batch_cache_lock:
+            cached = {
+                archive_id: self._market_archive_cache[archive_id]
+                for archive_id in archive_ids
+                if archive_id in self._market_archive_cache
+            }
+        missing = archive_ids - set(cached)
+        loaded = (
+            {
+                row["id"]: row
+                for row in connection.execute(
+                    select(import_batches).where(import_batches.c.id.in_(missing))
+                )
+                .mappings()
+                .all()
+            }
+            if missing
+            else {}
+        )
+        with self._market_batch_cache_lock:
+            for archive_id, row in loaded.items():
+                self._market_archive_cache[archive_id] = row
+                self._market_archive_cache.move_to_end(archive_id)
+            self._trim(self._market_archive_cache)
+        return {**cached, **loaded}
+
+    def _result_rows(self, connection, publication_ids: list[UUID]) -> dict:
+        with self._market_batch_cache_lock:
+            cached = {
+                publication_id: self._result_rows_cache[publication_id]
+                for publication_id in publication_ids
+                if publication_id in self._result_rows_cache
+            }
+        missing = set(publication_ids) - set(cached)
+        grouped = {publication_id: [] for publication_id in missing}
+        if missing:
+            rows = (
+                connection.execute(
+                    select(publication_results)
+                    .where(publication_results.c.publication_id.in_(missing))
+                    .order_by(
+                        publication_results.c.publication_id,
+                        publication_results.c.domain,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                grouped[row["publication_id"]].append(row)
+        loaded = {
+            publication_id: tuple(rows) for publication_id, rows in grouped.items()
+        }
+        with self._market_batch_cache_lock:
+            for publication_id, rows in loaded.items():
+                self._result_rows_cache[publication_id] = rows
+                self._result_rows_cache.move_to_end(publication_id)
+            self._trim(self._result_rows_cache)
+        return {**cached, **loaded}
+
+    @staticmethod
+    def _market_only(record: Publication) -> bool:
+        return (
+            record.topic_snapshot_id is None
+            and record.news_input_id is None
+            and record.regulation_input_id is None
+            and record.role_input_id is None
+        )
+
+    def _cached_market_only_snapshot(
+        self,
+        connection,
+        record: Publication,
+    ) -> PublishedSnapshot | None:
+        if not self._market_only(record):
+            return None
+        with self._market_batch_cache_lock:
+            cached = self._published_snapshot_cache.get(record.id)
+        if cached is None or cached.publication != record:
+            return None
+        dependencies = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if len(dependencies) != 1:
+            raise Forbidden("Publication market identity is invalid")
+        dependency = dependencies[0]
+        market = cached.market_snapshot
+        if (
+            dependency["source_id"] != market.batch.source_id
+            or dependency["archive_type"] != "market_import_batch"
+            or dependency["archive_id"] != market.batch_id
+            or dependency["derived_type"] != "market"
+            or dependency["derived_id"] != record.id
+            or dependency["publication_id"] != record.id
+            or record.market_snapshot_id != market.id
+        ):
+            raise Forbidden("Publication market identity is invalid")
+        source_id = dependency["source_id"]
+        if source_has_active_withdrawal(connection, source_id) or archive_was_withdrawn(
+            connection,
+            source_id,
+            dependency["archive_type"],
+            dependency["archive_id"],
+        ):
+            raise Forbidden("Publication inputs were withdrawn")
+        current = self.market._source(connection, source_id)
+        if not self.access_policy.allows(
+            "market",
+            source_id=source_id,
+            current=current,
+            embedded=market.batch.grant,
+        ):
+            raise Forbidden("Publication market source is not authorized")
+        with self._market_batch_cache_lock:
+            self._published_snapshot_cache.move_to_end(record.id)
+        return cached
+
+    def _cache_snapshot(self, snapshot: PublishedSnapshot) -> None:
+        if not self._market_only(snapshot.publication):
+            return
+        with self._market_batch_cache_lock:
+            self._published_snapshot_cache[snapshot.id] = snapshot
+            self._published_snapshot_cache.move_to_end(snapshot.id)
+            self._trim(self._published_snapshot_cache)
 
     @staticmethod
     def _result(row: Mapping) -> PublicationResult:
@@ -266,7 +426,7 @@ class PublicationRepository:
         market_archive = market_archives.get(market_row["batch_id"])
         if market_archive is None:
             raise Forbidden("Publication market identity is invalid")
-        market_batch = MarketBatch.model_validate_json(market_archive["canonical_json"])
+        market_batch = self._market_batch(market_archive)
         if not self.access_policy.allows(
             "market",
             source_id=market_row["source_id"],
@@ -280,7 +440,16 @@ class PublicationRepository:
             now=self.clock(),
         ):
             raise Forbidden("Source is not authorized for AI processing")
-        market = self.market._snapshot(market_row, market_archive)
+        market = Snapshot(
+            id=market_row["id"],
+            batch_id=market_row["batch_id"],
+            revision=market_row["revision"],
+            supersedes=market_row["supersedes"],
+            published_at=market_row["published_at"],
+            manifest=market_row["manifest"],
+            quality_report=market_archive["quality_report"],
+            batch=market_batch,
+        )
 
         if record.topic_snapshot_id is not None:
             topic_row = topic_rows.get(record.topic_snapshot_id)
@@ -507,7 +676,7 @@ class PublicationRepository:
                 archive = market_archives.get(dependency["archive_id"])
                 if archive is None or archive["source_id"] != dependency["source_id"]:
                     raise Forbidden("Publication role lineage is invalid")
-                batch = MarketBatch.model_validate_json(archive["canonical_json"])
+                batch = self._market_batch(archive)
                 if not self.access_policy.allows(
                     "market",
                     source_id=dependency["source_id"],
@@ -588,25 +757,17 @@ class PublicationRepository:
             .mappings()
             .all()
         }
-        market_archives = {
-            row["id"]: row
-            for row in connection.execute(
-                select(import_batches).where(
-                    import_batches.c.id.in_(
-                        {
-                            *(row["batch_id"] for row in market_rows.values()),
-                            *(
-                                row["archive_id"]
-                                for row in dependencies
-                                if row["archive_type"] == "market_import_batch"
-                            ),
-                        }
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        }
+        market_archives = self._market_archives(
+            connection,
+            {
+                *(row["batch_id"] for row in market_rows.values()),
+                *(
+                    row["archive_id"]
+                    for row in dependencies
+                    if row["archive_type"] == "market_import_batch"
+                ),
+            },
+        )
         topic_rows = {
             row["id"]: row
             for row in connection.execute(
@@ -737,23 +898,7 @@ class PublicationRepository:
             connection,
             source_ids,
         )
-        results = (
-            connection.execute(
-                select(publication_results)
-                .where(publication_results.c.publication_id.in_(publication_ids))
-                .order_by(
-                    publication_results.c.publication_id,
-                    publication_results.c.domain,
-                )
-            )
-            .mappings()
-            .all()
-            if publication_ids
-            else []
-        )
-        result_rows = {publication_id: [] for publication_id in publication_ids}
-        for row in results:
-            result_rows[row["publication_id"]].append(row)
+        result_rows = self._result_rows(connection, publication_ids)
         role_input_ids_by_publication = {}
         all_role_input_ids = set()
         for publication_id, rows_for_publication in result_rows.items():
@@ -980,7 +1125,13 @@ class PublicationRepository:
                 return None
             if row["status"] != "published":
                 raise Forbidden("Publication is not available")
-            return self._authorized_records(connection, [row])[0]
+            record = _publication(row)
+            cached = self._cached_market_only_snapshot(connection, record)
+            if cached is not None:
+                return cached
+            snapshot = self._authorized_records(connection, [row])[0]
+            self._cache_snapshot(snapshot)
+            return snapshot
 
     def get_snapshot(self, snapshot_id: UUID | str):
         snapshot_id = _uuid(snapshot_id)

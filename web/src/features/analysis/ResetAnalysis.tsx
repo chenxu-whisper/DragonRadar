@@ -4,7 +4,7 @@ import type { ResearchState, Sort } from '../../state';
 import type { ResetRankData, Snapshot, WorkbenchEnvelope } from '../../types';
 import { Exclusions, Pager, ResourceStatus, SearchForm, TableScroll, type Patch } from '../../components/Common';
 import { IntervalForm } from '../../components/IntervalForm';
-import { analysisRange, analysisSort } from './query';
+import { analysisRange, analysisSortDescriptor } from './query';
 import { CsvExportButton } from '../../export/CsvExportButton';
 
 export interface ResetAnalysisProps {
@@ -26,8 +26,10 @@ function ratio(value: number | null, signed = true): string {
 function ResetSortHead({ title, field, state, patch }: {
   title: string; field: Sort; state: ResearchState; patch: Patch;
 }) {
-  const active = analysisSort(state.sort) === analysisSort(field);
-  const order = field === 'maximum_drawdown' ? 'asc' : 'desc';
+  const current = analysisSortDescriptor(state.sort);
+  const selected = analysisSortDescriptor(field);
+  const active = current.requestField === selected.requestField;
+  const order = selected.direction;
   return <th aria-sort={active ? order === 'asc' ? 'ascending' : 'descending' : 'none'}>
     <button className="sort-button" title={`按${title}排序`} onClick={() => patch({ sort: field, order, page: 1 })}>
       {title}
@@ -37,6 +39,7 @@ function ResetSortHead({ title, field, state, patch }: {
 
 export function ResetAnalysis({ state, patch, refreshToken, open, compare, snapshot, ReviewActions }: ResetAnalysisProps) {
   let query = '', error = '';
+  const sort = analysisSortDescriptor(state.sort);
   try {
     if (snapshot) {
       const range = analysisRange(state, snapshot.result.calendar_sessions);
@@ -46,7 +49,7 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
         end: range.end,
         benchmark: state.benchmark,
         adj: state.adj,
-        sort: analysisSort(state.sort),
+        sort: sort.requestField,
       }).toString();
     }
   } catch (failure) { error = (failure as Error).message; }
@@ -87,8 +90,8 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
             start: response.data.adjusted_start,
             end: response.data.adjusted_end,
             q: state.q,
-            sort: analysisSort(state.sort),
-            order: state.order,
+            sort: sort.requestField,
+            order: sort.direction,
             page: state.page,
             page_size: state.page_size,
             adjustment: state.adj,

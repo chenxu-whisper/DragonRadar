@@ -393,10 +393,11 @@ body:has(dialog[open]) { overflow: hidden; }
     max-width: none;
   }
   .snapshot-controls > button { width: 100%; margin-left: 0; white-space: normal; }
-  main { padding: 16px 8px 24px; }
+  main { padding: 16px 8px 24px; overflow-wrap: anywhere; word-break: break-word; }
   button { max-width: 100%; white-space: normal; }
   .filter-context { padding-inline: 8px; }
   .filter-members { grid-template-columns: minmax(0, 1fr); }
+  .market-grid > div, .market-observations { min-width: 0; }
   .search-label, .news-controls form .search-label { min-width: 0; }
   .security-drawer { padding-inline: 8px; }
   .change-row { grid-template-columns: minmax(0, 1fr); }
