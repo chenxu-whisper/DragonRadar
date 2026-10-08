@@ -97,8 +97,8 @@ def add_commands(commands: argparse._SubParsersAction) -> None:
     serve = commands.add_parser(
         "serve-owner", help="Serve the explicitly private owner API"
     )
-    serve.add_argument("--host", default="0.0.0.0")
-    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8001)
     serve.add_argument("--origin", default=DEFAULT_ORIGIN)
 
 

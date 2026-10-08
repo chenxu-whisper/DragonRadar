@@ -1,0 +1,82 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+https://localhost:8443 {
+	tls internal
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Cache-Control no-store
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	}
+	request_body {
+		max_size 131072
+	}
+	route {
+		@wrongHost not header Host {$DRAGON_OWNER_AUTHORITY:localhost:8031}
+		respond @wrongHost 403
+
+		@health {
+			method GET HEAD
+			path /health/live /health/ready
+		}
+		reverse_proxy @health 127.0.0.1:8001
+
+		@publishedRead {
+			method GET HEAD
+			path_regexp publishedRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment|heatmap)|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
+		}
+		reverse_proxy @publishedRead 127.0.0.1:8001
+
+		@aiRead {
+			method GET HEAD
+			path_regexp aiRead ^/api/ai/task/[0-9a-fA-F-]{36}$
+		}
+		reverse_proxy @aiRead 127.0.0.1:8001
+
+		@aiWrite {
+			method POST
+			path_regexp aiWrite ^/api/ai/(summarize|topic-suggest|explain-stock|daily-review|task/[0-9a-fA-F-]{36}/(cancel|review))$
+		}
+		reverse_proxy @aiWrite 127.0.0.1:8001
+
+		@session {
+			method GET HEAD
+			path /api/owner/v1/session
+		}
+		reverse_proxy @session 127.0.0.1:8001
+
+		@pair {
+			method POST
+			path /api/owner/v1/pair
+		}
+		reverse_proxy @pair 127.0.0.1:8001
+
+		@logout {
+			method DELETE
+			path /api/owner/v1/session
+		}
+		reverse_proxy @logout 127.0.0.1:8001
+
+		@api path /api/* /health/*
+		respond @api 404
+		@write not method GET HEAD
+		respond @write 405
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+https://:8443 {
+	header {
+		Cache-Control no-store
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	respond 403
+}

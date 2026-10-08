@@ -206,8 +206,8 @@ def test_serve_owner_disables_proxy_trust_access_log_and_validates_configuration
     app, options = calls[0]
     assert app.state.owner_origin == ORIGIN
     assert options == {
-        "host": "0.0.0.0",
-        "port": 8000,
+        "host": "127.0.0.1",
+        "port": 8001,
         "proxy_headers": False,
         "access_log": False,
     }

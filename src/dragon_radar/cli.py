@@ -285,6 +285,12 @@ def _parser() -> argparse.ArgumentParser:
     serve = commands.add_parser("serve", help="Run the development read API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8000, type=int)
+    public = commands.add_parser(
+        "serve-public",
+        help="Run the explicitly shared public read API",
+    )
+    public.add_argument("--host", default="127.0.0.1")
+    public.add_argument("--port", default=8000, type=int)
     add_commands(commands)
     return parser
 
@@ -578,6 +584,24 @@ def main(argv: list[str] | None = None) -> int:
                 max_cost=ai_config.max_cost,
                 concurrency=args.concurrency,
             ).run_forever(poll_seconds=args.poll_seconds)
+            return 0
+        elif args.command == "serve-public":
+            import uvicorn
+
+            from dragon_radar.http.access import PublicPublicationRepository
+            from dragon_radar.http.public_app import create_public_app
+
+            if not 1 <= args.port <= 65535:
+                raise ValueError("Invalid port")
+            uvicorn.run(
+                create_public_app(
+                    repository=PublicPublicationRepository(database, repository)
+                ),
+                host=args.host,
+                port=args.port,
+                proxy_headers=False,
+                access_log=False,
+            )
             return 0
         else:
             import uvicorn

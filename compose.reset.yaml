@@ -1,0 +1,150 @@
+name: dragon-radar-reset
+
+services:
+  db:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_DB: dragon_radar
+      POSTGRES_USER: dragon_radar
+      POSTGRES_PASSWORD: ${DRAGON_DB_PASSWORD:?Set a strong database password}
+    volumes:
+      - reset_postgres_data:/var/lib/postgresql/data
+    networks: [public-data, owner-data, worker-data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dragon_radar -d dragon_radar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  public-api:
+    build: .
+    command: ["serve-public", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DRAGON_DATABASE_URL: postgresql+psycopg://dragon_radar:${DRAGON_DB_PASSWORD:?Set a strong database password}@db:5432/dragon_radar
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [public-data, public-edge]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  public-caddy:
+    build:
+      context: .
+      dockerfile: deploy/public.Dockerfile
+    ports:
+      - "${DRAGON_PUBLIC_BIND:-127.0.0.1}:${DRAGON_PUBLIC_PORT:-8080}:8080"
+    volumes:
+      - ./deploy/public.Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      public-api:
+        condition: service_healthy
+    networks: [public-edge]
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  owner-caddy:
+    build:
+      context: .
+      dockerfile: deploy/private.Dockerfile
+    environment:
+      DRAGON_OWNER_AUTHORITY: localhost:${DRAGON_OWNER_PORT:-8031}
+    ports:
+      - "127.0.0.1:${DRAGON_OWNER_PORT:-8031}:8443"
+    volumes:
+      - ./deploy/owner.Caddyfile:/etc/caddy/Caddyfile:ro
+      - reset_owner_caddy_data:/data
+      - reset_owner_caddy_config:/config
+    networks: [owner-data, owner-edge]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --max-time 3 --cacert /data/caddy/pki/authorities/local/root.crt --header \"Host: $$DRAGON_OWNER_AUTHORITY\" https://localhost:8443/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  owner-api:
+    build: .
+    command: ["serve-owner", "--host", "127.0.0.1", "--port", "8001", "--origin", "https://localhost:${DRAGON_OWNER_PORT:-8031}"]
+    network_mode: service:owner-caddy
+    environment:
+      DRAGON_DATABASE_URL: postgresql+psycopg://dragon_radar:${DRAGON_DB_PASSWORD:?Set a strong database password}@db:5432/dragon_radar
+      DRAGON_OWNER_AUTHORITY: localhost:${DRAGON_OWNER_PORT:-8031}
+    volumes:
+      - ./.temp/reset-secrets:/run/dragon-owner
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; request=urllib.request.Request('http://127.0.0.1:8001/health/ready', headers={'Host': os.environ['DRAGON_OWNER_AUTHORITY']}); urllib.request.urlopen(request, timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  analysis-worker:
+    build: .
+    command: ["analysis-worker", "--worker-id", "analysis-worker-1"]
+    environment:
+      DRAGON_DATABASE_URL: postgresql+psycopg://dragon_radar:${DRAGON_DB_PASSWORD:?Set a strong database password}@db:5432/dragon_radar
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [worker-data]
+    restart: unless-stopped
+
+  ai-worker:
+    build: .
+    command:
+      - ai-worker
+      - --worker-id
+      - ai-worker-1
+      - --poll-seconds
+      - ${DRAGON_AI_POLL_SECONDS:-1}
+      - --lease-seconds
+      - ${DRAGON_AI_LEASE_SECONDS:-60}
+      - --max-attempts
+      - ${DRAGON_AI_MAX_ATTEMPTS:-3}
+      - --provider-timeout-seconds
+      - ${DRAGON_AI_TIMEOUT_SECONDS:-30}
+      - --concurrency
+      - ${DRAGON_AI_CONCURRENCY:-1}
+    environment:
+      DRAGON_DATABASE_URL: postgresql+psycopg://dragon_radar:${DRAGON_DB_PASSWORD:?Set a strong database password}@db:5432/dragon_radar
+      DRAGON_AI_PROVIDER: ${DRAGON_AI_PROVIDER:-}
+      DRAGON_AI_TOKEN: ${DRAGON_AI_TOKEN:-}
+      DRAGON_AI_MODEL_VERSION: ${DRAGON_AI_MODEL_VERSION:-}
+      DRAGON_AI_PROMPT_VERSION: ${DRAGON_AI_PROMPT_VERSION:-prompt-v1}
+      DRAGON_AI_MAX_TOKENS: ${DRAGON_AI_MAX_TOKENS:-4096}
+      DRAGON_AI_MAX_COST: ${DRAGON_AI_MAX_COST:-10}
+      DRAGON_AI_TIMEOUT_SECONDS: ${DRAGON_AI_TIMEOUT_SECONDS:-30}
+      DRAGON_AI_CONCURRENCY: ${DRAGON_AI_CONCURRENCY:-1}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [worker-data]
+    restart: unless-stopped
+
+networks:
+  public-data:
+    internal: true
+  public-edge:
+  owner-data:
+    internal: true
+  owner-edge:
+  worker-data:
+    internal: true
+
+volumes:
+  reset_postgres_data:
+  reset_owner_caddy_data:
+  reset_owner_caddy_config:

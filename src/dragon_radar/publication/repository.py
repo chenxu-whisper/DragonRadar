@@ -222,6 +222,7 @@ class PublicationRepository:
         result_rows,
         active_withdrawal_sources,
         withdrawn_publications,
+        require_local_display=True,
     ) -> PublishedSnapshot:
         source_ids = {row["source_id"] for row in dependencies}
         if source_ids & active_withdrawal_sources:
@@ -262,7 +263,8 @@ class PublicationRepository:
         if market_archive is None:
             raise Forbidden("Publication market identity is invalid")
         market_batch = MarketBatch.model_validate_json(market_archive["canonical_json"])
-        self.market._authorize(grants[market_row["source_id"]], market_batch)
+        if require_local_display:
+            self.market._authorize(grants[market_row["source_id"]], market_batch)
         if "market" in ai_domains and not grant_allows_ai(
             market_batch.grant,
             source_id=market_row["source_id"],
@@ -293,7 +295,7 @@ class PublicationRepository:
             topic_batch = TopicBatch.model_validate_json(
                 topic_archive["canonical_json"]
             )
-            if not TopicRepository._authorized(
+            if require_local_display and not TopicRepository._authorized(
                 grants[topic_row["source_id"]],
                 topic_batch.grant,
                 topic_row["source_id"],
@@ -387,7 +389,7 @@ class PublicationRepository:
                 ):
                     raise Forbidden("Publication news lineage is invalid")
                 embedded = SourceGrant.model_validate(revision["embedded_grant"])
-                if not all(
+                if require_local_display and not all(
                     grant_allows_display(
                         grant,
                         source_id=revision["source_id"],
@@ -469,7 +471,7 @@ class PublicationRepository:
             for dependency in regulation_dependencies:
                 if dependency["archive_type"] != "regulation_event_snapshot":
                     continue
-                if not grant_allows_display(
+                if require_local_display and not grant_allows_display(
                     grants[dependency["source_id"]],
                     source_id=dependency["source_id"],
                     now=self.clock(),
@@ -498,7 +500,8 @@ class PublicationRepository:
                 if archive is None or archive["source_id"] != dependency["source_id"]:
                     raise Forbidden("Publication role lineage is invalid")
                 batch = MarketBatch.model_validate_json(archive["canonical_json"])
-                self.market._authorize(grants[dependency["source_id"]], batch)
+                if require_local_display:
+                    self.market._authorize(grants[dependency["source_id"]], batch)
                 if "role" in ai_domains and not grant_allows_ai(
                     batch.grant,
                     source_id=dependency["source_id"],
@@ -510,7 +513,7 @@ class PublicationRepository:
                 if archive is None or archive["source_id"] != dependency["source_id"]:
                     raise Forbidden("Publication role lineage is invalid")
                 batch = TopicBatch.model_validate_json(archive["canonical_json"])
-                if not TopicRepository._authorized(
+                if require_local_display and not TopicRepository._authorized(
                     grants[dependency["source_id"]],
                     batch.grant,
                     dependency["source_id"],
