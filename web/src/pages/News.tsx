@@ -65,6 +65,10 @@ function ArticleDetail({
   publicationVersion?: string;
 }) {
   const adoptionCommands = useRef(new AdoptionCommandCache());
+  useEffect(
+    () => () => adoptionCommands.current.dispose(),
+    [],
+  );
   const adopt = async (
     text: string,
     label: string,

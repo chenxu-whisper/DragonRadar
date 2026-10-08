@@ -60,7 +60,10 @@ jobs:
       - run: VITE_PRIVATE_REVIEW=1 npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
-      - run: npx playwright test --config playwright.private.config.ts
+      - run: npm run test:e2e:private
+      - run: npm run test:e2e:ai:public
+      - run: npm run test:e2e:ai:private
+      - run: npm run test:e2e:production-isolation
 
   private_scripts:
     runs-on: windows-latest

@@ -61,7 +61,11 @@ export default function LocalReview({
     mounted.current = true;
     void refresh();
     const unsubscribe = repo.subscribe(() => void refresh());
-    return () => { mounted.current = false; unsubscribe(); };
+    return () => {
+      mounted.current = false;
+      adoptionCommands.current.dispose();
+      unsubscribe();
+    };
   }, [refresh]);
   useEffect(() => {
     const stop = registerLeaveGuard(() => !dirty || window.confirm('笔记尚未保存，确定离开？'));

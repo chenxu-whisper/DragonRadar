@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: 'reset-*.spec.ts',
+  testIgnore: ['**/reset-ai.spec.ts', '**/reset-ai-public.spec.ts'],
   outputDir: './.temp/reset-navigation/results',
   workers: 2,
   timeout: 30000,

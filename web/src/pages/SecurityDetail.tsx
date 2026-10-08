@@ -33,6 +33,10 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
   state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent; patch: Patch;
 }) {
   const adoptionCommands = useRef(new AdoptionCommandCache());
+  useEffect(
+    () => () => adoptionCommands.current.dispose(),
+    [],
+  );
   const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
     ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
     : null, state.snapshot, refreshToken);

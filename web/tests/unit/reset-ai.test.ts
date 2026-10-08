@@ -312,6 +312,72 @@ describe('AI task and notes state', () => {
     repo.close();
   });
 
+  test('reuses the committed result when caller navigation suppresses acknowledgement', async () => {
+    const repo = new LocalRepository(`adoption-${crypto.randomUUID()}`);
+    const commands = new AdoptionCommandCache();
+    const navigation = new AbortController();
+    const sent: SaveNote[] = [];
+    let committed: Awaited<ReturnType<LocalRepository['putNote']>> | undefined;
+    const transport = {
+      putNote: async (command: SaveNote) => {
+        sent.push(command);
+        committed = await repo.putNote(command);
+        navigation.abort();
+        return committed;
+      },
+    };
+    const adopt = async () => {
+      const result = await commands.execute(transport, {
+        taskRevision: 7,
+        strategy: 'save_as_new',
+        payload: adoptionPayload,
+      });
+      if (navigation.signal.aborted) {
+        throw new DOMException('caller generation changed', 'AbortError');
+      }
+      return result;
+    };
+
+    await expect(adopt()).rejects.toMatchObject({ name: 'AbortError' });
+    const replay = await commands.execute(transport, {
+      taskRevision: 7,
+      strategy: 'save_as_new',
+      payload: adoptionPayload,
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(replay).toBe(committed);
+    expect(await repo.revisions(sent[0].note_id)).toHaveLength(1);
+    repo.close();
+  });
+
+  test('releases cached adoption identities only when its lifetime is disposed', async () => {
+    const repo = new LocalRepository(`adoption-${crypto.randomUUID()}`);
+    const commands = new AdoptionCommandCache();
+    const sent: SaveNote[] = [];
+    const transport = {
+      putNote: async (command: SaveNote) => {
+        sent.push(command);
+        return repo.putNote(command);
+      },
+    };
+    const request = {
+      taskRevision: 7,
+      strategy: 'save_as_new' as const,
+      payload: adoptionPayload,
+    };
+
+    await commands.execute(transport, request);
+    await commands.execute(transport, request);
+    commands.dispose();
+    await commands.execute(transport, request);
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1].note_id).not.toBe(sent[0].note_id);
+    expect(sent[1].key).not.toBe(sent[0].key);
+    repo.close();
+  });
+
   test('changes adoption identity when revision, strategy, or exact payload changes', async () => {
     const commands = new AdoptionCommandCache();
     const sent: SaveNote[] = [];

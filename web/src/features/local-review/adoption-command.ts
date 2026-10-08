@@ -25,6 +25,11 @@ interface NoteWriter {
   putNote(command: SaveNote): Promise<LocalNote>;
 }
 
+interface AdoptionCommandEntry {
+  command: SaveNote;
+  result?: LocalNote;
+}
+
 function canonical(value: unknown): string {
   if (value === undefined) return '"$undefined"';
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -53,7 +58,7 @@ export function resolveAdoptionBinding(
 }
 
 export class AdoptionCommandCache {
-  private pending = new Map<string, SaveNote>();
+  private entries = new Map<string, AdoptionCommandEntry>();
 
   async execute(repository: NoteWriter, request: AdoptionRequest): Promise<LocalNote> {
     const signature = canonical([
@@ -61,17 +66,23 @@ export class AdoptionCommandCache {
       request.strategy,
       request.payload,
     ]);
-    let command = this.pending.get(signature);
-    if (!command) {
-      command = {
-        ...request.payload,
-        note_id: request.payload.note_id ?? crypto.randomUUID(),
-        key: crypto.randomUUID(),
+    let entry = this.entries.get(signature);
+    if (!entry) {
+      entry = {
+        command: {
+          ...request.payload,
+          note_id: request.payload.note_id ?? crypto.randomUUID(),
+          key: crypto.randomUUID(),
+        },
       };
-      this.pending.set(signature, command);
+      this.entries.set(signature, entry);
     }
-    const result = await repository.putNote(command);
-    if (this.pending.get(signature) === command) this.pending.delete(signature);
-    return result;
+    if (entry.result) return entry.result;
+    entry.result = await repository.putNote(entry.command);
+    return entry.result;
+  }
+
+  dispose(): void {
+    this.entries.clear();
   }
 }
