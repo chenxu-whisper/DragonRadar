@@ -10,7 +10,7 @@
   --line: #dce1e7;
 }
 * { box-sizing: border-box; letter-spacing: 0; }
-body { margin: 0; min-width: 320px; }
+body { margin: 0; min-width: 0; }
 button, input, select { font: inherit; color: inherit; }
 button, a, input, select, summary { -webkit-tap-highlight-color: transparent; }
 button, select, input:not([type="checkbox"]) { min-height: 44px; border: 1px solid #b9c3d0; border-radius: 4px; background: #fff; padding: 8px 12px; }
@@ -383,6 +383,26 @@ body:has(dialog[open]) { overflow: hidden; }
   .security-drawer { width: 100vw; padding-inline: 16px; }
   .notice { padding: 10px 12px; }
   footer { padding-inline: 16px; }
+}
+@media (max-width: 319px) {
+  .snapshot-header { position: static; }
+  .snapshot-controls > label { display: grid; width: 100%; }
+  .snapshot-controls input, .snapshot-controls select {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+  .snapshot-controls > button { width: 100%; margin-left: 0; white-space: normal; }
+  main { padding: 16px 8px 24px; }
+  button { max-width: 100%; white-space: normal; }
+  .filter-context { padding-inline: 8px; }
+  .filter-members { grid-template-columns: minmax(0, 1fr); }
+  .search-label, .news-controls form .search-label { min-width: 0; }
+  .security-drawer { padding-inline: 8px; }
+  .change-row { grid-template-columns: minmax(0, 1fr); }
+  .change-row > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .local-backup label { display: grid; width: 100%; min-width: 0; }
+  .local-backup select { width: 100%; min-width: 0; max-width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

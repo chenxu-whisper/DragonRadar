@@ -102,15 +102,23 @@ uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/rese
 ```
 
 The default `full` mode executes every required Task20 command from a static
-argument allowlist with `shell=False` and bounded timeouts. It records command
-arguments, exit status, observed counts, environment, log path, size and
-SHA-256. A missing, skipped, failed or timed-out required command cannot pass.
+argument allowlist with `shell=False` and bounded timeouts. Evidence schema v2
+is closed: gate IDs must be complete and unique, each argv/cwd/environment
+class must exactly match its static specification, passed counts must be
+positive, and failed/skipped counts must be zero. Log and raw performance
+artifacts are bound by size and SHA-256. Gate status and performance/no-write
+observations are derived by the validator; claimed status fields are rejected.
 
 Use `--mode focused` for a shorter local diagnostic run. Because it omits full
 backend and frontend gates, its overall automated status remains blocked.
 Use `--mode validate --evidence <path>` to validate independently generated
-command evidence. Validation checks referenced artifacts and hashes; it does
-not execute command text from evidence.
+command evidence. Validation checks referenced artifacts, hashes, and derived
+performance arithmetic; it does not execute command text from evidence.
+
+`tested_commit` must equal the current `HEAD`. It may equal `HEAD^` only when
+the current commit changes paths exclusively under `docs/acceptance/`,
+`evidence/`, or `.github/evidence/`; the validation report then records the
+`HEAD^` relation. README or general runtime-document changes do not qualify.
 
 Exit `0` means all automated gates passed, while the report's overall status
 still remains blocked until real input, official rules, real model evaluation,

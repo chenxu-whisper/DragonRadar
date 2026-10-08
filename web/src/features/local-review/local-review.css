@@ -24,3 +24,6 @@
   .local-review-grid { grid-template-columns: 1fr; gap: 20px; }
   .local-review-list { border-right: 0; padding-right: 0; border-bottom: 1px solid #e5eaf0; padding-bottom: 12px; }
 }
+@media (max-width: 319px) {
+  .local-backup select { width: 100%; min-width: 0; max-width: 100%; }
+}

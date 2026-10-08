@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE_SCHEMA = "dragon-radar.task20-evidence.v1"
+EVIDENCE_SCHEMA = "dragon-radar.task20-evidence"
+EVIDENCE_SCHEMA_VERSION = 2
 REQUIRED_GATES = (
     "csv_units",
     "reset_acceptance_e2e",
@@ -67,8 +68,14 @@ def _spec(
     *,
     cwd: str = ".",
     timeout: int = 900,
+    environment_class: str = "default",
 ) -> dict[str, Any]:
-    return {"command": command, "cwd": cwd, "timeout_seconds": timeout}
+    return {
+        "command": command,
+        "cwd": cwd,
+        "timeout_seconds": timeout,
+        "environment_class": environment_class,
+    }
 
 
 GATE_SPECS: dict[str, list[dict[str, Any]]] = {
@@ -157,6 +164,7 @@ GATE_SPECS: dict[str, list[dict[str, Any]]] = {
         _spec(
             ["npm", "run", "build"],
             cwd="web",
+            environment_class="private-review",
         )
         | {"environment_overrides": {"VITE_PRIVATE_REVIEW": "1"}},
     ],
@@ -239,9 +247,8 @@ def _commit() -> dict[str, Any]:
         timeout=15,
     )
     return {
-        "command": ["git", "rev-parse", "HEAD"],
+        "tested_commit": result.stdout.strip() if result.returncode == 0 else None,
         "exit_status": result.returncode,
-        "value": result.stdout.strip() if result.returncode == 0 else None,
     }
 
 
@@ -290,7 +297,6 @@ def _run_command(
     gate: str,
     index: int,
     spec: dict[str, Any],
-    environment: dict[str, Any],
     evidence_dir: Path,
 ) -> dict[str, Any]:
     cwd = ROOT / spec["cwd"]
@@ -329,25 +335,20 @@ def _run_command(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(output, encoding="utf-8")
     return {
-        "command": command,
-        "resolved_executable": executable,
+        "argv": command,
         "cwd": spec["cwd"],
+        "environment_class": spec["environment_class"],
         "exit_status": exit_status,
         "timed_out": timed_out,
         "observed_counts": _counts(output, exit_status),
         "artifact": _artifact(log_path),
-        "environment": dict(environment),
     }
 
 
-def _load_performance() -> tuple[dict[str, Any] | None, list[str]]:
-    if not PERFORMANCE_ARTIFACT.is_file():
-        return None, ["Performance artifact is missing."]
-    try:
-        value = json.loads(PERFORMANCE_ARTIFACT.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        return None, [f"Performance artifact is unreadable: {type(error).__name__}."]
+def _performance_errors(value: Any) -> list[str]:
     errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["Performance artifact is not an object."]
     runs = value.get("runs")
     if not isinstance(runs, list) or len(runs) != 2:
         errors.append("Exactly two cold/warm performance runs are required.")
@@ -360,14 +361,30 @@ def _load_performance() -> tuple[dict[str, Any] | None, list[str]]:
                 run.get("request_count") != 20
                 or run.get("concurrency") != 20
                 or run.get("successful") != 20
-                or run.get("error_rate") != 0
             ):
                 errors.append(f"Performance run {index} is not 20/20 successful.")
+            request_count = run.get("request_count")
+            successful = run.get("successful")
+            expected_error_rate = (
+                (request_count - successful) / request_count
+                if type(request_count) is int
+                and request_count > 0
+                and type(successful) is int
+                else None
+            )
+            if run.get("error_rate") != expected_error_rate:
+                errors.append(f"Performance run {index} error-rate math is invalid.")
+            p50 = run.get("p50_seconds")
             p95 = run.get("p95_seconds")
-            if not isinstance(p95, (int, float)) or p95 > 2:
+            maximum = run.get("max_seconds")
+            if (
+                not all(type(item) in (int, float) for item in (p50, p95, maximum))
+                or not 0 <= p50 <= p95 <= maximum
+                or p95 > 2
+            ):
                 errors.append(f"Performance run {index} exceeds the P95 budget.")
             for field in ("process_cpu_seconds", "peak_memory_bytes", "rss_bytes"):
-                if not isinstance(run.get(field), (int, float)) or run[field] < 0:
+                if type(run.get(field)) not in (int, float) or run[field] < 0:
                     errors.append(f"Performance run {index} lacks {field}.")
     fixture = value.get("fixture")
     if not isinstance(fixture, dict) or fixture.get("kind") != "synthetic":
@@ -409,6 +426,27 @@ def _load_performance() -> tuple[dict[str, Any] | None, list[str]]:
         or any(not item for item in explains.values())
     ):
         errors.append("Measured-path EXPLAIN ANALYZE BUFFERS evidence is incomplete.")
+    if (
+        isinstance(runs, list)
+        and isinstance(statements, list)
+        and all(
+            isinstance(run, dict) and type(run.get("sql_statement_count")) is int
+            for run in runs
+        )
+    ):
+        if sum(run["sql_statement_count"] for run in runs) != len(statements):
+            errors.append("Performance SQL statement counts are inconsistent.")
+    return errors
+
+
+def _load_performance() -> tuple[dict[str, Any] | None, list[str]]:
+    if not PERFORMANCE_ARTIFACT.is_file():
+        return None, ["Performance artifact is missing."]
+    try:
+        value = json.loads(PERFORMANCE_ARTIFACT.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        return None, [f"Performance artifact is unreadable: {type(error).__name__}."]
+    errors = _performance_errors(value)
     return value, errors
 
 
@@ -416,7 +454,7 @@ def _performance_observations(
     value: dict[str, Any], evidence_dir: Path
 ) -> dict[str, Any]:
     return {
-        "artifact": _snapshot_artifact(
+        "raw_artifact": _snapshot_artifact(
             PERFORMANCE_ARTIFACT, evidence_dir / "artifacts"
         ),
         "runs": value["runs"],
@@ -446,24 +484,10 @@ def _async_observations(value: dict[str, Any]) -> dict[str, Any]:
     return dict(value["async_work"])
 
 
-def _record_status(commands: list[dict[str, Any]]) -> str:
-    return (
-        "pass"
-        if commands
-        and all(
-            command.get("exit_status") == 0
-            and not command.get("timed_out")
-            and command.get("observed_counts", {}).get("skipped") == 0
-            for command in commands
-        )
-        else "fail"
-    )
-
-
 def _run_gates(mode: str, evidence_dir: Path) -> dict[str, Any]:
     environment = _environment()
     selected = set(REQUIRED_GATES) if mode == "full" else FOCUSED_GATES
-    records: dict[str, Any] = {}
+    records: list[dict[str, Any]] = []
     performance_commands: list[dict[str, Any]] | None = None
     performance_value: dict[str, Any] | None = None
     performance_errors: list[str] = []
@@ -476,42 +500,35 @@ def _run_gates(mode: str, evidence_dir: Path) -> dict[str, Any]:
             commands = performance_commands
         else:
             commands = [
-                _run_command(gate, index, spec, environment, evidence_dir)
+                _run_command(gate, index, spec, evidence_dir)
                 for index, spec in enumerate(GATE_SPECS[gate], start=1)
             ]
         record = {
-            "status": _record_status(commands),
+            "gate_id": gate,
             "commands": commands,
             "observations": {},
         }
         if gate == "performance":
             performance_commands = commands
             performance_value, performance_errors = _load_performance()
-            if performance_errors:
-                record["status"] = "fail"
-                record["errors"] = performance_errors
-            elif performance_value is not None:
+            if not performance_errors and performance_value is not None:
                 record["observations"] = _performance_observations(
                     performance_value, evidence_dir
                 )
         elif gate == "public_no_write" and performance_value is not None:
             record["observations"] = _public_observations(performance_value)
-            if performance_errors:
-                record["status"] = "fail"
-                record["errors"] = performance_errors
         elif gate == "async_over_five_seconds" and performance_value is not None:
             record["observations"] = _async_observations(performance_value)
-            if performance_errors:
-                record["status"] = "fail"
-                record["errors"] = performance_errors
         elif gate == "recovery_drills":
             record["observations"] = {"drills": list(RECOVERY_DRILLS)}
-        records[gate] = record
+        records.append(record)
+    commit = _commit()
     return {
         "schema": EVIDENCE_SCHEMA,
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
         "mode": mode,
         "generated_at": datetime.now(UTC).isoformat(),
-        "commit": _commit(),
+        "tested_commit": commit["tested_commit"],
         "environment": environment,
         "records": records,
     }
@@ -522,123 +539,300 @@ def _resolve_artifact(path_value: str) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
-def _validate_command(value: Any) -> list[str]:
-    errors: list[str] = []
+def _exact_fields(value: Any, expected: set[str], label: str) -> list[str]:
     if not isinstance(value, dict):
-        return ["Command evidence is not an object."]
+        return [f"{label} is not an object."]
+    actual = set(value)
+    return (
+        []
+        if actual == expected
+        else [
+            f"{label} fields do not match the schema: "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}."
+        ]
+    )
+
+
+def _artifact_value(value: Any, label: str) -> tuple[Any, list[str]]:
+    errors: list[str] = []
+    errors.extend(_exact_fields(value, {"path", "sha256", "bytes"}, label))
+    if errors:
+        return None, errors
+    if (
+        not isinstance(value["path"], str)
+        or not isinstance(value["sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])
+        or type(value["bytes"]) is not int
+        or value["bytes"] < 0
+    ):
+        return None, [f"{label} metadata is invalid."]
+    path = _resolve_artifact(value["path"])
+    if not path.is_file():
+        return None, [f"{label} is missing."]
+    try:
+        actual = _artifact(path)
+        content = path.read_bytes()
+    except OSError as error:
+        return None, [f"{label} is unreadable: {type(error).__name__}."]
+    if actual["sha256"] != value["sha256"] or actual["bytes"] != value["bytes"]:
+        errors.append(f"{label} hash or size does not match.")
+    return content, errors
+
+
+def _validate_command(value: Any, spec: dict[str, Any]) -> list[str]:
     required = {
-        "command",
+        "argv",
         "cwd",
+        "environment_class",
         "exit_status",
         "timed_out",
         "observed_counts",
         "artifact",
-        "environment",
     }
-    missing = required - value.keys()
-    if missing:
-        return [f"Command evidence fields are missing: {sorted(missing)}."]
-    if (
-        not isinstance(value["command"], list)
-        or not value["command"]
-        or any(not isinstance(part, str) or not part for part in value["command"])
-    ):
-        errors.append("Command must be a non-empty argument array.")
+    errors = _exact_fields(value, required, "Command evidence")
+    if errors:
+        return errors
+    if value["argv"] != spec["command"]:
+        errors.append("Command argv is not the exact allowlisted argument array.")
+    if value["cwd"] != spec["cwd"]:
+        errors.append("Command cwd is not allowlisted.")
+    if value["environment_class"] != spec["environment_class"]:
+        errors.append("Command environment class is not allowlisted.")
     counts = value["observed_counts"]
-    if (
-        not isinstance(counts, dict)
-        or not {
-            "passed",
-            "failed",
-            "skipped",
-            "output_lines",
-        }
-        <= counts.keys()
+    count_fields = {"passed", "failed", "skipped", "output_lines"}
+    count_errors = _exact_fields(counts, count_fields, "Observed counts")
+    errors.extend(count_errors)
+    if not count_errors and any(
+        type(counts[name]) is not int or counts[name] < 0 for name in count_fields
     ):
-        errors.append("Observed counts are incomplete.")
-    elif any(type(counts[name]) is not int or counts[name] < 0 for name in counts):
         errors.append("Observed counts are invalid.")
-    if value["exit_status"] != 0:
+    if type(value["exit_status"]) is not int or value["exit_status"] != 0:
         errors.append("Command exit status is non-zero.")
     if value["timed_out"] is not False:
         errors.append("Command timed out.")
-    if isinstance(counts, dict) and counts.get("skipped", 0) != 0:
-        errors.append("Skipped checks cannot pass.")
-    if not isinstance(value["environment"], dict) or not value["environment"]:
-        errors.append("Command environment is missing.")
-    artifact = value["artifact"]
-    if (
-        not isinstance(artifact, dict)
-        or not {
-            "path",
-            "sha256",
-            "bytes",
-        }
-        <= artifact.keys()
+    if not count_errors and (
+        counts["passed"] <= 0
+        or counts["failed"] != 0
+        or counts["skipped"] != 0
+        or counts["output_lines"] <= 0
     ):
-        errors.append("Command artifact metadata is incomplete.")
-    else:
-        path = _resolve_artifact(artifact["path"])
-        if not path.is_file():
-            errors.append("Command artifact is missing.")
+        errors.append(
+            "Command requires positive passes and output with zero failures/skips."
+        )
+    content, artifact_errors = _artifact_value(value["artifact"], "Command artifact")
+    errors.extend(artifact_errors)
+    if content is not None and not count_errors:
+        try:
+            derived_counts = _counts(content.decode("utf-8"), value["exit_status"])
+        except UnicodeError:
+            errors.append("Command artifact is not UTF-8 text.")
         else:
-            actual = _artifact(path)
-            if (
-                actual["sha256"] != artifact["sha256"]
-                or actual["bytes"] != artifact["bytes"]
-            ):
-                errors.append("Command artifact hash or size does not match.")
+            if counts != derived_counts:
+                errors.append("Observed counts do not match the hashed command log.")
     return errors
 
 
-def _validate_observations(gate: str, observations: Any) -> list[str]:
+def _raw_performance(observations: Any) -> tuple[dict[str, Any] | None, list[str]]:
+    errors = _exact_fields(
+        observations,
+        {"raw_artifact", "runs", "fixture", "environment"},
+        "Performance observations",
+    )
+    if errors:
+        return None, errors
+    content, artifact_errors = _artifact_value(
+        observations["raw_artifact"], "Performance raw artifact"
+    )
+    errors.extend(artifact_errors)
+    if content is None:
+        return None, errors
+    try:
+        raw = json.loads(content)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        return None, [
+            *errors,
+            f"Performance raw artifact is invalid JSON: {type(error).__name__}.",
+        ]
+    errors.extend(_performance_errors(raw))
+    if isinstance(raw, dict):
+        for field in ("runs", "fixture", "environment"):
+            if observations[field] != raw.get(field):
+                errors.append(f"Performance {field} does not match the raw artifact.")
+    return raw if isinstance(raw, dict) else None, errors
+
+
+def _validate_observations(
+    gate: str,
+    observations: Any,
+    raw_performance: dict[str, Any] | None,
+) -> list[str]:
     if not isinstance(observations, dict):
         return ["Gate observations are missing."]
-    if gate == "reset_acceptance_e2e":
-        return []
-    if gate == "recovery_drills" and set(observations.get("drills", ())) != set(
-        RECOVERY_DRILLS
+    if gate == "performance":
+        return _raw_performance(observations)[1]
+    if gate == "recovery_drills":
+        return (
+            []
+            if observations == {"drills": list(RECOVERY_DRILLS)}
+            else ["Recovery drill observations are incomplete or duplicated."]
+        )
+    if gate == "public_no_write":
+        if raw_performance is None:
+            return ["Public no-write evidence lacks valid raw performance evidence."]
+        return (
+            []
+            if observations == _public_observations(raw_performance)
+            else ["Public no-write observations do not match the raw artifact."]
+        )
+    if gate == "async_over_five_seconds":
+        if raw_performance is None:
+            return ["Async evidence lacks valid raw performance evidence."]
+        return (
+            []
+            if observations == _async_observations(raw_performance)
+            else ["Async observations do not match the raw artifact."]
+        )
+    return [] if observations == {} else ["Unexpected gate observations were claimed."]
+
+
+def _git_value(*args: str) -> str | None:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        shell=False,
+        timeout=15,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _approved_tested_commit(
+    tested_commit: Any,
+    *,
+    head: str | None,
+    parent: str | None,
+    changed_paths: list[str],
+) -> tuple[bool, str | None]:
+    if not isinstance(tested_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", tested_commit
     ):
-        return ["Recovery drill observations are incomplete."]
-    if gate == "performance" and not observations.get("runs"):
-        return ["Performance run observations are missing."]
-    if gate == "public_no_write" and (
-        observations.get("sql_write_count") != 0
-        or observations.get("fingerprints_equal") is not True
-        or not isinstance(observations.get("application_table_count"), int)
-        or observations["application_table_count"] <= 0
-    ):
-        return ["Public no-write observations are invalid."]
-    if gate == "async_over_five_seconds" and (
-        not isinstance(observations.get("worker_elapsed_seconds"), (int, float))
-        or observations["worker_elapsed_seconds"] <= 5
-        or not isinstance(observations.get("submission_seconds"), (int, float))
-        or observations["submission_seconds"] >= 2
-        or observations.get("status") != "succeeded"
-    ):
-        return ["Actual asynchronous workload evidence is invalid."]
-    return []
+        return False, None
+    if tested_commit == head:
+        return True, "HEAD"
+    allowed_prefixes = ("docs/acceptance/", "evidence/", ".github/evidence/")
+    evidence_only = bool(changed_paths) and all(
+        path.replace("\\", "/").startswith(allowed_prefixes) for path in changed_paths
+    )
+    if tested_commit == parent and evidence_only:
+        return True, "HEAD^"
+    return False, None
+
+
+def _commit_relation(tested_commit: Any) -> tuple[bool, str | None]:
+    head = _git_value("rev-parse", "HEAD")
+    parent = _git_value("rev-parse", "HEAD^")
+    changed = _git_value("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+    return _approved_tested_commit(
+        tested_commit,
+        head=head,
+        parent=parent,
+        changed_paths=changed.splitlines() if changed else [],
+    )
 
 
 def _validate_manifest(value: Any) -> tuple[dict[str, Any], int]:
-    records = value.get("records") if isinstance(value, dict) else None
-    records = records if isinstance(records, dict) else {}
+    manifest_fields = {
+        "schema",
+        "schema_version",
+        "mode",
+        "generated_at",
+        "tested_commit",
+        "environment",
+        "records",
+    }
+    global_errors = _exact_fields(value, manifest_fields, "Evidence manifest")
+    manifest = value if isinstance(value, dict) else {}
+    if manifest.get("schema") != EVIDENCE_SCHEMA:
+        global_errors.append("Evidence schema is unsupported.")
+    if manifest.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+        global_errors.append("Evidence schema version is unsupported.")
+    if manifest.get("mode") not in {"full", "focused"}:
+        global_errors.append("Evidence mode is unsupported.")
+    try:
+        generated_at = datetime.fromisoformat(manifest.get("generated_at", ""))
+        if generated_at.tzinfo is None:
+            raise ValueError
+    except (TypeError, ValueError):
+        global_errors.append("Evidence generation time is invalid.")
+    environment_errors = _exact_fields(
+        manifest.get("environment"),
+        {"platform", "python", "node", "postgresql_evidence_available"},
+        "Evidence environment",
+    )
+    global_errors.extend(environment_errors)
+    commit_ok, commit_relation = _commit_relation(manifest.get("tested_commit"))
+    if not commit_ok:
+        global_errors.append(
+            "tested_commit must equal HEAD, or HEAD^ when HEAD is evidence-only."
+        )
+
+    records_value = manifest.get("records")
+    if not isinstance(records_value, list):
+        global_errors.append("Evidence records must be a list.")
+        records_value = []
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    unknown_records: list[str] = []
+    malformed_records = False
+    for source in records_value:
+        if not isinstance(source, dict) or not isinstance(source.get("gate_id"), str):
+            malformed_records = True
+            continue
+        gate_id = source["gate_id"]
+        if gate_id not in REQUIRED_GATES:
+            unknown_records.append(gate_id)
+            continue
+        indexed.setdefault(gate_id, []).append(source)
+    if malformed_records:
+        global_errors.append("A gate record is malformed.")
+    if unknown_records:
+        global_errors.append(f"Unknown gate IDs: {sorted(unknown_records)}.")
+
+    performance_sources = indexed.get("performance", [])
+    raw_performance = None
+    if len(performance_sources) == 1:
+        raw_performance, _ = _raw_performance(
+            performance_sources[0].get("observations")
+        )
     gates: dict[str, Any] = {}
-    any_failure = False
+    any_failure = bool(global_errors)
     any_missing = False
     for gate in REQUIRED_GATES:
-        source = records.get(gate)
-        if not isinstance(source, dict):
+        sources = indexed.get(gate, [])
+        if not sources:
             gates[gate] = {"status": "missing", "reason": "Evidence is missing."}
             any_missing = True
             continue
-        commands = source.get("commands")
-        errors = (
-            ["Gate command evidence is missing."]
-            if not isinstance(commands, list) or not commands
-            else [error for command in commands for error in _validate_command(command)]
+        source = sources[0]
+        errors = _exact_fields(
+            source, {"gate_id", "commands", "observations"}, "Gate record"
         )
-        errors.extend(_validate_observations(gate, source.get("observations")))
+        if len(sources) != 1:
+            errors.append("Gate ID is duplicated.")
+        commands = source.get("commands")
+        expected_specs = GATE_SPECS.get(gate, GATE_SPECS["performance"])
+        if not isinstance(commands, list) or len(commands) != len(expected_specs):
+            errors.append("Gate command count does not match the allowlist.")
+        else:
+            errors.extend(
+                error
+                for command, spec in zip(commands, expected_specs, strict=True)
+                for error in _validate_command(command, spec)
+            )
+        errors.extend(
+            _validate_observations(gate, source.get("observations"), raw_performance)
+        )
         gates[gate] = {
             "status": "fail" if errors else "pass",
             "commands": commands if isinstance(commands, list) else [],
@@ -647,8 +841,14 @@ def _validate_manifest(value: Any) -> tuple[dict[str, Any], int]:
         if errors:
             gates[gate]["errors"] = errors
             any_failure = True
+    if manifest.get("mode") != "full" and not any_failure:
+        any_missing = True
     if any_failure:
-        automated = {"status": "fail", "reason": "Required evidence failed validation."}
+        automated = {
+            "status": "fail",
+            "reason": "Required evidence failed validation.",
+            "errors": global_errors,
+        }
         exit_status = 1
     elif any_missing:
         automated = {
@@ -664,12 +864,14 @@ def _validate_manifest(value: Any) -> tuple[dict[str, Any], int]:
         exit_status = 0
     report: dict[str, Any] = {
         "schema": EVIDENCE_SCHEMA,
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
         "overall_status": "blocked",
         "automated_acceptance": automated,
         "gates": gates,
         "source": {
-            "mode": value.get("mode") if isinstance(value, dict) else None,
-            "commit": value.get("commit") if isinstance(value, dict) else None,
+            "mode": manifest.get("mode"),
+            "tested_commit": manifest.get("tested_commit"),
+            "commit_relation": commit_relation,
         },
     }
     reasons = {

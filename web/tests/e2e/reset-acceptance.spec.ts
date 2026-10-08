@@ -1,4 +1,4 @@
-import { expect, test, type Download, type Page } from '@playwright/test';
+import { expect, test, type Download, type Locator, type Page } from '@playwright/test';
 
 import {
   ID,
@@ -19,16 +19,55 @@ async function downloadText(download: Download): Promise<string> {
 }
 
 async function expectNoPageOverflow(page: Page) {
-  expect(await page.evaluate(() => ({
-    width: document.documentElement.clientWidth,
-    scroll: document.documentElement.scrollWidth,
-  }))).toEqual(expect.objectContaining({
+  expect(await page.evaluate(() => {
+    const root = document.documentElement;
+    return {
+      width: root.clientWidth,
+      scroll: root.scrollWidth,
+      offenders: [...document.querySelectorAll<HTMLElement>('body *')]
+        .filter(element => (
+          element.getBoundingClientRect().right > root.clientWidth + 1
+          && !element.closest('.table-scroll, .index-strip')
+        ))
+        .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)
+        .slice(0, 8)
+        .map(element => ({
+          className: element.className,
+          parentClassName: element.parentElement?.className,
+          tag: element.tagName,
+          text: element.textContent?.slice(0, 40),
+          right: element.getBoundingClientRect().right,
+          scrollWidth: element.scrollWidth,
+        })),
+    };
+  })).toEqual(expect.objectContaining({
     width: expect.any(Number),
-    scroll: expect.any(Number),
+    offenders: [],
   }));
-  expect(await page.evaluate(
-    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-  )).toBe(true);
+}
+
+async function expectUnobscured(locator: Locator) {
+  await expect(locator).toBeVisible();
+  await locator.scrollIntoViewIfNeeded();
+  expect(await locator.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const x = bounds.left + bounds.width / 2;
+    const y = bounds.top + Math.min(bounds.height / 2, innerHeight - bounds.top - 1);
+    const hit = document.elementFromPoint(x, y);
+    return {
+      bounds: { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height },
+      hit: hit?.tagName ?? null,
+      hitText: hit?.textContent?.slice(0, 40) ?? null,
+      unobscured: Boolean(hit && (hit === element || element.contains(hit) || hit.contains(element))),
+      viewport: { width: innerWidth, height: innerHeight },
+    };
+  })).toEqual(expect.objectContaining({ unobscured: true }));
+}
+
+async function activate(locator: Locator, key = 'Enter') {
+  await locator.focus();
+  await expect(locator).toBeFocused();
+  await locator.press(key);
 }
 
 type AcceptanceView =
@@ -45,48 +84,97 @@ const responsiveViews: {
   heading: string;
   url: string;
   meaningful: (page: Page) => ReturnType<Page['locator']>;
+  interact: (page: Page) => Promise<Locator>;
 }[] = [
   {
     view: 'overview',
     heading: '市场总览',
     url: `/?view=overview&snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByRole('region', { name: '证券筛选结果' }),
+    interact: async page => {
+      const button = page.getByRole('button', { name: /^上涨 / });
+      await activate(button);
+      await expect(button).toHaveAttribute('aria-pressed', 'true');
+      return page.getByRole('region', { name: '证券筛选结果' });
+    },
   },
   {
     view: 'news',
     heading: '消息',
     url: `/?view=news&snapshot=${NEWS_SNAPSHOT}&date=2026-09-10`,
     meaningful: page => page.getByRole('button', { name: '导出当前页 CSV' }),
+    interact: async page => {
+      const article = page.getByRole('region', { name: '消息列表' })
+        .getByRole('button', { name: /机器人公司签署/ });
+      await activate(article);
+      return page.getByRole('region', { name: '消息详情' })
+        .getByRole('heading', { name: '机器人公司签署合成测试订单' });
+    },
   },
   {
     view: 'leaders',
     heading: '梯队',
     url: `/?view=leaders&snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByRole('combobox', { name: '角色筛选' }),
+    interact: async page => {
+      const security = page.getByRole('table', { name: '角色候选' })
+        .getByRole('button', { name: '合成测试证券1', exact: true });
+      await activate(security);
+      return page.getByRole('dialog').getByRole('heading', { name: '合成测试证券1' });
+    },
   },
   {
     view: 'analysis',
     heading: '涨幅分析',
     url: `/?view=analysis&snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByRole('table', { name: '涨幅排行' }),
+    interact: async page => {
+      const checkbox = page.getByRole('checkbox', { name: '比较 TEST001' });
+      await activate(checkbox, 'Space');
+      await expect(checkbox).toBeChecked();
+      return page.getByRole('status').filter({ hasText: '已选 1 / 5 个标的' });
+    },
   },
   {
     view: 'stock',
     heading: '证券详情',
     url: `/stock/TEST001?snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByText('TEST001', { exact: true }).first(),
+    interact: async page => {
+      const pending = page.waitForEvent('download');
+      const button = page.getByRole('button', { name: '导出当前筛选 CSV' });
+      await activate(button);
+      expect(await downloadText(await pending)).toContain('security_id=TEST001');
+      return button;
+    },
   },
   {
     view: 'regulation',
     heading: '监管',
     url: `/?view=regulation&snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByRole('region', { name: '数据完整性' }),
+    interact: async page => {
+      const pending = page.waitForEvent('download');
+      const button = page.getByRole('button', { name: '导出当前筛选 CSV' });
+      await activate(button);
+      expect(await downloadText(await pending)).toContain('synthetic-v1');
+      return button;
+    },
   },
   {
     view: 'review',
     heading: '我的复盘',
     url: `/?view=review&snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByRole('region', { name: '备份与恢复' }),
+    interact: async page => {
+      const title = page.getByLabel('标题', { exact: true });
+      await title.focus();
+      await expect(title).toBeFocused();
+      await page.keyboard.type('缩放验收');
+      const save = page.getByRole('button', { name: '保存笔记', exact: true });
+      await activate(save);
+      return page.getByRole('status').filter({ hasText: '回读验证通过' });
+    },
   },
 ];
 
@@ -143,7 +231,7 @@ async function mockResponsiveView(page: Page, view: AcceptanceView) {
 
 for (const item of responsiveViews) {
   for (const width of [375, 1440]) {
-    test(`${item.view} is readable and functional at ${width}px and 200% zoom`, async ({ page }) => {
+    test(`${item.view} retains its responsive layout at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: width === 375 ? 812 : 1000 });
       await mockResponsiveView(page, item.view);
       await page.goto(item.url);
@@ -151,27 +239,36 @@ for (const item of responsiveViews) {
       const heading = page.getByRole('heading', { name: item.heading, exact: true });
       await expect(heading).toBeVisible();
       await expect(item.meaningful(page)).toBeVisible();
+      await expectNoPageOverflow(page);
+    });
+  }
+}
+
+for (const item of responsiveViews) {
+  for (const physicalWidth of [375, 1440]) {
+    test(`${item.view} works at layout-equivalent 200% and ${physicalWidth}px`, async ({ page }) => {
+      const physicalHeight = physicalWidth === 375 ? 812 : 1000;
+      const cssWidth = Math.ceil(physicalWidth / 2);
+      const cssHeight = Math.ceil(physicalHeight / 2);
       const session = await page.context().newCDPSession(page);
-      await session.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
-      expect(await page.evaluate(() => window.visualViewport?.scale)).toBe(2);
-      await expect(heading).toBeVisible();
-      await expect(heading).toBeInViewport();
-      await expect(item.meaningful(page)).toBeVisible();
-      const readability = await heading.evaluate(element => {
-        const style = getComputedStyle(element);
-        const bounds = element.getBoundingClientRect();
-        return {
-          fontSize: Number.parseFloat(style.fontSize),
-          width: bounds.width,
-          height: bounds.height,
-          clipped: element.scrollWidth > element.clientWidth
-            || element.scrollHeight > element.clientHeight,
-        };
+      await session.send('Emulation.setDeviceMetricsOverride', {
+        width: cssWidth,
+        height: cssHeight,
+        deviceScaleFactor: 2,
+        mobile: false,
       });
-      expect(readability.fontSize).toBeGreaterThanOrEqual(16);
-      expect(readability.width).toBeGreaterThan(40);
-      expect(readability.height).toBeGreaterThan(20);
-      expect(readability.clipped).toBe(false);
+      await mockResponsiveView(page, item.view);
+      await page.goto(item.url);
+
+      expect(await page.evaluate(() => ({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        dpr: window.devicePixelRatio,
+      }))).toEqual({ width: cssWidth, height: cssHeight, dpr: 2 });
+      const heading = page.getByRole('heading', { name: item.heading, exact: true });
+      await expectUnobscured(heading);
+      const result = await item.interact(page);
+      await expectUnobscured(result);
       await expectNoPageOverflow(page);
       await session.detach();
     });
