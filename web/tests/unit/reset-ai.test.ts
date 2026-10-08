@@ -154,6 +154,31 @@ describe('dedicated AI client', () => {
     });
   });
 
+  test('locks the private session before exposing an HTTP 401 failure', async () => {
+    const order: string[] = [];
+    const dispatchEvent = vi.fn((event: Event) => {
+      order.push(event.type);
+      return true;
+    });
+    vi.stubGlobal('window', { dispatchEvent });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ code: 'SESSION_REVOKED' }), { status: 401 }),
+      ),
+    );
+
+    await aiRequest(`/api/ai/task/${task.task_id}`).catch(error => {
+      order.push('rejected');
+      throw error;
+    }).catch(error => {
+      expect(error).toMatchObject({ status: 401, code: 'SESSION_REVOKED' });
+    });
+
+    expect(order).toEqual(['private-session-lock', 'rejected']);
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+  });
+
   test('strictly validates cancel and review receipts', () => {
     expect(() => validateCancellationReceipt({
       task_id: task.task_id,

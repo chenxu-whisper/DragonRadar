@@ -14,6 +14,7 @@ from dragon_radar.ai.service import AIService
 from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
 from dragon_radar.analysis_jobs.routes import install_analysis_job_routes
 from dragon_radar.api import StorageUnavailable, create_app
+from dragon_radar.http.app import create_workbench_app
 from dragon_radar.http.routes.ai import install_ai_routes
 from dragon_radar.http.routes.news import install_news_review_routes
 from dragon_radar.news.repository import NewsRepository
@@ -48,6 +49,28 @@ from dragon_radar.storage.repository import (
     QualityRejected,
     Repository,
 )
+
+_RESET_READ_PATHS = {
+    "/api/snapshots/list",
+    "/api/snapshots/{snapshot_id}",
+    "/api/market/overview",
+    "/api/market/sector-flow",
+    "/api/market/sentiment",
+    "/api/market/heatmap",
+    "/api/search",
+    "/api/limit-up/ladder",
+    "/api/limit-up/continuity",
+    "/api/role/candidates",
+    "/api/role/evidence",
+    "/api/rank/range",
+    "/api/compare/curves",
+    "/api/stock/{security_id}",
+    "/api/stock/{security_id}/kline",
+    "/api/news",
+    "/api/news/{article_id}",
+    "/api/regulation/status",
+    "/api/regulation/events",
+}
 
 
 def create_owner_app(
@@ -146,19 +169,36 @@ def create_owner_app(
         lifespan=lifespan,
         redirect_slashes=False,
     )
-    app.state.repository = repository
+    app.state.repository = publication_repository
+    app.state.market_repository = repository
     app.state.owner_repository = owner_repository
     app.state.publication_repository = publication_repository
     app.state.analysis_repository = analysis_repository
     app.state.ai_service = ai_service
     app.state.news_repository = news_repository
     app.state.owner_origin = origin
-    # Copy only explicit market routes. Do not mount a second application whose
+    # Copy only explicit Reset read routes. Do not mount a second application whose
     # lifecycle, exception handlers or request.app state could bypass this gate.
-    market = create_app(repository=repository)
+    workbench = create_workbench_app(
+        repository=publication_repository,
+        analysis_repository=analysis_repository,
+    )
+    read_routes = (
+        nested
+        for route in workbench.routes
+        for nested in getattr(
+            getattr(route, "original_router", None), "routes", [route]
+        )
+    )
     app.router.routes.extend(
         route
-        for route in market.routes
+        for route in read_routes
+        if getattr(route, "path", "") in _RESET_READ_PATHS
+    )
+    legacy = create_app(repository=repository)
+    app.router.routes.extend(
+        route
+        for route in legacy.routes
         if getattr(route, "path", "").startswith("/api/v1/")
     )
 

@@ -2052,9 +2052,8 @@ async def test_app_factories_construct_analysis_repositories(database_url):
     assert isinstance(owner.state.publication_repository, PublicationRepository)
     assert isinstance(owner.state.analysis_repository, AnalysisJobRepository)
     assert owner.state.analysis_repository.owners is owner.state.owner_repository
-    assert not any(
-        getattr(route, "path", None) in {"/api/rank/range", "/api/compare/curves"}
-        for route in owner.routes
-    )
+    assert {"/api/rank/range", "/api/compare/curves"} <= {
+        getattr(route, "path", None) for route in owner.routes
+    }
     async with owner.router.lifespan_context(owner):
         pass

@@ -360,6 +360,9 @@ export async function aiRequest(
     }
     if (!response.ok) {
       const code = record(data) && typeof data.code === 'string' ? data.code : '';
+      if (response.status === 401 && typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('private-session-lock'));
+      }
       throw new AIClientError(response.status, code);
     }
     if (!record(data)) throw new AIClientError(502, 'malformed_response');

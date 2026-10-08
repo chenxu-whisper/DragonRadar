@@ -11,17 +11,21 @@
 		Cache-Control no-store
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
 	}
-	@write not method GET HEAD
-	respond @write 405
-	handle /api/* {
-		reverse_proxy api:8000
-	}
-	handle /health/* {
-		reverse_proxy api:8000
-	}
-	handle {
-		root * /srv
-		try_files {path} /index.html
-		file_server
+	route {
+		@write not method GET HEAD
+		respond @write 405
+		@private path /api/ai/* /api/owner/*
+		respond @private 404
+		handle /api/* {
+			reverse_proxy api:8000
+		}
+		handle /health/* {
+			reverse_proxy api:8000
+		}
+		handle {
+			root * /srv
+			try_files {path} /index.html
+			file_server
+		}
 	}
 }

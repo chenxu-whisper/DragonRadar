@@ -112,7 +112,11 @@ def install_review_routes(app):
     """Use state.repository/owner_repository; absent storage fails closed with 503."""
     if getattr(app.state, "review_routes_installed", False):
         return
-    market = getattr(app.state, "repository", None)
+    market = getattr(
+        app.state,
+        "market_repository",
+        getattr(app.state, "repository", None),
+    )
     owners = getattr(app.state, "owner_repository", None)
     app.state.review_repository = (
         ReviewRepository(owners.database, owners, market)

@@ -147,6 +147,7 @@ def evaluate_manifest(manifest: Mapping) -> dict:
     seen_lineage: dict[str, str] = {}
     leaked_samples: set[str] = set()
     leaked_lineage: set[str] = set()
+    unique_human_inputs: set[str] = set()
     split_state: dict[str, dict[str, int]] = {
         split: {
             "total": 0,
@@ -184,9 +185,11 @@ def evaluate_manifest(manifest: Mapping) -> dict:
         for kind, value in (("input", input_hash), ("output", output_hash)):
             identity = f"{kind}:{value}"
             prior = seen_lineage.get(identity)
-            if prior is not None and prior != split:
-                leaked_lineage.add(identity)
-                _append(blocking, "lineage_leakage")
+            if prior is not None:
+                _append(blocking, "duplicate_lineage")
+                if prior != split:
+                    leaked_lineage.add(identity)
+                    _append(blocking, "lineage_leakage")
             seen_lineage[identity] = split
         lineage_matches = (
             lineage["dataset_version"] == versions["dataset"]
@@ -228,6 +231,9 @@ def evaluate_manifest(manifest: Mapping) -> dict:
             or type(sample["safety_hard_failure"]) is not bool
         ):
             raise ValueError(f"Invalid human labels for {sample_id}")
+        if not lineage_matches or input_hash in unique_human_inputs:
+            continue
+        unique_human_inputs.add(input_hash)
         human_samples.append(sample)
         state = split_state[split]
         state["human_count"] += 1

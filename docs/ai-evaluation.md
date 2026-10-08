@@ -23,9 +23,10 @@ dataset、model、prompt、retrieval 版本以及输入、输出 SHA-256；还�
 `label_provenance`：人工标注者、标注时间、证明编号、证明人和证明时间。缺失或无效证明
 使清单无效，工具不会替用户补造证明。
 
-相同 `sample_id` 不得跨分组出现，输入或输出 lineage 哈希也不得跨分组复用。报告分别
-计算并门禁 `development` 与 `frozen_test`，任一分组不达标都会阻断发布；开发集结果
-不能稀释或掩盖冻结测试集失败。
+相同 `sample_id` 不得重复，输入或输出 lineage 哈希也不得在全局复用，包括同一分组。
+至少 100 个样本的门槛按唯一且 lineage 版本匹配的人工输入计算，复制标签不能扩大样本量。
+报告分别计算并门禁 `development` 与 `frozen_test`，任一分组不达标都会阻断发布；
+开发集结果不能稀释或掩盖冻结测试集失败。
 
 发布阈值：
 
@@ -47,8 +48,10 @@ dataset、model、prompt、retrieval 版本以及输入、输出 SHA-256；还�
 
 推断必须有非空、有效且已引用的 `evidence_ids`。`claim.kind` 与
 `confidence.kind/value` 是结构字段；只接受 0 到 1 的 explanatory confidence，不接受
-概率式 confidence。监管结论必须由监管来源证据支持。界面不得把解释置信度称为上涨
-概率；引用中的原始文本不会按脆弱关键词拦截，动作和指令边界由结构字段约束。
+概率式 confidence。当前推断 schema 没有结构化数值 claim，因此推断正文只要包含显示
+数字 token 即关闭校验；数值只能出现在可按值、精度和单位复算的事实中。监管结论必须由
+监管来源证据支持。界面不得把解释置信度称为上涨概率；引用中的原始文本不会按脆弱
+关键词拦截，动作和指令边界由结构字段约束。
 
 ## 发布、回滚与留痕
 
@@ -59,3 +62,19 @@ dataset、model、prompt、retrieval 版本以及输入、输出 SHA-256；还�
 
 合成回归通过仅说明校验器和评估器按预期工作。只有外部人工数据与真实模型结果达到上述
 门禁，才能把状态从 blocked 改为候选发布。
+
+## 生产容器隔离回归
+
+前端常规单元测试不要求 Docker。具备 Docker Engine 和已安装的 Playwright 浏览器时，
+单独运行生产镜像与 Caddy 隔离回归：
+
+```bash
+cd web
+npm run test:containers
+```
+
+该命令使用随机回环端口、临时 Compose 项目和临时数据库卷，实际构建并启动私有与公开
+镜像。私有入口通过 HTTPS 完成锁定页、配对、会话、Reset GET、AI 代理和拒绝路径检查；
+公开入口检查 owner/AI 路径在 Caddy 边界被拒绝，并扫描 `/srv`，确认没有私有会话文案
+或 TaskPanel chunk。命令在 `finally` 中执行 `down --volumes --remove-orphans` 并删除临时
+凭据；它不会使用或修改日常私人实例的 Compose 项目和数据库卷。

@@ -235,6 +235,29 @@ def test_inference_rejects_probability_confidence_and_unsupported_regulation():
     assert "unsupported_regulatory_conclusion" in result.error_codes
 
 
+def test_inference_rejects_displayed_numeric_claims_without_structured_support():
+    from dragon_radar.ai.verification import verify_output
+
+    output = _output()
+    output["inferences"][0]["text"] = (
+        "The cited 12.30 currency/share implies a 999.99 percent increase."
+    )
+
+    result = verify_output(_manifest(), output)
+
+    assert result.status == "failed"
+    assert "inference_numeric_claim_forbidden" in result.error_codes
+
+
+def test_inference_allows_ordinary_nonnumeric_explanation():
+    from dragon_radar.ai.verification import verify_output
+
+    output = _output()
+    output["inferences"][0]["text"] = "The cited close supports further owner review."
+
+    assert verify_output(_manifest(), output).status == "passed"
+
+
 def test_verification_recomputes_whitelisted_numeric_claims_at_source_precision():
     from dragon_radar.ai.verification import recompute_claim, verify_output
 
@@ -732,6 +755,25 @@ def test_evaluation_detects_sample_and_output_lineage_leakage():
     assert report["leakage"]["lineage_count"] == 1
 
 
+def test_evaluation_counts_unique_inputs_and_rejects_duplicates_within_splits():
+    evaluate_manifest = _evaluator().evaluate_manifest
+    samples = [
+        _evaluation_sample(index, "development" if index < 50 else "frozen_test")
+        for index in range(100)
+    ]
+    for index, sample in enumerate(samples):
+        sample["lineage"]["input_hash"] = f"{0 if index < 50 else 1:064x}"
+
+    report = evaluate_manifest(_evaluation_manifest(samples))
+
+    assert report["release_status"] == "blocked"
+    assert "duplicate_lineage" in report["blocking_reasons"]
+    assert "missing_external_human_samples" in report["blocking_reasons"]
+    assert report["sample_counts"]["human_labeled"] == 2
+    assert report["sample_counts"]["development"] == 1
+    assert report["sample_counts"]["frozen_test"] == 1
+
+
 def test_frozen_gate_is_reported_and_cannot_be_hidden_by_good_development():
     evaluate_manifest = _evaluator().evaluate_manifest
     samples = [
@@ -899,3 +941,31 @@ def test_private_reset_build_uses_session_shell_and_local_review():
     assert "VITE_RESET_WORKBENCH !== '1'" not in app
     assert "<SessionProvider><AccessProvider><PrivateWorkbench />" in private_app
     assert "LocalReview && state.view === 'review'" in app
+
+
+def test_private_owner_app_installs_required_reset_read_routes():
+    from dragon_radar.owner.app import create_owner_app
+
+    paths = {getattr(route, "path", "") for route in create_owner_app().routes}
+
+    assert {
+        "/api/snapshots/list",
+        "/api/snapshots/{snapshot_id}",
+        "/api/market/overview",
+        "/api/market/sector-flow",
+        "/api/market/sentiment",
+        "/api/market/heatmap",
+        "/api/search",
+        "/api/limit-up/ladder",
+        "/api/limit-up/continuity",
+        "/api/role/candidates",
+        "/api/role/evidence",
+        "/api/rank/range",
+        "/api/compare/curves",
+        "/api/stock/{security_id}",
+        "/api/stock/{security_id}/kline",
+        "/api/news",
+        "/api/news/{article_id}",
+        "/api/regulation/status",
+        "/api/regulation/events",
+    } <= paths

@@ -547,6 +547,10 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
             for item in ids
         ):
             _append(errors, "inference_citation_absent")
+        if isinstance(inference.get("text"), str) and _displayed_decimals(
+            inference["text"]
+        ):
+            _append(errors, "inference_numeric_claim_forbidden")
         if claim_kind == "regulatory_conclusion" and (
             not valid_ids
             or not any(

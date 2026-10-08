@@ -41,7 +41,11 @@ from dragon_radar.storage.repository import (
 
 
 def get_repository(request: Request) -> Repository:
-    repository = request.app.state.repository
+    repository = getattr(
+        request.app.state,
+        "market_repository",
+        getattr(request.app.state, "repository", None),
+    )
     if repository is None:
         raise StorageUnavailable
     return repository
