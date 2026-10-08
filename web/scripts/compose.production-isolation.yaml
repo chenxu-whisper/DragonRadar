@@ -1,0 +1,15 @@
+services:
+  web:
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        while [ ! -s /run/dragon-e2e/authority ]; do sleep 0.1; done
+        export DRAGON_OWNER_AUTHORITY="$$(cat /run/dragon-e2e/authority)"
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --max-time 3 --cacert /data/caddy/pki/authorities/local/root.crt --header \"Host: $$(cat /run/dragon-e2e/authority)\" https://localhost:8443/health/ready"]
+    volumes:
+      - type: bind
+        source: ${DRAGON_E2E_STATE_DIR:?Set the production isolation state directory}
+        target: /run/dragon-e2e
+        read_only: true

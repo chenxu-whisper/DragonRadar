@@ -26,7 +26,7 @@ services:
     environment:
       DRAGON_OWNER_AUTHORITY: localhost:${DRAGON_PRIVATE_PORT:-8030}
     ports:
-      - "127.0.0.1:${DRAGON_PRIVATE_PORT:-8030}:8443"
+      - "127.0.0.1:${DRAGON_PRIVATE_PUBLISHED_PORT:-${DRAGON_PRIVATE_PORT:-8030}}:8443"
     volumes:
       - private_caddy_data:/data
       - private_caddy_config:/config

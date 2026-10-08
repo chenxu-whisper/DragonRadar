@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check:bundle": "node scripts/check-default-bundle.mjs",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/*.test.mjs",
     "test:e2e": "playwright test",
     "test:containers": "node scripts/test-production-isolation.mjs"
   },
