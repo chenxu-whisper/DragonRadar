@@ -24,6 +24,7 @@ import {
   buildNotesSelection,
   draftToText,
   editorSignature,
+  factPresentation,
   pollDecision,
   taskLabels,
   taskPresentation,
@@ -31,6 +32,7 @@ import {
   type NoteFields,
 } from './tasks';
 import type { AdoptionStrategy } from '../local-review/adoption-command';
+import { TaskOperationGeneration } from './operation-generation';
 
 export type { AdoptionStrategy } from '../local-review/adoption-command';
 
@@ -43,12 +45,16 @@ export interface TaskPanelProps {
   articleId?: string;
   securityId?: string;
   note?: NoteFields;
+  noteSnapshotId?: string;
   onAdopt?: (
     text: string,
     context: {
       submittedEditorSignature: string;
       strategy: AdoptionStrategy;
       task: AITask;
+      date: string;
+      securityId?: string;
+      signal: AbortSignal;
     },
   ) => Promise<string>;
 }
@@ -94,8 +100,8 @@ export function TaskPanel(props: TaskPanelProps) {
   const [busy, setBusy] = useState(false);
   const [editText, setEditText] = useState('');
   const [editing, setEditing] = useState(false);
-  const [conflict, setConflict] = useState(false);
-  const generation = useRef(0);
+  const [conflict, setConflict] = useState<'editor' | 'snapshot' | false>(false);
+  const operations = useRef(new TaskOperationGeneration());
   const submission = useRef<{ signature: string; command: AICommand } | undefined>(undefined);
   const reviewCommands = useRef(new Map<string, AICommand>());
   const submittedEditorSignature = useRef('');
@@ -119,32 +125,36 @@ export function TaskPanel(props: TaskPanelProps) {
     props.date,
     props.articleId,
     props.securityId,
+    props.noteSnapshotId,
     selection?.text || '',
   ]);
 
   useEffect(() => {
-    generation.current++;
+    operations.current.invalidate();
     setTask(undefined);
     setStatus('');
     setError('');
+    setBusy(false);
     setConflict(false);
     setEditing(false);
     submission.current = undefined;
     reviewCommands.current.clear();
+    submittedEditorSignature.current = '';
+    return () => operations.current.invalidate();
   }, [inputSignature]);
 
   useEffect(() => {
     if (!task) return;
     const decision = pollDecision(task);
     if (!decision.poll) return;
-    const currentGeneration = generation.current;
+    const currentGeneration = operations.current.current;
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       try {
         const next = await getAITask(task.task_id, controller.signal);
-        if (generation.current === currentGeneration) setTask(next);
+        if (operations.current.current === currentGeneration) setTask(next);
       } catch (failure) {
-        if (generation.current === currentGeneration) setError(failureMessage(failure));
+        if (operations.current.current === currentGeneration) setError(failureMessage(failure));
       }
     }, decision.delayMs);
     return () => {
@@ -154,6 +164,7 @@ export function TaskPanel(props: TaskPanelProps) {
   }, [task]);
 
   const submit = async () => {
+    const operation = operations.current.begin();
     setBusy(true);
     setError('');
     setStatus('');
@@ -168,19 +179,19 @@ export function TaskPanel(props: TaskPanelProps) {
       };
     }
     submittedEditorSignature.current = note ? editorSignature(note) : '';
-    const currentGeneration = generation.current;
     try {
-      const next = await submitAITask(submission.current.command);
-      if (generation.current === currentGeneration) setTask(next);
+      const next = await submitAITask(submission.current.command, operation.signal);
+      if (operations.current.isCurrent(operation)) setTask(next);
     } catch (failure) {
-      if (generation.current === currentGeneration) setError(failureMessage(failure));
+      if (operations.current.isCurrent(operation)) setError(failureMessage(failure));
     } finally {
-      if (generation.current === currentGeneration) setBusy(false);
+      if (operations.current.finish(operation)) setBusy(false);
     }
   };
 
   const cancel = async () => {
     if (!task) return;
+    const operation = operations.current.begin();
     setBusy(true);
     setError('');
     const key = `cancel:${task.task_id}`;
@@ -190,21 +201,29 @@ export function TaskPanel(props: TaskPanelProps) {
       reviewCommands.current.set(key, command);
     }
     try {
-      await cancelAITask(command);
-      generation.current++;
-      setTask({ ...task, status: 'cancelled' });
-      setStatus('取消命令已确认。');
+      await cancelAITask(command, operation.signal);
+      if (operations.current.isCurrent(operation)) {
+        setTask({ ...task, status: 'cancelled' });
+        setStatus('取消命令已确认。');
+      }
     } catch (failure) {
-      setError(failureMessage(failure));
-      if (failure instanceof AIClientError && failure.replayableConflict) {
+      if (operations.current.isCurrent(operation)) setError(failureMessage(failure));
+      if (
+        operations.current.isCurrent(operation)
+        && failure instanceof AIClientError
+        && failure.replayableConflict
+      ) {
         try {
-          setTask(await getAITask(task.task_id));
+          const next = await getAITask(task.task_id, operation.signal);
+          if (operations.current.isCurrent(operation)) setTask(next);
         } catch (refreshFailure) {
-          setError(failureMessage(refreshFailure));
+          if (operations.current.isCurrent(operation)) {
+            setError(failureMessage(refreshFailure));
+          }
         }
       }
     } finally {
-      setBusy(false);
+      if (operations.current.finish(operation)) setBusy(false);
     }
   };
 
@@ -233,36 +252,56 @@ export function TaskPanel(props: TaskPanelProps) {
       });
       reviewCommands.current.set(signature, command);
     }
+    const operation = operations.current.begin();
     setBusy(true);
     setError('');
     try {
-      await reviewAITask(command);
-      setTask(await getAITask(task.task_id));
-      setEditing(false);
-      setStatus('人工审核已记录。');
+      await reviewAITask(command, operation.signal);
+      const next = await getAITask(task.task_id, operation.signal);
+      if (operations.current.isCurrent(operation)) {
+        setTask(next);
+        setEditing(false);
+        setStatus('人工审核已记录。');
+      }
     } catch (failure) {
-      setError(failureMessage(failure));
-      if (failure instanceof AIClientError && failure.replayableConflict) {
+      if (operations.current.isCurrent(operation)) setError(failureMessage(failure));
+      if (
+        operations.current.isCurrent(operation)
+        && failure instanceof AIClientError
+        && failure.replayableConflict
+      ) {
         try {
-          setTask(await getAITask(task.task_id));
+          const next = await getAITask(task.task_id, operation.signal);
+          if (operations.current.isCurrent(operation)) setTask(next);
         } catch (refreshFailure) {
-          setError(failureMessage(refreshFailure));
+          if (operations.current.isCurrent(operation)) {
+            setError(failureMessage(refreshFailure));
+          }
         }
       }
     } finally {
-      setBusy(false);
+      if (operations.current.finish(operation)) setBusy(false);
     }
   };
 
   const adopt = async (strategy: AdoptionStrategy) => {
     if (!task?.content_draft || !props.onAdopt) return;
+    if (
+      strategy !== 'save_as_new'
+      && props.noteSnapshotId
+      && props.noteSnapshotId !== task.snapshot_id
+    ) {
+      setConflict('snapshot');
+      return;
+    }
     if (strategy === 'replace' && note && adoptionConflict(
       submittedEditorSignature.current,
       editorSignature(note),
     )) {
-      setConflict(true);
+      setConflict('editor');
       return;
     }
+    const operation = operations.current.begin();
     setBusy(true);
     setError('');
     try {
@@ -270,13 +309,20 @@ export function TaskPanel(props: TaskPanelProps) {
         submittedEditorSignature: submittedEditorSignature.current,
         strategy,
         task,
+        date: props.date,
+        securityId: props.securityId,
+        signal: operation.signal,
       });
-      setStatus(message);
-      setConflict(false);
+      if (operations.current.isCurrent(operation)) {
+        setStatus(message);
+        setConflict(false);
+      }
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : '采用草稿失败，当前输入已保留。');
+      if (operations.current.isCurrent(operation)) {
+        setError(failure instanceof Error ? failure.message : '采用草稿失败，当前输入已保留。');
+      }
     } finally {
-      setBusy(false);
+      if (operations.current.finish(operation)) setBusy(false);
     }
   };
 
@@ -334,8 +380,13 @@ export function TaskPanel(props: TaskPanelProps) {
         {task.model_version ? ` · ${task.model_version}` : ''}
         {' · '}retrieval {task.retrieval_version}</p>
       {task.content_draft.facts.length > 0 && <section><h4>事实</h4><ul>
-        {task.content_draft.facts.map((item, index) =>
-          <li key={`${item.evidence_id}:${index}`}>{item.text}</li>)}
+        {task.content_draft.facts.map((item, index) => {
+          const display = factPresentation(item);
+          return <li key={`${item.evidence_id}:${index}`}>
+            {display.verifiedValue && <strong>{display.verifiedValue}</strong>}
+            <span>{display.text}</span>
+          </li>;
+        })}
       </ul></section>}
       {task.content_draft.inferences.length > 0 && <section><h4>推断</h4><ul>
         {task.content_draft.inferences.map((item, index) =>
@@ -375,8 +426,10 @@ export function TaskPanel(props: TaskPanelProps) {
         <button type="button" disabled={!editText.trim() || busy} onClick={() => void review('edit')}>保存新修订并重新校验</button>
       </div>}
       {conflict && <div className="notice error" role="alert">
-        <span>编辑器已在提交后变化，迟到草稿不会覆盖当前文字。请选择合并或另存。</span>
-        <button type="button" disabled={busy} onClick={() => void adopt('merge')}>合并草稿</button>
+        <span>{conflict === 'snapshot'
+          ? '所选笔记与 AI 任务快照不一致，不会覆盖或合并当前文字。请另存为新笔记。'
+          : '编辑器已在提交后变化，迟到草稿不会覆盖当前文字。请选择合并或另存。'}</span>
+        {conflict === 'editor' && <button type="button" disabled={busy} onClick={() => void adopt('merge')}>合并草稿</button>}
         <button type="button" disabled={busy} onClick={() => void adopt('save_as_new')}>另存为新笔记</button>
       </div>}
     </div>}

@@ -297,6 +297,80 @@ def test_verification_recomputes_whitelisted_numeric_claims_at_source_precision(
     assert "recomputation_mismatch" in result.error_codes
 
 
+def test_verification_rejects_duplicate_recomputation_operands():
+    from dragon_radar.ai.verification import verify_output
+
+    output = _output()
+    output["facts"][0]["text"] = "The exact published difference was 0.00."
+    output["facts"][0]["recomputation"] = {
+        "function": "difference",
+        "evidence_ids": ["stock-close", "stock-close"],
+        "result": "0.00",
+    }
+
+    result = verify_output(_manifest(), output)
+
+    assert result.status == "failed"
+    assert "recomputation_duplicate_operand" in result.error_codes
+
+
+def test_verification_rejects_ratio_between_mixed_units():
+    from dragon_radar.ai.verification import verify_output
+
+    manifest = _manifest()
+    manifest["input"]["stock"]["volume"] = "10.00"
+    manifest["evidence"].append(
+        {
+            "evidence_id": "stock-volume",
+            "evidence_position": "/input/stock/volume",
+            "source_identity": "market:TEST001:v1",
+            "available_at": NOW.isoformat(),
+            "value": "10.00",
+            "precision": 2,
+            "unit": "shares",
+        }
+    )
+    output = _output()
+    output["facts"][0].update(
+        text="The ratio was 1.230000.",
+        precision=6,
+        unit="ratio",
+        recomputation={
+            "function": "ratio",
+            "evidence_ids": ["stock-close", "stock-volume"],
+            "result": "1.230000",
+        },
+    )
+    output["citations"].append(
+        {
+            "evidence_id": "stock-volume",
+            "evidence_position": "/input/stock/volume",
+            "source_identity": "market:TEST001:v1",
+            "available_at": NOW.isoformat(),
+            "value": "10.00",
+            "precision": 2,
+            "unit": "shares",
+        }
+    )
+
+    result = verify_output(manifest, output)
+
+    assert result.status == "failed"
+    assert "recomputation_unit_mismatch" in result.error_codes
+
+
+def test_verification_rejects_correct_decimal_with_contradictory_prose_unit():
+    from dragon_radar.ai.verification import verify_output
+
+    output = _output()
+    output["facts"][0]["text"] = "The published close was 12.30 percent."
+
+    result = verify_output(_manifest(), output)
+
+    assert result.status == "failed"
+    assert "fact_text_unit_mismatch" in result.error_codes
+
+
 @pytest.mark.parametrize(
     "unsafe_field",
     (
@@ -677,6 +751,40 @@ def test_frozen_gate_is_reported_and_cannot_be_hidden_by_good_development():
     assert report["release_status"] == "blocked"
 
 
+@pytest.mark.parametrize("split", ("development", "frozen_test"))
+def test_evaluation_uses_exact_counts_before_rounding_display_metrics(split):
+    evaluator = _evaluator()
+    state = {
+        "human_count": 2_000_000,
+        "fact_total": 2_000_000,
+        "fact_supported": 1_899_999,
+        "numeric_consistent": 2_000_000,
+        "safety_hard_failures": 0,
+    }
+
+    metrics = evaluator._metrics(state)
+    reasons = evaluator._gate_counts(state)
+
+    assert metrics["atomic_fact_support_rate"] == 0.95
+    assert reasons == ["fact_support_below_95_percent"], split
+
+
+def test_evaluation_exactly_requires_all_numeric_samples_and_zero_safety_failures():
+    evaluator = _evaluator()
+    state = {
+        "human_count": 2_000_000,
+        "fact_total": 20,
+        "fact_supported": 19,
+        "numeric_consistent": 1_999_999,
+        "safety_hard_failures": 1,
+    }
+
+    assert evaluator._gate_counts(state) == [
+        "numeric_recomputation_consistency_below_100_percent",
+        "safety_hard_failures_above_zero",
+    ]
+
+
 def test_checked_in_evaluation_manifest_truthfully_blocks_release():
     evaluate_file = _evaluator().evaluate_file
 
@@ -709,8 +817,85 @@ def test_ai_playwright_configs_use_explicit_public_and_private_flags():
     public = (root / "playwright.ai-public.config.ts").read_text(encoding="utf-8")
 
     assert "VITE_RESET_WORKBENCH: '1'" in private
+    assert "VITE_PRIVATE_REVIEW: '1'" in private
     assert "VITE_PRIVATE_AI: '1'" in private
     assert "testMatch: 'reset-ai.spec.ts'" in private
     assert "VITE_RESET_WORKBENCH: '1'" in public
     assert "VITE_PRIVATE_AI: '0'" in public
     assert "reset-ai-public.spec.ts" in public
+
+
+def _caddy_matcher(config: str, name: str) -> str:
+    import re
+
+    match = re.search(rf"path_regexp {name} (\S+)", config)
+    assert match is not None
+    return match.group(1)
+
+
+def test_private_caddy_allows_only_required_reset_reads_and_exact_ai_writes():
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    config = (root / "deploy/private.Caddyfile").read_text(encoding="utf-8")
+    reset_read = re.compile(_caddy_matcher(config, "resetRead"))
+    ai_read = re.compile(_caddy_matcher(config, "aiRead"))
+    ai_write = re.compile(_caddy_matcher(config, "aiWrite"))
+    snapshot = "00000000-0000-4000-8000-000000000001"
+    required_reads = {
+        "/api/snapshots/list",
+        f"/api/snapshots/{snapshot}",
+        "/api/market/overview",
+        "/api/market/sector-flow",
+        "/api/market/sentiment",
+        "/api/market/heatmap",
+        "/api/search",
+        "/api/limit-up/ladder",
+        "/api/limit-up/continuity",
+        "/api/role/candidates",
+        "/api/role/evidence",
+        "/api/rank/range",
+        "/api/compare/curves",
+        "/api/stock/SSE.600001",
+        "/api/stock/SSE.600001/kline",
+        "/api/news",
+        "/api/news/article-1",
+        "/api/regulation/status",
+        "/api/regulation/events",
+    }
+
+    assert all(reset_read.fullmatch(path) for path in required_reads)
+    assert ai_read.fullmatch(f"/api/ai/task/{snapshot}")
+    assert all(
+        ai_write.fullmatch(path)
+        for path in (
+            "/api/ai/summarize",
+            "/api/ai/topic-suggest",
+            "/api/ai/explain-stock",
+            "/api/ai/daily-review",
+            f"/api/ai/task/{snapshot}/cancel",
+            f"/api/ai/task/{snapshot}/review",
+        )
+    )
+    assert not reset_read.fullmatch("/api/snapshots/publish")
+    assert not reset_read.fullmatch("/api/news/article-1/review")
+    assert not ai_read.fullmatch("/api/ai/summarize")
+    assert not ai_write.fullmatch(f"/api/ai/task/{snapshot}")
+    assert "/api/v1/" not in config
+    assert "watchlist" not in config
+    assert "review-templates" not in config
+    assert config.count("path /api/owner/v1/session") == 2
+    assert "path /api/owner/v1/pair" in config
+
+
+def test_private_reset_build_uses_session_shell_and_local_review():
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "web/src/App.tsx").read_text(encoding="utf-8")
+    private_app = (root / "web/src/features/review/PrivateApp.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "VITE_PRIVATE_REVIEW === '1'\n  ? lazy(" in app
+    assert "VITE_RESET_WORKBENCH !== '1'" not in app
+    assert "<SessionProvider><AccessProvider><PrivateWorkbench />" in private_app
+    assert "LocalReview && state.view === 'review'" in app

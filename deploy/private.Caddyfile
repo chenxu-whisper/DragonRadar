@@ -26,29 +26,35 @@ https://localhost:8443 {
 		}
 		reverse_proxy @health api:8000
 
-		@market {
+		@resetRead {
 			method GET HEAD
-			path_regexp market ^/api/v1/(snapshots(/[0-9a-fA-F-]{36}(/(overview|interval|securities(/[^/]+)?))?)?|overview|interval)$
+			path_regexp resetRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment|heatmap)|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
 		}
-		reverse_proxy @market api:8000
+		reverse_proxy @resetRead api:8000
 
-		@ownerRead {
+		@aiRead {
 			method GET HEAD
-			path_regexp ownerRead ^/api/owner/v1/(session|watchlist|notes(/[0-9a-fA-F-]{36}(/(revisions(/[1-9][0-9]*)?|verifications))?)?)$
+			path_regexp aiRead ^/api/ai/task/[0-9a-fA-F-]{36}$
 		}
-		reverse_proxy @ownerRead api:8000
+		reverse_proxy @aiRead api:8000
 
-		@ownerCreate {
+		@aiWrite {
 			method POST
-			path_regexp ownerCreate ^/api/owner/v1/(pair|watchlist|notes|review-templates|notes/[0-9a-fA-F-]{36}/(confirm|fork|verifications))$
+			path_regexp aiWrite ^/api/ai/(summarize|topic-suggest|explain-stock|daily-review|task/[0-9a-fA-F-]{36}/(cancel|review))$
 		}
-		reverse_proxy @ownerCreate api:8000
+		reverse_proxy @aiWrite api:8000
 
-		@ownerUpdate {
-			method PATCH
-			path_regexp ownerUpdate ^/api/owner/v1/(watchlist|notes)/[0-9a-fA-F-]{36}$
+		@session {
+			method GET HEAD
+			path /api/owner/v1/session
 		}
-		reverse_proxy @ownerUpdate api:8000
+		reverse_proxy @session api:8000
+
+		@pair {
+			method POST
+			path /api/owner/v1/pair
+		}
+		reverse_proxy @pair api:8000
 
 		@logout {
 			method DELETE

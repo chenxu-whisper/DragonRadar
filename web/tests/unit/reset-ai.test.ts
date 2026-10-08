@@ -12,10 +12,15 @@ import {
 import {
   adoptionConflict,
   buildNotesSelection,
+  factPresentation,
   pollDecision,
   taskPresentation,
 } from '../../src/features/ai/tasks';
-import { AdoptionCommandCache } from '../../src/features/local-review/adoption-command';
+import { TaskOperationGeneration } from '../../src/features/ai/operation-generation';
+import {
+  AdoptionCommandCache,
+  resolveAdoptionBinding,
+} from '../../src/features/local-review/adoption-command';
 import { LocalRepository, type SaveNote } from '../../src/repositories/local/repository';
 
 const task = {
@@ -426,5 +431,92 @@ describe('AI task and notes state', () => {
       false,
     );
     expect(adoptionConflict('submitted-signature', 'changed-signature')).toBe(true);
+  });
+
+  test('derives verified numeric display from structured metadata and preserves prose', () => {
+    expect(factPresentation({
+      text: 'The published close is the relevant reference value.',
+      evidence_id: 'close',
+      evidence_position: '/input/close',
+      value: '12.30',
+      precision: 2,
+      unit: 'currency/share',
+    })).toEqual({
+      verifiedValue: '12.30 currency/share',
+      text: 'The published close is the relevant reference value.',
+    });
+  });
+
+  test('aborts all active operations and ignores stale results and finally blocks', async () => {
+    vi.useFakeTimers();
+    const lifecycle = new TaskOperationGeneration();
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>(done => { resolve = done; });
+      return { promise, resolve };
+    };
+    const accepted: string[] = [];
+    let busy = 'old';
+    const pending = ['submit', 'cancel', 'review', 'adopt'].map(label => {
+      const operation = lifecycle.begin();
+      const result = deferred<string>();
+      const completion = result.promise
+        .then(value => {
+          if (lifecycle.isCurrent(operation)) accepted.push(value);
+        })
+        .finally(() => {
+          if (lifecycle.finish(operation)) busy = 'idle';
+        });
+      return { label, operation, result, completion };
+    });
+
+    const previousGeneration = lifecycle.current;
+    lifecycle.invalidate();
+    busy = 'new';
+    const replacement = lifecycle.begin();
+    pending.forEach(({ result, label }) => {
+      setTimeout(() => result.resolve(label), 10);
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    await Promise.all(pending.map(item => item.completion));
+
+    expect(lifecycle.current).toBe(previousGeneration + 1);
+    expect(pending.every(item => item.operation.signal.aborted)).toBe(true);
+    expect(replacement.signal.aborted).toBe(false);
+    expect(accepted).toEqual([]);
+    expect(busy).toBe('new');
+  });
+
+  test('invalidates an in-flight operation again on unmount cleanup', () => {
+    const lifecycle = new TaskOperationGeneration();
+    const operation = lifecycle.begin();
+    const beforeUnmount = lifecycle.current;
+
+    lifecycle.invalidate();
+
+    expect(lifecycle.current).toBe(beforeUnmount + 1);
+    expect(operation.signal.aborted).toBe(true);
+    expect(lifecycle.finish(operation)).toBe(false);
+  });
+
+  test('blocks cross-snapshot replace and merge but binds save-as-new to task provenance', () => {
+    const selected = {
+      snapshot_id: 'snapshot-a',
+      trade_date: '2026-09-09',
+      security_id: 'OLD',
+    };
+    const taskBinding = {
+      snapshot_id: 'snapshot-b',
+      trade_date: '2026-09-10',
+      security_id: 'NEW',
+    };
+
+    expect(() => resolveAdoptionBinding('replace', selected, taskBinding))
+      .toThrow('快照');
+    expect(() => resolveAdoptionBinding('merge', selected, taskBinding))
+      .toThrow('快照');
+    expect(resolveAdoptionBinding('save_as_new', selected, taskBinding)).toEqual(
+      taskBinding,
+    );
   });
 });

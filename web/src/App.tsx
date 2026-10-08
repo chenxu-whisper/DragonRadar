@@ -267,7 +267,7 @@ function Session() {
   const { epoch } = useAccess();
   return <Workbench key={epoch} />;
 }
-const PrivateApp = import.meta.env.VITE_RESET_WORKBENCH !== '1' && import.meta.env.VITE_PRIVATE_REVIEW === '1'
+const PrivateApp = import.meta.env.VITE_PRIVATE_REVIEW === '1'
   ? lazy(() => import('./features/review/PrivateApp'))
   : null;
 export default function App() {

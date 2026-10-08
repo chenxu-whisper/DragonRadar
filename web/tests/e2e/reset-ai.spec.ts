@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
-import { ID, mockMarket } from '../fixtures/market';
+import { ID, OLD, mockMarket } from '../fixtures/market';
+import { mockReview, reviewServer } from '../fixtures/review';
 
 const taskId = '00000000-0000-4000-8000-000000000099';
 
@@ -59,8 +60,22 @@ const draft = {
   }],
 };
 
+test('private Reset keeps the workbench and AI panel behind the session lock', async ({ page }) => {
+  await mockMarket(page);
+  const owner = reviewServer();
+  owner.authorized = false;
+  await mockReview(page, owner);
+
+  await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-10`);
+
+  await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '我的复盘' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'AI 每日复盘' })).toHaveCount(0);
+});
+
 test('private AI previews selected fragments, polls, and protects edited notes on adoption', async ({ page }) => {
   await mockMarket(page);
+  await mockReview(page, reviewServer());
   let polls = 0;
   let submitted: Record<string, unknown> | undefined;
   await page.route('**/api/ai/daily-review', async route => {
@@ -129,6 +144,7 @@ test('private AI previews selected fragments, polls, and protects edited notes o
 
 test('cancel and review reconcile 409 responses by reading authoritative task state', async ({ page }) => {
   await mockMarket(page);
+  await mockReview(page, reviewServer());
   let submissions = 0;
   let cancelled = false;
   let accepted = false;
@@ -199,4 +215,75 @@ test('cancel and review reconcile 409 responses by reading authoritative task st
   await panel.getByRole('button', { name: '接受校验草稿' }).click();
   await expect(panel.getByText('人工审核：accepted')).toBeVisible();
   expect(submissions).toBe(2);
+});
+
+test('cross-snapshot adoption preserves the selected note and saves task provenance as new', async ({ page }) => {
+  await mockMarket(page);
+  await mockReview(page, reviewServer());
+  await page.route('**/api/ai/daily-review', route => route.fulfill({
+    json: task({
+      status: 'succeeded',
+      verification_status: 'passed',
+      content_draft: draft,
+      revision: 1,
+      content_draft_source: 'provider',
+      content_draft_created_at: '2026-09-10T08:01:02Z',
+      ai_generated: true,
+      model_version: 'model-v1',
+      prompt_version: 'prompt-v1',
+      provider: 'fake',
+      token_usage: 20,
+      cost: '0.10',
+      latency_ms: 100,
+    }),
+  }));
+
+  await page.goto(`/?view=review&snapshot=${OLD}&date=2026-09-09`);
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('旧快照笔记');
+  await page.getByRole('textbox', { name: '正文', exact: true }).fill('必须保留的旧正文');
+  await page.getByRole('textbox', { name: '判断', exact: true }).fill('发送给新任务');
+  await page.getByRole('button', { name: '保存笔记' }).click();
+  await expect(page.locator('.local-note-editor').getByRole('status'))
+    .toContainText('回读验证通过');
+
+  await page.getByLabel('交易日期').fill('2026-09-10');
+  await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
+  const panel = page.getByRole('region', { name: 'AI 每日复盘' });
+  await panel.getByRole('checkbox', { name: '判断' }).check();
+  await panel.getByRole('button', { name: '生成每日复盘' }).click();
+  await expect(panel.getByText('AI 草稿')).toBeVisible();
+
+  await panel.getByRole('button', { name: '采用草稿' }).click();
+  await expect(panel.getByRole('alert')).toContainText('快照不一致');
+  await expect(page.getByRole('textbox', { name: '正文', exact: true }))
+    .toHaveValue('必须保留的旧正文');
+  await panel.getByRole('button', { name: '另存为新笔记' }).click();
+  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+
+  const bindings = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = indexedDB.open('dragon-radar-local-v3');
+      opening.onsuccess = () => resolve(opening.result);
+      opening.onerror = () => reject(opening.error);
+    });
+    const notes = await new Promise<Array<{
+      snapshot_id: string;
+      trade_date?: string;
+      content: { title: string };
+    }>>((resolve, reject) => {
+      const request = database.transaction('notes').objectStore('notes').getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return notes.map(note => ({
+      title: note.content.title,
+      snapshot: note.snapshot_id,
+      date: note.trade_date,
+    }));
+  });
+  expect(bindings).toEqual(expect.arrayContaining([
+    { title: '旧快照笔记', snapshot: OLD, date: '2026-09-09' },
+    { title: 'AI 每日复盘 2026-09-10', snapshot: ID, date: '2026-09-10' },
+  ]));
 });

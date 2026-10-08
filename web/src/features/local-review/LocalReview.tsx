@@ -8,6 +8,7 @@ import { registerLeaveGuard } from '../review/navigation';
 import type { AITask } from '../ai/client';
 import {
   AdoptionCommandCache,
+  resolveAdoptionBinding,
   type AdoptionStrategy,
 } from './adoption-command';
 import { localNoteCommandSignature } from './note-command';
@@ -191,6 +192,9 @@ export default function LocalReview({
       submittedEditorSignature: string;
       strategy: AdoptionStrategy;
       task: AITask;
+      date: string;
+      securityId?: string;
+      signal: AbortSignal;
     },
   ) => {
     const currentSignature = JSON.stringify([
@@ -207,10 +211,25 @@ export default function LocalReview({
       throw new Error('编辑器已在提交后变化，当前输入已保留。');
     }
     const saveAsNew = context.strategy === 'save_as_new';
+    const binding = resolveAdoptionBinding(
+      context.strategy,
+      selected
+        ? {
+          snapshot_id: selected.snapshot_id,
+          trade_date: selected.trade_date ?? undefined,
+          security_id: selected.security_id ?? undefined,
+        }
+        : undefined,
+      {
+        snapshot_id: context.task.snapshot_id,
+        trade_date: context.date,
+        security_id: context.securityId,
+      },
+    );
     const nextContent: NoteContent = saveAsNew
       ? {
         ...empty(),
-        title: `AI 每日复盘 ${tradeDate || ''}`.trim(),
+        title: `AI 每日复盘 ${context.date}`.trim(),
         content: text,
       }
       : {
@@ -226,16 +245,20 @@ export default function LocalReview({
       payload: {
         ...(saveAsNew || !selected ? {} : { note_id: selected.note_id }),
         expected_revision: saveAsNew ? 0 : selected?.revision ?? 0,
-        snapshot_id: selected?.snapshot_id ?? snapshot,
-        trade_date: selected?.trade_date ?? tradeDate,
-        security_id: selected?.security_id ?? security,
+        ...binding,
         content: nextContent,
       },
     });
+    if (context.signal.aborted) {
+      throw new DOMException('采用操作已取消', 'AbortError');
+    }
     if (result.current_revision && result.current_revision > result.revision) {
       throw new Error('采用命令已提交，但本地笔记已有更新；当前输入已保留，请对照。');
     }
     await refresh();
+    if (context.signal.aborted) {
+      throw new DOMException('采用操作已取消', 'AbortError');
+    }
     if (!saveAsNew) {
       setSelected(result);
       setContent(editable(result.content));
@@ -261,6 +284,7 @@ export default function LocalReview({
         date={tradeDate}
         securityId={security || undefined}
         note={content}
+        noteSnapshotId={selected?.snapshot_id}
         onAdopt={adoptAIDraft}
       />
     </Suspense>}

@@ -117,17 +117,24 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
   }), [canDrawCandles, rawData]);
   const adoptExplanation = async (
     text: string,
-    context: { strategy: AdoptionStrategy; task: AITask },
+    context: {
+      strategy: AdoptionStrategy;
+      task: AITask;
+      date: string;
+      securityId?: string;
+      signal: AbortSignal;
+    },
   ) => {
     if (context.task.revision === null) throw new Error('AI 草稿修订无效，未保存。');
+    if (context.signal.aborted) throw new DOMException('采用操作已取消', 'AbortError');
     const result = await adoptionCommands.current.execute(localRepository, {
       taskRevision: context.task.revision,
       strategy: context.strategy,
       payload: {
         expected_revision: 0,
-        snapshot_id: state.snapshot,
-        trade_date: state.date,
-        security_id: id,
+        snapshot_id: context.task.snapshot_id,
+        trade_date: context.date,
+        security_id: context.securityId,
         content: {
           title: `AI 个股解释 · ${modernData?.name || id}`.slice(0, 100),
           content: text,
@@ -138,6 +145,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         },
       },
     });
+    if (context.signal.aborted) throw new DOMException('采用操作已取消', 'AbortError');
     return `已保存 · revision ${result.revision} · 回读验证通过`;
   };
   return <>

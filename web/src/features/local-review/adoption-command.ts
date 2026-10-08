@@ -5,6 +5,12 @@ import type {
 
 export type AdoptionStrategy = 'replace' | 'merge' | 'save_as_new';
 
+export interface AdoptionBinding {
+  snapshot_id: string;
+  trade_date?: string;
+  security_id?: string;
+}
+
 type AdoptionPayload = Omit<SaveNote, 'note_id' | 'key'> & {
   note_id?: string;
 };
@@ -29,6 +35,21 @@ function canonical(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+export function resolveAdoptionBinding(
+  strategy: AdoptionStrategy,
+  selected: AdoptionBinding | undefined,
+  task: AdoptionBinding,
+): AdoptionBinding {
+  if (
+    strategy !== 'save_as_new'
+    && selected
+    && selected.snapshot_id !== task.snapshot_id
+  ) {
+    throw new Error('所选笔记与 AI 任务快照不一致，请另存为新笔记。');
+  }
+  return strategy === 'save_as_new' || !selected ? task : selected;
 }
 
 export class AdoptionCommandCache {

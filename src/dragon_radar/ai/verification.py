@@ -61,6 +61,20 @@ _DISPLAYED_DECIMAL = re.compile(
     r"(?<![\w.-])-?(?:0|[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*)"
     r"(?:\.(\d+))?(?![\w-]|\.\d)"
 )
+_PROSE_UNIT = re.compile(
+    r"(?<![\w.-])-?(?:0|[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*)"
+    r"(?:\.\d+)?\s*(currency/share|percentage|percent|shares?|ratio|fraction|"
+    r"counts?|days?|yuan|%|元|股|次|天|倍)(?![\w/])",
+    re.IGNORECASE,
+)
+_UNIT_ALIASES = {
+    "counts": "count",
+    "day": "days",
+    "percent": "percent",
+    "percentage": "percent",
+    "share": "shares",
+    "yuan": "元",
+}
 
 
 @dataclass(frozen=True)
@@ -177,6 +191,19 @@ def _displayed_decimals(text: str) -> list[tuple[Decimal, int]]:
         if value is not None:
             values.append((value, len(match.group(1) or "")))
     return values
+
+
+def _normalized_unit(value: str) -> str:
+    normalized = value.strip().lower()
+    return _UNIT_ALIASES.get(normalized, normalized)
+
+
+def _has_contradictory_prose_unit(text: str, expected: str) -> bool:
+    expected_unit = _normalized_unit(expected)
+    return any(
+        _normalized_unit(match.group(1)) != expected_unit
+        for match in _PROSE_UNIT.finditer(text)
+    )
 
 
 def _numeric_metadata(value: Mapping) -> tuple[Decimal, int, str] | None:
@@ -369,10 +396,13 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
                 continue
             values: list[Decimal] = []
             precisions: list[int] = []
+            units: list[str] = []
             ids = recomputation.get("evidence_ids")
             if not isinstance(ids, (list, tuple)) or not ids:
                 _append(errors, "recomputation_invalid")
                 continue
+            if all(isinstance(item, str) for item in ids) and len(set(ids)) != len(ids):
+                _append(errors, "recomputation_duplicate_operand")
             if any(
                 not any(reference[0] == item for reference in citations_by_reference)
                 for item in ids
@@ -382,23 +412,34 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
                 argument = (
                     evidence.get(argument_id) if isinstance(argument_id, str) else None
                 )
-                number = _decimal(argument.get("value")) if argument else None
-                precision = (
-                    argument.get("precision")
-                    if argument and type(argument.get("precision")) is int
-                    else _precision(argument.get("value"))
-                    if argument
-                    else None
-                )
-                if number is None or precision is None:
+                metadata = _numeric_metadata(argument) if argument else None
+                if metadata is None:
                     _append(errors, "recomputation_invalid")
                     break
+                number, precision, unit = metadata
                 values.append(number)
                 precisions.append(precision)
+                units.append(unit)
             else:
+                function = recomputation.get("function")
+                compatible_units = (
+                    len(units) == len(ids) and bool(units) and len(set(units)) == 1
+                )
+                if (
+                    function
+                    in {
+                        "identity",
+                        "sum",
+                        "difference",
+                        "ratio",
+                        "percent_change",
+                    }
+                    and not compatible_units
+                ):
+                    _append(errors, "recomputation_unit_mismatch")
                 try:
                     result, _ = recompute_claim(
-                        recomputation.get("function"),
+                        function,
                         values,
                         precisions,
                     )
@@ -407,20 +448,14 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
                 else:
                     if recomputation.get("result") != result:
                         _append(errors, "recomputation_mismatch")
-                    units = {
-                        evidence[argument_id].get("unit")
-                        for argument_id in ids
-                        if isinstance(argument_id, str) and argument_id in evidence
-                    }
-                    function = recomputation.get("function")
                     if (
                         function in {"identity", "sum", "difference"}
-                        and len(units) == 1
+                        and compatible_units
                     ):
-                        result_unit = units.pop()
-                    elif function == "ratio":
+                        result_unit = units[0]
+                    elif function == "ratio" and compatible_units:
                         result_unit = "ratio"
-                    elif function == "percent_change":
+                    elif function == "percent_change" and compatible_units:
                         result_unit = "fraction"
                     else:
                         result_unit = None
@@ -453,6 +488,11 @@ def verify_output(manifest: Mapping, output: Mapping) -> VerificationResult:
                 _append(errors, "fact_text_unsupported")
             elif isinstance(text, str) and not _displayed_decimals(text):
                 _append(errors, "fact_text_unsupported")
+            if isinstance(text, str) and _has_contradictory_prose_unit(
+                text,
+                numeric_support[2],
+            ):
+                _append(errors, "fact_text_unit_mismatch")
         elif isinstance(text, str) and isinstance(entry.get("value"), str):
             evidence_tokens = set(_displayed_decimals(entry["value"]))
             if any(token not in evidence_tokens for token in _displayed_decimals(text)):

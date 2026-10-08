@@ -1,9 +1,11 @@
 import type {
   AIDraftContent,
+  AIFact,
   AITask,
   AITaskType,
   DraftSource,
 } from './client';
+import Decimal from 'decimal.js';
 
 export type NoteField =
   | 'title'
@@ -79,6 +81,29 @@ export function adoptionConflict(
   currentEditorSignature: string,
 ): boolean {
   return submittedEditorSignature !== currentEditorSignature;
+}
+
+export function factPresentation(fact: AIFact): {
+  verifiedValue?: string;
+  text: string;
+} {
+  const value = fact.recomputation?.result ?? fact.value;
+  if (
+    typeof fact.unit === 'string'
+    && Number.isSafeInteger(fact.precision)
+    && typeof value !== 'boolean'
+    && (typeof value === 'string' || typeof value === 'number')
+  ) {
+    try {
+      return {
+        verifiedValue: `${new Decimal(value).toFixed(fact.precision)} ${fact.unit}`,
+        text: fact.text,
+      };
+    } catch {
+      // The response validator owns malformed numeric metadata.
+    }
+  }
+  return { text: fact.text };
 }
 
 export function pollDecision(task: AITask): { poll: boolean; delayMs: number } {
