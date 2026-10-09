@@ -95,6 +95,24 @@ def command_record(tmp_path, gate, index, spec, *, skipped=0, exit_status=0):
 
 
 def performance_raw():
+    buffer_counts = {
+        "shared_hit_blocks": 2,
+        "shared_read_blocks": 0,
+        "shared_dirtied_blocks": 0,
+        "shared_written_blocks": 0,
+        "local_hit_blocks": 0,
+        "local_read_blocks": 0,
+        "local_dirtied_blocks": 0,
+        "local_written_blocks": 0,
+        "temp_read_blocks": 0,
+        "temp_written_blocks": 0,
+    }
+    explain_relations = {
+        "/api/snapshots/{id}": ("source_dependencies", "a" * 64),
+        "/api/market/overview": ("publication_results", "b" * 64),
+        "/api/rank/range": ("withdrawal_records", "c" * 64),
+        "/api/stock/{id}": ("withdrawal_dependencies", "d" * 64),
+    }
     runs = [
         {
             "round": index,
@@ -158,22 +176,38 @@ def performance_raw():
             "status": "succeeded",
         },
         "public_sql_statements": [
-            {"path": path, "verb": "SELECT"}
-            for _round in range(3)
-            for path in (
-                "/api/snapshots/{id}",
-                "/api/market/overview",
-                "/api/rank/range",
-                "/api/stock/{id}",
+            {
+                "path": path,
+                "verb": "SELECT",
+                "relations": [],
+                "sql_sha256": f"{index:064x}",
+                "count": 3,
+            }
+            for index, path in enumerate(
+                (
+                    "/api/snapshots/{id}",
+                    "/api/market/overview",
+                    "/api/rank/range",
+                    "/api/stock/{id}",
+                ),
+                start=1,
             )
         ],
         "application_state_before": {"table": {"rows": 1, "fingerprint": "a"}},
         "application_state_after": {"table": {"rows": 1, "fingerprint": "a"}},
         "measured_path_explains": {
-            "/api/snapshots/{id}": {"plan": ["index"]},
-            "/api/market/overview": {"plan": ["index"]},
-            "/api/rank/range": {"plan": ["index"]},
-            "/api/stock/{id}": {"plan": ["index"]},
+            path: {
+                "sql_sha256": digest,
+                "sql_relations": [relation],
+                "plan": {
+                    "relations": [relation],
+                    "indexes": [f"{relation}_test_idx"],
+                    "nodes": ["Index Scan"],
+                    "node_count": 1,
+                    "buffers": buffer_counts,
+                },
+            }
+            for path, (relation, digest) in explain_relations.items()
         },
     }
 
@@ -209,7 +243,9 @@ def evidence_manifest(tmp_path):
             }
         elif gate == "public_no_write":
             observations = {
-                "sql_statement_count": len(raw["public_sql_statements"]),
+                "sql_statement_count": sum(
+                    item["count"] for item in raw["public_sql_statements"]
+                ),
                 "sql_write_count": 0,
                 "fingerprints_equal": True,
                 "application_table_count": 1,
@@ -417,6 +453,44 @@ def test_performance_contract_requires_realistic_warmed_multi_round_fixture():
     no_aggregate = deepcopy(valid)
     del no_aggregate["aggregate"]
     assert any("aggregate" in error.lower() for error in errors(no_aggregate))
+
+
+def test_performance_contract_rejects_generic_or_duplicated_endpoint_plans():
+    errors = VERIFIER["_performance_errors"]
+    valid = performance_raw()
+
+    generic = deepcopy(valid)
+    generic["measured_path_explains"]["/api/market/overview"] = {
+        "sql_sha256": "e" * 64,
+        "sql_relations": ["publications"],
+        "plan": {
+            "relations": ["publications"],
+            "indexes": ["publications_pkey"],
+            "nodes": ["Index Scan"],
+            "node_count": 1,
+            "buffers": {
+                "shared_hit_blocks": 2,
+                "shared_read_blocks": 0,
+                "shared_dirtied_blocks": 0,
+                "shared_written_blocks": 0,
+                "local_hit_blocks": 0,
+                "local_read_blocks": 0,
+                "local_dirtied_blocks": 0,
+                "local_written_blocks": 0,
+                "temp_read_blocks": 0,
+                "temp_written_blocks": 0,
+            },
+        },
+    }
+    assert any("relation" in error.lower() for error in errors(generic))
+
+    duplicate = deepcopy(valid)
+    duplicate["measured_path_explains"]["/api/stock/{id}"]["sql_sha256"] = "c" * 64
+    assert any("distinct" in error.lower() for error in errors(duplicate))
+
+    trivial = deepcopy(valid)
+    trivial["measured_path_explains"]["/api/rank/range"]["plan"]["nodes"] = []
+    assert any("nontrivial" in error.lower() for error in errors(trivial))
 
 
 def test_default_full_mode_cannot_self_certify_from_performance_json(tmp_path):

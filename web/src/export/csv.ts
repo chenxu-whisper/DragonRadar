@@ -45,9 +45,10 @@ function formulaSafe(value: string): string {
 }
 
 function filters(value: CsvMetadata['filters']): string {
-  return Object.keys(value).sort().map(key => (
-    `${formulaSafe(key)}=${formulaSafe(String(value[key] ?? ''))}`
-  )).join(';');
+  const canonical = Object.fromEntries(
+    Object.keys(value).sort().map(key => [key, value[key]]),
+  );
+  return formulaSafe(JSON.stringify(canonical));
 }
 
 function cell(value: unknown): string {
@@ -58,10 +59,6 @@ function cell(value: unknown): string {
   let text = String(value);
   if (typeof value === 'string') text = formulaSafe(text);
   return /[\u0000-\u001f",]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
-function quotedCell(value: string): string {
-  return `"${value.replaceAll('"', '""')}"`;
 }
 
 export function buildCsv<Row extends Record<string, unknown>>(input: CsvExport<Row>): string {
@@ -94,7 +91,7 @@ export function buildCsv<Row extends Record<string, unknown>>(input: CsvExport<R
   return [
     [...metadataColumns, ...headers].map(cell).join(','),
     ...rows.map(row => [
-      ...prefix.map((value, index) => index === 4 ? quotedCell(String(value)) : cell(value)),
+      ...prefix.map(cell),
       ...input.columns.map(column => cell(row[column.key])),
     ].join(',')),
   ].join('\r\n') + '\r\n';

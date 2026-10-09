@@ -180,7 +180,7 @@ const responsiveViews: {
       const pending = page.waitForEvent('download');
       const button = page.getByRole('button', { name: '导出当前筛选 CSV' });
       await activate(button);
-      expect(await downloadText(await pending)).toContain('security_id=TEST001');
+      expect(await downloadText(await pending)).toContain('""security_id"":""TEST001""');
       return button;
     },
   },
@@ -327,8 +327,8 @@ test('overview at 375px exports the current filter with immutable metadata', asy
   expect(csv).toContain(ID);
   expect(csv).toContain('2026-09-10');
   expect(csv).toContain('测试规则一');
-  expect(csv).toContain('market_filter=up');
-  expect(csv).toContain('q=TEST001');
+  expect(csv).toContain('""market_filter"":""up""');
+  expect(csv).toContain('""q"":""TEST001""');
   expect(csv).toContain(',ratio,CNY,raw,');
   expect(csv).not.toContain('不上传服务器');
 });
@@ -345,7 +345,7 @@ test('news at 1440px remains readable at 200% zoom and exports only the current 
   await page.getByRole('button', { name: '导出当前页 CSV' }).click();
   const csv = await downloadText(await pending);
   expect(csv).toContain(NEWS_SNAPSHOT);
-  expect(csv).toContain('news_type=announcement');
+  expect(csv).toContain('""news_type"":""announcement""');
   expect(csv).toContain('机器人公司签署合成测试订单');
   expect(csv).not.toContain('行业跟踪');
 });
@@ -375,8 +375,8 @@ test('leaders supports keyboard, reduced motion, drawer Escape, focus restoratio
   const pending = page.waitForEvent('download');
   await page.getByRole('button', { name: '导出当前筛选 CSV' }).click();
   const csv = await downloadText(await pending);
-  expect(csv).toContain('role=trend_leader');
-  expect(csv).toContain('sector=SEC001');
+  expect(csv).toContain('""role"":""trend_leader""');
+  expect(csv).toContain('""sector"":""SEC001""');
   expect(csv).toContain('role-v1');
 });
 
@@ -416,7 +416,7 @@ test('analysis exports the rendered current page and declared benchmark/basis', 
   await page.getByRole('button', { name: '导出当前页 CSV' }).click();
   const csv = await downloadText(await pending);
   expect(csv).toContain('analysis-v1');
-  expect(csv).toContain('page=1;page_size=20');
+  expect(csv).toContain('""page"":1,""page_size"":20');
   expect(csv).toContain(',ratio,CNY,raw,B000300,');
   expect(csv).toContain('TEST001');
 });
@@ -453,8 +453,8 @@ test('stock detail exports its current raw date window without page overflow', a
   const pending = page.waitForEvent('download');
   await page.getByRole('button', { name: '导出当前筛选 CSV' }).click();
   const csv = await downloadText(await pending);
-  expect(csv).toContain('security_id=TEST001');
-  expect(csv).toContain('adjustment=raw');
+  expect(csv).toContain('""security_id"":""TEST001""');
+  expect(csv).toContain('""adjustment"":""raw""');
   expect(csv).toContain(',currency/share,CNY,raw,');
 });
 

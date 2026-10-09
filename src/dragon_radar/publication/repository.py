@@ -211,6 +211,22 @@ class PublicationRepository:
         while len(cache) > maximum:
             cache.popitem(last=False)
 
+    @staticmethod
+    def _trim_pair(
+        values: OrderedDict,
+        signatures: OrderedDict,
+        maximum: int = 32,
+    ) -> None:
+        for key in tuple(values):
+            if key not in signatures:
+                del values[key]
+        for key in tuple(signatures):
+            if key not in values:
+                del signatures[key]
+        while len(values) > maximum:
+            key, _value = values.popitem(last=False)
+            signatures.pop(key, None)
+
     def _market_batch(self, archive: Mapping) -> MarketBatch:
         key = (archive["id"], archive["payload_hash"])
         with self._market_batch_cache_lock:
@@ -225,11 +241,11 @@ class PublicationRepository:
 
     def _market_archives(self, connection, archive_ids: set[UUID]) -> dict:
         with self._market_batch_cache_lock:
-            cached = {
-                archive_id: self._market_archive_cache[archive_id]
-                for archive_id in archive_ids
-                if archive_id in self._market_archive_cache
-            }
+            cached = {}
+            for archive_id in archive_ids:
+                if archive_id in self._market_archive_cache:
+                    cached[archive_id] = self._market_archive_cache[archive_id]
+                    self._market_archive_cache.move_to_end(archive_id)
         missing = archive_ids - set(cached)
         loaded = (
             {
@@ -252,11 +268,15 @@ class PublicationRepository:
 
     def _result_rows(self, connection, publication_ids: list[UUID]) -> dict:
         with self._market_batch_cache_lock:
-            candidate_ids = {
-                publication_id
-                for publication_id in publication_ids
-                if publication_id in self._result_rows_cache
-            }
+            candidate_ids = set()
+            for publication_id in publication_ids:
+                if (
+                    publication_id in self._result_rows_cache
+                    and publication_id in self._result_signatures
+                ):
+                    candidate_ids.add(publication_id)
+                    self._result_rows_cache.move_to_end(publication_id)
+                    self._result_signatures.move_to_end(publication_id)
         if candidate_ids != set(publication_ids):
             candidate_ids = set()
         signature_rows = (
@@ -289,12 +309,16 @@ class PublicationRepository:
             publication_id: tuple(rows) for publication_id, rows in signatures.items()
         }
         with self._market_batch_cache_lock:
-            cached = {
-                publication_id: self._result_rows_cache[publication_id]
-                for publication_id in candidate_ids
-                if self._result_signatures.get(publication_id)
-                == signatures[publication_id]
-            }
+            cached = {}
+            for publication_id in candidate_ids:
+                if (
+                    publication_id in self._result_rows_cache
+                    and self._result_signatures.get(publication_id)
+                    == signatures[publication_id]
+                ):
+                    cached[publication_id] = self._result_rows_cache[publication_id]
+                    self._result_rows_cache.move_to_end(publication_id)
+                    self._result_signatures.move_to_end(publication_id)
         missing = set(publication_ids) - set(cached)
         grouped = {publication_id: [] for publication_id in missing}
         if missing:
@@ -330,8 +354,7 @@ class PublicationRepository:
                     publication_id
                 ]
                 self._result_signatures.move_to_end(publication_id)
-            self._trim(self._result_rows_cache)
-            self._trim(self._result_signatures)
+            self._trim_pair(self._result_rows_cache, self._result_signatures)
         return {**cached, **loaded}
 
     @staticmethod
@@ -352,8 +375,14 @@ class PublicationRepository:
             return None
         with self._market_batch_cache_lock:
             cached = self._published_snapshot_cache.get(record.id)
-        if cached is None or cached.publication != record:
-            return None
+            if (
+                cached is None
+                or cached.publication != record
+                or record.id not in self._published_snapshot_signatures
+            ):
+                return None
+            self._published_snapshot_cache.move_to_end(record.id)
+            self._published_snapshot_signatures.move_to_end(record.id)
         dependencies = (
             connection.execute(
                 select(
@@ -402,11 +431,24 @@ class PublicationRepository:
         ):
             raise Forbidden("Publication market source is not authorized")
         with self._market_batch_cache_lock:
+            if self._published_snapshot_cache.get(record.id) is not cached:
+                return None
             self._published_snapshot_cache.move_to_end(record.id)
+            self._published_snapshot_signatures.move_to_end(record.id)
         rows = self._result_rows(connection, [record.id])[record.id]
         with self._market_batch_cache_lock:
-            signature = self._result_signatures[record.id]
+            if (
+                self._published_snapshot_cache.get(record.id) is not cached
+                or record.id not in self._published_snapshot_signatures
+                or record.id not in self._result_signatures
+            ):
+                return None
+            signature = self._result_signatures.get(record.id)
             cached_signature = self._published_snapshot_signatures.get(record.id)
+            self._published_snapshot_cache.move_to_end(record.id)
+            self._published_snapshot_signatures.move_to_end(record.id)
+            self._result_rows_cache.move_to_end(record.id)
+            self._result_signatures.move_to_end(record.id)
         if cached_signature == signature:
             return cached
         refreshed = PublishedSnapshot(
@@ -421,14 +463,22 @@ class PublicationRepository:
         if not self._market_only(snapshot.publication):
             return
         with self._market_batch_cache_lock:
+            signature = self._result_signatures.get(snapshot.id)
+            rows = self._result_rows_cache.get(snapshot.id)
+            if (
+                signature is None
+                or rows is None
+                or tuple(self._result(row) for row in rows) != snapshot.results
+            ):
+                return
             self._published_snapshot_cache[snapshot.id] = snapshot
             self._published_snapshot_cache.move_to_end(snapshot.id)
-            self._published_snapshot_signatures[snapshot.id] = self._result_signatures[
-                snapshot.id
-            ]
+            self._published_snapshot_signatures[snapshot.id] = signature
             self._published_snapshot_signatures.move_to_end(snapshot.id)
-            self._trim(self._published_snapshot_cache)
-            self._trim(self._published_snapshot_signatures)
+            self._trim_pair(
+                self._published_snapshot_cache,
+                self._published_snapshot_signatures,
+            )
 
     @staticmethod
     def _result(row: Mapping) -> PublicationResult:

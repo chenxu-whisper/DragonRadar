@@ -61,6 +61,24 @@ RECOVERY_DRILLS = (
     "ai_off",
 )
 PERFORMANCE_ARTIFACT = ROOT / ".temp" / "acceptance" / "reset-performance.json"
+EXPLAIN_RELATIONS = {
+    "/api/snapshots/{id}": "source_dependencies",
+    "/api/market/overview": "publication_results",
+    "/api/rank/range": "withdrawal_records",
+    "/api/stock/{id}": "withdrawal_dependencies",
+}
+PLAN_BUFFER_FIELDS = {
+    "shared_hit_blocks",
+    "shared_read_blocks",
+    "shared_dirtied_blocks",
+    "shared_written_blocks",
+    "local_hit_blocks",
+    "local_read_blocks",
+    "local_dirtied_blocks",
+    "local_written_blocks",
+    "temp_read_blocks",
+    "temp_written_blocks",
+}
 URL_CREDENTIAL = re.compile(r"(://[^:/\s]+:)[^@\s]+(@)")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SUMMARY_COUNT = re.compile(r"(?<![\w-])(\d+)\s+(passed|failed|skipped)\b")
@@ -586,6 +604,81 @@ def _run_command(
     }
 
 
+def _explain_errors(explains: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(explains, dict) or set(explains) != set(EXPLAIN_RELATIONS):
+        return ["Measured-path EXPLAIN endpoints are not exact."]
+    hashes = []
+    for path, expected_relation in EXPLAIN_RELATIONS.items():
+        item = explains[path]
+        label = f"Measured-path EXPLAIN {path}"
+        field_errors = _exact_fields(
+            item,
+            {"sql_sha256", "sql_relations", "plan"},
+            label,
+        )
+        if field_errors:
+            errors.extend(field_errors)
+            continue
+        digest = item["sql_sha256"]
+        sql_relations = item["sql_relations"]
+        plan = item["plan"]
+        hashes.append(digest)
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            errors.append(f"{label} SQL hash is invalid.")
+        if (
+            not isinstance(sql_relations, list)
+            or sql_relations != sorted(set(sql_relations))
+            or not all(isinstance(relation, str) for relation in sql_relations)
+            or expected_relation not in sql_relations
+        ):
+            errors.append(f"{label} does not use its appropriate relation.")
+        plan_errors = _exact_fields(
+            plan,
+            {"relations", "indexes", "nodes", "node_count", "buffers"},
+            f"{label} normalized plan",
+        )
+        if plan_errors:
+            errors.extend(plan_errors)
+            continue
+        relations = plan["relations"]
+        indexes = plan["indexes"]
+        nodes = plan["nodes"]
+        if (
+            not isinstance(relations, list)
+            or relations != sorted(set(relations))
+            or expected_relation not in relations
+        ):
+            errors.append(f"{label} plan does not use its appropriate relation.")
+        if not isinstance(indexes, list) or indexes != sorted(set(indexes)):
+            errors.append(f"{label} plan indexes are not normalized.")
+        if (
+            not isinstance(nodes, list)
+            or nodes != sorted(set(nodes))
+            or not nodes
+            or type(plan["node_count"]) is not int
+            or plan["node_count"] < len(nodes)
+        ):
+            errors.append(f"{label} plan is nontrivial only when nodes are recorded.")
+        buffers = plan["buffers"]
+        if (
+            not isinstance(buffers, dict)
+            or set(buffers) != PLAN_BUFFER_FIELDS
+            or any(
+                type(count) not in (int, float) or count < 0
+                for count in buffers.values()
+            )
+        ):
+            errors.append(f"{label} plan buffers are invalid.")
+        if "publications_pkey" in indexes or (
+            sql_relations == ["publications"] and relations == ["publications"]
+        ):
+            errors.append(f"{label} is a generic publication primary-key plan.")
+    if len(hashes) == len(EXPLAIN_RELATIONS) and len(set(hashes)) != len(hashes):
+        errors.append("Measured-path EXPLAIN SQL hashes must be distinct.")
+    return errors
+
+
 def _performance_errors(value: Any) -> list[str]:
     errors: list[str] = []
     measured_paths = {
@@ -724,6 +817,13 @@ def _performance_errors(value: Any) -> list[str]:
         errors.append("Measured public SQL statements are missing.")
     elif any(
         not isinstance(item, dict)
+        or set(item) != {"path", "verb", "relations", "sql_sha256", "count"}
+        or type(item.get("count")) is not int
+        or item["count"] <= 0
+        or not isinstance(item.get("relations"), list)
+        or item["relations"] != sorted(set(item["relations"]))
+        or not isinstance(item.get("sql_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", item["sql_sha256"])
         or item.get("verb")
         in {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE"}
         for item in statements
@@ -736,12 +836,7 @@ def _performance_errors(value: Any) -> list[str]:
     if not isinstance(before, dict) or not before or before != after:
         errors.append("Comprehensive application table fingerprints changed.")
     explains = value.get("measured_path_explains")
-    if (
-        not isinstance(explains, dict)
-        or set(explains) != measured_paths
-        or any(not item for item in explains.values())
-    ):
-        errors.append("Measured-path EXPLAIN ANALYZE BUFFERS evidence is incomplete.")
+    errors.extend(_explain_errors(explains))
     if (
         isinstance(runs, list)
         and isinstance(statements, list)
@@ -750,7 +845,9 @@ def _performance_errors(value: Any) -> list[str]:
             for run in runs
         )
     ):
-        if sum(run["sql_statement_count"] for run in runs) != len(statements):
+        if sum(run["sql_statement_count"] for run in runs) != sum(
+            item.get("count", 0) for item in statements
+        ):
             errors.append("Performance SQL statement counts are inconsistent.")
     return errors
 
@@ -784,11 +881,12 @@ def _performance_observations(
 def _public_observations(value: dict[str, Any]) -> dict[str, Any]:
     statements = value["public_sql_statements"]
     return {
-        "sql_statement_count": len(statements),
+        "sql_statement_count": sum(item["count"] for item in statements),
         "sql_write_count": sum(
-            item["verb"]
-            in {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE"}
+            item["count"]
             for item in statements
+            if item["verb"]
+            in {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE"}
         ),
         "fingerprints_equal": (
             value["application_state_before"] == value["application_state_after"]
@@ -836,9 +934,17 @@ def _execute_gates(
                 record["observations"] = _performance_observations(
                     performance_value, evidence_dir
                 )
-        elif gate == "public_no_write" and performance_value is not None:
+        elif (
+            gate == "public_no_write"
+            and performance_value is not None
+            and not performance_errors
+        ):
             record["observations"] = _public_observations(performance_value)
-        elif gate == "async_over_five_seconds" and performance_value is not None:
+        elif (
+            gate == "async_over_five_seconds"
+            and performance_value is not None
+            and not performance_errors
+        ):
             record["observations"] = _async_observations(performance_value)
         elif gate == "recovery_drills":
             record["observations"] = {"drills": list(RECOVERY_DRILLS)}

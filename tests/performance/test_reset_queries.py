@@ -54,6 +54,24 @@ MEASURED_PATHS = (
     "/api/rank/range",
     "/api/stock/{id}",
 )
+EXPLAIN_RELATIONS = {
+    "/api/snapshots/{id}": "source_dependencies",
+    "/api/market/overview": "publication_results",
+    "/api/rank/range": "withdrawal_records",
+    "/api/stock/{id}": "withdrawal_dependencies",
+}
+PLAN_BUFFER_FIELDS = (
+    "Shared Hit Blocks",
+    "Shared Read Blocks",
+    "Shared Dirtied Blocks",
+    "Shared Written Blocks",
+    "Local Hit Blocks",
+    "Local Read Blocks",
+    "Local Dirtied Blocks",
+    "Local Written Blocks",
+    "Temp Read Blocks",
+    "Temp Written Blocks",
+)
 CURRENT_PUBLIC_PATH: ContextVar[str] = ContextVar(
     "task20_current_public_path", default="unattributed"
 )
@@ -326,6 +344,87 @@ def _statement_verb(statement: str) -> str:
     return first
 
 
+def _normalized_sql(statement: str) -> str:
+    return " ".join(statement.split())
+
+
+def _sql_relations(statement: str) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                match.group(1).lower()
+                for match in re.finditer(
+                    r'\b(?:FROM|JOIN)\s+(?:(?:"?[\w]+"?)\.)?"?([\w]+)"?',
+                    statement,
+                    flags=re.IGNORECASE,
+                )
+            }
+        )
+    )
+
+
+def _normalized_plan(plan) -> dict:
+    if isinstance(plan, str):
+        plan = json.loads(plan)
+    if not isinstance(plan, list) or len(plan) != 1 or not isinstance(plan[0], dict):
+        raise AssertionError("PostgreSQL JSON plan must contain one document")
+    root = plan[0].get("Plan")
+    if not isinstance(root, dict):
+        raise AssertionError("PostgreSQL JSON plan has no root node")
+    nodes = []
+    relations = set()
+    indexes = set()
+
+    def visit(node):
+        if not isinstance(node, dict) or not isinstance(node.get("Node Type"), str):
+            raise AssertionError("PostgreSQL JSON plan contains a malformed node")
+        nodes.append(node["Node Type"])
+        if isinstance(node.get("Relation Name"), str):
+            relations.add(node["Relation Name"])
+        if isinstance(node.get("Index Name"), str):
+            indexes.add(node["Index Name"])
+        for child in node.get("Plans", ()):
+            visit(child)
+
+    visit(root)
+    buffers = {
+        field.lower().replace(" ", "_"): root.get(field, 0)
+        for field in PLAN_BUFFER_FIELDS
+    }
+    if any(type(value) not in (int, float) or value < 0 for value in buffers.values()):
+        raise AssertionError("PostgreSQL JSON plan contains invalid buffer counts")
+    return {
+        "relations": sorted(relations),
+        "indexes": sorted(indexes),
+        "nodes": sorted(set(nodes)),
+        "node_count": len(nodes),
+        "buffers": buffers,
+    }
+
+
+def _summarized_statements(captured) -> list[dict]:
+    counts = {}
+    for item in captured:
+        normalized = _normalized_sql(item["statement"])
+        record = (
+            item["path"],
+            item["verb"],
+            _sql_relations(normalized),
+            hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        )
+        counts[record] = counts.get(record, 0) + 1
+    return [
+        {
+            "path": path,
+            "verb": verb,
+            "relations": list(relations),
+            "sql_sha256": digest,
+            "count": count,
+        }
+        for (path, verb, relations, digest), count in sorted(counts.items())
+    ]
+
+
 def _measured_path_explains(database, captured):
     explains = {}
     with database.engine.connect() as connection:
@@ -337,23 +436,34 @@ def _measured_path_explains(database, captured):
                 and item["verb"] == "SELECT"
                 and " FROM " in f" {' '.join(item['statement'].split()).upper()} "
             ]
-            preferred = [
+            selected_relation = EXPLAIN_RELATIONS[path]
+            eligible = [
                 item
                 for item in candidates
-                if "PUBLICATION" in item["statement"].upper()
+                if selected_relation in _sql_relations(item["statement"])
             ]
-            selected = (preferred or candidates)[0]
+            if not eligible:
+                raise AssertionError(
+                    f"No {selected_relation} SQL was captured for measured path {path}"
+                )
+            selected = min(
+                eligible, key=lambda item: _normalized_sql(item["statement"])
+            )
+            normalized_sql = _normalized_sql(selected["statement"])
             plan = connection.exec_driver_sql(
                 "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + selected["statement"],
                 selected["parameters"],
             ).scalar()
             explains[path] = {
-                "sql": " ".join(selected["statement"].split()),
                 "sql_sha256": hashlib.sha256(
-                    selected["statement"].encode("utf-8")
+                    normalized_sql.encode("utf-8")
                 ).hexdigest(),
-                "plan": plan,
+                "sql_relations": list(_sql_relations(normalized_sql)),
+                "plan": _normalized_plan(plan),
             }
+    assert len({item["sql_sha256"] for item in explains.values()}) == len(
+        MEASURED_PATHS
+    )
     return explains
 
 
@@ -564,17 +674,7 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
             "worker_elapsed_seconds": worker_elapsed_seconds,
             "status": completed.status,
         },
-        "public_sql_statements": [
-            {
-                "path": item["path"],
-                "verb": item["verb"],
-                "sql": " ".join(item["statement"].split()),
-                "sql_sha256": hashlib.sha256(
-                    item["statement"].encode("utf-8")
-                ).hexdigest(),
-            }
-            for item in captured
-        ],
+        "public_sql_statements": _summarized_statements(captured),
         "application_state_before": state_before,
         "application_state_after": state_after,
         "measured_path_explains": measured_path_explains,

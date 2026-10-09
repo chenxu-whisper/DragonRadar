@@ -43,9 +43,9 @@ describe('Reset CSV export contract', () => {
     expect(csv).toBe(
       'snapshot_id,trade_date,as_of,rule_version,filters,unit,currency,price_type,benchmark,name,value\r\n'
       + `${metadata.snapshot_id},2026-09-10,2026-09-10T08:01:00Z,rule-v1,`
-      + '"direction=up;empty=;page=2;q=龙头",ratio,CNY,raw,B000300,"龙头,甲",12.5\r\n'
+      + '"{""direction"":""up"",""empty"":"""",""page"":2,""q"":""龙头""}",ratio,CNY,raw,B000300,"龙头,甲",12.5\r\n'
       + `${metadata.snapshot_id},2026-09-10,2026-09-10T08:01:00Z,rule-v1,`
-      + '"direction=up;empty=;page=2;q=龙头",ratio,CNY,raw,B000300,"line\r\n""two""",\r\n',
+      + '"{""direction"":""up"",""empty"":"""",""page"":2,""q"":""龙头""}",ratio,CNY,raw,B000300,"line\r\n""two""",\r\n',
     );
   });
 
@@ -65,24 +65,22 @@ describe('Reset CSV export contract', () => {
     expect(csv.split('\r\n')[1]).toContain(`'${value}`.replace(/\n/g, '\n'));
   });
 
-  test.each([
-    ['=filter', 'ordinary'],
-    ['ordinary', '\t+filter-value'],
-    ['@key', '-filter-value'],
-  ])('forces formula-like filter key/value %j=%j to text', (key, value) => {
-    const formulaSafe = (part: string) => /^[\u0000-\u0020]*[=+\-@]/.test(part)
-      ? `'${part}`
-      : part;
+  test('serializes filters as canonical sorted JSON without losing hostile text', () => {
     const csv = buildCsv({
       ...input([{ snapshot_id: metadata.snapshot_id, name: 'safe', value: 1 }]),
       metadata: {
         ...metadata,
-        filters: { [key]: value },
+        filters: {
+          unicode: '龙头',
+          quote: '"quoted"',
+          a: 'x;y=z',
+          '=key': '\t+filter-value',
+        },
       },
     });
 
-    expect(csv.split('\r\n')[1]).toContain(
-      `${formulaSafe(key)}=${formulaSafe(value)}`,
+    expect(csv).toContain(
+      '"{""=key"":""\\t+filter-value"",""a"":""x;y=z"",""quote"":""\\""quoted\\"""",""unicode"":""龙头""}"',
     );
   });
 
