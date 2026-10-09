@@ -21,11 +21,12 @@ measured results; do not report either target as an approved service objective.
 1. Stop writes at every application and worker entry point. Leave reads
    available only when they cannot enqueue or mutate data.
 2. Enforce the database write freeze before fingerprinting or dumping. Set
-   `default_transaction_read_only=on` for the validated, safely quoted source
-   database identifier, terminate other source sessions, verify none remain,
-   reconnect, and prove `transaction_read_only=on`. Perform this drill only in
-   a dedicated test container; production operators must use the approved
-   equivalent controls.
+   `default_transaction_read_only=on`, revoke `CONNECT` from `PUBLIC` and the
+   application role, terminate source sessions, verify zero sessions remain,
+   and prove a fresh application connection/write is denied. The automated
+   drill accepts only a generated source in a container carrying the exact
+   `dragon-radar.task21-release=true` label and an admin maintenance URL whose
+   database is `postgres`.
 3. Record the UTC write-stop time, capture the full stable source fingerprint,
    and start the write-freeze timer.
 4. Create the custom-format backup without printing credentials:
@@ -45,10 +46,9 @@ measured results; do not report either target as an approved service objective.
    and `data_loss_window_seconds=0.0` only when the enforced freeze, stable
    source fingerprints, and restored fingerprint equality are all proven.
    Otherwise fail the drill and emit no pass evidence.
-6. In all success and failure paths, restore
-   `default_transaction_read_only=off`, reconnect, and prove
-   `transaction_read_only=off`. Preserve the primary failure if this cleanup
-   also fails.
+6. Do not thaw the fenced source during the automated drill. Its cleanup drops
+   the generated source, restore, role, and dump through the `postgres`
+   maintenance database while preserving the primary and all cleanup failures.
 
 ## Restore And Check
 
@@ -88,9 +88,13 @@ permission, count, fingerprint, or elapsed-time check failure. Keep writes
 stopped, retain the original source, mark the release blocked, and escalate.
 Never attempt an in-place repair as part of this procedure.
 
+Production failure stays frozen. A thaw requires an explicit approved thaw
+decision recorded by the incident owner; it is not an automatic failure
+cleanup action.
+
 ## Cleanup And Audit
 
-Cleanup is conditional on whether the switch occurred:
+Production cleanup is conditional on whether the switch occurred:
 
 1. After a successful switch, retain the newly active restored database. Never
    drop the active restored database. Retain the old source database for the
@@ -98,8 +102,13 @@ Cleanup is conditional on whether the switch occurred:
 2. On abort before switch, retain the original source and evidence. Operators
    may drop the failed restore database after recording its identity and
    failure, then remove the dump according to the retention policy.
-3. A disposable drill that never becomes a production switch may drop its
-   isolated restore database and remove its dump after verification.
+### Disposable Drill Cleanup
+
+A disposable drill never becomes a production switch. It uses generated
+source/restore database names, a generated non-superuser application role, and
+an unreported generated password. After verification it drops the generated
+source database, restore database, and role through the `postgres` maintenance
+database, then removes the dump. There is no thaw step.
 
 The audit record must contain incident and operator IDs, application artifact,
 source and restore database IDs, write-stop and switch/abort UTC times, revision,

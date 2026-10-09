@@ -1999,6 +1999,8 @@ def _configure_fake_restore_drill(
     hash_stdout=None,
     source_fingerprints=None,
 ):
+    from sqlalchemy.engine import make_url
+
     globals_ = verifier["exercise_backup_restore"].__globals__
     events = []
     fingerprint_calls = 0
@@ -2034,15 +2036,37 @@ def _configure_fake_restore_drill(
         events.append(("fingerprint", database_url))
         return next(fingerprints)
 
-    def enforce_quiescence(container, username, source_database):
-        events.append(("freeze", container, username, source_database))
+    resources = {
+        "role": "task21_role_" + ("c" * 32),
+        "source_database": "task21_source_" + ("c" * 32),
+        "restore_database": "task21_restore_" + ("c" * 32),
+        "dump_path": "/tmp/task21_restore_" + ("c" * 32) + ".dump",
+        "password": "unreported-password",
+    }
+
+    def create_resources(container, username, actual):
+        assert actual == resources
+        events.append(("create", container, username))
+        if failure == "prepare":
+            raise RuntimeError("prepare failed")
+
+    def enforce_quiescence(
+        container,
+        username,
+        source_database,
+        app_role,
+        app_password,
+    ):
+        events.append(
+            ("freeze", container, username, source_database, app_role, app_password)
+        )
         if failure == "freeze":
             raise RuntimeError("freeze failed")
 
-    def restore_writable(container, username, source_database):
-        events.append(("thaw", container, username, source_database))
-        if failure == "thaw":
-            raise RuntimeError("thaw failed")
+    def restore_access(container, username, restore_database, app_role):
+        events.append(
+            ("restore_access", container, username, restore_database, app_role)
+        )
 
     def verify(restore_url, source_state):
         events.append(("verify", restore_url, source_state))
@@ -2055,21 +2079,20 @@ def _configure_fake_restore_drill(
             "permissions_preserved": True,
             "restore_fingerprint": source_fingerprint,
             "restored_counts": source_state["source_counts"],
+            "app_semantics_verified": True,
         }
 
     def run_process(argv, **kwargs):
         events.append(("process", list(argv), kwargs))
         command = next(
-            (
-                item
-                for item in ("pg_dump", "createdb", "pg_restore", "sha256sum")
-                if item in argv
-            ),
+            (item for item in ("pg_dump", "pg_restore", "sha256sum") if item in argv),
             None,
         )
+        if argv[-1].startswith("CREATE DATABASE"):
+            command = "createdb"
         if failure is not None and failure == command:
             return subprocess.CompletedProcess(argv, 23, "", f"{command} failed")
-        if failure == "cleanup" and ("dropdb" in argv or "rm" in argv):
+        if failure == "cleanup" and (argv[-1].startswith("DROP ") or "rm" in argv):
             return subprocess.CompletedProcess(argv, 24, "", "cleanup failed")
         stdout = ""
         if command == "sha256sum":
@@ -2080,17 +2103,22 @@ def _configure_fake_restore_drill(
             )
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
-    monkeypatch.setitem(globals_, "_prepare_restore_source", prepare)
-    monkeypatch.setitem(globals_, "_database_fingerprint", fingerprint)
     monkeypatch.setitem(
         globals_,
-        "_enforce_source_quiescence",
-        enforce_quiescence,
+        "_validate_restore_drill_target",
+        lambda *_: (
+            make_url("postgresql+psycopg://dragon:secret@localhost:5432/postgres"),
+            "dragon",
+        ),
     )
-    monkeypatch.setitem(globals_, "_restore_source_writable", restore_writable)
+    monkeypatch.setitem(globals_, "_new_restore_drill_resources", lambda: resources)
+    monkeypatch.setitem(globals_, "_create_restore_drill_resources", create_resources)
+    monkeypatch.setitem(globals_, "_prepare_restore_source", prepare)
+    monkeypatch.setitem(globals_, "_database_fingerprint", fingerprint)
+    monkeypatch.setitem(globals_, "_fence_restore_source", enforce_quiescence)
+    monkeypatch.setitem(globals_, "_restore_app_access", restore_access)
     monkeypatch.setitem(globals_, "_verify_restored_database", verify)
     monkeypatch.setitem(globals_, "_run_process", run_process)
-    monkeypatch.setitem(globals_, "_new_restore_token", lambda: "c" * 32)
     return events, source_fingerprint, backup_sha256, lambda: fingerprint_calls
 
 
@@ -2103,7 +2131,7 @@ def test_backup_restore_drill_uses_argv_and_writes_atomic_evidence(
         _configure_fake_restore_drill(verifier, monkeypatch)
     )
     output = tmp_path / "restore.json"
-    database_url = "postgresql+psycopg://dragon:secret@localhost:5432/source"
+    database_url = "postgresql+psycopg://dragon:secret@localhost:5432/postgres"
 
     result = verifier["exercise_backup_restore"](
         "task21-postgres",
@@ -2118,6 +2146,7 @@ def test_backup_restore_drill_uses_argv_and_writes_atomic_evidence(
     assert result["restored_ready"] is True
     assert result["sentinel_preserved"] is True
     assert result["permissions_preserved"] is True
+    assert result["app_semantics_verified"] is True
     assert result["quiescence_enforced"] is True
     assert result["measured_data_loss_rows"] == 0
     assert result["data_loss_window_seconds"] == 0.0
@@ -2126,85 +2155,40 @@ def test_backup_restore_drill_uses_argv_and_writes_atomic_evidence(
     assert "measured_data_loss_window_seconds" not in result
     assert result["elapsed_seconds"] > 0
     assert "secret" not in output.read_text(encoding="utf-8")
+    assert "unreported-password" not in output.read_text(encoding="utf-8")
     assert fingerprint_calls() == 3
     assert [event[0] for event in events].index("freeze") < [
         event[0] for event in events
     ].index("fingerprint")
-    thaw_index = [event[0] for event in events].index("thaw")
     cleanup_index = next(
         index
         for index, event in enumerate(events)
-        if event[0] == "process" and ("dropdb" in event[1] or "rm" in event[1])
+        if event[0] == "process" and event[1][-1].startswith("DROP ")
     )
-    assert thaw_index < cleanup_index
+    assert [event[0] for event in events].index("verify") < cleanup_index
+    assert "thaw" not in [event[0] for event in events]
 
     process_events = [event for event in events if event[0] == "process"]
     argv = [event[1] for event in process_events]
     assert all(event[2]["timeout"] > 0 for event in process_events)
     assert all("shell" not in event[2] for event in process_events)
-    assert argv == [
-        [
-            "docker",
-            "exec",
-            "task21-postgres",
-            "pg_dump",
-            "--username",
-            "dragon",
-            "--dbname",
-            "source",
-            "--format=custom",
-            "--file=/tmp/task21_restore_" + ("c" * 32) + ".dump",
-        ],
-        [
-            "docker",
-            "exec",
-            "task21-postgres",
-            "sha256sum",
-            "/tmp/task21_restore_" + ("c" * 32) + ".dump",
-        ],
-        [
-            "docker",
-            "exec",
-            "task21-postgres",
-            "createdb",
-            "--username",
-            "dragon",
-            "task21_restore_" + ("c" * 32),
-        ],
-        [
-            "docker",
-            "exec",
-            "task21-postgres",
-            "pg_restore",
-            "--username",
-            "dragon",
-            "--exit-on-error",
-            "--dbname",
-            "task21_restore_" + ("c" * 32),
-            "/tmp/task21_restore_" + ("c" * 32) + ".dump",
-        ],
-        [
-            "docker",
-            "exec",
-            "task21-postgres",
-            "dropdb",
-            "--username",
-            "dragon",
-            "--if-exists",
-            "task21_restore_" + ("c" * 32),
-        ],
-        [
-            "docker",
-            "exec",
-            "task21-postgres",
-            "rm",
-            "-f",
-            "/tmp/task21_restore_" + ("c" * 32) + ".dump",
-        ],
+    assert sum("pg_dump" in command for command in argv) == 1
+    assert sum("sha256sum" in command for command in argv) == 1
+    assert sum("pg_restore" in command for command in argv) == 1
+    cleanup_sql = [command[-1] for command in argv if command[-1].startswith("DROP ")]
+    assert cleanup_sql == [
+        'DROP DATABASE IF EXISTS "task21_restore_' + ("c" * 32) + '" WITH (FORCE)',
+        'DROP DATABASE IF EXISTS "task21_source_' + ("c" * 32) + '" WITH (FORCE)',
+        'DROP ROLE IF EXISTS "task21_role_' + ("c" * 32) + '"',
+    ]
+    assert argv[-1][-3:] == [
+        "rm",
+        "-f",
+        "/tmp/task21_restore_" + ("c" * 32) + ".dump",
     ]
 
 
-def test_source_write_freeze_and_thaw_use_quoted_database_and_prove_state(
+def test_source_fence_never_thaws_and_proves_app_denial(
     verifier,
     monkeypatch,
 ):
@@ -2214,25 +2198,27 @@ def test_source_write_freeze_and_thaw_use_quoted_database_and_prove_state(
     def run_process(argv, **kwargs):
         calls.append((argv, kwargs))
         sql = argv[-1]
-        if sql == "SHOW transaction_read_only":
-            stdout = "on\n" if len(calls) == 4 else "off\n"
-        elif "SELECT count(*)" in sql:
+        if "SELECT count(*)" in sql:
             stdout = "0\n"
+        elif "task21_write_denied" in sql:
+            return subprocess.CompletedProcess(
+                argv,
+                2,
+                "",
+                "FATAL: permission denied for database source-db",
+            )
         else:
             stdout = ""
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setitem(globals_, "_run_process", run_process)
 
-    verifier["_enforce_source_quiescence"](
+    verifier["_fence_restore_source"](
         "task21-postgres",
         "dragon",
         "source-db",
-    )
-    verifier["_restore_source_writable"](
-        "task21-postgres",
-        "dragon",
-        "source-db",
+        "task21-role",
+        "unreported-password",
     )
 
     argv = [call[0] for call in calls]
@@ -2241,15 +2227,14 @@ def test_source_write_freeze_and_thaw_use_quoted_database_and_prove_state(
         'ALTER DATABASE "source-db" SET default_transaction_read_only = on'
         in (argv[0][-1])
     )
-    assert "pg_terminate_backend" in argv[1][-1]
-    assert "SELECT count(*)" in argv[2][-1]
-    assert argv[3][-1] == "SHOW transaction_read_only"
-    assert (
-        'ALTER DATABASE "source-db" SET default_transaction_read_only = off'
-        in (argv[4][-1])
+    assert "REVOKE CONNECT" in argv[1][-1]
+    assert "REVOKE CONNECT" in argv[2][-1]
+    assert "pg_terminate_backend" in argv[3][-1]
+    assert "SELECT count(*)" in argv[4][-1]
+    assert "CREATE TABLE task21_write_denied" in argv[5][-1]
+    assert not any(
+        "default_transaction_read_only = off" in command[-1] for command in argv
     )
-    assert argv[5][-1] == "SHOW transaction_read_only"
-    assert all("--set=ON_ERROR_STOP=1" in command for command in argv)
 
 
 @pytest.mark.parametrize(
@@ -2280,18 +2265,19 @@ def test_backup_sha256_malformed_output_fails_closed(
     with pytest.raises(ValueError, match="SHA-256 output is invalid"):
         verifier["exercise_backup_restore"](
             "task21-postgres",
-            "postgresql://dragon:secret@localhost/source",
+            "postgresql://dragon:secret@localhost/postgres",
             output,
         )
 
     assert not output.exists()
-    assert "thaw" in [event[0] for event in events]
     cleanup = [
         event[1]
         for event in events
-        if event[0] == "process" and ("dropdb" in event[1] or "rm" in event[1])
+        if event[0] == "process"
+        and (event[1][-1].startswith("DROP ") or "rm" in event[1])
     ]
-    assert len(cleanup) == 2
+    assert len(cleanup) == 4
+    assert "thaw" not in [event[0] for event in events]
 
 
 def test_source_mutation_after_dump_fails_closed(
@@ -2311,16 +2297,16 @@ def test_source_mutation_after_dump_fails_closed(
     with pytest.raises(ValueError, match="source database fingerprint changed"):
         verifier["exercise_backup_restore"](
             "task21-postgres",
-            "postgresql://dragon:secret@localhost/source",
+            "postgresql://dragon:secret@localhost/postgres",
             output,
         )
 
     assert not output.exists()
     assert fingerprint_calls() >= 2
-    assert "thaw" in [event[0] for event in events]
+    assert "thaw" not in [event[0] for event in events]
 
 
-def test_quiescence_failure_emits_no_pass_evidence_and_restores_writable(
+def test_quiescence_failure_emits_no_pass_evidence_and_keeps_source_frozen(
     verifier,
     tmp_path,
     monkeypatch,
@@ -2335,13 +2321,13 @@ def test_quiescence_failure_emits_no_pass_evidence_and_restores_writable(
     with pytest.raises(RuntimeError, match="freeze failed"):
         verifier["exercise_backup_restore"](
             "task21-postgres",
-            "postgresql://dragon:secret@localhost/source",
+            "postgresql://dragon:secret@localhost/postgres",
             output,
         )
 
     assert not output.exists()
     assert fingerprint_calls() == 0
-    assert "thaw" in [event[0] for event in events]
+    assert "thaw" not in [event[0] for event in events]
 
 
 def test_restore_schema_canonicalization_recreates_only_round_trip_mismatches(
@@ -2473,18 +2459,22 @@ def test_backup_restore_failure_invalidates_output_and_cleans_exactly(
     with pytest.raises(RuntimeError, match=message):
         verifier["exercise_backup_restore"](
             "task21-postgres",
-            "postgresql://dragon:secret@localhost/source",
+            "postgresql://dragon:secret@localhost/postgres",
             output,
         )
 
     assert not output.exists()
     argv = [event[1] for event in events if event[0] == "process"]
-    cleanup = [command for command in argv if "dropdb" in command or "rm" in command]
-    assert len(cleanup) == 2
-    assert "dropdb" in cleanup[0]
-    assert "rm" in cleanup[1]
+    cleanup = [
+        command
+        for command in argv
+        if command[-1].startswith("DROP ") or "rm" in command
+    ]
+    assert len(cleanup) == 4
+    assert cleanup[0][-1].startswith("DROP DATABASE")
+    assert "rm" in cleanup[-1]
     assert fingerprint_calls() >= 1
-    assert "thaw" in [event[0] for event in events]
+    assert "thaw" not in [event[0] for event in events]
 
 
 def test_backup_restore_preserves_primary_and_all_cleanup_failures(
@@ -2503,42 +2493,24 @@ def test_backup_restore_preserves_primary_and_all_cleanup_failures(
     with pytest.raises(BaseExceptionGroup) as raised:
         verifier["exercise_backup_restore"](
             "task21-postgres",
-            "postgresql://dragon:secret@localhost/source",
+            "postgresql://dragon:secret@localhost/postgres",
             tmp_path / "restore.json",
         )
 
     assert [str(error) for error in raised.value.exceptions] == [
         "verify failed",
         "restore database cleanup failed with exit code 24: cleanup failed",
+        "source database cleanup failed with exit code 24: cleanup failed",
+        "app role cleanup failed with exit code 24: cleanup failed",
         "backup file cleanup failed with exit code 24: cleanup failed",
     ]
     assert "secret" not in repr(raised.value)
 
 
-def test_writable_restore_failure_preserves_primary_failure(
-    verifier,
-    tmp_path,
-    monkeypatch,
-):
-    _configure_fake_restore_drill(verifier, monkeypatch, failure="verify")
-    globals_ = verifier["exercise_backup_restore"].__globals__
-    monkeypatch.setitem(
-        globals_,
-        "_restore_source_writable",
-        lambda *_: (_ for _ in ()).throw(RuntimeError("writable restore failed")),
-    )
+def test_backup_restore_has_no_source_thaw_path():
+    source = SCRIPT.read_text(encoding="utf-8")
 
-    with pytest.raises(BaseExceptionGroup) as raised:
-        verifier["exercise_backup_restore"](
-            "task21-postgres",
-            "postgresql://dragon:secret@localhost/source",
-            tmp_path / "restore.json",
-        )
-
-    assert [str(error) for error in raised.value.exceptions] == [
-        "verify failed",
-        "writable restore failed",
-    ]
+    assert "_restore_source_writable" not in source
 
 
 def test_actual_named_container_backup_restore_drill(verifier, tmp_path):
@@ -2570,7 +2542,9 @@ def test_actual_named_container_backup_restore_drill(verifier, tmp_path):
         == json.loads(output.read_text(encoding="utf-8"))["backup_sha256"]
     )
     assert result["cleanup"] == {
+        "source_database_removed": True,
         "restore_database_removed": True,
+        "app_role_removed": True,
         "backup_file_removed": True,
     }
 
@@ -2634,3 +2608,221 @@ def test_ci_has_isolated_task21_migration_release_contract():
     assert "docker rm -f dragon-radar-task21-migration-release" in job
     assert "actions/upload-artifact@v4" in job
     assert ".temp/acceptance/" in job
+
+
+def test_focused_verifier_rejects_unlabeled_container_before_mutation(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    globals_ = verifier["exercise_backup_restore"].__globals__
+    events = []
+
+    def run_process(argv, **_kwargs):
+        events.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "false\n", "")
+
+    monkeypatch.setitem(globals_, "_run_process", run_process)
+    monkeypatch.setitem(
+        globals_,
+        "_create_restore_drill_resources",
+        lambda *_args, **_kwargs: pytest.fail("mutation preceded label validation"),
+    )
+
+    with pytest.raises(ValueError, match="dragon-radar.task21-release=true"):
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://admin:secret@localhost/postgres",
+            tmp_path / "restore.json",
+        )
+
+    assert events == [
+        [
+            "docker",
+            "inspect",
+            "--format",
+            '{{ index .Config.Labels "dragon-radar.task21-release" }}',
+            "task21-postgres",
+        ]
+    ]
+
+
+def test_focused_verifier_rejects_nonmaintenance_url_before_mutation(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    globals_ = verifier["exercise_backup_restore"].__globals__
+    mutated = False
+
+    def mutate(*_args, **_kwargs):
+        nonlocal mutated
+        mutated = True
+
+    monkeypatch.setitem(
+        globals_,
+        "_run_process",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "true\n", ""),
+    )
+    monkeypatch.setitem(globals_, "_create_restore_drill_resources", mutate)
+
+    with pytest.raises(ValueError, match="maintenance database postgres"):
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://admin:secret@localhost/arbitrary",
+            tmp_path / "restore.json",
+        )
+
+    assert mutated is False
+
+
+def test_focused_verifier_generates_unique_disposable_identities(verifier):
+    first = verifier["_new_restore_drill_resources"]()
+    second = verifier["_new_restore_drill_resources"]()
+
+    assert first.keys() == {
+        "role",
+        "source_database",
+        "restore_database",
+        "dump_path",
+        "password",
+    }
+    assert second.keys() == first.keys()
+    assert first != second
+    for identity in ("role", "source_database", "restore_database", "dump_path"):
+        assert first[identity] != second[identity]
+    assert re.fullmatch(r"task21_role_[0-9a-f]{32}", first["role"])
+    assert re.fullmatch(r"task21_source_[0-9a-f]{32}", first["source_database"])
+    assert re.fullmatch(r"task21_restore_[0-9a-f]{32}", first["restore_database"])
+    assert first["dump_path"] == f"/tmp/{first['restore_database']}.dump"
+    assert first["password"] not in json.dumps(
+        {key: value for key, value in first.items() if key != "password"}
+    )
+
+
+def test_focused_verifier_fence_orders_revocation_and_proves_app_denial(
+    verifier,
+    monkeypatch,
+):
+    globals_ = verifier["_fence_restore_source"].__globals__
+    calls = []
+
+    def run_process(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        sql = argv[-1]
+        if "SELECT count(*) FROM pg_stat_activity" in sql:
+            return subprocess.CompletedProcess(argv, 0, "0\n", "")
+        if "--username" in argv and argv[argv.index("--username") + 1].startswith(
+            "task21_role_"
+        ):
+            return subprocess.CompletedProcess(
+                argv,
+                2,
+                "",
+                "FATAL: permission denied for database",
+            )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setitem(globals_, "_run_process", run_process)
+    verifier["_fence_restore_source"](
+        "task21-postgres",
+        "admin",
+        "task21_source_" + ("a" * 32),
+        "task21_role_" + ("b" * 32),
+        "unreported-password",
+    )
+
+    sql = [argv[-1] for argv, _kwargs in calls]
+    assert "default_transaction_read_only = on" in sql[0]
+    assert sql[1].startswith("REVOKE CONNECT ON DATABASE")
+    assert "FROM PUBLIC" in sql[1]
+    assert sql[2].startswith("REVOKE CONNECT ON DATABASE")
+    assert 'FROM "task21_role_' in sql[2]
+    assert "pg_terminate_backend" in sql[3]
+    assert "SELECT count(*) FROM pg_stat_activity" in sql[4]
+    assert "CREATE TABLE task21_write_denied" in sql[5]
+    assert calls[5][1]["env"]["PGPASSWORD"] == "unreported-password"
+
+
+def test_focused_verifier_fingerprint_contract_includes_sequences_and_snapshot(
+    verifier,
+):
+    source = SCRIPT.read_text(encoding="utf-8")
+    function = source[
+        source.index("def _database_fingerprint(") : source.index(
+            "\ndef _restore_sentinel_counts",
+            source.index("def _database_fingerprint("),
+        )
+    ]
+
+    assert "REPEATABLE READ READ ONLY" in function
+    for required in (
+        "public",
+        "last_value",
+        "is_called",
+        "increment",
+        "cycle",
+    ):
+        assert required in function
+
+    base = {
+        "tables": [{"qualified_name": "public.example", "rows": 0}],
+        "sequences": [
+            {
+                "qualified_name": "public.example_id_seq",
+                "last_value": 1,
+                "is_called": False,
+                "increment": 1,
+                "cycle": False,
+            }
+        ],
+    }
+    drifted = deepcopy(base)
+    drifted["sequences"][0]["last_value"] = 2
+    assert verifier["_hash_database_state"](base) != verifier["_hash_database_state"](
+        drifted
+    )
+
+
+def test_focused_verifier_detects_sequence_only_drift(
+    verifier,
+    database_url,
+):
+    from sqlalchemy import create_engine, text
+
+    sequence = "task21_fingerprint_" + os.urandom(8).hex()
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SEQUENCE public."{sequence}"'))
+        before = verifier["_database_fingerprint"](database_url)
+        with engine.begin() as connection:
+            connection.execute(text(f"SELECT nextval('public.\"{sequence}\"')"))
+        after = verifier["_database_fingerprint"](database_url)
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SEQUENCE IF EXISTS public."{sequence}"'))
+        engine.dispose()
+
+    assert before != after
+
+
+def test_focused_verifier_docs_and_ci_preserve_production_frozen_state():
+    runbook = (ROOT / "docs/operations/database-backup-restore.md").read_text(
+        encoding="utf-8"
+    )
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    normalized = " ".join(runbook.lower().split())
+    job = workflow[workflow.index("  task21_migration_release:") :]
+
+    assert "disposable drill cleanup" in normalized
+    assert "production failure stays frozen" in normalized
+    assert "explicit approved thaw" in normalized
+    assert "retain the newly active restored database" in normalized
+    assert "retain the old source database for the rollback window" in normalized
+    assert "--label dragon-radar.task21-release=true" in job
+    assert re.search(
+        r"DRAGON_TEST_DATABASE_URL=.*?/postgres(?:\"|$)",
+        job,
+        flags=re.MULTILINE,
+    )

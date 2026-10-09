@@ -1608,9 +1608,31 @@ def _new_restore_token() -> str:
     return secrets.token_hex(16)
 
 
+def _new_restore_drill_resources() -> dict[str, str]:
+    token = _new_restore_token()
+    restore_database = f"task21_restore_{token}"
+    return {
+        "role": f"task21_role_{token}",
+        "source_database": f"task21_source_{token}",
+        "restore_database": restore_database,
+        "dump_path": f"/tmp/{restore_database}.dump",
+        "password": secrets.token_urlsafe(32),
+    }
+
+
+def _hash_database_state(state: dict[str, object]) -> str:
+    encoded = json.dumps(
+        state,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _database_fingerprint(database_url: str) -> str:
-    """Hash every public table's row count and order-independent row hashes."""
-    from sqlalchemy import create_engine, inspect, text
+    """Hash public table rows and sequence state in one stable snapshot."""
+    from sqlalchemy import create_engine, text
 
     engine = create_engine(
         _validated_postgres_url(database_url),
@@ -1618,38 +1640,80 @@ def _database_fingerprint(database_url: str) -> str:
         hide_parameters=True,
         connect_args={"connect_timeout": 3},
     )
-    table_state = []
+    state: dict[str, list[dict[str, object]]] = {
+        "tables": [],
+        "sequences": [],
+    }
     try:
         with engine.connect() as connection:
+            transaction = connection.begin()
+            connection.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            )
             preparer = connection.dialect.identifier_preparer
-            tables = sorted(inspect(connection).get_table_names(schema="public"))
+            tables = list(
+                connection.execute(
+                    text(
+                        """
+                        SELECT tablename
+                        FROM pg_tables
+                        WHERE schemaname = 'public'
+                        ORDER BY tablename
+                        """
+                    )
+                ).scalars()
+            )
             for table in tables:
-                quoted = preparer.quote(table)
+                qualified = f"{preparer.quote_schema('public')}.{preparer.quote(table)}"
                 row = connection.execute(
                     text(
                         "SELECT count(*) AS row_count, "
                         "md5(COALESCE(string_agg("
                         "md5(row_to_json(row_value)::text), '' "
                         "ORDER BY md5(row_to_json(row_value)::text)), '')) "
-                        f"AS fingerprint FROM {quoted} AS row_value"
+                        f"AS fingerprint FROM {qualified} AS row_value"
                     )
                 ).one()
-                table_state.append(
+                state["tables"].append(
                     {
-                        "table": table,
+                        "qualified_name": f"public.{table}",
                         "rows": row.row_count,
                         "fingerprint": row.fingerprint,
                     }
                 )
+            sequences = connection.execute(
+                text(
+                    """
+                    SELECT sequencename, increment_by, cycle
+                    FROM pg_sequences
+                    WHERE schemaname = 'public'
+                    ORDER BY sequencename
+                    """
+                )
+            ).mappings()
+            for sequence in sequences:
+                name = str(sequence["sequencename"])
+                qualified = f"{preparer.quote_schema('public')}.{preparer.quote(name)}"
+                runtime = (
+                    connection.execute(
+                        text(f"SELECT last_value, is_called FROM {qualified}")
+                    )
+                    .mappings()
+                    .one()
+                )
+                state["sequences"].append(
+                    {
+                        "qualified_name": f"public.{name}",
+                        "last_value": runtime["last_value"],
+                        "is_called": runtime["is_called"],
+                        "increment": sequence["increment_by"],
+                        "cycle": sequence["cycle"],
+                    }
+                )
+            transaction.commit()
     finally:
         engine.dispose()
-    encoded = json.dumps(
-        table_state,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    ).encode("ascii")
-    return hashlib.sha256(encoded).hexdigest()
+    return _hash_database_state(state)
 
 
 def _restore_sentinel_counts(connection, values: dict[str, object]) -> dict[str, int]:
@@ -1888,6 +1952,26 @@ def _verify_restored_database(
     try:
         ready_before_canonicalization = database.ready()
         with database.engine.begin() as connection:
+            app_role, app_is_superuser = connection.execute(
+                text(
+                    """
+                    SELECT current_user, role_record.rolsuper
+                    FROM pg_roles role_record
+                    WHERE role_record.rolname = current_user
+                    """
+                )
+            ).one()
+            connection.execute(
+                text("CREATE TEMP TABLE task21_app_semantics(value integer)")
+            )
+            connection.execute(
+                text("INSERT INTO task21_app_semantics(value) VALUES (1)")
+            )
+            if (
+                connection.scalar(text("SELECT count(*) FROM task21_app_semantics"))
+                != 1
+            ):
+                raise ValueError("restored app write semantics failed")
             canonicalized_schema_objects = _canonicalize_restored_schema(connection)
             revision = connection.scalar(
                 text("SELECT version_num FROM alembic_version")
@@ -1928,6 +2012,8 @@ def _verify_restored_database(
         raise ValueError("restored database sentinel counts changed")
     if restore_fingerprint != source_state["fingerprint"]:
         raise ValueError("restored database fingerprint changed")
+    if app_is_superuser or app_role != source_state["app_role"]:
+        raise ValueError("restored database did not use the non-superuser app role")
     return {
         "revision": revision,
         "restored_ready": ready,
@@ -1937,6 +2023,7 @@ def _verify_restored_database(
         "restored_counts": restored_counts,
         "ready_before_canonicalization": ready_before_canonicalization,
         "canonicalized_schema_objects": canonicalized_schema_objects,
+        "app_semantics_verified": True,
     }
 
 
@@ -1988,24 +2075,144 @@ def _psql_restore_command(
     )
 
 
-def _enforce_source_quiescence(
+def _validate_restore_drill_target(container: str, database_url: str):
+    from sqlalchemy import create_engine, text
+
+    label = _run_process(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            '{{ index .Config.Labels "dragon-radar.task21-release" }}',
+            container,
+        ],
+        timeout=30,
+    )
+    _require_process_success(label, stage="restore container inspection")
+    if label.stdout.strip() != "true":
+        raise ValueError("restore container must have dragon-radar.task21-release=true")
+
+    url = _validated_postgres_url(database_url).difference_update_query(["options"])
+    if url.database != "postgres":
+        raise ValueError("restore drill requires maintenance database postgres")
+    username = url.username
+    if (
+        username is None
+        or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}", username) is None
+    ):
+        raise ValueError("maintenance URL must contain a safe admin user")
+
+    engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        hide_parameters=True,
+        connect_args={"connect_timeout": 3},
+    )
+    try:
+        with engine.connect() as connection:
+            database, is_superuser = connection.execute(
+                text(
+                    """
+                    SELECT current_database(), role_record.rolsuper
+                    FROM pg_roles role_record
+                    WHERE role_record.rolname = current_user
+                    """
+                )
+            ).one()
+    finally:
+        engine.dispose()
+    if database != "postgres" or is_superuser is not True:
+        raise ValueError("maintenance URL must identify a postgres admin")
+    return url, username
+
+
+def _create_restore_drill_resources(
     container: str,
-    username: str,
-    source_database: str,
+    admin_username: str,
+    resources: dict[str, str],
 ) -> None:
-    """Freeze the dedicated source and prove a new connection is read-only."""
-    quoted_database = _validated_database_identifier(source_database)
-    database_literal = _database_literal(source_database)
+    role = _validated_database_identifier(resources["role"])
+    source_database = _validated_database_identifier(resources["source_database"])
+    password = _database_literal(resources["password"])
     _psql_restore_command(
         container,
-        username,
+        admin_username,
+        "postgres",
+        (
+            f"CREATE ROLE {role} LOGIN PASSWORD {password} "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION"
+        ),
+        stage="app role creation",
+    )
+    _psql_restore_command(
+        container,
+        admin_username,
+        "postgres",
+        f"CREATE DATABASE {source_database} OWNER {role}",
+        stage="source database creation",
+    )
+    attributes = _psql_restore_command(
+        container,
+        admin_username,
+        "postgres",
+        (
+            "SELECT rolsuper::int || ',' || rolcreatedb::int || ',' || "
+            "rolcreaterole::int || ',' || rolreplication::int "
+            f"FROM pg_roles WHERE rolname = {_database_literal(resources['role'])}"
+        ),
+        stage="app role verification",
+    )
+    if attributes.stdout.strip() != "0,0,0,0":
+        raise RuntimeError("generated app role is privileged")
+
+
+def _app_database_url(admin_url, resources: dict[str, str], database: str) -> str:
+    return admin_url.set(
+        username=resources["role"],
+        password=resources["password"],
+        database=database,
+    ).render_as_string(hide_password=False)
+
+
+def _admin_database_url(admin_url, database: str) -> str:
+    return admin_url.set(database=database).render_as_string(hide_password=False)
+
+
+def _fence_restore_source(
+    container: str,
+    admin_username: str,
+    source_database: str,
+    app_role: str,
+    app_password: str,
+) -> None:
+    """Permanently fence the disposable source before its backup."""
+    quoted_database = _validated_database_identifier(source_database)
+    database_literal = _database_literal(source_database)
+    quoted_role = _validated_database_identifier(app_role)
+    _psql_restore_command(
+        container,
+        admin_username,
         "postgres",
         (f"ALTER DATABASE {quoted_database} SET default_transaction_read_only = on"),
         stage="source write freeze",
     )
     _psql_restore_command(
         container,
-        username,
+        admin_username,
+        "postgres",
+        f"REVOKE CONNECT ON DATABASE {quoted_database} FROM PUBLIC",
+        stage="public connect revocation",
+    )
+    _psql_restore_command(
+        container,
+        admin_username,
+        "postgres",
+        f"REVOKE CONNECT ON DATABASE {quoted_database} FROM {quoted_role}",
+        stage="app connect revocation",
+    )
+    _psql_restore_command(
+        container,
+        admin_username,
         "postgres",
         (
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
@@ -2015,7 +2222,7 @@ def _enforce_source_quiescence(
     )
     sessions = _psql_restore_command(
         container,
-        username,
+        admin_username,
         "postgres",
         (
             "SELECT count(*) FROM pg_stat_activity "
@@ -2025,40 +2232,55 @@ def _enforce_source_quiescence(
     )
     if sessions.stdout.strip() != "0":
         raise RuntimeError("source database still has non-drill sessions")
-    read_only = _psql_restore_command(
-        container,
-        username,
-        source_database,
-        "SHOW transaction_read_only",
-        stage="source read-only verification",
+
+    denied = _run_process(
+        [
+            "docker",
+            "exec",
+            "--env",
+            "PGPASSWORD",
+            container,
+            "psql",
+            "--host",
+            "localhost",
+            "--username",
+            app_role,
+            "--dbname",
+            source_database,
+            "--set=ON_ERROR_STOP=1",
+            "--command",
+            "CREATE TABLE task21_write_denied(value integer)",
+        ],
+        env={**os.environ, "PGPASSWORD": app_password},
+        timeout=30,
     )
-    if read_only.stdout.strip() != "on":
-        raise RuntimeError("source database write freeze was not enforced")
+    if (
+        denied.returncode == 0
+        or "permission denied for database" not in denied.stderr.lower()
+    ):
+        raise RuntimeError("fresh app connection/write denial was not proven")
 
 
-def _restore_source_writable(
+def _restore_app_access(
     container: str,
-    username: str,
-    source_database: str,
+    admin_username: str,
+    restore_database: str,
+    app_role: str,
 ) -> None:
-    """Restore the dedicated source default and prove a new connection can write."""
-    quoted_database = _validated_database_identifier(source_database)
+    quoted_database = _validated_database_identifier(restore_database)
+    quoted_role = _validated_database_identifier(app_role)
     _psql_restore_command(
         container,
-        username,
+        admin_username,
         "postgres",
-        (f"ALTER DATABASE {quoted_database} SET default_transaction_read_only = off"),
-        stage="source writable restore",
+        (
+            f"ALTER DATABASE {quoted_database} OWNER TO {quoted_role}; "
+            f"ALTER DATABASE {quoted_database} "
+            "SET default_transaction_read_only = off; "
+            f"GRANT CONNECT ON DATABASE {quoted_database} TO {quoted_role}"
+        ),
+        stage="restore app access",
     )
-    read_only = _psql_restore_command(
-        container,
-        username,
-        source_database,
-        "SHOW transaction_read_only",
-        stage="source writable verification",
-    )
-    if read_only.stdout.strip() != "off":
-        raise RuntimeError("source database writable setting was not restored")
 
 
 def _parse_backup_sha256(stdout: str, dump_path: str) -> str:
@@ -2079,52 +2301,56 @@ def exercise_backup_restore(
     """Run an isolated custom-format backup and restore verification drill."""
     _clear_output_target(output)
     container = validate_restore_container_name(restore_container)
-    url = _validated_postgres_url(database_url)
-    username = url.username
-    source_database = url.database
-    if (
-        username is None
-        or source_database is None
-        or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}", username) is None
-    ):
-        raise ValueError("database URL must contain safe user and database names")
-    _validated_database_identifier(source_database)
-
-    token = _new_restore_token()
-    restore_database = f"task21_restore_{token}"
-    dump_path = f"/tmp/{restore_database}.dump"
-    restore_url = url.set(database=restore_database).render_as_string(
-        hide_password=False
+    admin_url, admin_username = _validate_restore_drill_target(
+        container,
+        database_url,
     )
+    resources = _new_restore_drill_resources()
+    source_database = resources["source_database"]
+    restore_database = resources["restore_database"]
+    dump_path = resources["dump_path"]
+    source_app_url = _app_database_url(admin_url, resources, source_database)
+    source_admin_url = _admin_database_url(admin_url, source_database)
+    restore_app_url = _app_database_url(admin_url, resources, restore_database)
     started = time.monotonic()
     primary_error = None
     cleanup_errors: list[BaseException] = []
     source_state = None
     verification = None
     backup_sha256 = None
-    freeze_attempted = False
     freeze_started = None
     freeze_ended = None
     quiescence_enforced = False
     try:
-        source_state = _prepare_restore_source(database_url)
-        freeze_attempted = True
+        _create_restore_drill_resources(
+            container,
+            admin_username,
+            resources,
+        )
+        source_state = _prepare_restore_source(source_app_url)
+        source_state["app_role"] = resources["role"]
         freeze_started = time.monotonic()
-        _enforce_source_quiescence(container, username, source_database)
+        _fence_restore_source(
+            container,
+            admin_username,
+            source_database,
+            resources["role"],
+            resources["password"],
+        )
         quiescence_enforced = True
-        source_state["fingerprint"] = _database_fingerprint(database_url)
+        source_state["fingerprint"] = _database_fingerprint(source_admin_url)
         _docker_restore_command(
             container,
             "pg_dump",
             "--username",
-            username,
+            admin_username,
             "--dbname",
             source_database,
             "--format=custom",
             f"--file={dump_path}",
             stage="pg_dump",
         )
-        if _database_fingerprint(database_url) != source_state["fingerprint"]:
+        if _database_fingerprint(source_admin_url) != source_state["fingerprint"]:
             raise ValueError("source database fingerprint changed")
         hash_result = _docker_restore_command(
             container,
@@ -2133,58 +2359,77 @@ def exercise_backup_restore(
             stage="backup SHA-256",
         )
         backup_sha256 = _parse_backup_sha256(hash_result.stdout, dump_path)
-        _docker_restore_command(
+        _psql_restore_command(
             container,
-            "createdb",
-            "--username",
-            username,
-            restore_database,
-            stage="createdb",
+            admin_username,
+            "postgres",
+            (
+                f"CREATE DATABASE {_validated_database_identifier(restore_database)} "
+                f"OWNER {_validated_database_identifier(resources['role'])}"
+            ),
+            stage="restore database creation",
         )
         _docker_restore_command(
             container,
             "pg_restore",
             "--username",
-            username,
+            admin_username,
             "--exit-on-error",
             "--dbname",
             restore_database,
             dump_path,
             stage="pg_restore",
         )
-        verification = _verify_restored_database(restore_url, source_state)
-        if _database_fingerprint(database_url) != source_state["fingerprint"]:
+        _restore_app_access(
+            container,
+            admin_username,
+            restore_database,
+            resources["role"],
+        )
+        verification = _verify_restored_database(restore_app_url, source_state)
+        if _database_fingerprint(source_admin_url) != source_state["fingerprint"]:
             raise ValueError("source database fingerprint changed")
+        freeze_ended = time.monotonic()
     except BaseException as exc:
         primary_error = exc
     finally:
-        if freeze_attempted:
-            try:
-                _restore_source_writable(container, username, source_database)
-                freeze_ended = time.monotonic()
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-        for arguments, stage in (
+        for sql, stage in (
             (
-                (
-                    "dropdb",
-                    "--username",
-                    username,
-                    "--if-exists",
-                    restore_database,
-                ),
+                "DROP DATABASE IF EXISTS "
+                f"{_validated_database_identifier(restore_database)} WITH (FORCE)",
                 "restore database cleanup",
             ),
-            (("rm", "-f", dump_path), "backup file cleanup"),
+            (
+                "DROP DATABASE IF EXISTS "
+                f"{_validated_database_identifier(source_database)} WITH (FORCE)",
+                "source database cleanup",
+            ),
+            (
+                "DROP ROLE IF EXISTS "
+                f"{_validated_database_identifier(resources['role'])}",
+                "app role cleanup",
+            ),
         ):
             try:
-                _docker_restore_command(
+                _psql_restore_command(
                     container,
-                    *arguments,
+                    admin_username,
+                    "postgres",
+                    sql,
                     stage=stage,
                 )
             except BaseException as exc:
                 cleanup_errors.append(exc)
+        try:
+            _docker_restore_command(
+                container,
+                "rm",
+                "-f",
+                dump_path,
+                stage="backup file cleanup",
+            )
+        except BaseException as exc:
+            cleanup_errors.append(exc)
 
     if primary_error is not None:
         if cleanup_errors:
@@ -2227,6 +2472,7 @@ def exercise_backup_restore(
         "restored_ready": verification["restored_ready"],
         "sentinel_preserved": verification["sentinel_preserved"],
         "permissions_preserved": verification["permissions_preserved"],
+        "app_semantics_verified": verification["app_semantics_verified"],
         "ready_before_canonicalization": verification.get(
             "ready_before_canonicalization",
             True,
@@ -2238,8 +2484,16 @@ def exercise_backup_restore(
         "source_counts": source_state["source_counts"],
         "restored_counts": verification["restored_counts"],
         "cleanup": {
+            "source_database_removed": True,
             "restore_database_removed": True,
+            "app_role_removed": True,
             "backup_file_removed": True,
+        },
+        "disposable": {
+            "role": resources["role"],
+            "source_database": source_database,
+            "restore_database": restore_database,
+            "dump_path": dump_path,
         },
         "targets": {
             "rpo_seconds": 3600,

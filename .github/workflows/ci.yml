@@ -70,6 +70,7 @@ jobs:
         run: |
           docker run --detach \
             --name dragon-radar-task21-migration-release \
+            --label dragon-radar.task21-release=true \
             --publish 127.0.0.1::5432 \
             --env POSTGRES_USER=dragon_task21 \
             --env POSTGRES_PASSWORD="$TASK21_POSTGRES_PASSWORD" \
@@ -80,7 +81,7 @@ jobs:
             awk -F: 'NR == 1 { print $NF }'
           )"
           echo "TASK21_POSTGRES_PORT=$TASK21_POSTGRES_PORT" >> "$GITHUB_ENV"
-          echo "DRAGON_TEST_DATABASE_URL=postgresql+psycopg://dragon_task21:$TASK21_POSTGRES_PASSWORD@127.0.0.1:$TASK21_POSTGRES_PORT/dragon_task21" >> "$GITHUB_ENV"
+          echo "DRAGON_TEST_DATABASE_URL=postgresql+psycopg://dragon_task21:$TASK21_POSTGRES_PASSWORD@127.0.0.1:$TASK21_POSTGRES_PORT/postgres" >> "$GITHUB_ENV"
       - name: Wait for PostgreSQL readiness
         shell: bash
         run: |
