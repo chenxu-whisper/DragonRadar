@@ -1939,3 +1939,464 @@ def test_actual_generation_matches_committed_contract_and_drops_schema(
             )
     finally:
         admin.dispose()
+
+
+def test_release_policy_rejects_alembic_downgrade(verifier):
+    manifest = verifier["load_release_manifest"](MIGRATIONS / "release_manifest.json")
+
+    assert manifest["rollback_mode"] == "backup_restore_only"
+    with pytest.raises(ValueError) as raised:
+        verifier["validate_rollback_request"]("alembic_downgrade")
+
+    assert raised.value.args == (
+        {
+            "code": "unsupported_release_rollback",
+            "requested": "alembic_downgrade",
+            "rollback_mode": "backup_restore_only",
+        },
+    )
+
+
+def test_release_tooling_never_imports_or_calls_alembic_downgrade():
+    import ast
+
+    for path in (ROOT / "scripts").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            assert not (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "alembic.command"
+                and any(alias.name == "downgrade" for alias in node.names)
+            ), path
+            assert not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "downgrade"
+            ), path
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "-starts-with-dash",
+        "contains space",
+        "name;rm",
+        "name/child",
+        "a" * 129,
+    ],
+)
+def test_restore_container_name_must_be_safe(verifier, name):
+    with pytest.raises(ValueError, match="unsafe restore container name"):
+        verifier["validate_restore_container_name"](name)
+
+
+def _configure_fake_restore_drill(verifier, monkeypatch, *, failure=None):
+    globals_ = verifier["exercise_backup_restore"].__globals__
+    events = []
+    fingerprint_calls = 0
+    source_fingerprint = "a" * 64
+    backup_sha256 = "b" * 64
+
+    def prepare(database_url):
+        events.append(("prepare", database_url))
+        if failure == "prepare":
+            raise RuntimeError("prepare failed")
+        return {
+            "fingerprint": source_fingerprint,
+            "sentinel_kind": "foundation_archive",
+            "sentinel_expected": {"snapshot_id": "sentinel"},
+            "source_counts": {
+                "source_grants": 1,
+                "import_batches": 1,
+                "snapshots": 1,
+                "audit_events": 1,
+            },
+            "permission_sentinel": {
+                "source_id": "task21.sentinel",
+                "approved": True,
+                "local_storage": True,
+                "local_display": True,
+            },
+        }
+
+    def fingerprint(database_url):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        events.append(("fingerprint", database_url))
+        return source_fingerprint
+
+    def verify(restore_url, source_state):
+        events.append(("verify", restore_url, source_state))
+        if failure == "verify":
+            raise RuntimeError("verify failed")
+        return {
+            "revision": "0010_ai_tasks",
+            "restored_ready": True,
+            "sentinel_preserved": True,
+            "permissions_preserved": True,
+            "restore_fingerprint": source_fingerprint,
+            "restored_counts": source_state["source_counts"],
+        }
+
+    def run_process(argv, **kwargs):
+        events.append(("process", list(argv), kwargs))
+        command = next(
+            (
+                item
+                for item in ("pg_dump", "createdb", "pg_restore", "sha256sum")
+                if item in argv
+            ),
+            None,
+        )
+        if failure is not None and failure == command:
+            return subprocess.CompletedProcess(argv, 23, "", f"{command} failed")
+        if failure == "cleanup" and ("dropdb" in argv or "rm" in argv):
+            return subprocess.CompletedProcess(argv, 24, "", "cleanup failed")
+        stdout = (
+            f"{backup_sha256}  /tmp/task21.dump\n" if command == "sha256sum" else ""
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setitem(globals_, "_prepare_restore_source", prepare)
+    monkeypatch.setitem(globals_, "_database_fingerprint", fingerprint)
+    monkeypatch.setitem(globals_, "_verify_restored_database", verify)
+    monkeypatch.setitem(globals_, "_run_process", run_process)
+    monkeypatch.setitem(globals_, "_new_restore_token", lambda: "c" * 32)
+    return events, source_fingerprint, backup_sha256, lambda: fingerprint_calls
+
+
+def test_backup_restore_drill_uses_argv_and_writes_atomic_evidence(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    events, source_fingerprint, backup_sha256, fingerprint_calls = (
+        _configure_fake_restore_drill(verifier, monkeypatch)
+    )
+    output = tmp_path / "restore.json"
+    database_url = "postgresql+psycopg://dragon:secret@localhost:5432/source"
+
+    result = verifier["exercise_backup_restore"](
+        "task21-postgres",
+        database_url,
+        output,
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == result
+    assert result["backup_sha256"] == backup_sha256
+    assert result["source_fingerprint"] == source_fingerprint
+    assert result["source_unchanged"] is True
+    assert result["restored_ready"] is True
+    assert result["sentinel_preserved"] is True
+    assert result["permissions_preserved"] is True
+    assert result["quiesced"] is True
+    assert result["measured_data_loss_window_seconds"] == 0.0
+    assert result["elapsed_seconds"] > 0
+    assert "secret" not in output.read_text(encoding="utf-8")
+    assert fingerprint_calls() == 1
+
+    process_events = [event for event in events if event[0] == "process"]
+    argv = [event[1] for event in process_events]
+    assert all(event[2]["timeout"] > 0 for event in process_events)
+    assert all("shell" not in event[2] for event in process_events)
+    assert argv == [
+        [
+            "docker",
+            "exec",
+            "task21-postgres",
+            "pg_dump",
+            "--username",
+            "dragon",
+            "--dbname",
+            "source",
+            "--format=custom",
+            "--file=/tmp/task21_restore_" + ("c" * 32) + ".dump",
+        ],
+        [
+            "docker",
+            "exec",
+            "task21-postgres",
+            "sha256sum",
+            "/tmp/task21_restore_" + ("c" * 32) + ".dump",
+        ],
+        [
+            "docker",
+            "exec",
+            "task21-postgres",
+            "createdb",
+            "--username",
+            "dragon",
+            "task21_restore_" + ("c" * 32),
+        ],
+        [
+            "docker",
+            "exec",
+            "task21-postgres",
+            "pg_restore",
+            "--username",
+            "dragon",
+            "--exit-on-error",
+            "--dbname",
+            "task21_restore_" + ("c" * 32),
+            "/tmp/task21_restore_" + ("c" * 32) + ".dump",
+        ],
+        [
+            "docker",
+            "exec",
+            "task21-postgres",
+            "dropdb",
+            "--username",
+            "dragon",
+            "--if-exists",
+            "task21_restore_" + ("c" * 32),
+        ],
+        [
+            "docker",
+            "exec",
+            "task21-postgres",
+            "rm",
+            "-f",
+            "/tmp/task21_restore_" + ("c" * 32) + ".dump",
+        ],
+    ]
+
+
+def test_restore_schema_canonicalization_recreates_only_round_trip_mismatches(
+    verifier,
+    monkeypatch,
+):
+    from sqlalchemy import CheckConstraint, Column, Index, MetaData, String, Table
+
+    statements = []
+    metadata = MetaData()
+    example = Table(
+        "example",
+        metadata,
+        Column("status", String),
+        CheckConstraint("status IN ('queued', 'running')", name="example_status"),
+    )
+    Index(
+        "example_claim",
+        example.c.status,
+        postgresql_where=example.c.status.in_(("queued", "running")),
+    )
+    expected = {
+        "constraints": [
+            {
+                "table": "example",
+                "name": "example_status",
+                "kind": "check",
+                "expression": "expected",
+                "columns": ["status"],
+            }
+        ],
+        "indexes": [
+            {
+                "table": "example",
+                "name": "example_claim",
+                "predicate": "expected",
+            }
+        ],
+    }
+    actual = {
+        "constraints": [
+            {
+                "table": "example",
+                "name": "example_status",
+                "kind": "check",
+                "expression": "round-trip",
+                "columns": ["status"],
+            }
+        ],
+        "indexes": [
+            {
+                "table": "example",
+                "name": "example_claim",
+                "predicate": "round-trip",
+            }
+        ],
+    }
+    globals_ = verifier["_canonicalize_restored_schema"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_restored_schema_contracts",
+        lambda _connection: (expected, actual),
+    )
+    monkeypatch.setitem(globals_, "_restore_schema_metadata", lambda: metadata)
+
+    class FakeConnection:
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    count = verifier["_canonicalize_restored_schema"](FakeConnection())
+
+    assert count == 2
+    combined = "\n".join(statements)
+    for object_name in ("example_status", "example_claim"):
+        assert combined.count(object_name) == 2
+
+
+def test_restore_constraint_resolution_uses_literals_for_unnamed_checks(verifier):
+    from sqlalchemy import CheckConstraint, Column, MetaData, String, Table
+
+    metadata = MetaData()
+    table = Table(
+        "example",
+        metadata,
+        Column("state", String),
+        Column("reason", String),
+        CheckConstraint("state IN ('pending', 'idle')"),
+        CheckConstraint("(state = 'pending' AND reason IS NULL)"),
+    )
+    expected = {
+        "name": "example_state_check",
+        "columns": ["state"],
+        "expression": (
+            "((state)::text = ANY ((ARRAY['pending'::character varying, "
+            "'idle'::character varying])::text[]))"
+        ),
+    }
+
+    constraint = verifier["_metadata_check_constraint"](table, expected)
+
+    assert str(constraint.sqltext) == "state IN ('pending', 'idle')"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["pg_dump", "createdb", "pg_restore", "verify"],
+)
+def test_backup_restore_failure_invalidates_output_and_cleans_exactly(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    failure,
+):
+    events, _, _, fingerprint_calls = _configure_fake_restore_drill(
+        verifier,
+        monkeypatch,
+        failure=failure,
+    )
+    output = tmp_path / "restore.json"
+    output.write_text('{"stale":"success"}\n', encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://dragon:secret@localhost/source",
+            output,
+        )
+
+    assert not output.exists()
+    argv = [event[1] for event in events if event[0] == "process"]
+    cleanup = [command for command in argv if "dropdb" in command or "rm" in command]
+    assert len(cleanup) == 2
+    assert "dropdb" in cleanup[0]
+    assert "rm" in cleanup[1]
+    assert fingerprint_calls() == 1
+
+
+def test_backup_restore_preserves_primary_and_all_cleanup_failures(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    _configure_fake_restore_drill(verifier, monkeypatch, failure="cleanup")
+    globals_ = verifier["exercise_backup_restore"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_verify_restored_database",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("verify failed")),
+    )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://dragon:secret@localhost/source",
+            tmp_path / "restore.json",
+        )
+
+    assert [str(error) for error in raised.value.exceptions] == [
+        "verify failed",
+        "restore database cleanup failed with exit code 24: cleanup failed",
+        "backup file cleanup failed with exit code 24: cleanup failed",
+    ]
+    assert "secret" not in repr(raised.value)
+
+
+def test_actual_named_container_backup_restore_drill(verifier, tmp_path):
+    container = os.environ.get("DRAGON_TEST_POSTGRES_CONTAINER")
+    database_url = os.environ.get("DRAGON_TEST_DATABASE_URL")
+    if not container or not database_url:
+        pytest.skip(
+            "DRAGON_TEST_POSTGRES_CONTAINER and DRAGON_TEST_DATABASE_URL "
+            "are required for the restore integration"
+        )
+    output = tmp_path / "restore.json"
+
+    result = verifier["exercise_backup_restore"](
+        container,
+        database_url,
+        output,
+    )
+
+    assert result["source_unchanged"] is True
+    assert result["restored_ready"] is True
+    assert result["sentinel_preserved"] is True
+    assert result["permissions_preserved"] is True
+    assert (
+        result["backup_sha256"]
+        == json.loads(output.read_text(encoding="utf-8"))["backup_sha256"]
+    )
+    assert result["cleanup"] == {
+        "restore_database_removed": True,
+        "backup_file_removed": True,
+    }
+
+
+def test_backup_restore_runbook_is_restore_only_and_operational():
+    runbook = (ROOT / "docs" / "operations" / "database-backup-restore.md").read_text(
+        encoding="utf-8"
+    )
+
+    for required in (
+        "stop writes",
+        "custom",
+        "distinct restore",
+        "Database.ready",
+        "sentinel",
+        "switch",
+        "abort",
+        "cleanup",
+        "audit",
+        "RPO <= 1 hour",
+        "RTO <= 4 hours",
+        "suggested",
+        "unapproved",
+        "NEVER",
+        "alembic downgrade",
+    ):
+        assert required.lower() in runbook.lower()
+    assert "down -v" not in runbook
+
+
+def test_ci_has_isolated_task21_migration_release_contract():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = workflow[workflow.index("  task21_migration_release:") :]
+    next_job = re.search(r"\n  [a-zA-Z0-9_]+:\n", job[1:])
+    if next_job is not None:
+        job = job[: next_job.start() + 1]
+
+    assert "postgres:17-alpine@sha256:" in job
+    assert "--name dragon-radar-task21-migration-release" in job
+    assert "-p 5432" not in job
+    assert "openssl rand" in job
+    assert "pg_isready" in job
+    assert job.index("uv sync --locked") < job.index("uv build")
+    assert "--wheel .temp/dist" in job
+    assert "--restore-container dragon-radar-task21-migration-release" in job
+    assert "if: always()" in job
+    assert "docker rm -f dragon-radar-task21-migration-release" in job
+    assert "actions/upload-artifact@v4" in job
+    assert ".temp/acceptance/" in job

@@ -48,6 +48,76 @@ jobs:
           --output .temp/acceptance/task21-migrations.json
           --audited-commit '${{ github.sha }}'
 
+  task21_migration_release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.temp/pycache
+      UV_CACHE_DIR: ${{ github.workspace }}/.temp/uv-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate CI-only database password
+        shell: bash
+        run: |
+          TASK21_POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$TASK21_POSTGRES_PASSWORD"
+          echo "TASK21_POSTGRES_PASSWORD=$TASK21_POSTGRES_PASSWORD" >> "$GITHUB_ENV"
+      - name: Start named PostgreSQL 17 release container
+        shell: bash
+        run: |
+          docker run --detach \
+            --name dragon-radar-task21-migration-release \
+            --publish 127.0.0.1::5432 \
+            --env POSTGRES_USER=dragon_task21 \
+            --env POSTGRES_PASSWORD="$TASK21_POSTGRES_PASSWORD" \
+            --env POSTGRES_DB=dragon_task21 \
+            postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          TASK21_POSTGRES_PORT="$(
+            docker port dragon-radar-task21-migration-release 5432/tcp |
+            awk -F: 'NR == 1 { print $NF }'
+          )"
+          echo "TASK21_POSTGRES_PORT=$TASK21_POSTGRES_PORT" >> "$GITHUB_ENV"
+          echo "DRAGON_TEST_DATABASE_URL=postgresql+psycopg://dragon_task21:$TASK21_POSTGRES_PASSWORD@127.0.0.1:$TASK21_POSTGRES_PORT/dragon_task21" >> "$GITHUB_ENV"
+      - name: Wait for PostgreSQL readiness
+        shell: bash
+        run: |
+          for attempt in $(seq 1 30); do
+            if docker exec dragon-radar-task21-migration-release \
+              pg_isready --username dragon_task21 --dbname dragon_task21
+            then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+      - run: python -m pip install uv==0.8.2
+      - run: uv sync --locked
+      - run: uv build --out-dir .temp/dist
+      - name: Verify installed wheel migrations
+        run: >-
+          uv run python scripts/verify_release_migrations.py
+          --database-url "$DRAGON_TEST_DATABASE_URL"
+          --wheel .temp/dist
+          --output .temp/acceptance/task21-wheel-migrations.json
+          --audited-commit '${{ github.sha }}'
+      - name: Run named-container backup restore drill
+        run: >-
+          uv run python scripts/verify_release_migrations.py
+          --restore-container dragon-radar-task21-migration-release
+          --database-url "$DRAGON_TEST_DATABASE_URL"
+          --output .temp/acceptance/task21-migrations.json
+      - name: Remove Task21 release container
+        if: always()
+        run: docker rm -f dragon-radar-task21-migration-release
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: task21-migration-release-evidence
+          path: .temp/acceptance/
+
   reset_performance:
     runs-on: ubuntu-latest
     timeout-minutes: 15

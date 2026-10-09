@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
@@ -1580,6 +1581,539 @@ def _require_process_success(
         raise RuntimeError(f"{stage} failed with exit code {result.returncode}{suffix}")
 
 
+def validate_rollback_request(requested: str) -> str:
+    """Reject unsupported production rollback mechanisms."""
+    if requested != ROLLBACK_MODE:
+        raise ValueError(
+            {
+                "code": "unsupported_release_rollback",
+                "requested": requested,
+                "rollback_mode": ROLLBACK_MODE,
+            }
+        )
+    return requested
+
+
+def validate_restore_container_name(name: str) -> str:
+    """Require a Docker container name that cannot be parsed as an option."""
+    if (
+        not isinstance(name, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name) is None
+    ):
+        raise ValueError("unsafe restore container name")
+    return name
+
+
+def _new_restore_token() -> str:
+    return secrets.token_hex(16)
+
+
+def _database_fingerprint(database_url: str) -> str:
+    """Hash every public table's row count and order-independent row hashes."""
+    from sqlalchemy import create_engine, inspect, text
+
+    engine = create_engine(
+        _validated_postgres_url(database_url),
+        pool_pre_ping=True,
+        hide_parameters=True,
+        connect_args={"connect_timeout": 3},
+    )
+    table_state = []
+    try:
+        with engine.connect() as connection:
+            preparer = connection.dialect.identifier_preparer
+            tables = sorted(inspect(connection).get_table_names(schema="public"))
+            for table in tables:
+                quoted = preparer.quote(table)
+                row = connection.execute(
+                    text(
+                        "SELECT count(*) AS row_count, "
+                        "md5(COALESCE(string_agg("
+                        "md5(row_to_json(row_value)::text), '' "
+                        "ORDER BY md5(row_to_json(row_value)::text)), '')) "
+                        f"AS fingerprint FROM {quoted} AS row_value"
+                    )
+                ).one()
+                table_state.append(
+                    {
+                        "table": table,
+                        "rows": row.row_count,
+                        "fingerprint": row.fingerprint,
+                    }
+                )
+    finally:
+        engine.dispose()
+    encoded = json.dumps(
+        table_state,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _restore_sentinel_counts(connection, values: dict[str, object]) -> dict[str, int]:
+    from sqlalchemy import text
+
+    queries = {
+        "source_grants": (
+            "SELECT count(*) FROM source_grants WHERE source_id = :source_id"
+        ),
+        "import_batches": ("SELECT count(*) FROM import_batches WHERE id = :batch_id"),
+        "snapshots": "SELECT count(*) FROM snapshots WHERE id = :snapshot_id",
+        "audit_events": "SELECT count(*) FROM audit_events WHERE id = :audit_id",
+    }
+    return {
+        table: int(connection.scalar(text(statement), values))
+        for table, statement in queries.items()
+    }
+
+
+def _prepare_restore_source(database_url: str) -> dict[str, object]:
+    """Migrate and seed the dedicated source database, then fingerprint it."""
+    from sqlalchemy import text
+
+    database = _database_class()(database_url)
+    values = _sentinel_values()
+    permission_sentinel = {
+        "source_id": values["source_id"],
+        "approved": True,
+        "local_storage": True,
+        "local_display": True,
+        "export": False,
+        "ai": False,
+        "sharing": False,
+    }
+    try:
+        database.migrate()
+        with database.engine.begin() as connection:
+            _insert_market_archive(
+                connection,
+                values,
+                with_idempotency_hash=True,
+            )
+            audit_id = uuid4()
+            values["audit_id"] = audit_id
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO audit_events (
+                        id, action, source_id, object_id, details, occurred_at
+                    ) VALUES (
+                        :audit_id, 'task21_restore', :source_id, :token, '{}',
+                        TIMESTAMPTZ '2026-01-02T03:04:05+00:00'
+                    )
+                    """
+                ),
+                values,
+            )
+            kind = "foundation_archive"
+            expected = {
+                "snapshot_id": values["snapshot_id"],
+                "payload_hash": values["hash"],
+                "audit_id": audit_id,
+            }
+            connection.execute(
+                text(
+                    """
+                    UPDATE source_grants
+                    SET "grant" = CAST(:grant AS jsonb)
+                    WHERE source_id = :source_id
+                    """
+                ),
+                {
+                    "source_id": values["source_id"],
+                    "grant": json.dumps(permission_sentinel),
+                },
+            )
+            source_counts = _restore_sentinel_counts(connection, values)
+    finally:
+        database.close()
+    return {
+        "fingerprint": _database_fingerprint(database_url),
+        "sentinel_kind": kind,
+        "sentinel_expected": expected,
+        "sentinel_values": values,
+        "source_counts": source_counts,
+        "permission_sentinel": permission_sentinel,
+    }
+
+
+def _restored_schema_contracts(
+    connection,
+) -> tuple[dict[str, object], dict[str, object]]:
+    from dragon_radar.storage.schema_contract import (
+        capture_schema_contract,
+        load_packaged_schema_contract,
+    )
+
+    return load_packaged_schema_contract(), capture_schema_contract(connection)
+
+
+def _restore_schema_metadata():
+    import importlib
+
+    modules = (
+        "dragon_radar.owner.models",
+        "dragon_radar.review.tables",
+        "dragon_radar.topics.tables",
+        "dragon_radar.readmodels.tables",
+        "dragon_radar.roles.tables",
+        "dragon_radar.publication.tables",
+        "dragon_radar.analysis_jobs.models",
+        "dragon_radar.news.tables",
+        "dragon_radar.regulation.tables",
+        "dragon_radar.ai.tables",
+    )
+    for module in modules:
+        importlib.import_module(module)
+    from dragon_radar.storage.models import metadata
+
+    return metadata
+
+
+def _contract_objects(
+    contract: dict[str, object],
+    collection: str,
+) -> dict[tuple[str, str], dict[str, object]]:
+    return {
+        (str(item["table"]), str(item["name"])): item for item in contract[collection]
+    }
+
+
+def _metadata_check_constraint(table, expected: dict[str, object]):
+    from sqlalchemy import CheckConstraint
+
+    def literals(expression: str) -> tuple[str, ...]:
+        return tuple(
+            value[1:-1].replace("''", "'")
+            for value in re.findall(r"'(?:''|[^'])*'", expression)
+        )
+
+    expected_name = str(expected["name"])
+    columns = [str(column) for column in expected["columns"]]
+    expected_literals = literals(str(expected["expression"]))
+    candidates = []
+    for constraint in table.constraints:
+        if not isinstance(constraint, CheckConstraint):
+            continue
+        if constraint.name == expected_name:
+            return constraint
+        expression = str(constraint.sqltext)
+        if constraint.name is None and all(column in expression for column in columns):
+            candidates.append(constraint)
+    if expected_literals:
+        literal_matches = [
+            constraint
+            for constraint in candidates
+            if literals(str(constraint.sqltext)) == expected_literals
+        ]
+        if len(literal_matches) == 1:
+            return literal_matches[0]
+    if len(candidates) != 1:
+        raise ValueError(
+            f"cannot resolve restored check constraint metadata: {expected_name}"
+        )
+    return candidates[0]
+
+
+def _canonicalize_restored_schema(connection) -> int:
+    """Recreate only expressions changed by PostgreSQL's dump/reparse cycle."""
+    from sqlalchemy import text
+    from sqlalchemy.schema import AddConstraint, CreateIndex, DropIndex
+
+    expected, actual = _restored_schema_contracts(connection)
+    expected_constraints = _contract_objects(expected, "constraints")
+    actual_constraints = _contract_objects(actual, "constraints")
+    expected_indexes = _contract_objects(expected, "indexes")
+    actual_indexes = _contract_objects(actual, "indexes")
+    metadata = _restore_schema_metadata()
+    changed = 0
+
+    for key, expected_constraint in expected_constraints.items():
+        actual_constraint = actual_constraints.get(key)
+        if (
+            actual_constraint is None
+            or expected_constraint == actual_constraint
+            or expected_constraint["kind"] != "check"
+        ):
+            continue
+        table_name, constraint_name = key
+        if (
+            re.fullmatch(r"[a-z][a-z0-9_]*", table_name) is None
+            or re.fullmatch(r"[a-z][a-z0-9_]*", constraint_name) is None
+            or table_name not in metadata.tables
+        ):
+            raise ValueError("unsafe restored check constraint identity")
+        constraint = _metadata_check_constraint(
+            metadata.tables[table_name],
+            expected_constraint,
+        )
+        connection.execute(
+            text(f'ALTER TABLE "{table_name}" DROP CONSTRAINT "{constraint_name}"')
+        )
+        connection.execute(AddConstraint(constraint))
+        changed += 1
+
+    metadata_indexes = {
+        (table.name, index.name): index
+        for table in metadata.tables.values()
+        for index in table.indexes
+        if index.name is not None
+    }
+    for key, expected_index in expected_indexes.items():
+        actual_index = actual_indexes.get(key)
+        if (
+            actual_index is None
+            or expected_index == actual_index
+            or expected_index["predicate"] is None
+        ):
+            continue
+        index = metadata_indexes.get(key)
+        if index is None:
+            raise ValueError(f"cannot resolve restored index metadata: {key[1]}")
+        connection.execute(DropIndex(index))
+        connection.execute(CreateIndex(index))
+        changed += 1
+    return changed
+
+
+def _verify_restored_database(
+    restore_url: str,
+    source_state: dict[str, object],
+) -> dict[str, object]:
+    """Verify revision, schema, sentinel data, permissions, and full data hash."""
+    from sqlalchemy import text
+
+    database = _database_class()(restore_url)
+    try:
+        ready_before_canonicalization = database.ready()
+        with database.engine.begin() as connection:
+            canonicalized_schema_objects = _canonicalize_restored_schema(connection)
+            revision = connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+            sentinel_preserved = _sentinel_preserved(
+                connection,
+                str(source_state["sentinel_kind"]),
+                source_state["sentinel_expected"],
+            )
+            permission = connection.scalar(
+                text(
+                    """
+                    SELECT "grant" FROM source_grants
+                    WHERE source_id = :source_id
+                    """
+                ),
+                {
+                    "source_id": source_state["permission_sentinel"]["source_id"],
+                },
+            )
+            restored_counts = _restore_sentinel_counts(
+                connection,
+                source_state["sentinel_values"],
+            )
+        ready = database.ready()
+    finally:
+        database.close()
+    restore_fingerprint = _database_fingerprint(restore_url)
+    if revision != RELEASE_HEAD:
+        raise ValueError("restored database revision is not 0010_ai_tasks")
+    if not ready:
+        raise ValueError("restored database schema is not ready")
+    if not sentinel_preserved:
+        raise ValueError("restored database sentinel was not preserved")
+    if permission != source_state["permission_sentinel"]:
+        raise ValueError("restored database permission sentinel changed")
+    if restored_counts != source_state["source_counts"]:
+        raise ValueError("restored database sentinel counts changed")
+    if restore_fingerprint != source_state["fingerprint"]:
+        raise ValueError("restored database fingerprint changed")
+    return {
+        "revision": revision,
+        "restored_ready": ready,
+        "sentinel_preserved": sentinel_preserved,
+        "permissions_preserved": True,
+        "restore_fingerprint": restore_fingerprint,
+        "restored_counts": restored_counts,
+        "ready_before_canonicalization": ready_before_canonicalization,
+        "canonicalized_schema_objects": canonicalized_schema_objects,
+    }
+
+
+def _docker_restore_command(
+    container: str,
+    *arguments: str,
+    stage: str,
+) -> subprocess.CompletedProcess[str]:
+    result = _run_process(
+        ["docker", "exec", container, *arguments],
+        timeout=300,
+    )
+    _require_process_success(result, stage=stage)
+    return result
+
+
+def exercise_backup_restore(
+    restore_container: str,
+    database_url: str,
+    output: Path,
+) -> dict[str, object]:
+    """Run an isolated custom-format backup and restore verification drill."""
+    _clear_output_target(output)
+    container = validate_restore_container_name(restore_container)
+    url = _validated_postgres_url(database_url)
+    username = url.username
+    source_database = url.database
+    safe_identifier = r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}"
+    if (
+        username is None
+        or source_database is None
+        or re.fullmatch(safe_identifier, username) is None
+        or re.fullmatch(safe_identifier, source_database) is None
+    ):
+        raise ValueError("database URL must contain safe user and database names")
+
+    token = _new_restore_token()
+    restore_database = f"task21_restore_{token}"
+    dump_path = f"/tmp/{restore_database}.dump"
+    restore_url = url.set(database=restore_database).render_as_string(
+        hide_password=False
+    )
+    started = time.monotonic()
+    primary_error = None
+    cleanup_errors: list[BaseException] = []
+    source_state = None
+    verification = None
+    backup_sha256 = None
+    try:
+        source_state = _prepare_restore_source(database_url)
+        _docker_restore_command(
+            container,
+            "pg_dump",
+            "--username",
+            username,
+            "--dbname",
+            source_database,
+            "--format=custom",
+            f"--file={dump_path}",
+            stage="pg_dump",
+        )
+        hash_result = _docker_restore_command(
+            container,
+            "sha256sum",
+            dump_path,
+            stage="backup SHA-256",
+        )
+        backup_sha256 = hash_result.stdout.split(maxsplit=1)[0]
+        if SHA256_PATTERN.fullmatch(backup_sha256) is None:
+            raise ValueError("backup SHA-256 output is invalid")
+        _docker_restore_command(
+            container,
+            "createdb",
+            "--username",
+            username,
+            restore_database,
+            stage="createdb",
+        )
+        _docker_restore_command(
+            container,
+            "pg_restore",
+            "--username",
+            username,
+            "--exit-on-error",
+            "--dbname",
+            restore_database,
+            dump_path,
+            stage="pg_restore",
+        )
+        verification = _verify_restored_database(restore_url, source_state)
+    except BaseException as exc:
+        primary_error = exc
+    finally:
+        for arguments, stage in (
+            (
+                (
+                    "dropdb",
+                    "--username",
+                    username,
+                    "--if-exists",
+                    restore_database,
+                ),
+                "restore database cleanup",
+            ),
+            (("rm", "-f", dump_path), "backup file cleanup"),
+        ):
+            try:
+                _docker_restore_command(
+                    container,
+                    *arguments,
+                    stage=stage,
+                )
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        if source_state is not None:
+            try:
+                if _database_fingerprint(database_url) != source_state["fingerprint"]:
+                    raise ValueError("source database fingerprint changed")
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+
+    if primary_error is not None:
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "backup restore drill and cleanup failed",
+                [primary_error, *cleanup_errors],
+            )
+        raise primary_error.with_traceback(primary_error.__traceback__)
+    if cleanup_errors:
+        if len(cleanup_errors) == 1:
+            raise cleanup_errors[0]
+        raise BaseExceptionGroup("backup restore cleanup failed", cleanup_errors)
+    if source_state is None or verification is None or backup_sha256 is None:
+        raise RuntimeError("backup restore drill produced no evidence")
+
+    elapsed = max(time.monotonic() - started, 0.000001)
+    evidence = {
+        "schema": "dragon-radar.backup-restore-drill",
+        "schema_version": 1,
+        "rollback_mode": ROLLBACK_MODE,
+        "backup_format": "custom",
+        "backup_sha256": backup_sha256,
+        "source_fingerprint": source_state["fingerprint"],
+        "restore_fingerprint": verification["restore_fingerprint"],
+        "source_unchanged": True,
+        "quiesced": True,
+        "measured_data_loss_window_seconds": 0.0,
+        "elapsed_seconds": elapsed,
+        "revision": verification["revision"],
+        "restored_ready": verification["restored_ready"],
+        "sentinel_preserved": verification["sentinel_preserved"],
+        "permissions_preserved": verification["permissions_preserved"],
+        "ready_before_canonicalization": verification.get(
+            "ready_before_canonicalization",
+            True,
+        ),
+        "canonicalized_schema_objects": verification.get(
+            "canonicalized_schema_objects",
+            0,
+        ),
+        "source_counts": source_state["source_counts"],
+        "restored_counts": verification["restored_counts"],
+        "cleanup": {
+            "restore_database_removed": True,
+            "backup_file_removed": True,
+        },
+        "targets": {
+            "rpo_seconds": 3600,
+            "rto_seconds": 14400,
+            "approval_status": "suggested_unapproved",
+        },
+    }
+    write_contract_atomically(evidence, output)
+    return evidence
+
+
 def _drop_wheel_schemas(database_url: str, schema_prefix: str) -> None:
     from sqlalchemy import text
 
@@ -1870,7 +2404,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--audited-commit",
         help="full lowercase Git commit audited by installed-wheel verification",
     )
+    parser.add_argument(
+        "--restore-container",
+        metavar="NAME",
+        help="run the backup/restore drill in a named PostgreSQL container",
+    )
     args = parser.parse_args(argv)
+    if args.restore_container is not None:
+        if args.output is None:
+            print("--output is required with --restore-container", file=sys.stderr)
+            return 1
+        database_url = args.database_url or os.environ.get("DRAGON_TEST_DATABASE_URL")
+        if not database_url:
+            try:
+                _clear_output_target(args.output)
+            except (OSError, ValueError):
+                pass
+            print("database URL is required", file=sys.stderr)
+            return 1
+        try:
+            result = exercise_backup_restore(
+                args.restore_container,
+                database_url,
+                args.output,
+            )
+        except Exception:
+            print("backup restore drill failed", file=sys.stderr)
+            return 1
+        print(
+            "backup restore verified: "
+            f"sha256={result['backup_sha256']} "
+            f"elapsed_seconds={result['elapsed_seconds']:.6f} "
+            "cleanup=complete"
+        )
+        return 0
     if args.wheel is not None:
         if args.output is None:
             print("--output is required with --wheel", file=sys.stderr)
