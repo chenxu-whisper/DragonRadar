@@ -524,6 +524,26 @@ def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
 
 def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
     commit = audited_head()
+    verifier_bytes = subprocess.check_output(
+        [
+            "git",
+            "--no-replace-objects",
+            "cat-file",
+            "blob",
+            f"{commit}:scripts/verify_release_migrations.py",
+        ],
+        cwd=ROOT,
+    )
+    schema_validator_bytes = subprocess.check_output(
+        [
+            "git",
+            "--no-replace-objects",
+            "cat-file",
+            "blob",
+            f"{commit}:src/dragon_radar/storage/schema_contract.py",
+        ],
+        cwd=ROOT,
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -564,6 +584,7 @@ def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
             subprocess.check_output(
                 [
                     "git",
+                    "--no-replace-objects",
                     "cat-file",
                     "blob",
                     f"{commit}:src/dragon_radar/storage/schema_contract.json",
@@ -571,8 +592,63 @@ def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
                 cwd=ROOT,
             )
         ).hexdigest(),
+        "verifier_sha256": hashlib.sha256(verifier_bytes).hexdigest(),
+        "schema_validator_sha256": hashlib.sha256(schema_validator_bytes).hexdigest(),
         "errors": [],
     }
+
+
+def test_machine_verifier_ignores_external_pythonpath(tmp_path):
+    package = tmp_path / "polluted" / "dragon_radar" / "storage"
+    package.mkdir(parents=True)
+    (package.parent / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    marker = tmp_path / "external-validator-imported"
+    (package / "schema_contract.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "raise RuntimeError('external validator imported')\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(tmp_path / "polluted")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repository-root",
+            str(ROOT),
+            "--audited-commit",
+            audited_head(),
+            "--json",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert (
+        json.loads(result.stdout)["schema_validator_sha256"]
+        == hashlib.sha256(
+            subprocess.check_output(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "cat-file",
+                    "blob",
+                    f"{audited_head()}:src/dragon_radar/storage/schema_contract.py",
+                ],
+                cwd=ROOT,
+            )
+        ).hexdigest()
+    )
 
 
 def test_cli_returns_nonzero_with_actionable_errors(
@@ -856,9 +932,11 @@ def test_audited_commit_fails_closed_when_checkout_identity_cannot_be_read(
     repository = tmp_path / "repository"
     repository.mkdir()
     (repository / ".git").mkdir()
-    monkeypatch.setattr(
-        subprocess,
-        "run",
+    globals_ = verifier["validate_audited_commit"].__globals__
+    monkeypatch.setitem(globals_, "_reject_git_replace_refs", lambda *_: None)
+    monkeypatch.setitem(
+        globals_,
+        "_git_process",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=128,
             stdout="",
@@ -1544,25 +1622,28 @@ def test_clean_migration_gate_uses_strict_git_argv(
 ):
     observed = {}
 
-    def fake_run(argv, **kwargs):
+    def fake_run(root, argv, **kwargs):
+        observed["root"] = root
         observed["argv"] = argv
         observed["kwargs"] = kwargs
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setitem(
+        verifier["require_clean_migration_tree"].__globals__,
+        "_git_process",
+        fake_run,
+    )
 
     verifier["require_clean_migration_tree"](ROOT)
 
     assert observed["argv"] == [
-        "git",
         "diff",
         "--quiet",
         "HEAD",
         "--",
         "src/dragon_radar/migrations",
     ]
-    assert observed["kwargs"]["cwd"] == ROOT
-    assert observed["kwargs"]["shell"] is False
+    assert observed["root"] == ROOT
 
 
 def test_atomic_contract_output_preserves_target_and_removes_temp_on_failure(
@@ -2174,6 +2255,16 @@ def _configure_fake_restore_drill(
     monkeypatch.setitem(globals_, "_restore_app_access", restore_access)
     monkeypatch.setitem(globals_, "_verify_restored_database", verify)
     monkeypatch.setitem(globals_, "_run_process", run_process)
+    monkeypatch.setitem(
+        globals_,
+        "_git_process",
+        lambda _root, argv, **_kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            "" if argv[0] == "for-each-ref" else audited_head() + "\n",
+            "",
+        ),
+    )
     return events, source_fingerprint, backup_sha256, lambda: fingerprint_calls
 
 
@@ -2683,6 +2774,16 @@ def test_focused_verifier_rejects_unlabeled_container_before_mutation(
     monkeypatch.setitem(globals_, "_run_process", run_process)
     monkeypatch.setitem(
         globals_,
+        "_git_process",
+        lambda _root, argv, **_kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            "" if argv[0] == "for-each-ref" else audited_head() + "\n",
+            "",
+        ),
+    )
+    monkeypatch.setitem(
+        globals_,
         "_create_restore_drill_resources",
         lambda *_args, **_kwargs: pytest.fail("mutation preceded label validation"),
     )
@@ -2721,6 +2822,16 @@ def test_focused_verifier_rejects_nonmaintenance_url_before_mutation(
         globals_,
         "_run_process",
         lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "true\n", ""),
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_git_process",
+        lambda _root, argv, **_kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            "" if argv[0] == "for-each-ref" else audited_head() + "\n",
+            "",
+        ),
     )
     monkeypatch.setitem(globals_, "_create_restore_drill_resources", mutate)
 

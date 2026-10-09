@@ -212,13 +212,13 @@ def test_collect_git_state_uses_argv_and_captures_before_output_creation(
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs, output.parent.exists()))
         responses = {
-            ("git", "rev-parse", "HEAD"): ("a" * 40 + "\n", 0),
-            ("git", "symbolic-ref", "--quiet", "--short", "HEAD"): (
+            ("for-each-ref", "--format=%(refname)", "refs/replace/"): ("", 0),
+            ("rev-parse", "HEAD"): ("a" * 40 + "\n", 0),
+            ("symbolic-ref", "--quiet", "--short", "HEAD"): (
                 "feature/test\n",
                 0,
             ),
             (
-                "git",
                 "rev-parse",
                 "--abbrev-ref",
                 "--symbolic-full-name",
@@ -227,28 +227,28 @@ def test_collect_git_state_uses_argv_and_captures_before_output_creation(
                 "",
                 128,
             ),
-            ("git", "config", "--get", "branch.feature/test.remote"): ("", 1),
-            ("git", "config", "--get", "branch.feature/test.merge"): ("", 1),
-            ("git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"): (
+            ("config", "--get", "branch.feature/test.remote"): ("", 1),
+            ("config", "--get", "branch.feature/test.merge"): ("", 1),
+            ("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"): (
                 "origin/main\n",
                 0,
             ),
-            ("git", "rev-parse", "origin/main"): ("b" * 40 + "\n", 0),
-            ("git", "merge-base", "HEAD", "origin/main"): ("b" * 40 + "\n", 0),
-            ("git", "rev-list", "--left-right", "--count", "origin/main...HEAD"): (
+            ("rev-parse", "origin/main"): ("b" * 40 + "\n", 0),
+            ("merge-base", "HEAD", "origin/main"): ("b" * 40 + "\n", 0),
+            ("rev-list", "--left-right", "--count", "origin/main...HEAD"): (
                 "0\t3\n",
                 0,
             ),
-            ("git", "status", "--porcelain=v1", "-z", "--untracked-files=all"): (
+            ("status", "--porcelain=v1", "-z", "--untracked-files=all"): (
                 " M tracked.txt\0?? untracked.txt\0",
                 0,
             ),
-            ("git", "rev-parse", "--git-common-dir"): (".git\n", 0),
         }
-        stdout, returncode = responses[tuple(argv)]
+        assert argv[:2] == ["git", "--no-replace-objects"]
+        stdout, returncode = responses[tuple(argv[2:])]
         return SimpleNamespace(stdout=stdout, stderr="", returncode=returncode)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setitem(auditor["collect_git_state"].__globals__, "_run", fake_run)
     monkeypatch.setitem(
         auditor["collect_git_state"].__globals__,
         "_remote_freshness",
@@ -270,7 +270,7 @@ def test_collect_git_state_uses_argv_and_captures_before_output_creation(
     assert state["untracked_count"] == 1
     assert state["configured_upstream"] is None
     assert all(isinstance(call[0], list) for call in calls)
-    assert all(call[1]["shell"] is False for call in calls)
+    assert all(call[1]["env"]["GIT_NO_REPLACE_OBJECTS"] == "1" for call in calls)
     assert all(call[2] is False for call in calls)
 
 
@@ -496,6 +496,8 @@ def test_migration_collection_validates_actual_decisive_data(
     tmp_path,
     monkeypatch,
 ):
+    verifier_bytes = b"# audited verifier\n"
+    verifier_sha = hashlib.sha256(verifier_bytes).hexdigest()
     verification = {
         "schema": "dragon-radar.release-migration-verification",
         "schema_version": 1,
@@ -504,6 +506,8 @@ def test_migration_collection_validates_actual_decisive_data(
         "revision_count": 18,
         "release_manifest_sha256": "f" * 64,
         "schema_contract_sha256": "f" * 64,
+        "verifier_sha256": verifier_sha,
+        "schema_validator_sha256": "f" * 64,
         "errors": [],
     }
     calls = []
@@ -530,6 +534,11 @@ def test_migration_collection_validates_actual_decisive_data(
         "_git_blob_fingerprint",
         lambda *_: {"sha256": "f" * 64, "bytes": 1},
     )
+    monkeypatch.setitem(
+        auditor["collect_migration_evidence"].__globals__,
+        "_git_blob",
+        lambda *_: verifier_bytes,
+    )
 
     result = auditor["collect_migration_evidence"](
         wheel_path,
@@ -544,20 +553,17 @@ def test_migration_collection_validates_actual_decisive_data(
     assert result["restore"]["source_fingerprint"] == "3" * 64
     assert set(result["source_artifacts"]) == {"wheel", "restore"}
     assert "disposable" not in result["restore"]
-    assert calls == [
-        (
-            [
-                os.fspath(Path(os.sys.executable)),
-                os.fspath(ROOT / "scripts/verify_release_migrations.py"),
-                "--repository-root",
-                os.fspath(ROOT),
-                "--audited-commit",
-                "a" * 40,
-                "--json",
-            ],
-            {"cwd": ROOT},
-        )
+    assert len(calls) == 1
+    assert calls[0][0][0] == os.fspath(Path(os.sys.executable))
+    assert Path(calls[0][0][1]).name == "verify_release_migrations.py"
+    assert calls[0][0][2:] == [
+        "--repository-root",
+        os.fspath(ROOT),
+        "--audited-commit",
+        "a" * 40,
+        "--json",
     ]
+    assert "PYTHONPATH" not in calls[0][1]["env"]
 
 
 def test_manifest_check_reexecutes_migration_verifier(
@@ -566,6 +572,8 @@ def test_manifest_check_reexecutes_migration_verifier(
 ):
     migration = valid_inputs()["migration"]
     calls = []
+    verifier_bytes = b"# audited verifier\n"
+    verifier_sha = hashlib.sha256(verifier_bytes).hexdigest()
     verification = {
         "schema": "dragon-radar.release-migration-verification",
         "schema_version": 1,
@@ -574,6 +582,8 @@ def test_manifest_check_reexecutes_migration_verifier(
         "revision_count": 18,
         "release_manifest_sha256": "3" * 64,
         "schema_contract_sha256": "4" * 64,
+        "verifier_sha256": verifier_sha,
+        "schema_validator_sha256": "4" * 64,
         "errors": [],
     }
     globals_ = auditor["_validate_migration_at_commit"].__globals__
@@ -599,11 +609,12 @@ def test_manifest_check_reexecutes_migration_verifier(
             "bytes": 1,
         },
     )
+    monkeypatch.setitem(globals_, "_git_blob", lambda *_: verifier_bytes)
 
     auditor["_validate_migration_at_commit"](ROOT, migration, "a" * 40)
 
     assert len(calls) == 1
-    assert calls[0][0][1].endswith("verify_release_migrations.py")
+    assert Path(calls[0][0][1]).name == "verify_release_migrations.py"
     assert "--audited-commit" in calls[0][0]
 
 
@@ -999,6 +1010,7 @@ def test_remote_freshness_uses_configured_upstream_ls_remote_argv(
         (
             [
                 "git",
+                "--no-replace-objects",
                 "ls-remote",
                 "--exit-code",
                 "origin",
@@ -1007,9 +1019,12 @@ def test_remote_freshness_uses_configured_upstream_ls_remote_argv(
             {
                 "cwd": tmp_path,
                 "timeout": 30,
+                "env": calls[0][1]["env"],
+                "text": True,
             },
         )
     ]
+    assert calls[0][1]["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
     assert all("FETCH_HEAD" not in " ".join(call[0]) for call in calls)
 
 
@@ -1384,3 +1399,255 @@ def test_task20_missing_declared_blob_fails_collection_and_check(
 
     with pytest.raises(ValueError, match="cannot read committed Git blob"):
         auditor["check_release_manifest"](tmp_path, release_path)
+
+
+@pytest.mark.parametrize(
+    ("age", "expired"),
+    [
+        (timedelta(hours=24), False),
+        (timedelta(hours=24, microseconds=1), True),
+    ],
+)
+def test_manifest_check_revalidates_artifact_age_at_current_utc(
+    auditor,
+    monkeypatch,
+    age,
+    expired,
+):
+    now = datetime(2026, 10, 9, 12, tzinfo=UTC)
+    generated_at = now - age
+    migration = valid_inputs()["migration"]
+    for name in ("wheel", "restore"):
+        migration[name]["generated_at"] = generated_at.isoformat()
+        artifact = migration["source_artifacts"][name]
+        artifact["generated_at"] = generated_at.isoformat()
+        artifact["validated_at"] = generated_at.isoformat()
+        artifact["age_seconds_at_audit"] = 0.0
+    globals_ = auditor["_validate_migration_at_commit"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob_fingerprint",
+        lambda _root, _commit, blob_path: {
+            "sha256": (
+                "3" * 64 if blob_path.endswith("release_manifest.json") else "4" * 64
+            ),
+            "bytes": 1,
+        },
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_verify_migration_commit",
+        lambda _root, commit: {
+            "schema": "dragon-radar.release-migration-verification",
+            "schema_version": 1,
+            "audited_commit": commit,
+            "head": "0010_ai_tasks",
+            "revision_count": 18,
+            "release_manifest_sha256": "3" * 64,
+            "schema_contract_sha256": "4" * 64,
+            "verifier_sha256": "5" * 64,
+            "schema_validator_sha256": "6" * 64,
+            "errors": [],
+        },
+    )
+
+    if expired:
+        with pytest.raises(ValueError, match="older than 24 hours"):
+            auditor["_validate_migration_at_commit"](
+                ROOT,
+                migration,
+                "a" * 40,
+                now=now,
+            )
+    else:
+        auditor["_validate_migration_at_commit"](
+            ROOT,
+            migration,
+            "a" * 40,
+            now=now,
+        )
+
+
+def test_git_blob_ignores_replace_objects_and_audit_rejects_replace_refs(
+    auditor,
+    tmp_path,
+):
+    repository, original = _init_committed_evidence_repository(tmp_path)
+    evidence = repository / "evidence.md"
+    evidence.write_bytes(b"replacement\n")
+    subprocess.run(["git", "add", "evidence.md"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "replacement"], cwd=repository, check=True)
+    replacement = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "replace", original, replacement],
+        cwd=repository,
+        check=True,
+    )
+
+    assert auditor["_git_blob"](repository, original, "evidence.md") == (
+        b"committed\nbytes\n"
+    )
+    with pytest.raises(ValueError, match="replace"):
+        auditor["collect_git_state"](repository)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "GIT_REPLACE_REF_BASE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+    ],
+)
+def test_audit_rejects_dangerous_git_environment(
+    auditor,
+    monkeypatch,
+    name,
+):
+    monkeypatch.setenv(name, "caller-controlled")
+
+    with pytest.raises(ValueError, match=name):
+        auditor["collect_git_state"](ROOT)
+
+
+def test_git_object_and_ancestry_commands_disable_replace_objects(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        if "cat-file" in argv:
+            return subprocess.CompletedProcess(argv, 0, b"blob", b"")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    globals_ = auditor["_git_blob"].__globals__
+    monkeypatch.setitem(globals_, "_run", run)
+
+    assert auditor["_git_blob"](tmp_path, "a" * 40, "evidence.md") == b"blob"
+    assert auditor["_is_ancestor"](tmp_path, "a" * 40, "b" * 40) is True
+    auditor["_git_output"](tmp_path, ["rev-parse", "HEAD"])
+
+    assert calls
+    assert all(call[0][:2] == ["git", "--no-replace-objects"] for call in calls)
+    assert all(call[1]["env"]["GIT_NO_REPLACE_OBJECTS"] == "1" for call in calls)
+
+
+def test_audit_process_timeout_terminates_and_waits(
+    auditor,
+    monkeypatch,
+    tmp_path,
+):
+    events = []
+
+    class FakeProcess:
+        returncode = 17
+
+        def communicate(self, timeout=None):
+            events.append(("communicate", timeout))
+            if len(events) == 1:
+                raise subprocess.TimeoutExpired(["helper"], timeout)
+            return ("", "")
+
+        def terminate(self):
+            events.append(("terminate", None))
+
+        def kill(self):
+            events.append(("kill", None))
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        auditor["_run"](["helper"], cwd=tmp_path, timeout=0.01)
+
+    assert events == [
+        ("communicate", 0.01),
+        ("terminate", None),
+        ("communicate", 5),
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/etc/dragon-radar/evidence.json",
+        "/var/lib/dragon-radar/evidence.json",
+        r"\\server\share\evidence.json",
+        r"D:\evidence.json",
+    ],
+)
+def test_manifest_safety_rejects_every_absolute_path(auditor, value):
+    with pytest.raises(ValueError, match="unsafe release manifest"):
+        auditor["validate_manifest_safety"]({"path": value})
+
+
+def test_migration_verifier_runs_audited_blob_without_pythonpath(
+    auditor,
+    monkeypatch,
+):
+    verifier_bytes = b"# audited verifier\n"
+    verifier_sha = hashlib.sha256(verifier_bytes).hexdigest()
+    validator_sha = "6" * 64
+    verification = {
+        "schema": "dragon-radar.release-migration-verification",
+        "schema_version": 1,
+        "audited_commit": "a" * 40,
+        "head": "0010_ai_tasks",
+        "revision_count": 18,
+        "release_manifest_sha256": "3" * 64,
+        "schema_contract_sha256": "4" * 64,
+        "verifier_sha256": verifier_sha,
+        "schema_validator_sha256": validator_sha,
+        "errors": [],
+    }
+    observed = {}
+    globals_ = auditor["_verify_migration_commit"].__globals__
+
+    def git_blob(_root, _commit, path):
+        assert path == "scripts/verify_release_migrations.py"
+        return verifier_bytes
+
+    def run(argv, **kwargs):
+        observed["argv"] = list(argv)
+        observed["verifier"] = Path(argv[1]).read_bytes()
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(verification),
+            stderr="",
+        )
+
+    monkeypatch.setenv("PYTHONPATH", "caller-controlled")
+    monkeypatch.setitem(globals_, "_git_blob", git_blob)
+    monkeypatch.setitem(globals_, "_run", run)
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob_fingerprint",
+        lambda _root, _commit, path: {
+            "sha256": (
+                verifier_sha
+                if path == "scripts/verify_release_migrations.py"
+                else validator_sha
+            ),
+            "bytes": 1,
+        },
+    )
+
+    assert auditor["_verify_migration_commit"](ROOT, "a" * 40) == verification
+    assert observed["argv"][1] != os.fspath(
+        ROOT / "scripts/verify_release_migrations.py"
+    )
+    assert observed["verifier"] == verifier_bytes
+    assert "PYTHONPATH" not in observed["kwargs"]["env"]

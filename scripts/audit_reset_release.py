@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -130,6 +131,8 @@ MIGRATION_VERIFICATION_FIELDS = {
     "revision_count",
     "release_manifest_sha256",
     "schema_contract_sha256",
+    "verifier_sha256",
+    "schema_validator_sha256",
     "errors",
 }
 TASK_DECISION_FIELDS = {
@@ -161,6 +164,15 @@ DECISION_FIELDS = {
     "production_release",
     "overall_status",
 }
+DANGEROUS_GIT_ENVIRONMENT = (
+    "GIT_REPLACE_REF_BASE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -273,29 +285,68 @@ def _run(
     *,
     cwd: Path,
     timeout: float = 30,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    env: dict[str, str] | None = None,
+    text: bool = True,
+) -> subprocess.CompletedProcess:
+    process_kwargs: dict[str, object] = {
+        "cwd": cwd,
+        "env": env,
+        "shell": False,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": text,
+    }
+    if text:
+        process_kwargs.update(encoding="utf-8", errors="replace")
+    process = subprocess.Popen(
         list(argv),
-        cwd=cwd,
-        shell=False,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        **process_kwargs,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process.terminate()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+        raise exc
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _safe_git_environment() -> dict[str, str]:
+    for name in DANGEROUS_GIT_ENVIRONMENT:
+        if name in os.environ:
+            raise ValueError(f"unsafe Git environment: {name}")
+    environment = os.environ.copy()
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return environment
+
+
+def _git_run(
+    root: Path,
+    argv: Sequence[str],
+    *,
+    timeout: float = 30,
+    text: bool = True,
+) -> subprocess.CompletedProcess:
+    return _run(
+        ["git", "--no-replace-objects", *argv],
+        cwd=root,
         timeout=timeout,
+        env=_safe_git_environment(),
+        text=text,
     )
 
 
 def _git_blob(root: Path, commit: str, path: str) -> bytes:
     commit = _exact_commit(commit, "Git blob commit")
     relative = validate_relative_path(path)
-    result = subprocess.run(
-        ["git", "cat-file", "blob", f"{commit}:{relative}"],
-        cwd=root,
-        shell=False,
-        check=False,
-        capture_output=True,
+    result = _git_run(
+        root,
+        ["cat-file", "blob", f"{commit}:{relative}"],
+        text=False,
     )
     if result.returncode != 0:
         raise ValueError(f"cannot read committed Git blob: {relative}")
@@ -316,7 +367,7 @@ def _git_output(
     *,
     required: bool = True,
 ) -> str | None:
-    result = _run(["git", *argv], cwd=root)
+    result = _git_run(root, argv)
     if result.returncode != 0:
         if required:
             raise ValueError(f"Git command failed: git {' '.join(argv)}")
@@ -332,13 +383,22 @@ def _tracked_paths(root: Path, commit: str | None = None) -> set[str]:
 
 
 def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
-    result = _run(
-        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=root,
+    result = _git_run(
+        root,
+        ["merge-base", "--is-ancestor", ancestor, descendant],
     )
     if result.returncode not in {0, 1}:
         raise ValueError("cannot validate Git ancestry")
     return result.returncode == 0
+
+
+def _reject_git_replace_refs(root: Path) -> None:
+    refs = _git_output(
+        root,
+        ["for-each-ref", "--format=%(refname)", "refs/replace/"],
+    )
+    if refs:
+        raise ValueError("Git replace refs are not allowed during release audit")
 
 
 def _parse_porcelain(output: str) -> tuple[list[str], int]:
@@ -386,9 +446,9 @@ def _remote_freshness(
     if not verify_remote:
         return result
     try:
-        query = _run(
-            ["git", "ls-remote", "--exit-code", remote, remote_ref],
-            cwd=root,
+        query = _git_run(
+            root,
+            ["ls-remote", "--exit-code", remote, remote_ref],
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
@@ -421,6 +481,7 @@ def collect_git_state(
 ) -> dict[str, object]:
     """Capture source state before any output directory is created."""
     root = Path(root).resolve()
+    _reject_git_replace_refs(root)
     head = _exact_commit(
         _git_output(root, ["rev-parse", "HEAD"]),
         "audited HEAD",
@@ -477,9 +538,9 @@ def collect_git_state(
             values = counts.split()
             if len(values) == 2 and all(value.isdigit() for value in values):
                 behind, ahead = map(int, values)
-    status_result = _run(
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        cwd=root,
+    status_result = _git_run(
+        root,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )
     if status_result.returncode != 0:
         raise ValueError("Git status capture failed")
@@ -1034,19 +1095,34 @@ def collect_migration_evidence(
 
 
 def _verify_migration_commit(root: Path, audited_commit: str) -> dict[str, object]:
-    verifier = root / "scripts/verify_release_migrations.py"
-    result = _run(
-        [
-            sys.executable,
-            str(verifier),
-            "--repository-root",
-            str(root),
-            "--audited-commit",
-            audited_commit,
-            "--json",
-        ],
-        cwd=root,
-    )
+    verifier_path = "scripts/verify_release_migrations.py"
+    validator_path = "src/dragon_radar/storage/schema_contract.py"
+    verifier_bytes = _git_blob(root, audited_commit, verifier_path)
+    verifier_sha256 = hashlib.sha256(verifier_bytes).hexdigest()
+    validator_sha256 = _git_blob_fingerprint(
+        root,
+        audited_commit,
+        validator_path,
+    )["sha256"]
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    with tempfile.TemporaryDirectory(prefix="dragon-radar-release-verifier-") as temp:
+        verifier = Path(temp) / "verify_release_migrations.py"
+        verifier.write_bytes(verifier_bytes)
+        result = _run(
+            [
+                sys.executable,
+                str(verifier),
+                "--repository-root",
+                str(root),
+                "--audited-commit",
+                audited_commit,
+                "--json",
+            ],
+            cwd=Path(temp),
+            env=environment,
+        )
     if result.returncode != 0:
         raise ValueError("release migration commit verification failed")
     verification = _exact_object(
@@ -1068,6 +1144,8 @@ def _verify_migration_commit(root: Path, audited_commit: str) -> dict[str, objec
             "migration verification revision_count",
         )
         != 18
+        or verification["verifier_sha256"] != verifier_sha256
+        or verification["schema_validator_sha256"] != validator_sha256
         or verification["errors"] != []
     ):
         raise ValueError("migration graph or frozen hashes are invalid")
@@ -1078,6 +1156,14 @@ def _verify_migration_commit(root: Path, audited_commit: str) -> dict[str, objec
     _exact_sha(
         verification["schema_contract_sha256"],
         "migration schema contract SHA-256",
+    )
+    _exact_sha(
+        verification["verifier_sha256"],
+        "migration verifier SHA-256",
+    )
+    _exact_sha(
+        verification["schema_validator_sha256"],
+        "migration schema validator SHA-256",
     )
     return verification
 
@@ -1292,7 +1378,7 @@ def validate_manifest_safety(value: object) -> None:
         re.IGNORECASE,
     )
     absolute_path = re.compile(
-        r"(?:^[A-Za-z]:[\\/]|^\\\\|^/(?:home|Users|private|tmp)/)",
+        r"(?:^[A-Za-z]:[\\/]|^\\\\|^/)",
         re.IGNORECASE,
     )
 
@@ -1400,6 +1486,7 @@ def _validate_migration_at_commit(
     root: Path,
     value: object,
     implementation_commit: str,
+    now: datetime | None = None,
 ) -> None:
     migration = _exact_object(value, MIGRATION_FULL_FIELDS, "migration evidence")
     if migration["valid"] is not True:
@@ -1455,6 +1542,17 @@ def _validate_migration_at_commit(
     )
     if wheel != migration["wheel"] or restore != migration["restore"]:
         raise ValueError("embedded migration evidence is not canonical")
+    checked_at = datetime.now(UTC) if now is None else now
+    _validate_artifact_age(
+        wheel["generated_at"],
+        checked_at,
+        "wheel generated_at",
+    )
+    _validate_artifact_age(
+        restore["generated_at"],
+        checked_at,
+        "restore generated_at",
+    )
     _validate_source_artifact(
         wheel_artifact,
         generated_at=str(wheel["generated_at"]),
@@ -1509,6 +1607,7 @@ def _validate_manifest_shape(
     value: dict[str, object],
     *,
     root: Path | None = None,
+    now: datetime | None = None,
 ) -> None:
     _exact_object(value, MANIFEST_FIELDS, "release manifest")
     if (
@@ -1528,7 +1627,12 @@ def _validate_manifest_shape(
     decisions = _exact_object(value["decisions"], DECISION_FIELDS, "decisions")
     inputs = {field: value[field] for field in ROOT_INPUT_FIELDS}
     if root is not None:
-        _validate_migration_at_commit(root, value["migration"], implementation_commit)
+        _validate_migration_at_commit(
+            root,
+            value["migration"],
+            implementation_commit,
+            now,
+        )
         expected_task = collect_task20_evidence(
             root,
             implementation_commit,
@@ -1587,7 +1691,12 @@ def _validate_inventory_at_head(
         raise ValueError("Task00-20 inventory differs from committed evidence")
 
 
-def check_release_manifest(root: Path, path: Path) -> dict[str, object]:
+def check_release_manifest(
+    root: Path,
+    path: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object]:
     root = Path(root).resolve()
     manifest_path = Path(path).resolve()
     try:
@@ -1609,7 +1718,11 @@ def check_release_manifest(root: Path, path: Path) -> dict[str, object]:
         current_head,
         str(manifest["implementation_commit_relation"]),
     )
-    _validate_manifest_shape(manifest, root=root)
+    _validate_manifest_shape(
+        manifest,
+        root=root,
+        now=datetime.now(UTC) if now is None else now,
+    )
     task = manifest["task00_20"]
     assert isinstance(task, dict)
     _validate_inventory_at_head(

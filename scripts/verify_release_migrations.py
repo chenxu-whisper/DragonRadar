@@ -24,6 +24,19 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+_external_pythonpath = os.environ.pop("PYTHONPATH", None)
+if _external_pythonpath:
+    external_entries = {
+        os.path.normcase(os.path.abspath(entry))
+        for entry in _external_pythonpath.split(os.pathsep)
+        if entry
+    }
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if os.path.normcase(os.path.abspath(entry)) not in external_entries
+    ]
+
 MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
 AUDIT_SCHEMA = "dragon-radar.release-migration-verification"
@@ -56,6 +69,51 @@ DEFAULT_MIGRATIONS = (
     Path(__file__).resolve().parents[1] / "src" / "dragon_radar" / "migrations"
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+DANGEROUS_GIT_ENVIRONMENT = (
+    "GIT_REPLACE_REF_BASE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+)
+
+
+def _safe_git_environment() -> dict[str, str]:
+    for name in DANGEROUS_GIT_ENVIRONMENT:
+        if name in os.environ:
+            raise ValueError(f"unsafe Git environment: {name}")
+    environment = os.environ.copy()
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return environment
+
+
+def _git_process(
+    repository_root: Path,
+    argv: Sequence[str],
+    *,
+    text: bool = True,
+    timeout: float = 30,
+) -> subprocess.CompletedProcess:
+    return _run_process(
+        ["git", "--no-replace-objects", *argv],
+        cwd=repository_root,
+        env=_safe_git_environment(),
+        timeout=timeout,
+        text=text,
+    )
+
+
+def _reject_git_replace_refs(repository_root: Path) -> None:
+    result = _git_process(
+        repository_root,
+        ["for-each-ref", "--format=%(refname)", "refs/replace/"],
+    )
+    if result.returncode != 0:
+        raise ValueError("cannot inspect Git replace refs")
+    if result.stdout.strip():
+        raise ValueError("Git replace refs are not allowed during release verification")
 
 
 def canonical_migration_bytes(path: Path) -> bytes:
@@ -391,12 +449,10 @@ def verify_manifest(root: Path) -> dict[str, object]:
 
 
 def _committed_blob(repository_root: Path, commit: str, path: str) -> bytes:
-    result = subprocess.run(
-        ["git", "cat-file", "blob", f"{commit}:{path}"],
-        cwd=repository_root,
-        shell=False,
-        check=False,
-        capture_output=True,
+    result = _git_process(
+        repository_root,
+        ["cat-file", "blob", f"{commit}:{path}"],
+        text=False,
     )
     if result.returncode != 0:
         raise ValueError(f"cannot read committed Git blob: {path}")
@@ -410,19 +466,18 @@ def verify_repository_commit(
     """Verify the complete frozen migration contract from one Git commit."""
     repository_root = Path(repository_root).resolve()
     audited_commit = validate_audited_commit(audited_commit)
-    verify_commit = subprocess.run(
-        ["git", "cat-file", "-e", f"{audited_commit}^{{commit}}"],
-        cwd=repository_root,
-        shell=False,
-        check=False,
-        capture_output=True,
+    _reject_git_replace_refs(repository_root)
+    verify_commit = _git_process(
+        repository_root,
+        ["cat-file", "-e", f"{audited_commit}^{{commit}}"],
+        text=False,
     )
     if verify_commit.returncode != 0:
         raise ValueError("audited commit is not available")
     prefix = "src/dragon_radar/migrations"
-    listed = subprocess.run(
+    listed = _git_process(
+        repository_root,
         [
-            "git",
             "-c",
             "core.quotepath=false",
             "ls-tree",
@@ -432,13 +487,6 @@ def verify_repository_commit(
             "--",
             prefix,
         ],
-        cwd=repository_root,
-        shell=False,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="strict",
     )
     if listed.returncode != 0:
         raise ValueError("cannot enumerate committed migrations")
@@ -451,17 +499,28 @@ def verify_repository_commit(
 
     release_path = f"{prefix}/release_manifest.json"
     schema_path = "src/dragon_radar/storage/schema_contract.json"
+    verifier_path = "scripts/verify_release_migrations.py"
+    validator_path = "src/dragon_radar/storage/schema_contract.py"
     release_bytes = _committed_blob(repository_root, audited_commit, release_path)
     schema_bytes = _committed_blob(repository_root, audited_commit, schema_path)
+    verifier_bytes = _committed_blob(repository_root, audited_commit, verifier_path)
+    validator_bytes = _committed_blob(repository_root, audited_commit, validator_path)
     try:
         schema_contract = json.loads(
             schema_bytes.decode("utf-8"),
             object_pairs_hook=_reject_duplicate_keys,
         )
-        from dragon_radar.storage.schema_contract import validate_schema_contract
-
+        validator_globals = {
+            "__name__": "_audited_schema_contract",
+            "__file__": validator_path,
+        }
+        exec(
+            compile(validator_bytes, validator_path, "exec"),
+            validator_globals,
+        )
+        validate_schema_contract = validator_globals["validate_schema_contract"]
         validate_schema_contract(schema_contract)
-    except (UnicodeError, json.JSONDecodeError) as exc:
+    except (KeyError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("committed schema contract is invalid") from exc
 
     with tempfile.TemporaryDirectory(
@@ -483,24 +542,23 @@ def verify_repository_commit(
         "revision_count": graph["revision_count"],
         "release_manifest_sha256": hashlib.sha256(release_bytes).hexdigest(),
         "schema_contract_sha256": hashlib.sha256(schema_bytes).hexdigest(),
+        "verifier_sha256": hashlib.sha256(verifier_bytes).hexdigest(),
+        "schema_validator_sha256": hashlib.sha256(validator_bytes).hexdigest(),
         "errors": graph["errors"],
     }
 
 
 def require_clean_migration_tree(repository_root: Path = REPOSITORY_ROOT) -> None:
     """Reject staged or unstaged changes to tracked migration files."""
-    result = subprocess.run(
+    result = _git_process(
+        repository_root,
         [
-            "git",
             "diff",
             "--quiet",
             "HEAD",
             "--",
             "src/dragon_radar/migrations",
         ],
-        cwd=repository_root,
-        shell=False,
-        check=False,
     )
     if result.returncode != 0:
         raise ValueError("tracked migrations differ from HEAD")
@@ -1472,14 +1530,10 @@ def validate_audited_commit(
     root = Path(repository_root)
     if not (root / ".git").exists():
         return value
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", "HEAD"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        shell=False,
-        check=False,
+    _reject_git_replace_refs(root)
+    result = _git_process(
+        root,
+        ["rev-parse", "--verify", "HEAD"],
     )
     if result.returncode != 0:
         raise ValueError("cannot verify repository HEAD")
@@ -1647,15 +1701,20 @@ def _run_process(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     timeout: float,
-) -> subprocess.CompletedProcess[str]:
+    text: bool = True,
+) -> subprocess.CompletedProcess:
+    process_kwargs: dict[str, object] = {
+        "cwd": cwd,
+        "env": env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": text,
+    }
+    if text:
+        process_kwargs.update(encoding="utf-8", errors="replace")
     process = subprocess.Popen(
         list(argv),
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
+        **process_kwargs,
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout)
@@ -2403,14 +2462,9 @@ def exercise_backup_restore(
     """Run an isolated custom-format backup and restore verification drill."""
     _clear_output_target(output)
     if audited_commit is None:
-        head = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"],
-            cwd=REPOSITORY_ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            shell=False,
-            check=False,
+        head = _git_process(
+            REPOSITORY_ROOT,
+            ["rev-parse", "--verify", "HEAD"],
         )
         if head.returncode != 0:
             raise ValueError("cannot derive audited commit from repository HEAD")
