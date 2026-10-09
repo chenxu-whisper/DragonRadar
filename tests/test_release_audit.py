@@ -323,6 +323,100 @@ def _write_task20_bundle(root: Path):
     return manifest_path, summary_path
 
 
+def _commit_task20_fixture(
+    root: Path, verifier_bytes: bytes | None
+) -> tuple[str, Path]:
+    _manifest, summary = _write_task20_bundle(root)
+    verifier = root / "scripts" / "verify_task20_bundle.py"
+    if verifier_bytes is not None:
+        verifier.parent.mkdir(parents=True)
+        verifier.write_bytes(verifier_bytes)
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "task21@example.invalid"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Task21 Test"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-c", "core.autocrlf=false", "add", "--all"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "test fixture"],
+        cwd=root,
+        check=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        text=True,
+    ).strip()
+    return commit, summary
+
+
+def _isolate_task20_collection(auditor, monkeypatch):
+    globals_ = auditor["collect_task20_evidence"].__globals__
+    monkeypatch.setitem(globals_, "_is_ancestor", lambda *_: True)
+    monkeypatch.setitem(globals_, "collect_task_inventory", lambda *_: [])
+
+
+def test_task20_collection_uses_committed_verifier_and_artifacts(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    committed_verifier = (ROOT / "scripts/verify_task20_bundle.py").read_bytes()
+    commit, summary = _commit_task20_fixture(tmp_path, committed_verifier)
+    _isolate_task20_collection(auditor, monkeypatch)
+
+    (tmp_path / "scripts/verify_task20_bundle.py").write_text(
+        "raise SystemExit('uncommitted verifier executed')\n",
+        encoding="utf-8",
+    )
+    summary.write_text("uncommitted artifact bytes", encoding="utf-8")
+
+    result = auditor["collect_task20_evidence"](tmp_path, commit)
+
+    assert result["valid"] is True
+    assert result["implementation_commit"] == "c" * 40
+
+
+@pytest.mark.parametrize(
+    "committed_verifier",
+    [
+        None,
+        (b"from pathlib import Path\nraise SystemExit(Path(__file__).resolve())\n"),
+    ],
+    ids=("missing", "tampered"),
+)
+def test_task20_collection_rejects_missing_or_tampered_committed_verifier(
+    auditor,
+    tmp_path,
+    monkeypatch,
+    committed_verifier,
+):
+    commit, _summary = _commit_task20_fixture(tmp_path, committed_verifier)
+    checkout_verifier = tmp_path / "scripts/verify_task20_bundle.py"
+    checkout_verifier.parent.mkdir(parents=True, exist_ok=True)
+    checkout_verifier.write_bytes(
+        (ROOT / "scripts/verify_task20_bundle.py").read_bytes()
+    )
+    _isolate_task20_collection(auditor, monkeypatch)
+
+    with pytest.raises(ValueError) as exc_info:
+        auditor["collect_task20_evidence"](tmp_path, commit)
+
+    message = str(exc_info.value)
+    assert str(tmp_path.resolve()) not in message
+    assert str(ROOT.resolve()) not in message
+
+
 def test_task20_collection_invokes_strict_verifier_and_rejects_tamper(
     auditor,
     tmp_path,
@@ -330,10 +424,19 @@ def test_task20_collection_invokes_strict_verifier_and_rejects_tamper(
 ):
     manifest, summary = _write_task20_bundle(tmp_path)
     calls = []
+    verifier_bytes = (ROOT / "scripts/verify_task20_bundle.py").read_bytes()
+    blobs = {
+        "scripts/verify_task20_bundle.py": verifier_bytes,
+        manifest.relative_to(tmp_path).as_posix(): manifest.read_bytes(),
+        summary.relative_to(tmp_path).as_posix(): summary.read_bytes(),
+    }
+    observed_verifier = {}
     globals_ = auditor["collect_task20_evidence"].__globals__
 
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
+        if argv[0] == os.fspath(Path(os.sys.executable)):
+            observed_verifier["bytes"] = Path(argv[1]).read_bytes()
         return SimpleNamespace(returncode=0, stdout="verified", stderr="")
 
     monkeypatch.setitem(globals_, "_run", run)
@@ -350,7 +453,7 @@ def test_task20_collection_invokes_strict_verifier_and_rejects_tamper(
     monkeypatch.setitem(
         globals_,
         "_git_blob",
-        lambda root, _commit, path: (root / path).read_bytes(),
+        lambda _root, _commit, path: blobs[path],
     )
 
     result = auditor["collect_task20_evidence"](tmp_path, "a" * 40)
@@ -362,9 +465,15 @@ def test_task20_collection_invokes_strict_verifier_and_rejects_tamper(
         "skipped": 0,
     }
     assert result["attestation"] == "committed_execution_provenance_only"
-    assert calls[0][0][1].endswith("verify_task20_bundle.py")
+    assert observed_verifier["bytes"] == verifier_bytes
+    assert calls[-1][0][0] == os.fspath(Path(os.sys.executable))
+    assert calls[-1][0][2] == "docs/acceptance/evidence/task20/manifest.json"
+    assert calls[-1][1]["cwd"] != tmp_path.resolve()
+    assert "PYTHONPATH" not in calls[-1][1]["env"]
+    assert "PYTHONHOME" not in calls[-1][1]["env"]
+    assert all(call[1]["timeout"] == 30 for call in calls)
 
-    summary.write_text("tampered", encoding="utf-8")
+    blobs[summary.relative_to(tmp_path).as_posix()] = b"tampered"
     with pytest.raises(ValueError, match="SHA-256"):
         auditor["collect_task20_evidence"](tmp_path, "a" * 40)
 

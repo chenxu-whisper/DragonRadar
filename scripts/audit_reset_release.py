@@ -740,6 +740,61 @@ def _validate_task20_summary(
     return {"required": 21, "failed": 0, "skipped": 0}
 
 
+def _run_task20_verifier(
+    root: Path,
+    audited_commit: str,
+    manifest: Mapping[str, object],
+    manifest_bytes: bytes,
+) -> None:
+    verifier_relative = "scripts/verify_task20_bundle.py"
+    manifest_relative = "docs/acceptance/evidence/task20/manifest.json"
+    verifier_bytes = _git_blob(root, audited_commit, verifier_relative)
+    environment = _safe_git_environment()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    with tempfile.TemporaryDirectory(
+        prefix="dragon-radar-task20-verifier-"
+    ) as temporary:
+        snapshot = Path(temporary) / "repository"
+        verifier = snapshot / verifier_relative
+        manifest_path = snapshot / manifest_relative
+        verifier.parent.mkdir(parents=True)
+        manifest_path.parent.mkdir(parents=True)
+        verifier.write_bytes(verifier_bytes)
+        manifest_path.write_bytes(manifest_bytes)
+        for raw_item in manifest["files"]:
+            item = _exact_object(
+                raw_item,
+                {"path", "sha256", "bytes"},
+                "Task20 verifier file",
+            )
+            relative = validate_relative_path(item["path"])
+            repository_path = f"docs/acceptance/evidence/task20/{relative}"
+            destination = snapshot.joinpath(*PurePosixPath(repository_path).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(_git_blob(root, audited_commit, repository_path))
+        for git_argv in (
+            ["git", "--no-replace-objects", "init", "--quiet"],
+            ["git", "--no-replace-objects", "add", "--all"],
+        ):
+            result = _run(
+                git_argv,
+                cwd=snapshot,
+                env=environment,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                raise ValueError("cannot prepare strict Task20 verifier snapshot")
+        result = _run(
+            [sys.executable, str(verifier), manifest_relative],
+            cwd=snapshot,
+            env=environment,
+            timeout=30,
+        )
+    if result.returncode != 0:
+        raise ValueError("strict Task20 bundle verification failed")
+
+
 def collect_task20_evidence(
     root: Path,
     audited_commit: str,
@@ -747,17 +802,18 @@ def collect_task20_evidence(
     run_verifier: bool = True,
 ) -> dict[str, object]:
     root = Path(root).resolve()
-    manifest_path = root / "docs/acceptance/evidence/task20/manifest.json"
-    verifier = root / "scripts/verify_task20_bundle.py"
-    if run_verifier:
-        result = _run([sys.executable, str(verifier), str(manifest_path)], cwd=root)
-        if result.returncode != 0:
-            raise ValueError("strict Task20 bundle verification failed")
     manifest_relative = "docs/acceptance/evidence/task20/manifest.json"
     manifest_bytes = _git_blob(root, audited_commit, manifest_relative)
     manifest = load_strict_json_bytes(manifest_bytes)
     tracked = _tracked_paths(root, audited_commit)
     _validate_task20_manifest(root, manifest, tracked, audited_commit)
+    if run_verifier:
+        _run_task20_verifier(
+            root,
+            audited_commit,
+            manifest,
+            manifest_bytes,
+        )
     implementation_commit = _exact_commit(
         manifest["implementation_commit"],
         "Task20 implementation commit",

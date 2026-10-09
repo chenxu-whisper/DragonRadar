@@ -771,6 +771,8 @@ def test_wheel_parent_cleans_exact_run_prefix_after_helper_failure(
     def run_process(argv, **kwargs):
         nonlocal created_prefix
         calls.append((argv, kwargs))
+        if argv[:3] == ["git", "--no-replace-objects", "rev-parse"]:
+            return subprocess.CompletedProcess(argv, 0, audited_head() + "\n", "")
         if Path(argv[0]).name.startswith("python") and "wheel_helper.py" in argv[1]:
             created_prefix = argv[-1]
             schema = f"{created_prefix}{'f' * 16}"
@@ -805,7 +807,14 @@ def test_wheel_parent_cleans_exact_run_prefix_after_helper_failure(
                 {"prefix": created_prefix},
             )
         assert remaining == 0
-        assert len(calls) == 3
+        assert len(calls) == 5
+        assert calls[1][0] == [
+            "git",
+            "--no-replace-objects",
+            "rev-parse",
+            "--verify",
+            "HEAD",
+        ]
     finally:
         if created_prefix is not None:
             with admin.begin() as connection:
@@ -1122,7 +1131,7 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
 
     assert expected == actual
     assert expected["schema"] == "dragon-radar.postgresql-schema-contract"
-    assert expected["schema_version"] == 1
+    assert expected["schema_version"] == 2
     assert expected["postgresql_major"] == 17
     for collection in ("tables", "constraints", "indexes", "triggers"):
         assert expected[collection] == sorted(
@@ -1136,20 +1145,113 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
     )
     assert exclusion == {
         "columns": [],
+        "deferrable": False,
         "expression": None,
+        "initially_deferred": False,
         "key_expressions": [
             "security_id",
             "state_type",
             "daterange(valid_from, valid_to, '[)'::text)",
         ],
         "kind": "exclusion",
+        "match_type": None,
         "name": "security_state_history_no_overlap",
+        "on_delete": None,
+        "on_update": None,
         "operators": ["=", "=", "&&"],
         "referenced_columns": [],
         "referenced_table": None,
         "table": "security_state_history",
     }
+    foreign_key = next(
+        constraint
+        for constraint in expected["constraints"]
+        if constraint["name"] == "news_article_revisions_article_id_fkey"
+    )
+    assert {
+        field: foreign_key[field]
+        for field in (
+            "on_update",
+            "on_delete",
+            "match_type",
+            "deferrable",
+            "initially_deferred",
+        )
+    } == {
+        "on_update": "no_action",
+        "on_delete": "restrict",
+        "match_type": "simple",
+        "deferrable": False,
+        "initially_deferred": False,
+    }
+    trigger = next(
+        trigger
+        for trigger in expected["triggers"]
+        if trigger["name"] == "immutable_rows" and trigger["table"] == "snapshots"
+    )
+    assert trigger["function_schema"] == "current_schema"
+    assert trigger["function_name"] == "reject_immutable_mutation"
     assert database.ready()
+
+
+def test_readiness_rejects_foreign_key_action_drift(database):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE news_article_revisions DROP CONSTRAINT "
+                "news_article_revisions_article_id_fkey"
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE news_article_revisions "
+                "ADD CONSTRAINT news_article_revisions_article_id_fkey "
+                "FOREIGN KEY (article_id) REFERENCES news_articles(id) "
+                "ON DELETE CASCADE"
+            )
+        )
+
+    assert not database.ready()
+
+
+def test_readiness_rejects_trigger_function_schema_drift(database):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        current_schema = connection.scalar(text("SELECT current_schema()"))
+        alternate_schema = f"{current_schema}_trigger"
+        connection.execute(text(f'CREATE SCHEMA "{alternate_schema}"'))
+        connection.execute(
+            text(
+                f'CREATE FUNCTION "{alternate_schema}".reject_immutable_mutation() '
+                "RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "BEGIN RAISE EXCEPTION 'immutable table'; END $$"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE OR REPLACE TRIGGER immutable_rows "
+                "BEFORE UPDATE OR DELETE ON snapshots "
+                "FOR EACH ROW EXECUTE FUNCTION "
+                f'"{alternate_schema}".reject_immutable_mutation()'
+            )
+        )
+
+    try:
+        from dragon_radar.storage.schema_contract import capture_schema_contract
+
+        with database.engine.connect() as connection:
+            actual = capture_schema_contract(connection)
+        trigger = next(
+            trigger
+            for trigger in actual["triggers"]
+            if trigger["name"] == "immutable_rows" and trigger["table"] == "snapshots"
+        )
+        assert trigger["function_schema"] == f"schema:{alternate_schema}"
+        assert not database.ready()
+    finally:
+        with database.engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{alternate_schema}" CASCADE'))
 
 
 def test_readiness_rejects_exclusion_replaced_by_equivalent_named_index(database):
@@ -1327,6 +1429,89 @@ def test_schema_contract_requires_exact_index_predicate_field(tmp_path):
         load_schema_contract(path)
 
 
+def test_schema_contract_requires_exact_foreign_key_behavior_fields(tmp_path):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    foreign_key = next(
+        constraint
+        for constraint in contract["constraints"]
+        if constraint["kind"] == "foreign_key"
+    )
+    del foreign_key["on_delete"]
+    path = tmp_path / "missing-foreign-key-action.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match=r"constraints\[\d+\] missing field: on_delete"
+    ):
+        load_schema_contract(path)
+
+
+def test_schema_contract_rejects_invalid_foreign_key_behavior(tmp_path):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    foreign_key = next(
+        constraint
+        for constraint in contract["constraints"]
+        if constraint["kind"] == "foreign_key"
+    )
+    foreign_key["on_update"] = "ignore"
+    contract["constraints"] = sorted(
+        contract["constraints"],
+        key=lambda item: json.dumps(
+            item,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ),
+    )
+    path = tmp_path / "invalid-foreign-key-action.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"constraints\[\d+\]\.on_update.*one of"):
+        load_schema_contract(path)
+
+    contract = load_packaged_schema_contract()
+    contract["constraints"][0]["initially_deferred"] = True
+    contract["constraints"] = sorted(
+        contract["constraints"],
+        key=lambda item: json.dumps(
+            item,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ),
+    )
+    path.write_text(json.dumps(contract), encoding="utf-8")
+    with pytest.raises(ValueError, match="initially_deferred requires"):
+        load_schema_contract(path)
+
+
+def test_schema_contract_requires_trigger_function_schema(tmp_path):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    del contract["triggers"][0]["function_schema"]
+    path = tmp_path / "missing-trigger-function-schema.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"triggers\[0\] missing field: function_schema",
+    ):
+        load_schema_contract(path)
+
+
 @pytest.mark.parametrize("predicate", ["", True, 1, [], {}])
 def test_schema_contract_rejects_invalid_index_predicate(tmp_path, predicate):
     from dragon_radar.storage.schema_contract import (
@@ -1429,7 +1614,7 @@ def test_schema_contract_loader_rejects_duplicate_keys_and_wrong_version(tmp_pat
         json.dumps(
             {
                 "schema": "dragon-radar.postgresql-schema-contract",
-                "schema_version": 2,
+                "schema_version": 3,
                 "postgresql_major": 17,
                 "tables": [],
                 "constraints": [],

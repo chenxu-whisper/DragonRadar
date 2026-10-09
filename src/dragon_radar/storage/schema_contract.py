@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 CONTRACT_SCHEMA = "dragon-radar.postgresql-schema-contract"
-CONTRACT_SCHEMA_VERSION = 1
+CONTRACT_SCHEMA_VERSION = 2
 SUPPORTED_POSTGRESQL_MAJOR = 17
 CONTRACT_FIELDS = {
     "schema",
@@ -38,6 +38,11 @@ CONSTRAINT_FIELDS = {
     "expression",
     "key_expressions",
     "operators",
+    "on_update",
+    "on_delete",
+    "match_type",
+    "deferrable",
+    "initially_deferred",
 }
 INDEX_FIELDS = {
     "table",
@@ -53,9 +58,18 @@ TRIGGER_FIELDS = {
     "enabled",
     "timing",
     "events",
-    "function",
+    "function_schema",
+    "function_name",
 }
 CONSTRAINT_KINDS = {"primary_key", "unique", "foreign_key", "check", "exclusion"}
+FOREIGN_KEY_ACTIONS = {
+    "no_action",
+    "restrict",
+    "cascade",
+    "set_null",
+    "set_default",
+}
+FOREIGN_KEY_MATCH_TYPES = {"full", "partial", "simple"}
 IDENTITY_VALUES = {"always", "by_default"}
 GENERATED_VALUES = {"stored"}
 TRIGGER_ENABLED_VALUES = {"origin", "disabled", "replica", "always"}
@@ -160,7 +174,31 @@ SELECT
             ORDER BY exclusion_operator.position
         )
         ELSE ARRAY[]::text[]
-    END AS operators
+    END AS operators,
+    CASE constraint_record.confupdtype
+        WHEN 'a' THEN 'no_action'
+        WHEN 'r' THEN 'restrict'
+        WHEN 'c' THEN 'cascade'
+        WHEN 'n' THEN 'set_null'
+        WHEN 'd' THEN 'set_default'
+        ELSE NULL
+    END AS on_update,
+    CASE constraint_record.confdeltype
+        WHEN 'a' THEN 'no_action'
+        WHEN 'r' THEN 'restrict'
+        WHEN 'c' THEN 'cascade'
+        WHEN 'n' THEN 'set_null'
+        WHEN 'd' THEN 'set_default'
+        ELSE NULL
+    END AS on_delete,
+    CASE constraint_record.confmatchtype
+        WHEN 'f' THEN 'full'
+        WHEN 'p' THEN 'partial'
+        WHEN 's' THEN 'simple'
+        ELSE NULL
+    END AS match_type,
+    constraint_record.condeferrable AS deferrable,
+    constraint_record.condeferred AS initially_deferred
 FROM pg_catalog.pg_constraint constraint_record
 JOIN pg_catalog.pg_class relation ON relation.oid = constraint_record.conrelid
 JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -208,12 +246,18 @@ SELECT
     trigger_record.tgname AS trigger_name,
     trigger_record.tgenabled AS enabled_code,
     trigger_record.tgtype AS trigger_type,
+    CASE
+        WHEN function_namespace.oid = namespace.oid THEN 'current_schema'
+        ELSE 'schema:' || function_namespace.nspname
+    END AS function_schema,
     function_record.proname AS function_name
 FROM pg_catalog.pg_trigger trigger_record
 JOIN pg_catalog.pg_class relation ON relation.oid = trigger_record.tgrelid
 JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
 JOIN pg_catalog.pg_proc function_record
   ON function_record.oid = trigger_record.tgfoid
+JOIN pg_catalog.pg_namespace function_namespace
+  ON function_namespace.oid = function_record.pronamespace
 WHERE namespace.nspname = current_schema()
   AND relation.relname <> 'alembic_version'
   AND NOT trigger_record.tgisinternal
@@ -262,6 +306,11 @@ def capture_constraints(connection: Connection) -> list[dict[str, object]]:
                 "expression": row["expression"],
                 "key_expressions": list(row["key_expressions"] or []),
                 "operators": list(row["operators"] or []),
+                "on_update": row["on_update"],
+                "on_delete": row["on_delete"],
+                "match_type": row["match_type"],
+                "deferrable": bool(row["deferrable"]),
+                "initially_deferred": bool(row["initially_deferred"]),
             }
         )
     return _sorted_records(records)
@@ -320,7 +369,8 @@ def capture_triggers(connection: Connection) -> list[dict[str, object]]:
                 "enabled": enabled_values[str(row["enabled_code"])],
                 "timing": _trigger_timing(trigger_type),
                 "events": _trigger_events(trigger_type),
-                "function": str(row["function_name"]),
+                "function_schema": str(row["function_schema"]),
+                "function_name": str(row["function_name"]),
             }
         )
     return _sorted_records(records)
@@ -537,6 +587,33 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
             constraint["operators"],
             location=f"{location}.operators",
         )
+        on_update = _require_optional_choice(
+            constraint["on_update"],
+            FOREIGN_KEY_ACTIONS,
+            location=f"{location}.on_update",
+        )
+        on_delete = _require_optional_choice(
+            constraint["on_delete"],
+            FOREIGN_KEY_ACTIONS,
+            location=f"{location}.on_delete",
+        )
+        match_type = _require_optional_choice(
+            constraint["match_type"],
+            FOREIGN_KEY_MATCH_TYPES,
+            location=f"{location}.match_type",
+        )
+        deferrable = _require_bool(
+            constraint["deferrable"],
+            location=f"{location}.deferrable",
+        )
+        initially_deferred = _require_bool(
+            constraint["initially_deferred"],
+            location=f"{location}.initially_deferred",
+        )
+        if initially_deferred and not deferrable:
+            raise ValueError(
+                f"{location}.initially_deferred requires a deferrable constraint"
+            )
         if kind in {"primary_key", "unique"} and not columns:
             raise ValueError(f"{location}.columns must not be empty")
         if kind == "foreign_key":
@@ -544,9 +621,18 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
                 not columns
                 or referenced_table is None
                 or len(columns) != len(referenced_columns)
+                or on_update is None
+                or on_delete is None
+                or match_type is None
             ):
                 raise ValueError(f"{location} has an invalid foreign key")
-        elif referenced_table is not None or referenced_columns:
+        elif (
+            referenced_table is not None
+            or referenced_columns
+            or on_update is not None
+            or on_delete is not None
+            or match_type is not None
+        ):
             raise ValueError(f"{location} has unexpected referenced columns")
         if (kind == "check") != (expression is not None):
             raise ValueError(f"{location} has an invalid check expression")
@@ -593,7 +679,7 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
     )
     for index, trigger in enumerate(triggers):
         location = f"triggers[{index}]"
-        for field in ("table", "name", "function"):
+        for field in ("table", "name", "function_schema", "function_name"):
             _require_string(trigger[field], location=f"{location}.{field}")
         _require_choice(
             trigger["enabled"],
