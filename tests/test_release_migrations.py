@@ -7,8 +7,10 @@ import runpy
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -743,3 +745,417 @@ def test_schema_contract_writer_is_atomic_and_contains_no_credentials(
     assert "postgresql+psycopg://" not in serialized
     assert "dragon-test-local-only" not in serialized
     assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+def test_write_schema_contract_cli_requires_database_url(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.delenv("DRAGON_TEST_DATABASE_URL", raising=False)
+    output = tmp_path / "contract.json"
+
+    assert verifier["main"](["--write-schema-contract", str(output)]) == 1
+
+    captured = capsys.readouterr()
+    assert "database URL is required" in captured.err
+    assert not output.exists()
+
+
+def test_write_schema_contract_verifies_exact_package_before_database(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    calls = []
+    verifier_globals = verifier["main"].__globals__
+
+    def reject_manifest(root):
+        calls.append(root)
+        return {"head": None, "revision_count": 0, "errors": ["hash failure"]}
+
+    monkeypatch.setitem(verifier_globals, "verify_manifest", reject_manifest)
+    monkeypatch.setitem(
+        verifier_globals,
+        "require_clean_migration_tree",
+        lambda: pytest.fail("Git check ran after a failed manifest"),
+    )
+    monkeypatch.setitem(
+        verifier_globals,
+        "generate_schema_contract",
+        lambda *_: pytest.fail("database code ran after a failed manifest"),
+    )
+
+    result = verifier["main"](
+        [
+            "--write-schema-contract",
+            str(tmp_path / "contract.json"),
+            "--database-url",
+            "postgresql://user:top-secret@localhost/dragon_test",
+        ]
+    )
+
+    assert result == 1
+    assert calls == [MIGRATIONS]
+    captured = capsys.readouterr()
+    assert "hash failure" in captured.err
+    assert "top-secret" not in captured.err + captured.out
+
+
+@pytest.mark.parametrize("staged", [False, True], ids=["unstaged", "staged"])
+def test_clean_migration_gate_rejects_any_tracked_change(
+    verifier,
+    tmp_path,
+    staged,
+):
+    repository = tmp_path / "repository"
+    migration = repository / "src" / "dragon_radar" / "migrations" / "version.py"
+    migration.parent.mkdir(parents=True)
+    migration.write_text("revision = 'base'\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    migration.write_text("revision = 'changed'\n", encoding="utf-8")
+    if staged:
+        subprocess.run(["git", "add", str(migration)], cwd=repository, check=True)
+
+    with pytest.raises(ValueError, match="tracked migrations differ from HEAD"):
+        verifier["require_clean_migration_tree"](repository)
+
+
+def test_clean_migration_gate_uses_strict_git_argv(
+    verifier,
+    monkeypatch,
+):
+    observed = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    verifier["require_clean_migration_tree"](ROOT)
+
+    assert observed["argv"] == [
+        "git",
+        "diff",
+        "--quiet",
+        "HEAD",
+        "--",
+        "src/dragon_radar/migrations",
+    ]
+    assert observed["kwargs"]["cwd"] == ROOT
+    assert observed["kwargs"]["shell"] is False
+
+
+def test_atomic_contract_output_preserves_target_and_removes_temp_on_failure(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    output = tmp_path / "contract.json"
+    output.write_text("original\n", encoding="utf-8")
+
+    def reject_replace(_source, _target):
+        raise OSError("write failed")
+
+    monkeypatch.setattr(os, "replace", reject_replace)
+
+    with pytest.raises(OSError, match="write failed"):
+        verifier["write_contract_atomically"](
+            {"schema": "test", "tables": []},
+            output,
+        )
+
+    assert output.read_text(encoding="utf-8") == "original\n"
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    events = []
+    verifier_globals = verifier["generate_schema_contract"].__globals__
+    schema = "schema_contract_" + ("a" * 32)
+    contract = {
+        "schema": "dragon-radar.postgresql-schema-contract",
+        "schema_version": 1,
+        "tables": [{"name": "example", "columns": []}],
+        "constraints": [],
+        "indexes": [],
+        "triggers": [],
+    }
+
+    class FakeUrl:
+        def difference_update_query(self, keys):
+            assert keys == ["options"]
+            return self
+
+        def update_query_dict(self, query):
+            assert query == {"options": f"-csearch_path={schema}"}
+            return self
+
+        def render_as_string(self, *, hide_password):
+            assert not hide_password
+            return "postgresql+psycopg://user:secret@localhost/dragon_test"
+
+    class FakeConnection:
+        def execute(self, statement):
+            events.append(str(statement))
+
+        def scalar(self, statement):
+            events.append(str(statement))
+            return "0010_ai_tasks"
+
+    class FakeEngine:
+        @contextmanager
+        def begin(self):
+            yield FakeConnection()
+
+        @contextmanager
+        def connect(self):
+            yield FakeConnection()
+
+        def dispose(self):
+            events.append("admin disposed")
+
+    class FakeDatabase:
+        def __init__(self, url):
+            assert "secret" in url
+            self.engine = FakeEngine()
+
+        def migrate(self):
+            events.append("migrated")
+
+        def close(self):
+            events.append("database closed")
+
+    monkeypatch.setitem(
+        verifier_globals, "_validated_postgres_url", lambda _: FakeUrl()
+    )
+    monkeypatch.setitem(
+        verifier_globals, "_create_admin_engine", lambda _: FakeEngine()
+    )
+    monkeypatch.setitem(verifier_globals, "_database_class", lambda: FakeDatabase)
+    monkeypatch.setitem(
+        verifier_globals,
+        "_schema_contract_functions",
+        lambda: (lambda _connection: contract, lambda value: value),
+    )
+    monkeypatch.setitem(verifier_globals, "_new_schema_name", lambda: schema)
+    output = tmp_path / "contract.json"
+
+    result = verifier["generate_schema_contract"](
+        output,
+        "postgresql://user:secret@localhost/dragon_test",
+    )
+
+    assert result == contract
+    assert json.loads(output.read_text(encoding="utf-8")) == contract
+    assert events.index("migrated") < next(
+        index for index, event in enumerate(events) if "alembic_version" in event
+    )
+    assert events[-3:] == [
+        "database closed",
+        f'DROP SCHEMA "{schema}" CASCADE',
+        "admin disposed",
+    ]
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("revision", "close_fails", "expected_error"),
+    [
+        ("0010_ai_tasks", False, "capture failed"),
+        ("wrong_revision", False, "generated database revision"),
+        ("0010_ai_tasks", True, "close failed"),
+    ],
+    ids=["capture", "revision", "close"],
+)
+def test_generation_failure_leaves_no_output_or_schema(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    revision,
+    close_fails,
+    expected_error,
+):
+    output = tmp_path / "contract.json"
+    verifier_globals = verifier["generate_schema_contract"].__globals__
+    events = []
+    schema = "schema_contract_" + ("b" * 32)
+
+    class FakeUrl:
+        def difference_update_query(self, keys):
+            return self
+
+        def update_query_dict(self, query):
+            return self
+
+        def render_as_string(self, *, hide_password):
+            return "postgresql+psycopg://user:secret@localhost/dragon_test"
+
+    class FakeConnection:
+        def execute(self, statement):
+            events.append(str(statement))
+
+        def scalar(self, statement):
+            return revision
+
+    class FakeEngine:
+        @contextmanager
+        def begin(self):
+            yield FakeConnection()
+
+        @contextmanager
+        def connect(self):
+            yield FakeConnection()
+
+        def dispose(self):
+            events.append("admin disposed")
+
+    class FakeDatabase:
+        def __init__(self, url):
+            self.engine = FakeEngine()
+
+        def migrate(self):
+            events.append("migrated")
+
+        def close(self):
+            events.append("database closed")
+            if close_fails:
+                raise RuntimeError("close failed")
+
+    monkeypatch.setitem(
+        verifier_globals,
+        "_validated_postgres_url",
+        lambda _: FakeUrl(),
+    )
+    monkeypatch.setitem(
+        verifier_globals,
+        "_create_admin_engine",
+        lambda _: FakeEngine(),
+    )
+    monkeypatch.setitem(verifier_globals, "_database_class", lambda: FakeDatabase)
+    monkeypatch.setitem(verifier_globals, "_new_schema_name", lambda: schema)
+    monkeypatch.setitem(
+        verifier_globals,
+        "_schema_contract_functions",
+        lambda: (
+            lambda _connection: (_ for _ in ()).throw(RuntimeError("capture failed")),
+            lambda value: value,
+        ),
+    )
+    monkeypatch.setitem(
+        verifier_globals,
+        "write_contract_atomically",
+        lambda *_: pytest.fail("write attempted after capture failed"),
+    )
+
+    with pytest.raises((RuntimeError, ValueError), match=expected_error):
+        verifier["generate_schema_contract"](
+            output,
+            "postgresql://user:secret@localhost/dragon_test",
+        )
+
+    assert f'DROP SCHEMA "{schema}" CASCADE' in events
+    assert events[-1] == "admin disposed"
+    assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+def test_write_cli_never_reveals_database_password(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "never-print-this-password"
+    verifier_globals = verifier["main"].__globals__
+    monkeypatch.setitem(
+        verifier_globals,
+        "verify_manifest",
+        lambda root: {
+            "head": "0010_ai_tasks",
+            "revision_count": 18,
+            "errors": [],
+        },
+    )
+    monkeypatch.setitem(verifier_globals, "require_clean_migration_tree", lambda: None)
+    monkeypatch.setitem(
+        verifier_globals,
+        "generate_schema_contract",
+        lambda *_: (_ for _ in ()).throw(RuntimeError(f"failed at {secret}")),
+    )
+
+    result = verifier["main"](
+        [
+            "--write-schema-contract",
+            str(tmp_path / "contract.json"),
+            "--database-url",
+            f"postgresql://user:{secret}@localhost/dragon_test",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert secret not in captured.out + captured.err
+
+
+def test_actual_generation_matches_committed_contract_and_drops_schema(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    value = os.environ.get("DRAGON_TEST_DATABASE_URL")
+    if not value:
+        pytest.skip("DRAGON_TEST_DATABASE_URL is required for PostgreSQL integration")
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import make_url
+
+    schema = "schema_contract_" + os.urandom(16).hex()
+    verifier_globals = verifier["generate_schema_contract"].__globals__
+    monkeypatch.setitem(verifier_globals, "_new_schema_name", lambda: schema)
+    output = tmp_path / "schema_contract.json"
+
+    verifier["generate_schema_contract"](output, value)
+
+    committed = json.loads(
+        (ROOT / "src/dragon_radar/storage/schema_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert json.loads(output.read_text(encoding="utf-8")) == committed
+    admin = create_engine(make_url(value).difference_update_query(["options"]))
+    try:
+        with admin.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM pg_namespace WHERE nspname = :schema"),
+                    {"schema": schema},
+                )
+                == 0
+            )
+    finally:
+        admin.dispose()

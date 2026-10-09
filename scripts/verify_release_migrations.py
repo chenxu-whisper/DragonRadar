@@ -7,10 +7,12 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
+from uuid import uuid4
 
 from alembic.script import ScriptDirectory
 
@@ -43,6 +45,7 @@ SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 DEFAULT_MIGRATIONS = (
     Path(__file__).resolve().parents[1] / "src" / "dragon_radar" / "migrations"
 )
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def canonical_migration_bytes(path: Path) -> bytes:
@@ -377,6 +380,140 @@ def verify_manifest(root: Path) -> dict[str, object]:
     }
 
 
+def require_clean_migration_tree(repository_root: Path = REPOSITORY_ROOT) -> None:
+    """Reject staged or unstaged changes to tracked migration files."""
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            "HEAD",
+            "--",
+            "src/dragon_radar/migrations",
+        ],
+        cwd=repository_root,
+        shell=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError("tracked migrations differ from HEAD")
+
+
+def _validated_postgres_url(database_url: str):
+    from sqlalchemy.engine import make_url
+
+    try:
+        url = make_url(database_url)
+    except Exception:
+        raise ValueError("invalid PostgreSQL database URL") from None
+    if url.drivername not in ("postgresql", "postgresql+psycopg"):
+        raise ValueError("PostgreSQL with psycopg is required")
+    return url.set(drivername="postgresql+psycopg")
+
+
+def _create_admin_engine(url):
+    from sqlalchemy import create_engine
+
+    return create_engine(
+        url,
+        pool_pre_ping=True,
+        hide_parameters=True,
+        connect_args={"connect_timeout": 3},
+    )
+
+
+def _database_class():
+    from dragon_radar.storage.database import Database
+
+    return Database
+
+
+def _schema_contract_functions():
+    from dragon_radar.storage.schema_contract import (
+        capture_schema_contract,
+        validate_schema_contract,
+    )
+
+    return capture_schema_contract, validate_schema_contract
+
+
+def _new_schema_name() -> str:
+    return f"schema_contract_{uuid4().hex}"
+
+
+def write_contract_atomically(
+    contract: dict[str, object],
+    output_path: Path,
+) -> None:
+    """Write a validated contract without exposing a partial target file."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary_path.write_text(
+            json.dumps(contract, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_path, output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _run_generation_lifecycle(database_url: str) -> dict[str, object]:
+    from sqlalchemy import text
+
+    url = _validated_postgres_url(database_url)
+    admin_url = url.difference_update_query(["options"])
+    admin_engine = _create_admin_engine(admin_url)
+    schema = _new_schema_name()
+    if re.fullmatch(r"schema_contract_[0-9a-f]{32}", schema) is None:
+        admin_engine.dispose()
+        raise ValueError("unsafe generated schema name")
+
+    database = None
+    schema_created = False
+    try:
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        schema_created = True
+        scoped_url = admin_url.update_query_dict({"options": f"-csearch_path={schema}"})
+        database = _database_class()(scoped_url.render_as_string(hide_password=False))
+        database.migrate()
+        with database.engine.connect() as connection:
+            revision = connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+            if revision != RELEASE_HEAD:
+                raise ValueError("generated database revision is not 0010_ai_tasks")
+            capture_schema_contract, validate_schema_contract = (
+                _schema_contract_functions()
+            )
+            contract = capture_schema_contract(connection)
+            validate_schema_contract(contract)
+            return contract
+    finally:
+        try:
+            if database is not None:
+                database.close()
+        finally:
+            try:
+                if schema_created:
+                    with admin_engine.begin() as connection:
+                        connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+            finally:
+                admin_engine.dispose()
+
+
+def generate_schema_contract(
+    output_path: Path,
+    database_url: str,
+) -> dict[str, object]:
+    """Generate a schema contract in a disposable PostgreSQL schema."""
+    contract = _run_generation_lifecycle(database_url)
+    write_contract_atomically(contract, output_path)
+    return contract
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -385,7 +522,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_MIGRATIONS,
         help="migration package root (defaults to the repository package)",
     )
+    parser.add_argument(
+        "--write-schema-contract",
+        type=Path,
+        metavar="PATH",
+        help="generate the current schema contract at PATH",
+    )
+    parser.add_argument(
+        "--database-url",
+        help="PostgreSQL URL for disposable schema generation",
+    )
     args = parser.parse_args(argv)
+    if args.write_schema_contract is not None:
+        database_url = args.database_url or os.environ.get("DRAGON_TEST_DATABASE_URL")
+        if not database_url:
+            print("database URL is required", file=sys.stderr)
+            return 1
+        try:
+            result = verify_manifest(DEFAULT_MIGRATIONS)
+            if result["errors"]:
+                for error in result["errors"]:
+                    print(error, file=sys.stderr)
+                return 1
+            require_clean_migration_tree()
+            contract = generate_schema_contract(
+                args.write_schema_contract,
+                database_url,
+            )
+        except Exception:
+            print("schema contract generation failed", file=sys.stderr)
+            return 1
+        print(
+            f"{len(contract['tables'])} tables, "
+            f"{len(contract['constraints'])} constraints, "
+            f"{len(contract['indexes'])} indexes, "
+            f"{len(contract['triggers'])} triggers written to "
+            f"{args.write_schema_contract}"
+        )
+        return 0
     try:
         result = verify_manifest(args.root)
     except (OSError, ValueError) as exc:
