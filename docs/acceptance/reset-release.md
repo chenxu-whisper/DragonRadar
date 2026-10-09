@@ -1,7 +1,7 @@
 # Reset Release Audit
 
 Audited implementation:
-`884a78688b9d68e082870d44a6a768bf97242ebd`.
+`2b72ff8c823494143818d2697cb17e0323b599e7`.
 Machine evidence:
 [release-manifest.json](evidence/task21/release-manifest.json).
 
@@ -11,7 +11,7 @@ Machine evidence:
    override the independent branch-cut and production-release gates.
 2. **Branch cut is NO_GO.** `feature/prd-reset` has no configured upstream,
    remote freshness is therefore absent, and 27 tracked paths were dirty when
-   the audit captured Git state. The audited commit is 297 commits ahead and
+   the audit captured Git state. The audited commit is 299 commits ahead and
    zero behind the local `origin/main` base, but that local relation is not
    remote proof.
 3. **Production release is NO_GO.** All five external gates and all five
@@ -78,11 +78,11 @@ in the machine manifest.
 ## Restore Evidence
 
 - Custom-format backup SHA-256:
-  `6108ec0a469f91ee4bf46f830365718b092bf2a4cdbc7ac774778f2134b852e8`
+  `4cae4ef49cb8bae826a4f2aa9239ab75eafa3e7a638ecf27b97cb28efbda98f7`
 - Source and restored fingerprint:
-  `1e4e470a199b832edbd3debd019accc8b981669c0a6b76b1b8f7f87b7acc388f`
-- Elapsed time: `8.796999999787658` seconds
-- Write-freeze time: `4.6100000001024455` seconds
+  `d3ed827d0959356d52c4f08a259577950c4a6bc0f757371271530751b1b2773a`
+- Elapsed time: `8.264999999897555` seconds
+- Write-freeze time: `4.141000000061467` seconds
 - Quiescence enforced, source unchanged, sentinel and permissions preserved,
   app semantics verified, and all disposable resources cleaned up
 - Measured data-loss rows and data-loss window: zero
