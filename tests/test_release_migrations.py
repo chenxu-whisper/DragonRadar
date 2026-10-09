@@ -96,11 +96,13 @@ def add_revision(root, *, revision, down_revision):
 
 
 def audited_head():
-    return subprocess.check_output(
+    head = subprocess.check_output(
         ["git", "rev-parse", "HEAD"],
         cwd=ROOT,
         text=True,
     ).strip()
+    assert re.fullmatch(r"[0-9a-f]{40}", head)
+    return head
 
 
 def append_import_marker(path, marker):
@@ -657,7 +659,7 @@ def test_wheel_parent_cleans_exact_run_prefix_after_helper_failure(
                 database_url,
                 wheel,
                 output,
-                "183587ec2b2494779db3a9221ea40cd596bb897d",
+                audited_head(),
             )
 
         assert created_prefix is not None
