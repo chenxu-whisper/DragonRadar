@@ -107,11 +107,23 @@ def performance_raw():
         "temp_read_blocks": 0,
         "temp_written_blocks": 0,
     }
-    explain_relations = {
-        "/api/snapshots/{id}": ("source_dependencies", "a" * 64),
-        "/api/market/overview": ("publication_results", "b" * 64),
-        "/api/rank/range": ("withdrawal_records", "c" * 64),
-        "/api/stock/{id}": ("withdrawal_dependencies", "d" * 64),
+    paths = (
+        "/api/snapshots/{id}",
+        "/api/market/overview",
+        "/api/rank/range",
+        "/api/stock/{id}",
+    )
+    normalized_sql = (
+        "SELECT id FROM publications WHERE id = %(id)s",
+        "SELECT payload FROM publication_results WHERE publication_id = %(id)s",
+        "SELECT source_id FROM source_dependencies WHERE publication_id = %(id)s",
+        "SELECT id FROM withdrawal_records WHERE source_id = %(source_id)s",
+        "SELECT withdrawal_id FROM withdrawal_dependencies "
+        "WHERE archive_id = %(archive_id)s",
+    )
+    shape_hashes = {
+        statement: hashlib.sha256(statement.encode("utf-8")).hexdigest()
+        for statement in normalized_sql
     }
     runs = [
         {
@@ -129,7 +141,7 @@ def performance_raw():
             "peak_memory_bytes": 100,
             "rss_bytes": 100,
             "memory_measurement": "test",
-            "sql_statement_count": 4,
+            "sql_statement_count": 100,
         }
         for index in range(1, 4)
     ]
@@ -175,39 +187,50 @@ def performance_raw():
             "worker_elapsed_seconds": 5.1,
             "status": "succeeded",
         },
-        "public_sql_statements": [
-            {
-                "path": path,
+        "observed_query_shapes": {
+            shape_hashes[statement]: {
+                "normalized_sql": statement,
                 "verb": "SELECT",
-                "relations": [],
-                "sql_sha256": f"{index:064x}",
-                "count": 3,
+                "relations": [
+                    statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+                ],
+                "endpoint_observations": {
+                    path: {
+                        "count": 15,
+                        "total_seconds": 0.15,
+                        "min_seconds": 0.005,
+                        "max_seconds": 0.02,
+                    }
+                    for path in paths
+                },
             }
-            for index, path in enumerate(
-                (
-                    "/api/snapshots/{id}",
-                    "/api/market/overview",
-                    "/api/rank/range",
-                    "/api/stock/{id}",
-                ),
-                start=1,
-            )
-        ],
+            for statement in normalized_sql
+        },
+        "endpoint_shape_hashes": {
+            path: sorted(shape_hashes.values()) for path in paths
+        },
         "application_state_before": {"table": {"rows": 1, "fingerprint": "a"}},
         "application_state_after": {"table": {"rows": 1, "fingerprint": "a"}},
-        "measured_path_explains": {
-            path: {
-                "sql_sha256": digest,
-                "sql_relations": [relation],
+        "query_plan_evidence": {
+            digest: {
+                "status": "explained",
+                "sql_relations": [
+                    statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+                ],
                 "plan": {
-                    "relations": [relation],
+                    "relations": [
+                        statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+                    ],
                     "indexes": [f"{relation}_test_idx"],
                     "nodes": ["Index Scan"],
                     "node_count": 1,
                     "buffers": buffer_counts,
                 },
             }
-            for path, (relation, digest) in explain_relations.items()
+            for statement, digest in shape_hashes.items()
+            for relation in [
+                statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+            ]
         },
     }
 
@@ -244,12 +267,15 @@ def evidence_manifest(tmp_path):
         elif gate == "public_no_write":
             observations = {
                 "sql_statement_count": sum(
-                    item["count"] for item in raw["public_sql_statements"]
+                    timing["count"]
+                    for shape in raw["observed_query_shapes"].values()
+                    for timing in shape["endpoint_observations"].values()
                 ),
                 "sql_write_count": 0,
                 "fingerprints_equal": True,
                 "application_table_count": 1,
-                "measured_path_explains": raw["measured_path_explains"],
+                "endpoint_shape_hashes": raw["endpoint_shape_hashes"],
+                "query_plan_evidence": raw["query_plan_evidence"],
             }
         elif gate == "async_over_five_seconds":
             observations = raw["async_work"]
@@ -260,7 +286,7 @@ def evidence_manifest(tmp_path):
         )
     return {
         "schema": "dragon-radar.task20-evidence",
-        "schema_version": 2,
+        "schema_version": 3,
         "mode": "full",
         "generated_at": "2026-10-08T00:00:00+00:00",
         "tested_commit": git_head(),
@@ -455,42 +481,41 @@ def test_performance_contract_requires_realistic_warmed_multi_round_fixture():
     assert any("aggregate" in error.lower() for error in errors(no_aggregate))
 
 
-def test_performance_contract_rejects_generic_or_duplicated_endpoint_plans():
+def test_performance_contract_rejects_endpoint_map_not_matching_observed_shapes():
     errors = VERIFIER["_performance_errors"]
     valid = performance_raw()
 
-    generic = deepcopy(valid)
-    generic["measured_path_explains"]["/api/market/overview"] = {
-        "sql_sha256": "e" * 64,
-        "sql_relations": ["publications"],
-        "plan": {
-            "relations": ["publications"],
-            "indexes": ["publications_pkey"],
-            "nodes": ["Index Scan"],
-            "node_count": 1,
-            "buffers": {
-                "shared_hit_blocks": 2,
-                "shared_read_blocks": 0,
-                "shared_dirtied_blocks": 0,
-                "shared_written_blocks": 0,
-                "local_hit_blocks": 0,
-                "local_read_blocks": 0,
-                "local_dirtied_blocks": 0,
-                "local_written_blocks": 0,
-                "temp_read_blocks": 0,
-                "temp_written_blocks": 0,
-            },
-        },
+    hard_coded = deepcopy(valid)
+    hard_coded["endpoint_shape_hashes"]["/api/market/overview"] = [
+        next(iter(valid["observed_query_shapes"]))
+    ]
+
+    assert any("observed shape set" in error.lower() for error in errors(hard_coded))
+
+
+def test_performance_contract_rejects_missing_shared_shape_plan():
+    errors = VERIFIER["_performance_errors"]
+    missing = performance_raw()
+    missing["query_plan_evidence"].pop(next(iter(missing["observed_query_shapes"])))
+
+    assert any("plan coverage" in error.lower() for error in errors(missing))
+
+
+def test_performance_contract_rejects_fabricated_distinct_endpoint_mappings():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    hashes = iter(fabricated["observed_query_shapes"])
+    fabricated["endpoint_shape_hashes"] = {
+        path: [next(hashes)] for path in fabricated["endpoint_shape_hashes"]
     }
-    assert any("relation" in error.lower() for error in errors(generic))
 
-    duplicate = deepcopy(valid)
-    duplicate["measured_path_explains"]["/api/stock/{id}"]["sql_sha256"] = "c" * 64
-    assert any("distinct" in error.lower() for error in errors(duplicate))
-
-    trivial = deepcopy(valid)
-    trivial["measured_path_explains"]["/api/rank/range"]["plan"]["nodes"] = []
-    assert any("nontrivial" in error.lower() for error in errors(trivial))
+    mapping_errors = errors(fabricated)
+    assert (
+        len(
+            [error for error in mapping_errors if "observed shape set" in error.lower()]
+        )
+        == 4
+    )
 
 
 def test_default_full_mode_cannot_self_certify_from_performance_json(tmp_path):

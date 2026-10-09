@@ -12,6 +12,7 @@ from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from threading import Lock
 
 import pytest
 from factories import NOW, bar, batch, grant, state
@@ -54,12 +55,6 @@ MEASURED_PATHS = (
     "/api/rank/range",
     "/api/stock/{id}",
 )
-EXPLAIN_RELATIONS = {
-    "/api/snapshots/{id}": "source_dependencies",
-    "/api/market/overview": "publication_results",
-    "/api/rank/range": "withdrawal_records",
-    "/api/stock/{id}": "withdrawal_dependencies",
-}
 PLAN_BUFFER_FIELDS = (
     "Shared Hit Blocks",
     "Shared Read Blocks",
@@ -402,69 +397,83 @@ def _normalized_plan(plan) -> dict:
     }
 
 
-def _summarized_statements(captured) -> list[dict]:
-    counts = {}
+def _observed_query_shapes(captured) -> dict[str, dict]:
+    shapes = {}
     for item in captured:
         normalized = _normalized_sql(item["statement"])
-        record = (
-            item["path"],
-            item["verb"],
-            _sql_relations(normalized),
-            hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        shape = shapes.setdefault(
+            digest,
+            {
+                "normalized_sql": normalized,
+                "verb": item["verb"],
+                "relations": list(_sql_relations(normalized)),
+                "endpoint_observations": {},
+            },
         )
-        counts[record] = counts.get(record, 0) + 1
-    return [
-        {
-            "path": path,
-            "verb": verb,
-            "relations": list(relations),
-            "sql_sha256": digest,
-            "count": count,
-        }
-        for (path, verb, relations, digest), count in sorted(counts.items())
-    ]
+        assert shape["normalized_sql"] == normalized
+        assert shape["verb"] == item["verb"]
+        timing = shape["endpoint_observations"].setdefault(
+            item["path"],
+            {
+                "count": 0,
+                "total_seconds": 0.0,
+                "min_seconds": item["duration_seconds"],
+                "max_seconds": item["duration_seconds"],
+            },
+        )
+        timing["count"] += 1
+        timing["total_seconds"] += item["duration_seconds"]
+        timing["min_seconds"] = min(timing["min_seconds"], item["duration_seconds"])
+        timing["max_seconds"] = max(timing["max_seconds"], item["duration_seconds"])
+    return {digest: shapes[digest] for digest in sorted(shapes)}
 
 
-def _measured_path_explains(database, captured):
-    explains = {}
-    with database.engine.connect() as connection:
-        for path in MEASURED_PATHS:
-            candidates = [
-                item
-                for item in captured
-                if item["path"] == path
-                and item["verb"] == "SELECT"
-                and " FROM " in f" {' '.join(item['statement'].split()).upper()} "
-            ]
-            selected_relation = EXPLAIN_RELATIONS[path]
-            eligible = [
-                item
-                for item in candidates
-                if selected_relation in _sql_relations(item["statement"])
-            ]
-            if not eligible:
-                raise AssertionError(
-                    f"No {selected_relation} SQL was captured for measured path {path}"
-                )
-            selected = min(
-                eligible, key=lambda item: _normalized_sql(item["statement"])
-            )
-            normalized_sql = _normalized_sql(selected["statement"])
-            plan = connection.exec_driver_sql(
-                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + selected["statement"],
-                selected["parameters"],
-            ).scalar()
-            explains[path] = {
-                "sql_sha256": hashlib.sha256(
-                    normalized_sql.encode("utf-8")
-                ).hexdigest(),
+def _endpoint_shape_hashes(shapes) -> dict[str, list[str]]:
+    return {
+        path: sorted(
+            digest
+            for digest, shape in shapes.items()
+            if path in shape["endpoint_observations"]
+        )
+        for path in MEASURED_PATHS
+    }
+
+
+def _query_plan_evidence(database, captured):
+    representatives = {}
+    for item in captured:
+        normalized = _normalized_sql(item["statement"])
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if item["verb"] == "SELECT" and _sql_relations(normalized):
+            representatives.setdefault(digest, item)
+    plans = {}
+    for digest in sorted(representatives):
+        selected = representatives[digest]
+        normalized_sql = _normalized_sql(selected["statement"])
+        assert hashlib.sha256(normalized_sql.encode("utf-8")).hexdigest() == digest
+        with database.engine.connect() as connection:
+            try:
+                plan = connection.exec_driver_sql(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + selected["statement"],
+                    selected["parameters"],
+                ).scalar()
+            except Exception as error:
+                plans[digest] = {
+                    "status": "unsupported",
+                    "sql_relations": list(_sql_relations(normalized_sql)),
+                    "reason": (
+                        "PostgreSQL rejected EXPLAIN ANALYZE for the captured "
+                        f"read shape with {type(error).__name__}."
+                    ),
+                }
+                continue
+            plans[digest] = {
+                "status": "explained",
                 "sql_relations": list(_sql_relations(normalized_sql)),
                 "plan": _normalized_plan(plan),
             }
-    assert len({item["sql_sha256"] for item in explains.values()}) == len(
-        MEASURED_PATHS
-    )
-    return explains
+    return plans
 
 
 async def test_reset_public_queries_meet_budget_and_do_not_write(database, repository):
@@ -570,16 +579,31 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
     paths = _request_paths(publication.id, sessions, security_id)
     assert tuple(_path_label(path) for path in paths) == MEASURED_PATHS
     captured = []
+    active_queries = {}
+    capture_lock = Lock()
 
-    def capture_query(_conn, _cursor, statement, parameters, _context, _executemany):
-        captured.append(
-            {
-                "path": CURRENT_PUBLIC_PATH.get(),
-                "verb": _statement_verb(statement),
-                "statement": statement,
-                "parameters": parameters,
-            }
-        )
+    def start_query(_conn, _cursor, statement, parameters, context, _executemany):
+        with capture_lock:
+            active_queries[id(context)] = (
+                time.perf_counter(),
+                {
+                    "path": CURRENT_PUBLIC_PATH.get(),
+                    "verb": _statement_verb(statement),
+                    "statement": statement,
+                    "parameters": parameters,
+                },
+            )
+
+    def finish_query(_conn, _cursor, _statement, _parameters, context, _executemany):
+        finished = time.perf_counter()
+        with capture_lock:
+            started, item = active_queries.pop(id(context))
+            captured.append(
+                {
+                    **item,
+                    "duration_seconds": finished - started,
+                }
+            )
 
     public = public_publication_repository(database, repository, clock=lambda: NOW)
     app = create_public_app(repository=public)
@@ -607,7 +631,8 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         }
         assert warmup["successful"] == CONCURRENCY
         state_before = _application_state(database)
-        event.listen(database.engine, "before_cursor_execute", capture_query)
+        event.listen(database.engine, "before_cursor_execute", start_query)
+        event.listen(database.engine, "after_cursor_execute", finish_query)
         try:
             measured = [
                 await _run(client, paths, captured, round_number)
@@ -618,8 +643,12 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
                 latency for _run_metrics, latencies in measured for latency in latencies
             ]
         finally:
-            event.remove(database.engine, "before_cursor_execute", capture_query)
-    measured_path_explains = _measured_path_explains(database, captured)
+            event.remove(database.engine, "before_cursor_execute", start_query)
+            event.remove(database.engine, "after_cursor_execute", finish_query)
+    assert not active_queries
+    observed_query_shapes = _observed_query_shapes(captured)
+    endpoint_shape_hashes = _endpoint_shape_hashes(observed_query_shapes)
+    query_plan_evidence = _query_plan_evidence(database, captured)
     state_after = _application_state(database)
 
     for run in runs:
@@ -674,16 +703,17 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
             "worker_elapsed_seconds": worker_elapsed_seconds,
             "status": completed.status,
         },
-        "public_sql_statements": _summarized_statements(captured),
+        "observed_query_shapes": observed_query_shapes,
+        "endpoint_shape_hashes": endpoint_shape_hashes,
         "application_state_before": state_before,
         "application_state_after": state_after,
-        "measured_path_explains": measured_path_explains,
+        "query_plan_evidence": query_plan_evidence,
     }
     assert evidence["async_work"]["synthetic"] is True
     assert evidence["async_work"]["submission_seconds"] < 2
     assert evidence["async_work"]["worker_elapsed_seconds"] > 5
     assert evidence["async_work"]["status"] == "succeeded"
-    assert evidence["public_sql_statements"]
+    assert evidence["observed_query_shapes"]
     assert not {
         "INSERT",
         "UPDATE",
@@ -692,13 +722,16 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         "ALTER",
         "DROP",
         "TRUNCATE",
-    } & {statement["verb"] for statement in evidence["public_sql_statements"]}
+    } & {shape["verb"] for shape in evidence["observed_query_shapes"].values()}
     assert evidence["application_state_before"] == evidence["application_state_after"]
     assert len(evidence["application_state_before"]) > 8
-    assert set(evidence["measured_path_explains"]) == set(MEASURED_PATHS)
-    assert {item["path"] for item in evidence["public_sql_statements"]} == set(
-        MEASURED_PATHS
-    )
+    assert set(evidence["endpoint_shape_hashes"]) == set(MEASURED_PATHS)
+    assert all(evidence["endpoint_shape_hashes"].values())
+    assert set(evidence["query_plan_evidence"]) == {
+        digest
+        for digest, shape in evidence["observed_query_shapes"].items()
+        if shape["verb"] == "SELECT" and shape["relations"]
+    }
     assert all(run["rss_bytes"] > 0 for run in evidence["runs"])
     artifact = Path(".temp/acceptance/reset-performance.json")
     artifact.parent.mkdir(parents=True, exist_ok=True)

@@ -21,7 +21,7 @@ from typing import Any, Protocol
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_SCHEMA = "dragon-radar.task20-evidence"
-EVIDENCE_SCHEMA_VERSION = 2
+EVIDENCE_SCHEMA_VERSION = 3
 REQUIRED_GATES = (
     "csv_units",
     "reset_acceptance_e2e",
@@ -61,11 +61,20 @@ RECOVERY_DRILLS = (
     "ai_off",
 )
 PERFORMANCE_ARTIFACT = ROOT / ".temp" / "acceptance" / "reset-performance.json"
-EXPLAIN_RELATIONS = {
-    "/api/snapshots/{id}": "source_dependencies",
-    "/api/market/overview": "publication_results",
-    "/api/rank/range": "withdrawal_records",
-    "/api/stock/{id}": "withdrawal_dependencies",
+MEASURED_PATHS = {
+    "/api/snapshots/{id}",
+    "/api/market/overview",
+    "/api/rank/range",
+    "/api/stock/{id}",
+}
+WRITE_VERBS = {
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "TRUNCATE",
 }
 PLAN_BUFFER_FIELDS = {
     "shared_hit_blocks",
@@ -604,89 +613,215 @@ def _run_command(
     }
 
 
-def _explain_errors(explains: Any) -> list[str]:
+def _normalized_sql(statement: str) -> str:
+    return " ".join(statement.split())
+
+
+def _statement_verb(statement: str) -> str:
+    normalized = statement.lstrip().upper()
+    first = normalized.split(maxsplit=1)[0] if normalized else "UNKNOWN"
+    if first == "WITH":
+        for verb in WRITE_VERBS:
+            if re.search(rf"\b{verb}\b", normalized):
+                return verb
+        return "SELECT"
+    return first
+
+
+def _sql_relations(statement: str) -> list[str]:
+    return sorted(
+        {
+            match.group(1).lower()
+            for match in re.finditer(
+                r'\b(?:FROM|JOIN)\s+(?:(?:"?[\w]+"?)\.)?"?([\w]+)"?',
+                statement,
+                flags=re.IGNORECASE,
+            )
+        }
+    )
+
+
+def _plan_errors(plan: Any, sql_relations: list[str], label: str) -> list[str]:
     errors: list[str] = []
-    if not isinstance(explains, dict) or set(explains) != set(EXPLAIN_RELATIONS):
-        return ["Measured-path EXPLAIN endpoints are not exact."]
-    hashes = []
-    for path, expected_relation in EXPLAIN_RELATIONS.items():
-        item = explains[path]
-        label = f"Measured-path EXPLAIN {path}"
+    field_errors = _exact_fields(
+        plan,
+        {"relations", "indexes", "nodes", "node_count", "buffers"},
+        f"{label} normalized plan",
+    )
+    if field_errors:
+        return field_errors
+    relations = plan["relations"]
+    indexes = plan["indexes"]
+    nodes = plan["nodes"]
+    if (
+        not isinstance(relations, list)
+        or relations != sorted(set(relations))
+        or not set(sql_relations).issubset(relations)
+    ):
+        errors.append(f"{label} plan relations do not cover its SQL relations.")
+    if not isinstance(indexes, list) or indexes != sorted(set(indexes)):
+        errors.append(f"{label} plan indexes are not normalized.")
+    if (
+        not isinstance(nodes, list)
+        or nodes != sorted(set(nodes))
+        or not nodes
+        or type(plan["node_count"]) is not int
+        or plan["node_count"] < len(nodes)
+    ):
+        errors.append(f"{label} plan is nontrivial only when nodes are recorded.")
+    buffers = plan["buffers"]
+    if (
+        not isinstance(buffers, dict)
+        or set(buffers) != PLAN_BUFFER_FIELDS
+        or any(
+            type(count) not in (int, float) or count < 0 for count in buffers.values()
+        )
+    ):
+        errors.append(f"{label} plan buffers are invalid.")
+    return errors
+
+
+def _query_evidence_errors(
+    shapes: Any,
+    endpoint_hashes: Any,
+    plans: Any,
+) -> tuple[list[str], int, int]:
+    errors: list[str] = []
+    statement_count = 0
+    write_count = 0
+    derived_endpoint_hashes = {path: set() for path in MEASURED_PATHS}
+    nontrivial_read_hashes = set()
+    shape_relations: dict[str, list[str]] = {}
+    if not isinstance(shapes, dict) or not shapes:
+        return ["Observed normalized SQL shapes are missing."], 0, 0
+    for digest, shape in shapes.items():
+        label = f"Observed SQL shape {digest}"
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            errors.append(f"{label} hash key is invalid.")
+            continue
         field_errors = _exact_fields(
-            item,
-            {"sql_sha256", "sql_relations", "plan"},
+            shape,
+            {
+                "normalized_sql",
+                "verb",
+                "relations",
+                "endpoint_observations",
+            },
             label,
         )
         if field_errors:
             errors.extend(field_errors)
             continue
-        digest = item["sql_sha256"]
-        sql_relations = item["sql_relations"]
-        plan = item["plan"]
-        hashes.append(digest)
-        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            errors.append(f"{label} SQL hash is invalid.")
-        if (
-            not isinstance(sql_relations, list)
-            or sql_relations != sorted(set(sql_relations))
-            or not all(isinstance(relation, str) for relation in sql_relations)
-            or expected_relation not in sql_relations
-        ):
-            errors.append(f"{label} does not use its appropriate relation.")
-        plan_errors = _exact_fields(
-            plan,
-            {"relations", "indexes", "nodes", "node_count", "buffers"},
-            f"{label} normalized plan",
-        )
-        if plan_errors:
-            errors.extend(plan_errors)
+        statement = shape["normalized_sql"]
+        if not isinstance(statement, str) or not statement:
+            errors.append(f"{label} normalized SQL is missing.")
             continue
-        relations = plan["relations"]
-        indexes = plan["indexes"]
-        nodes = plan["nodes"]
-        if (
-            not isinstance(relations, list)
-            or relations != sorted(set(relations))
-            or expected_relation not in relations
-        ):
-            errors.append(f"{label} plan does not use its appropriate relation.")
-        if not isinstance(indexes, list) or indexes != sorted(set(indexes)):
-            errors.append(f"{label} plan indexes are not normalized.")
-        if (
-            not isinstance(nodes, list)
-            or nodes != sorted(set(nodes))
-            or not nodes
-            or type(plan["node_count"]) is not int
-            or plan["node_count"] < len(nodes)
-        ):
-            errors.append(f"{label} plan is nontrivial only when nodes are recorded.")
-        buffers = plan["buffers"]
-        if (
-            not isinstance(buffers, dict)
-            or set(buffers) != PLAN_BUFFER_FIELDS
-            or any(
-                type(count) not in (int, float) or count < 0
-                for count in buffers.values()
+        if statement != _normalized_sql(statement):
+            errors.append(f"{label} SQL is not normalized.")
+        if hashlib.sha256(statement.encode("utf-8")).hexdigest() != digest:
+            errors.append(f"{label} SHA-256 does not match normalized SQL.")
+        verb = shape["verb"]
+        if verb != _statement_verb(statement):
+            errors.append(f"{label} verb does not match normalized SQL.")
+        relations = shape["relations"]
+        if relations != _sql_relations(statement):
+            errors.append(f"{label} relations do not match normalized SQL.")
+            continue
+        shape_relations[digest] = relations
+        if verb == "SELECT" and relations:
+            nontrivial_read_hashes.add(digest)
+        observations = shape["endpoint_observations"]
+        if not isinstance(observations, dict) or not observations:
+            errors.append(f"{label} endpoint observations are missing.")
+            continue
+        for path, timing in observations.items():
+            timing_label = f"{label} endpoint {path}"
+            if path not in MEASURED_PATHS:
+                errors.append(f"{timing_label} is not a measured endpoint.")
+                continue
+            timing_errors = _exact_fields(
+                timing,
+                {"count", "total_seconds", "min_seconds", "max_seconds"},
+                timing_label,
             )
-        ):
-            errors.append(f"{label} plan buffers are invalid.")
-        if "publications_pkey" in indexes or (
-            sql_relations == ["publications"] and relations == ["publications"]
-        ):
-            errors.append(f"{label} is a generic publication primary-key plan.")
-    if len(hashes) == len(EXPLAIN_RELATIONS) and len(set(hashes)) != len(hashes):
-        errors.append("Measured-path EXPLAIN SQL hashes must be distinct.")
-    return errors
+            if timing_errors:
+                errors.extend(timing_errors)
+                continue
+            count = timing["count"]
+            total = timing["total_seconds"]
+            minimum = timing["min_seconds"]
+            maximum = timing["max_seconds"]
+            if (
+                type(count) is not int
+                or count <= 0
+                or not all(
+                    type(value) in (int, float) for value in (total, minimum, maximum)
+                )
+                or not 0 <= minimum <= maximum
+                or not minimum * count <= total + 1e-12
+                or not total <= maximum * count + 1e-12
+            ):
+                errors.append(f"{timing_label} counts or timings are invalid.")
+                continue
+            statement_count += count
+            if verb in WRITE_VERBS:
+                write_count += count
+            derived_endpoint_hashes[path].add(digest)
+    if not isinstance(endpoint_hashes, dict) or set(endpoint_hashes) != MEASURED_PATHS:
+        errors.append("Endpoint shape-hash mapping endpoints are not exact.")
+    else:
+        for path in sorted(MEASURED_PATHS):
+            hashes = endpoint_hashes[path]
+            if (
+                not isinstance(hashes, list)
+                or hashes != sorted(set(hashes))
+                or set(hashes) != derived_endpoint_hashes[path]
+            ):
+                errors.append(
+                    f"Endpoint {path} mapping does not match its observed shape set."
+                )
+    if not isinstance(plans, dict) or set(plans) != nontrivial_read_hashes:
+        errors.append("Nontrivial observed read shape plan coverage is incomplete.")
+        plans = plans if isinstance(plans, dict) else {}
+    explained_non_generic = False
+    for digest, item in plans.items():
+        label = f"Query plan {digest}"
+        if digest not in nontrivial_read_hashes:
+            errors.append(f"{label} does not identify a nontrivial observed read.")
+            continue
+        if not isinstance(item, dict):
+            errors.append(f"{label} is malformed.")
+            continue
+        sql_relations = shape_relations.get(digest, [])
+        status = item.get("status")
+        expected_fields = (
+            {"status", "sql_relations", "plan"}
+            if status == "explained"
+            else {"status", "sql_relations", "reason"}
+        )
+        field_errors = _exact_fields(item, expected_fields, label)
+        if field_errors:
+            errors.extend(field_errors)
+            continue
+        if item["sql_relations"] != sql_relations:
+            errors.append(f"{label} relations do not match its observed SQL shape.")
+        if status == "explained":
+            errors.extend(_plan_errors(item["plan"], sql_relations, label))
+            if sql_relations != ["publications"]:
+                explained_non_generic = True
+        elif status == "unsupported":
+            reason = item["reason"]
+            if not isinstance(reason, str) or len(reason.strip()) < 20:
+                errors.append(f"{label} unsupported reason is not justified.")
+        else:
+            errors.append(f"{label} status is invalid.")
+    if nontrivial_read_hashes and not explained_non_generic:
+        errors.append("Generic publication lookup cannot be the only explained plan.")
+    return errors, statement_count, write_count
 
 
 def _performance_errors(value: Any) -> list[str]:
     errors: list[str] = []
-    measured_paths = {
-        "/api/snapshots/{id}",
-        "/api/market/overview",
-        "/api/rank/range",
-        "/api/stock/{id}",
-    }
     if not isinstance(value, dict):
         return ["Performance artifact is not an object."]
     runs = value.get("runs")
@@ -762,7 +897,7 @@ def _performance_errors(value: Any) -> list[str]:
     warmup = value.get("warmup")
     if (
         not isinstance(warmup, dict)
-        or set(warmup.get("paths", [])) != measured_paths
+        or set(warmup.get("paths", [])) != MEASURED_PATHS
         or warmup.get("request_count") != 20
         or warmup.get("concurrency") != 20
         or warmup.get("successful") != 20
@@ -812,42 +947,23 @@ def _performance_errors(value: Any) -> list[str]:
             errors.append("Owner submission was not quick.")
         if async_work.get("status") != "succeeded":
             errors.append("Async worker did not succeed.")
-    statements = value.get("public_sql_statements")
-    if not isinstance(statements, list) or not statements:
-        errors.append("Measured public SQL statements are missing.")
-    elif any(
-        not isinstance(item, dict)
-        or set(item) != {"path", "verb", "relations", "sql_sha256", "count"}
-        or type(item.get("count")) is not int
-        or item["count"] <= 0
-        or not isinstance(item.get("relations"), list)
-        or item["relations"] != sorted(set(item["relations"]))
-        or not isinstance(item.get("sql_sha256"), str)
-        or not re.fullmatch(r"[0-9a-f]{64}", item["sql_sha256"])
-        or item.get("verb")
-        in {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE"}
-        for item in statements
-    ):
+    query_errors, statement_count, write_count = _query_evidence_errors(
+        value.get("observed_query_shapes"),
+        value.get("endpoint_shape_hashes"),
+        value.get("query_plan_evidence"),
+    )
+    errors.extend(query_errors)
+    if write_count:
         errors.append("A public request executed write or DDL SQL.")
-    elif {item.get("path") for item in statements} != measured_paths:
-        errors.append("Measured SQL does not cover every public path.")
     before = value.get("application_state_before")
     after = value.get("application_state_after")
     if not isinstance(before, dict) or not before or before != after:
         errors.append("Comprehensive application table fingerprints changed.")
-    explains = value.get("measured_path_explains")
-    errors.extend(_explain_errors(explains))
-    if (
-        isinstance(runs, list)
-        and isinstance(statements, list)
-        and all(
-            isinstance(run, dict) and type(run.get("sql_statement_count")) is int
-            for run in runs
-        )
+    if isinstance(runs, list) and all(
+        isinstance(run, dict) and type(run.get("sql_statement_count")) is int
+        for run in runs
     ):
-        if sum(run["sql_statement_count"] for run in runs) != sum(
-            item.get("count", 0) for item in statements
-        ):
+        if sum(run["sql_statement_count"] for run in runs) != statement_count:
             errors.append("Performance SQL statement counts are inconsistent.")
     return errors
 
@@ -879,20 +995,25 @@ def _performance_observations(
 
 
 def _public_observations(value: dict[str, Any]) -> dict[str, Any]:
-    statements = value["public_sql_statements"]
+    shapes = value["observed_query_shapes"]
     return {
-        "sql_statement_count": sum(item["count"] for item in statements),
+        "sql_statement_count": sum(
+            timing["count"]
+            for shape in shapes.values()
+            for timing in shape["endpoint_observations"].values()
+        ),
         "sql_write_count": sum(
-            item["count"]
-            for item in statements
-            if item["verb"]
-            in {"INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE"}
+            timing["count"]
+            for shape in shapes.values()
+            if shape["verb"] in WRITE_VERBS
+            for timing in shape["endpoint_observations"].values()
         ),
         "fingerprints_equal": (
             value["application_state_before"] == value["application_state_after"]
         ),
         "application_table_count": len(value["application_state_before"]),
-        "measured_path_explains": value["measured_path_explains"],
+        "endpoint_shape_hashes": value["endpoint_shape_hashes"],
+        "query_plan_evidence": value["query_plan_evidence"],
     }
 
 
