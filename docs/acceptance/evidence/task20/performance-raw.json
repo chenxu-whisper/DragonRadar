@@ -1,0 +1,1113 @@
+{
+  "fixture": {
+    "kind": "synthetic",
+    "counts": {
+      "securities": 100,
+      "security_read_model_rows": 0,
+      "trading_sessions": 61,
+      "publications": 1,
+      "owner_sessions": 1,
+      "analysis_jobs": 1,
+      "completed_analysis_jobs": 1
+    },
+    "data_volume": {
+      "market_archive_bytes": 3597209,
+      "publication_payload_bytes": 509039
+    },
+    "controlled_worker_delay_seconds": 5.1,
+    "owner_execution": "queued_async"
+  },
+  "environment": {
+    "python": "3.12.9",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "postgresql": "17.11",
+    "os_cold_cache_controlled": false,
+    "cache_claim": "warmup_then_measured_caches_uncontrolled"
+  },
+  "warmup": {
+    "paths": [
+      "/api/snapshots/{id}",
+      "/api/market/overview",
+      "/api/rank/range",
+      "/api/stock/{id}"
+    ],
+    "request_count": 20,
+    "concurrency": 20,
+    "successful": 20
+  },
+  "runs": [
+    {
+      "round": 1,
+      "cache_condition": "post_warmup_caches_uncontrolled",
+      "request_count": 20,
+      "concurrency": 20,
+      "successful": 20,
+      "error_rate": 0.0,
+      "p50_seconds": 0.9347253001760691,
+      "p95_seconds": 1.4276709000114352,
+      "max_seconds": 1.4501275999937207,
+      "wall_seconds": 1.45273149991408,
+      "process_cpu_seconds": 1.5625,
+      "peak_memory_bytes": 344707072,
+      "rss_bytes": 290877440,
+      "memory_measurement": "windows_working_set",
+      "sql_statement_count": 100,
+      "path_metrics": {
+        "/api/snapshots/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.9347253001760691,
+          "p95_seconds": 1.2010518999304622,
+          "max_seconds": 1.2010518999304622
+        },
+        "/api/market/overview": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 1.1955572001170367,
+          "p95_seconds": 1.4501275999937207,
+          "max_seconds": 1.4501275999937207
+        },
+        "/api/rank/range": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 1.1948830999899656,
+          "p95_seconds": 1.4276709000114352,
+          "max_seconds": 1.4276709000114352
+        },
+        "/api/stock/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.9338940000161529,
+          "p95_seconds": 1.2572254999540746,
+          "max_seconds": 1.2572254999540746
+        }
+      }
+    },
+    {
+      "round": 2,
+      "cache_condition": "post_warmup_caches_uncontrolled",
+      "request_count": 20,
+      "concurrency": 20,
+      "successful": 20,
+      "error_rate": 0.0,
+      "p50_seconds": 1.236827400047332,
+      "p95_seconds": 1.4179225000552833,
+      "max_seconds": 1.484724200097844,
+      "wall_seconds": 1.4939633999019861,
+      "process_cpu_seconds": 1.5625,
+      "peak_memory_bytes": 344707072,
+      "rss_bytes": 298672128,
+      "memory_measurement": "windows_working_set",
+      "sql_statement_count": 100,
+      "path_metrics": {
+        "/api/snapshots/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 1.236827400047332,
+          "p95_seconds": 1.2431179999839514,
+          "max_seconds": 1.2431179999839514
+        },
+        "/api/market/overview": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 1.240060199983418,
+          "p95_seconds": 1.4179225000552833,
+          "max_seconds": 1.4179225000552833
+        },
+        "/api/rank/range": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 1.2377325999550521,
+          "p95_seconds": 1.484724200097844,
+          "max_seconds": 1.484724200097844
+        },
+        "/api/stock/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.8818089999258518,
+          "p95_seconds": 1.2390503999777138,
+          "max_seconds": 1.2390503999777138
+        }
+      }
+    },
+    {
+      "round": 3,
+      "cache_condition": "post_warmup_caches_uncontrolled",
+      "request_count": 20,
+      "concurrency": 20,
+      "successful": 20,
+      "error_rate": 0.0,
+      "p50_seconds": 0.7784791002050042,
+      "p95_seconds": 1.3019847001414746,
+      "max_seconds": 1.4519681998062879,
+      "wall_seconds": 1.460850999923423,
+      "process_cpu_seconds": 1.578125,
+      "peak_memory_bytes": 344707072,
+      "rss_bytes": 296574976,
+      "memory_measurement": "windows_working_set",
+      "sql_statement_count": 100,
+      "path_metrics": {
+        "/api/snapshots/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.8997816999908537,
+          "p95_seconds": 1.260371700162068,
+          "max_seconds": 1.260371700162068
+        },
+        "/api/market/overview": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 1.0362670999020338,
+          "p95_seconds": 1.3010284998454154,
+          "max_seconds": 1.3010284998454154
+        },
+        "/api/rank/range": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.7740283999592066,
+          "p95_seconds": 1.2251627000514418,
+          "max_seconds": 1.2251627000514418
+        },
+        "/api/stock/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.7737072000745684,
+          "p95_seconds": 1.4519681998062879,
+          "max_seconds": 1.4519681998062879
+        }
+      }
+    }
+  ],
+  "aggregate": {
+    "round_count": 3,
+    "request_count": 60,
+    "successful": 60,
+    "error_rate": 0.0,
+    "p50_seconds": 1.1948830999899656,
+    "p95_seconds": 1.4276709000114352,
+    "max_seconds": 1.484724200097844,
+    "wall_seconds": 4.407545899739489,
+    "process_cpu_seconds": 4.703125
+  },
+  "async_work": {
+    "synthetic": true,
+    "label": "controlled_worker_delay",
+    "submission_seconds": 0.31934050004929304,
+    "submitted_status": "queued",
+    "worker_elapsed_seconds": 5.416536200093105,
+    "status": "succeeded"
+  },
+  "public_sql_statements": [
+    {
+      "path": "/api/market/overview",
+      "verb": "SELECT",
+      "relations": [
+        "publication_results"
+      ],
+      "sql_sha256": "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "count": 15
+    },
+    {
+      "path": "/api/market/overview",
+      "verb": "SELECT",
+      "relations": [
+        "publications"
+      ],
+      "sql_sha256": "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9",
+      "count": 15
+    },
+    {
+      "path": "/api/market/overview",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "sql_sha256": "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "count": 15
+    },
+    {
+      "path": "/api/market/overview",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "sql_sha256": "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "count": 15
+    },
+    {
+      "path": "/api/market/overview",
+      "verb": "SELECT",
+      "relations": [
+        "withdrawal_records"
+      ],
+      "sql_sha256": "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "count": 15
+    },
+    {
+      "path": "/api/rank/range",
+      "verb": "SELECT",
+      "relations": [
+        "publication_results"
+      ],
+      "sql_sha256": "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "count": 15
+    },
+    {
+      "path": "/api/rank/range",
+      "verb": "SELECT",
+      "relations": [
+        "publications"
+      ],
+      "sql_sha256": "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9",
+      "count": 15
+    },
+    {
+      "path": "/api/rank/range",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "sql_sha256": "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "count": 15
+    },
+    {
+      "path": "/api/rank/range",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "sql_sha256": "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "count": 15
+    },
+    {
+      "path": "/api/rank/range",
+      "verb": "SELECT",
+      "relations": [
+        "withdrawal_records"
+      ],
+      "sql_sha256": "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "count": 15
+    },
+    {
+      "path": "/api/snapshots/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "publication_results"
+      ],
+      "sql_sha256": "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "count": 15
+    },
+    {
+      "path": "/api/snapshots/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "publications"
+      ],
+      "sql_sha256": "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9",
+      "count": 15
+    },
+    {
+      "path": "/api/snapshots/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "sql_sha256": "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "count": 15
+    },
+    {
+      "path": "/api/snapshots/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "sql_sha256": "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "count": 15
+    },
+    {
+      "path": "/api/snapshots/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "withdrawal_records"
+      ],
+      "sql_sha256": "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "count": 15
+    },
+    {
+      "path": "/api/stock/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "publication_results"
+      ],
+      "sql_sha256": "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "count": 15
+    },
+    {
+      "path": "/api/stock/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "publications"
+      ],
+      "sql_sha256": "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9",
+      "count": 15
+    },
+    {
+      "path": "/api/stock/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "sql_sha256": "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "count": 15
+    },
+    {
+      "path": "/api/stock/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "sql_sha256": "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "count": 15
+    },
+    {
+      "path": "/api/stock/{id}",
+      "verb": "SELECT",
+      "relations": [
+        "withdrawal_records"
+      ],
+      "sql_sha256": "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "count": 15
+    }
+  ],
+  "application_state_before": {
+    "ai_task_cancellations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_drafts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "alembic_version": {
+      "rows": 1,
+      "fingerprint": "d4065d05c6dff817f15bebd31d698d6c"
+    },
+    "analysis_job_cache": {
+      "rows": 1,
+      "fingerprint": "0531938aa28bd34a6c6b502076618774"
+    },
+    "analysis_jobs": {
+      "rows": 1,
+      "fingerprint": "939c9786401d085747baa0d525e4cde5"
+    },
+    "audit_events": {
+      "rows": 4,
+      "fingerprint": "764fb5831c85990cf14197aa2f53298b"
+    },
+    "daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "import_batches": {
+      "rows": 1,
+      "fingerprint": "f49786e3a0286a75ac599655f3e1845c"
+    },
+    "index_daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "limit_up_record": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_article_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_association_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_associations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_event_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_ingest_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshot_items": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_pairing_limits": {
+      "rows": 1,
+      "fingerprint": "634421ae7808df9f81464dfaee20a291"
+    },
+    "owner_pairings": {
+      "rows": 1,
+      "fingerprint": "3854c3caa720a162a459a54b72d76d8a"
+    },
+    "owner_principals": {
+      "rows": 1,
+      "fingerprint": "fb036fa64c61a05d4dbb4c48e480672d"
+    },
+    "owner_sessions": {
+      "rows": 1,
+      "fingerprint": "be21925c04f47c5c6bc9c715c0d5377c"
+    },
+    "private_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_attempts": {
+      "rows": 1,
+      "fingerprint": "c0a52fc1bcc87c916e5d57124cd75a3b"
+    },
+    "publication_module_controls": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_results": {
+      "rows": 5,
+      "fingerprint": "fc10f9769cc2404fb81e34aed5e24ea9"
+    },
+    "publications": {
+      "rows": 1,
+      "fingerprint": "39ac3f7d8ef26c4916864d19f68d379f"
+    },
+    "regulation_calculations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rule_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_note_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_notes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_verifications": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_change_summaries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_changes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_factor_observations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_limit_rows": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_materialization_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_pending_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_results": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_run_topics": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_runs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_topic_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security_state_history": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "snapshots": {
+      "rows": 1,
+      "fingerprint": "d9dc50a1dd111e14c48cefed25f5bed1"
+    },
+    "source_dependencies": {
+      "rows": 1,
+      "fingerprint": "9da2941260b78b3eb9d6f9248cc4c5f9"
+    },
+    "source_grants": {
+      "rows": 1,
+      "fingerprint": "e70d02e506686042ecc5089f0f249b7c"
+    },
+    "topic_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_import_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "watch_entries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_binding_seals": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_dependencies": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_records": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    }
+  },
+  "application_state_after": {
+    "ai_task_cancellations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_drafts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "alembic_version": {
+      "rows": 1,
+      "fingerprint": "d4065d05c6dff817f15bebd31d698d6c"
+    },
+    "analysis_job_cache": {
+      "rows": 1,
+      "fingerprint": "0531938aa28bd34a6c6b502076618774"
+    },
+    "analysis_jobs": {
+      "rows": 1,
+      "fingerprint": "939c9786401d085747baa0d525e4cde5"
+    },
+    "audit_events": {
+      "rows": 4,
+      "fingerprint": "764fb5831c85990cf14197aa2f53298b"
+    },
+    "daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "import_batches": {
+      "rows": 1,
+      "fingerprint": "f49786e3a0286a75ac599655f3e1845c"
+    },
+    "index_daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "limit_up_record": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_article_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_association_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_associations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_event_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_ingest_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshot_items": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_pairing_limits": {
+      "rows": 1,
+      "fingerprint": "634421ae7808df9f81464dfaee20a291"
+    },
+    "owner_pairings": {
+      "rows": 1,
+      "fingerprint": "3854c3caa720a162a459a54b72d76d8a"
+    },
+    "owner_principals": {
+      "rows": 1,
+      "fingerprint": "fb036fa64c61a05d4dbb4c48e480672d"
+    },
+    "owner_sessions": {
+      "rows": 1,
+      "fingerprint": "be21925c04f47c5c6bc9c715c0d5377c"
+    },
+    "private_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_attempts": {
+      "rows": 1,
+      "fingerprint": "c0a52fc1bcc87c916e5d57124cd75a3b"
+    },
+    "publication_module_controls": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_results": {
+      "rows": 5,
+      "fingerprint": "fc10f9769cc2404fb81e34aed5e24ea9"
+    },
+    "publications": {
+      "rows": 1,
+      "fingerprint": "39ac3f7d8ef26c4916864d19f68d379f"
+    },
+    "regulation_calculations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rule_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_note_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_notes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_verifications": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_change_summaries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_changes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_factor_observations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_limit_rows": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_materialization_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_pending_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_results": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_run_topics": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_runs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_topic_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security_state_history": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "snapshots": {
+      "rows": 1,
+      "fingerprint": "d9dc50a1dd111e14c48cefed25f5bed1"
+    },
+    "source_dependencies": {
+      "rows": 1,
+      "fingerprint": "9da2941260b78b3eb9d6f9248cc4c5f9"
+    },
+    "source_grants": {
+      "rows": 1,
+      "fingerprint": "e70d02e506686042ecc5089f0f249b7c"
+    },
+    "topic_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_import_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "watch_entries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_binding_seals": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_dependencies": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_records": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    }
+  },
+  "measured_path_explains": {
+    "/api/snapshots/{id}": {
+      "sql_sha256": "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "sql_relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "plan": {
+        "relations": [
+          "source_dependencies",
+          "source_grants"
+        ],
+        "indexes": [
+          "source_grants_pkey"
+        ],
+        "nodes": [
+          "Index Scan",
+          "Nested Loop",
+          "Seq Scan"
+        ],
+        "node_count": 3,
+        "buffers": {
+          "shared_hit_blocks": 3,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    },
+    "/api/market/overview": {
+      "sql_sha256": "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "sql_relations": [
+        "publication_results"
+      ],
+      "plan": {
+        "relations": [
+          "publication_results"
+        ],
+        "indexes": [
+          "publication_results_pkey"
+        ],
+        "nodes": [
+          "Bitmap Heap Scan",
+          "Bitmap Index Scan",
+          "Sort"
+        ],
+        "node_count": 3,
+        "buffers": {
+          "shared_hit_blocks": 2,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    },
+    "/api/rank/range": {
+      "sql_sha256": "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "sql_relations": [
+        "withdrawal_records"
+      ],
+      "plan": {
+        "relations": [
+          "withdrawal_records"
+        ],
+        "indexes": [
+          "withdrawal_records_source"
+        ],
+        "nodes": [
+          "Index Scan",
+          "Limit"
+        ],
+        "node_count": 2,
+        "buffers": {
+          "shared_hit_blocks": 2,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    },
+    "/api/stock/{id}": {
+      "sql_sha256": "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "sql_relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "plan": {
+        "relations": [
+          "source_dependencies",
+          "withdrawal_dependencies",
+          "withdrawal_records"
+        ],
+        "indexes": [
+          "source_dependencies_pkey",
+          "withdrawal_dependencies_withdrawal_id_archive_type_archive__key",
+          "withdrawal_records_source"
+        ],
+        "nodes": [
+          "Bitmap Heap Scan",
+          "Bitmap Index Scan",
+          "Index Scan",
+          "Limit",
+          "Nested Loop"
+        ],
+        "node_count": 7,
+        "buffers": {
+          "shared_hit_blocks": 2,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    }
+  }
+}

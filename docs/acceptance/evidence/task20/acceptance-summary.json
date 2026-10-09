@@ -1,0 +1,57 @@
+{
+  "schema": "dragon-radar.task20-acceptance-summary",
+  "schema_version": 1,
+  "implementation_commit": "2b7f2801be131fe273f5a8cca3831ea69d7eafec",
+  "execution_provenance": {
+    "source": "Executed by scripts/verify_reset.py in a clean detached worktree at implementation_commit.",
+    "tracked_clean_before_and_after": true,
+    "focused": {
+      "mode": "focused",
+      "selected_gates": "pass",
+      "overall_status": "blocked_by_design",
+      "reason": "Focused mode omits full-only gates and cannot grant automated acceptance."
+    },
+    "full": {
+      "mode": "full",
+      "automated_acceptance": "pass",
+      "required_gates": 21,
+      "failed_gates": 0,
+      "skipped_tests": 0
+    }
+  },
+  "native_counts": {
+    "csv_units": 15,
+    "reset_acceptance_e2e": 35,
+    "recovery_backend": 8,
+    "recovery_e2e": 5,
+    "recovery_ai_public": 1,
+    "performance": 1,
+    "full_backend": 2557,
+    "frontend_vitest": 335,
+    "frontend_node": 8,
+    "frontend_e2e_legacy": 80,
+    "frontend_e2e_reset": 86,
+    "frontend_e2e_private": 69,
+    "frontend_e2e_ai_public": 1,
+    "frontend_e2e_ai_private": 4,
+    "production_isolation": 1,
+    "contract_runtime": 1
+  },
+  "quality_gates": {
+    "ruff_lint": "pass",
+    "ruff_format": "pass",
+    "compileall": "pass",
+    "frontend_default_build": "pass",
+    "frontend_private_build": "pass",
+    "frontend_bundle": "pass",
+    "entry_bundle_bytes": 315419
+  },
+  "external_blockers": [
+    "licensed_real_input",
+    "approved_official_rules",
+    "real_model_evaluation",
+    "public_sharing_permit",
+    "shadow_run_20_trading_days"
+  ],
+  "migration_added": false
+}

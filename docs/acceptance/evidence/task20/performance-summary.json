@@ -1,0 +1,108 @@
+{
+  "schema": "dragon-radar.task20-performance-summary",
+  "schema_version": 1,
+  "implementation_commit": "2b7f2801be131fe273f5a8cca3831ea69d7eafec",
+  "fixture": {
+    "kind": "synthetic",
+    "securities": 100,
+    "trading_sessions": 61,
+    "market_archive_bytes": 3597209,
+    "publication_payload_bytes": 509039
+  },
+  "cache_claim": "warmup_then_measured_caches_uncontrolled",
+  "aggregate": {
+    "request_count": 60,
+    "successful": 60,
+    "error_rate": 0.0,
+    "p50_seconds": 1.1948830999899656,
+    "p95_seconds": 1.4276709000114352,
+    "max_seconds": 1.484724200097844,
+    "sql_statement_count": 300,
+    "sql_shape_count": 20,
+    "sql_write_count": 0,
+    "application_table_fingerprints_equal": true,
+    "application_table_count": 72
+  },
+  "runs": [
+    {
+      "round": 1,
+      "p50_seconds": 0.9347253001760691,
+      "p95_seconds": 1.4276709000114352,
+      "max_seconds": 1.4501275999937207,
+      "process_cpu_seconds": 1.5625,
+      "rss_bytes": 290877440
+    },
+    {
+      "round": 2,
+      "p50_seconds": 1.236827400047332,
+      "p95_seconds": 1.4179225000552833,
+      "max_seconds": 1.484724200097844,
+      "process_cpu_seconds": 1.5625,
+      "rss_bytes": 298672128
+    },
+    {
+      "round": 3,
+      "p50_seconds": 0.7784791002050042,
+      "p95_seconds": 1.3019847001414746,
+      "max_seconds": 1.4519681998062879,
+      "process_cpu_seconds": 1.578125,
+      "rss_bytes": 296574976
+    }
+  ],
+  "async_work": {
+    "submission_seconds": 0.31934050004929304,
+    "worker_elapsed_seconds": 5.416536200093105,
+    "status": "succeeded"
+  },
+  "endpoint_plans": {
+    "/api/snapshots/{id}": {
+      "sql_sha256": "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "indexes": [
+        "source_grants_pkey"
+      ],
+      "node_count": 3,
+      "shared_hit_blocks": 3
+    },
+    "/api/market/overview": {
+      "sql_sha256": "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "relations": [
+        "publication_results"
+      ],
+      "indexes": [
+        "publication_results_pkey"
+      ],
+      "node_count": 3,
+      "shared_hit_blocks": 2
+    },
+    "/api/rank/range": {
+      "sql_sha256": "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "relations": [
+        "withdrawal_records"
+      ],
+      "indexes": [
+        "withdrawal_records_source"
+      ],
+      "node_count": 2,
+      "shared_hit_blocks": 2
+    },
+    "/api/stock/{id}": {
+      "sql_sha256": "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "indexes": [
+        "source_dependencies_pkey",
+        "withdrawal_dependencies_withdrawal_id_archive_type_archive__key",
+        "withdrawal_records_source"
+      ],
+      "node_count": 7,
+      "shared_hit_blocks": 2
+    }
+  }
+}
