@@ -5174,6 +5174,7 @@
         "withdrawal_id"
       ],
       "name": "withdrawal_dependencies_archive",
+      "predicate": null,
       "table": "withdrawal_dependencies",
       "unique": false,
       "valid": true
@@ -5184,6 +5185,7 @@
         "revision"
       ],
       "name": "news_article_revisions_article_id_revision_key",
+      "predicate": null,
       "table": "news_article_revisions",
       "unique": true,
       "valid": true
@@ -5196,6 +5198,7 @@
         "method"
       ],
       "name": "news_associations_article_revision_id_target_type_target_id_key",
+      "predicate": null,
       "table": "news_associations",
       "unique": true,
       "valid": true
@@ -5205,6 +5208,7 @@
         "article_revision_id"
       ],
       "name": "news_event_articles_article_revision_id_key",
+      "predicate": null,
       "table": "news_event_articles",
       "unique": true,
       "valid": true
@@ -5214,6 +5218,7 @@
         "article_revision_id"
       ],
       "name": "news_ingest_commands_article_revision_id_key",
+      "predicate": null,
       "table": "news_ingest_commands",
       "unique": true,
       "valid": true
@@ -5224,6 +5229,7 @@
         "revision"
       ],
       "name": "news_association_reviews_association_id_revision_key",
+      "predicate": null,
       "table": "news_association_reviews",
       "unique": true,
       "valid": true
@@ -5233,6 +5239,7 @@
         "attempt_sequence"
       ],
       "name": "market_import_attempts_attempt_sequence_key",
+      "predicate": null,
       "table": "market_import_attempts",
       "unique": true,
       "valid": true
@@ -5242,6 +5249,7 @@
         "attempt_sequence"
       ],
       "name": "market_import_attempts_listing",
+      "predicate": null,
       "table": "market_import_attempts",
       "unique": false,
       "valid": true
@@ -5253,6 +5261,7 @@
         "revision"
       ],
       "name": "news_article_revisions_available",
+      "predicate": null,
       "table": "news_article_revisions",
       "unique": false,
       "valid": true
@@ -5263,6 +5272,7 @@
         "created_at"
       ],
       "name": "ai_tasks_claim",
+      "predicate": "((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[]))",
       "table": "ai_tasks",
       "unique": false,
       "valid": true
@@ -5273,6 +5283,7 @@
         "created_at"
       ],
       "name": "analysis_jobs_claim",
+      "predicate": "((status)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))",
       "table": "analysis_jobs",
       "unique": false,
       "valid": true
@@ -5282,6 +5293,7 @@
         "batch_id"
       ],
       "name": "snapshots_batch_id_key",
+      "predicate": null,
       "table": "snapshots",
       "unique": true,
       "valid": true
@@ -5291,6 +5303,7 @@
         "batch_id"
       ],
       "name": "topic_snapshots_batch_id_key",
+      "predicate": null,
       "table": "topic_snapshots",
       "unique": true,
       "valid": true
@@ -5300,6 +5313,7 @@
         "cache_key"
       ],
       "name": "analysis_job_cache_cache_key_key",
+      "predicate": null,
       "table": "analysis_job_cache",
       "unique": true,
       "valid": true
@@ -5309,6 +5323,7 @@
         "code_hash"
       ],
       "name": "owner_pairings_code_hash_key",
+      "predicate": null,
       "table": "owner_pairings",
       "unique": true,
       "valid": true
@@ -5319,6 +5334,7 @@
         "id"
       ],
       "name": "topic_import_attempts_listing",
+      "predicate": null,
       "table": "topic_import_attempts",
       "unique": false,
       "valid": true
@@ -5328,6 +5344,7 @@
         "dependency_sequence"
       ],
       "name": "source_dependencies_dependency_sequence_key",
+      "predicate": null,
       "table": "source_dependencies",
       "unique": true,
       "valid": true
@@ -5339,6 +5356,7 @@
         "rule_id"
       ],
       "name": "regulation_rules_effective",
+      "predicate": null,
       "table": "regulation_rules",
       "unique": false,
       "valid": true
@@ -5349,6 +5367,7 @@
         "announcement_id"
       ],
       "name": "regulation_events_event_id_announcement_id_key",
+      "predicate": null,
       "table": "regulation_events",
       "unique": true,
       "valid": true
@@ -5359,6 +5378,7 @@
         "article_revision_id"
       ],
       "name": "news_event_articles_pkey",
+      "predicate": null,
       "table": "news_event_articles",
       "unique": true,
       "valid": true
@@ -5368,6 +5388,7 @@
         "event_id"
       ],
       "name": "regulation_events_pkey",
+      "predicate": null,
       "table": "regulation_events",
       "unique": true,
       "valid": true
@@ -5378,6 +5399,7 @@
         "evidence_value"
       ],
       "name": "news_events_evidence_kind_evidence_value_key",
+      "predicate": null,
       "table": "news_events",
       "unique": true,
       "valid": true
@@ -5388,6 +5410,7 @@
         "board"
       ],
       "name": "security_exchange_board",
+      "predicate": null,
       "table": "security",
       "unique": false,
       "valid": true
@@ -5398,6 +5421,7 @@
         "code"
       ],
       "name": "security_exchange_code",
+      "predicate": null,
       "table": "security",
       "unique": false,
       "valid": true
@@ -5407,6 +5431,7 @@
         "history_id"
       ],
       "name": "security_state_history_pkey",
+      "predicate": null,
       "table": "security_state_history",
       "unique": true,
       "valid": true
@@ -5419,6 +5444,7 @@
         "role"
       ],
       "name": "role_results_pending_identity",
+      "predicate": null,
       "table": "role_results",
       "unique": true,
       "valid": true
@@ -5428,6 +5454,7 @@
         "id"
       ],
       "name": "ai_task_cancellations_pkey",
+      "predicate": null,
       "table": "ai_task_cancellations",
       "unique": true,
       "valid": true
@@ -5437,6 +5464,7 @@
         "id"
       ],
       "name": "ai_task_drafts_pkey",
+      "predicate": null,
       "table": "ai_task_drafts",
       "unique": true,
       "valid": true
@@ -5446,6 +5474,7 @@
         "id"
       ],
       "name": "ai_task_reviews_pkey",
+      "predicate": null,
       "table": "ai_task_reviews",
       "unique": true,
       "valid": true
@@ -5455,6 +5484,7 @@
         "id"
       ],
       "name": "ai_tasks_pkey",
+      "predicate": null,
       "table": "ai_tasks",
       "unique": true,
       "valid": true
@@ -5464,6 +5494,7 @@
         "id"
       ],
       "name": "analysis_job_cache_pkey",
+      "predicate": null,
       "table": "analysis_job_cache",
       "unique": true,
       "valid": true
@@ -5473,6 +5504,7 @@
         "id"
       ],
       "name": "analysis_jobs_pkey",
+      "predicate": null,
       "table": "analysis_jobs",
       "unique": true,
       "valid": true
@@ -5482,6 +5514,7 @@
         "id"
       ],
       "name": "audit_events_pkey",
+      "predicate": null,
       "table": "audit_events",
       "unique": true,
       "valid": true
@@ -5491,6 +5524,7 @@
         "id"
       ],
       "name": "import_batches_pkey",
+      "predicate": null,
       "table": "import_batches",
       "unique": true,
       "valid": true
@@ -5500,6 +5534,7 @@
         "id"
       ],
       "name": "market_import_attempts_pkey",
+      "predicate": null,
       "table": "market_import_attempts",
       "unique": true,
       "valid": true
@@ -5509,6 +5544,7 @@
         "id"
       ],
       "name": "market_import_tasks_pkey",
+      "predicate": null,
       "table": "market_import_tasks",
       "unique": true,
       "valid": true
@@ -5518,6 +5554,7 @@
         "id"
       ],
       "name": "news_article_revisions_pkey",
+      "predicate": null,
       "table": "news_article_revisions",
       "unique": true,
       "valid": true
@@ -5527,6 +5564,7 @@
         "id"
       ],
       "name": "news_articles_pkey",
+      "predicate": null,
       "table": "news_articles",
       "unique": true,
       "valid": true
@@ -5536,6 +5574,7 @@
         "id"
       ],
       "name": "news_association_reviews_pkey",
+      "predicate": null,
       "table": "news_association_reviews",
       "unique": true,
       "valid": true
@@ -5545,6 +5584,7 @@
         "id"
       ],
       "name": "news_associations_pkey",
+      "predicate": null,
       "table": "news_associations",
       "unique": true,
       "valid": true
@@ -5554,6 +5594,7 @@
         "id"
       ],
       "name": "news_events_pkey",
+      "predicate": null,
       "table": "news_events",
       "unique": true,
       "valid": true
@@ -5563,6 +5604,7 @@
         "id"
       ],
       "name": "news_ingest_commands_pkey",
+      "predicate": null,
       "table": "news_ingest_commands",
       "unique": true,
       "valid": true
@@ -5572,6 +5614,7 @@
         "id"
       ],
       "name": "news_review_audit_events_pkey",
+      "predicate": null,
       "table": "news_review_audit_events",
       "unique": true,
       "valid": true
@@ -5581,6 +5624,7 @@
         "id"
       ],
       "name": "news_review_commands_pkey",
+      "predicate": null,
       "table": "news_review_commands",
       "unique": true,
       "valid": true
@@ -5590,6 +5634,7 @@
         "id"
       ],
       "name": "news_snapshots_pkey",
+      "predicate": null,
       "table": "news_snapshots",
       "unique": true,
       "valid": true
@@ -5599,6 +5644,7 @@
         "id"
       ],
       "name": "owner_pairing_limits_pkey",
+      "predicate": null,
       "table": "owner_pairing_limits",
       "unique": true,
       "valid": true
@@ -5608,6 +5654,7 @@
         "id"
       ],
       "name": "owner_pairings_pkey",
+      "predicate": null,
       "table": "owner_pairings",
       "unique": true,
       "valid": true
@@ -5617,6 +5664,7 @@
         "id"
       ],
       "name": "owner_principals_pkey",
+      "predicate": null,
       "table": "owner_principals",
       "unique": true,
       "valid": true
@@ -5626,6 +5674,7 @@
         "id"
       ],
       "name": "owner_sessions_pkey",
+      "predicate": null,
       "table": "owner_sessions",
       "unique": true,
       "valid": true
@@ -5635,6 +5684,7 @@
         "id"
       ],
       "name": "private_audit_events_pkey",
+      "predicate": null,
       "table": "private_audit_events",
       "unique": true,
       "valid": true
@@ -5644,6 +5694,7 @@
         "id"
       ],
       "name": "publication_attempts_pkey",
+      "predicate": null,
       "table": "publication_attempts",
       "unique": true,
       "valid": true
@@ -5653,6 +5704,7 @@
         "id"
       ],
       "name": "publications_pkey",
+      "predicate": null,
       "table": "publications",
       "unique": true,
       "valid": true
@@ -5662,6 +5714,7 @@
         "id"
       ],
       "name": "regulation_calculations_pkey",
+      "predicate": null,
       "table": "regulation_calculations",
       "unique": true,
       "valid": true
@@ -5671,6 +5724,7 @@
         "id"
       ],
       "name": "regulation_commands_pkey",
+      "predicate": null,
       "table": "regulation_commands",
       "unique": true,
       "valid": true
@@ -5680,6 +5734,7 @@
         "id"
       ],
       "name": "regulation_rule_statuses_pkey",
+      "predicate": null,
       "table": "regulation_rule_statuses",
       "unique": true,
       "valid": true
@@ -5689,6 +5744,7 @@
         "id"
       ],
       "name": "regulation_rules_pkey",
+      "predicate": null,
       "table": "regulation_rules",
       "unique": true,
       "valid": true
@@ -5698,6 +5754,7 @@
         "id"
       ],
       "name": "regulation_snapshots_pkey",
+      "predicate": null,
       "table": "regulation_snapshots",
       "unique": true,
       "valid": true
@@ -5707,6 +5764,7 @@
         "id"
       ],
       "name": "review_note_revisions_pkey",
+      "predicate": null,
       "table": "review_note_revisions",
       "unique": true,
       "valid": true
@@ -5716,6 +5774,7 @@
         "id"
       ],
       "name": "review_notes_pkey",
+      "predicate": null,
       "table": "review_notes",
       "unique": true,
       "valid": true
@@ -5725,6 +5784,7 @@
         "id"
       ],
       "name": "review_verifications_pkey",
+      "predicate": null,
       "table": "review_verifications",
       "unique": true,
       "valid": true
@@ -5734,6 +5794,7 @@
         "id"
       ],
       "name": "role_changes_pkey",
+      "predicate": null,
       "table": "role_changes",
       "unique": true,
       "valid": true
@@ -5743,6 +5804,7 @@
         "id"
       ],
       "name": "role_materialization_attempts_pkey",
+      "predicate": null,
       "table": "role_materialization_attempts",
       "unique": true,
       "valid": true
@@ -5752,6 +5814,7 @@
         "id"
       ],
       "name": "role_pending_validations_pkey",
+      "predicate": null,
       "table": "role_pending_validations",
       "unique": true,
       "valid": true
@@ -5761,6 +5824,7 @@
         "id"
       ],
       "name": "role_results_pkey",
+      "predicate": null,
       "table": "role_results",
       "unique": true,
       "valid": true
@@ -5770,6 +5834,7 @@
         "id"
       ],
       "name": "role_runs_pkey",
+      "predicate": null,
       "table": "role_runs",
       "unique": true,
       "valid": true
@@ -5779,6 +5844,7 @@
         "id"
       ],
       "name": "role_validation_commands_pkey",
+      "predicate": null,
       "table": "role_validation_commands",
       "unique": true,
       "valid": true
@@ -5788,6 +5854,7 @@
         "id"
       ],
       "name": "role_validations_pkey",
+      "predicate": null,
       "table": "role_validations",
       "unique": true,
       "valid": true
@@ -5797,6 +5864,7 @@
         "id"
       ],
       "name": "snapshots_pkey",
+      "predicate": null,
       "table": "snapshots",
       "unique": true,
       "valid": true
@@ -5806,6 +5874,7 @@
         "id"
       ],
       "name": "source_dependencies_pkey",
+      "predicate": null,
       "table": "source_dependencies",
       "unique": true,
       "valid": true
@@ -5815,6 +5884,7 @@
         "id"
       ],
       "name": "topic_import_attempts_pkey",
+      "predicate": null,
       "table": "topic_import_attempts",
       "unique": true,
       "valid": true
@@ -5824,6 +5894,7 @@
         "id"
       ],
       "name": "topic_import_batches_pkey",
+      "predicate": null,
       "table": "topic_import_batches",
       "unique": true,
       "valid": true
@@ -5833,6 +5904,7 @@
         "id"
       ],
       "name": "topic_snapshots_pkey",
+      "predicate": null,
       "table": "topic_snapshots",
       "unique": true,
       "valid": true
@@ -5842,6 +5914,7 @@
         "id"
       ],
       "name": "watch_entries_pkey",
+      "predicate": null,
       "table": "watch_entries",
       "unique": true,
       "valid": true
@@ -5851,6 +5924,7 @@
         "id"
       ],
       "name": "withdrawal_dependencies_pkey",
+      "predicate": null,
       "table": "withdrawal_dependencies",
       "unique": true,
       "valid": true
@@ -5860,6 +5934,7 @@
         "id"
       ],
       "name": "withdrawal_records_pkey",
+      "predicate": null,
       "table": "withdrawal_records",
       "unique": true,
       "valid": true
@@ -5869,6 +5944,7 @@
         "idempotency_key"
       ],
       "name": "import_batches_idempotency_key_key",
+      "predicate": null,
       "table": "import_batches",
       "unique": true,
       "valid": true
@@ -5878,6 +5954,7 @@
         "idempotency_key"
       ],
       "name": "market_import_attempts_idempotency_key_key",
+      "predicate": null,
       "table": "market_import_attempts",
       "unique": true,
       "valid": true
@@ -5887,6 +5964,7 @@
         "idempotency_key"
       ],
       "name": "market_import_tasks_idempotency_key_key",
+      "predicate": null,
       "table": "market_import_tasks",
       "unique": true,
       "valid": true
@@ -5896,6 +5974,7 @@
         "idempotency_key"
       ],
       "name": "news_ingest_commands_idempotency_key_key",
+      "predicate": null,
       "table": "news_ingest_commands",
       "unique": true,
       "valid": true
@@ -5905,6 +5984,7 @@
         "idempotency_key"
       ],
       "name": "news_snapshots_idempotency_key_key",
+      "predicate": null,
       "table": "news_snapshots",
       "unique": true,
       "valid": true
@@ -5914,6 +5994,7 @@
         "idempotency_key"
       ],
       "name": "publication_attempts_published_key",
+      "predicate": "((status)::text = 'published'::text)",
       "table": "publication_attempts",
       "unique": true,
       "valid": true
@@ -5923,6 +6004,7 @@
         "idempotency_key"
       ],
       "name": "regulation_commands_idempotency_key_key",
+      "predicate": null,
       "table": "regulation_commands",
       "unique": true,
       "valid": true
@@ -5932,6 +6014,7 @@
         "idempotency_key"
       ],
       "name": "regulation_snapshots_idempotency_key_key",
+      "predicate": null,
       "table": "regulation_snapshots",
       "unique": true,
       "valid": true
@@ -5941,6 +6024,7 @@
         "idempotency_key"
       ],
       "name": "role_runs_idempotency_key_key",
+      "predicate": null,
       "table": "role_runs",
       "unique": true,
       "valid": true
@@ -5950,6 +6034,7 @@
         "idempotency_key"
       ],
       "name": "role_validation_commands_idempotency_key_key",
+      "predicate": null,
       "table": "role_validation_commands",
       "unique": true,
       "valid": true
@@ -5959,6 +6044,7 @@
         "idempotency_key"
       ],
       "name": "topic_import_attempts_idempotency_key_key",
+      "predicate": null,
       "table": "topic_import_attempts",
       "unique": true,
       "valid": true
@@ -5968,6 +6054,7 @@
         "idempotency_key"
       ],
       "name": "topic_import_batches_idempotency_key_key",
+      "predicate": null,
       "table": "topic_import_batches",
       "unique": true,
       "valid": true
@@ -5977,6 +6064,7 @@
         "local_key"
       ],
       "name": "owner_principals_local_key_key",
+      "predicate": null,
       "table": "owner_principals",
       "unique": true,
       "valid": true
@@ -5986,6 +6074,7 @@
         "market_snapshot_id"
       ],
       "name": "regulation_snapshots_market",
+      "predicate": null,
       "table": "regulation_snapshots",
       "unique": false,
       "valid": true
@@ -5996,6 +6085,7 @@
         "id"
       ],
       "name": "private_audit_events_owner_id_id_key",
+      "predicate": null,
       "table": "private_audit_events",
       "unique": true,
       "valid": true
@@ -6006,6 +6096,7 @@
         "id"
       ],
       "name": "review_note_revisions_owner_id_id_key",
+      "predicate": null,
       "table": "review_note_revisions",
       "unique": true,
       "valid": true
@@ -6016,6 +6107,7 @@
         "id"
       ],
       "name": "review_notes_owner_id_id_key",
+      "predicate": null,
       "table": "review_notes",
       "unique": true,
       "valid": true
@@ -6026,6 +6118,7 @@
         "id"
       ],
       "name": "review_verifications_owner_id_id_key",
+      "predicate": null,
       "table": "review_verifications",
       "unique": true,
       "valid": true
@@ -6036,6 +6129,7 @@
         "id"
       ],
       "name": "watch_entries_owner_id_id_key",
+      "predicate": null,
       "table": "watch_entries",
       "unique": true,
       "valid": true
@@ -6046,6 +6140,7 @@
         "idempotency_key"
       ],
       "name": "ai_task_cancellations_owner_id_idempotency_key_key",
+      "predicate": null,
       "table": "ai_task_cancellations",
       "unique": true,
       "valid": true
@@ -6056,6 +6151,7 @@
         "idempotency_key"
       ],
       "name": "ai_task_reviews_owner_id_idempotency_key_key",
+      "predicate": null,
       "table": "ai_task_reviews",
       "unique": true,
       "valid": true
@@ -6066,6 +6162,7 @@
         "idempotency_key"
       ],
       "name": "ai_tasks_owner_id_idempotency_key_key",
+      "predicate": null,
       "table": "ai_tasks",
       "unique": true,
       "valid": true
@@ -6076,6 +6173,7 @@
         "idempotency_key"
       ],
       "name": "analysis_jobs_owner_id_idempotency_key_key",
+      "predicate": null,
       "table": "analysis_jobs",
       "unique": true,
       "valid": true
@@ -6086,6 +6184,7 @@
         "idempotency_key"
       ],
       "name": "news_review_commands_owner_id_idempotency_key_key",
+      "predicate": null,
       "table": "news_review_commands",
       "unique": true,
       "valid": true
@@ -6096,6 +6195,7 @@
         "key"
       ],
       "name": "owner_commands_pkey",
+      "predicate": null,
       "table": "owner_commands",
       "unique": true,
       "valid": true
@@ -6107,6 +6207,7 @@
         "id"
       ],
       "name": "review_note_revisions_owner_id_note_id_id_key",
+      "predicate": null,
       "table": "review_note_revisions",
       "unique": true,
       "valid": true
@@ -6119,6 +6220,7 @@
         "id"
       ],
       "name": "review_verifications_owner_id_note_id_revision_id_id_key",
+      "predicate": null,
       "table": "review_verifications",
       "unique": true,
       "valid": true
@@ -6130,6 +6232,7 @@
         "version"
       ],
       "name": "review_note_revisions_owner_id_note_id_version_key",
+      "predicate": null,
       "table": "review_note_revisions",
       "unique": true,
       "valid": true
@@ -6140,6 +6243,7 @@
         "note_id"
       ],
       "name": "verifications_owner_note",
+      "predicate": null,
       "table": "review_verifications",
       "unique": false,
       "valid": true
@@ -6150,6 +6254,7 @@
         "security_id"
       ],
       "name": "watch_entries_owner_id_security_id_key",
+      "predicate": null,
       "table": "watch_entries",
       "unique": true,
       "valid": true
@@ -6161,6 +6266,7 @@
         "id"
       ],
       "name": "notes_owner_updated",
+      "predicate": null,
       "table": "review_notes",
       "unique": false,
       "valid": true
@@ -6172,6 +6278,7 @@
         "id"
       ],
       "name": "watch_owner_updated",
+      "predicate": null,
       "table": "watch_entries",
       "unique": false,
       "valid": true
@@ -6181,6 +6288,7 @@
         "owner_id"
       ],
       "name": "owner_pairings_owner",
+      "predicate": null,
       "table": "owner_pairings",
       "unique": false,
       "valid": true
@@ -6190,6 +6298,7 @@
         "owner_id"
       ],
       "name": "owner_sessions_owner",
+      "predicate": null,
       "table": "owner_sessions",
       "unique": false,
       "valid": true
@@ -6199,6 +6308,7 @@
         "pending_result_id"
       ],
       "name": "role_pending_validations_pending_result_id_key",
+      "predicate": null,
       "table": "role_pending_validations",
       "unique": true,
       "valid": true
@@ -6209,6 +6319,7 @@
         "revision"
       ],
       "name": "role_validations_pending_validation_id_revision_key",
+      "predicate": null,
       "table": "role_validations",
       "unique": true,
       "valid": true
@@ -6219,6 +6330,7 @@
         "domain"
       ],
       "name": "publication_results_pkey",
+      "predicate": null,
       "table": "publication_results",
       "unique": true,
       "valid": true
@@ -6228,6 +6340,7 @@
         "publication_sequence"
       ],
       "name": "publications_publication_sequence_key",
+      "predicate": null,
       "table": "publications",
       "unique": true,
       "valid": true
@@ -6237,6 +6350,7 @@
         "publication_sequence"
       ],
       "name": "topic_snapshots_publication_sequence_key",
+      "predicate": null,
       "table": "topic_snapshots",
       "unique": true,
       "valid": true
@@ -6246,6 +6360,7 @@
         "regulation_input_id"
       ],
       "name": "publications_regulation_input",
+      "predicate": "(regulation_input_id IS NOT NULL)",
       "table": "publications",
       "unique": false,
       "valid": true
@@ -6257,6 +6372,7 @@
         "role"
       ],
       "name": "role_change_summaries_pkey",
+      "predicate": null,
       "table": "role_change_summaries",
       "unique": true,
       "valid": true
@@ -6268,6 +6384,7 @@
         "role"
       ],
       "name": "role_topic_statuses_pkey",
+      "predicate": null,
       "table": "role_topic_statuses",
       "unique": true,
       "valid": true
@@ -6282,6 +6399,7 @@
         "\"window\""
       ],
       "name": "role_factor_observations_pkey",
+      "predicate": null,
       "table": "role_factor_observations",
       "unique": true,
       "valid": true
@@ -6296,6 +6414,7 @@
         "rule_version"
       ],
       "name": "role_results_complete_business_key",
+      "predicate": null,
       "table": "role_results",
       "unique": true,
       "valid": true
@@ -6308,6 +6427,7 @@
         "role"
       ],
       "name": "role_changes_role_run_id_topic_id_security_id_role_key",
+      "predicate": null,
       "table": "role_changes",
       "unique": true,
       "valid": true
@@ -6319,6 +6439,7 @@
         "security_id"
       ],
       "name": "role_limit_rows_pkey",
+      "predicate": null,
       "table": "role_limit_rows",
       "unique": true,
       "valid": true
@@ -6329,6 +6450,7 @@
         "topic_id"
       ],
       "name": "role_run_topics_pkey",
+      "predicate": null,
       "table": "role_run_topics",
       "unique": true,
       "valid": true
@@ -6339,6 +6461,7 @@
         "rule_version"
       ],
       "name": "regulation_rules_rule_id_rule_version_key",
+      "predicate": null,
       "table": "regulation_rules",
       "unique": true,
       "valid": true
@@ -6349,6 +6472,7 @@
         "sequence"
       ],
       "name": "regulation_rule_statuses_rule",
+      "predicate": null,
       "table": "regulation_rule_statuses",
       "unique": false,
       "valid": true
@@ -6359,6 +6483,7 @@
         "effective_from"
       ],
       "name": "regulation_events_security_effective",
+      "predicate": null,
       "table": "regulation_events",
       "unique": false,
       "valid": true
@@ -6370,6 +6495,7 @@
         "daterange(valid_from, valid_to, '[)'::text)"
       ],
       "name": "security_state_history_no_overlap",
+      "predicate": null,
       "table": "security_state_history",
       "unique": false,
       "valid": true
@@ -6381,6 +6507,7 @@
         "valid_from"
       ],
       "name": "security_state_history_security_id_state_type_valid_from_key",
+      "predicate": null,
       "table": "security_state_history",
       "unique": true,
       "valid": true
@@ -6391,6 +6518,7 @@
         "state_type"
       ],
       "name": "security_state_history_security_type",
+      "predicate": null,
       "table": "security_state_history",
       "unique": false,
       "valid": true
@@ -6403,6 +6531,7 @@
         "source_version"
       ],
       "name": "daily_kline_security_id_trade_date_source_source_version_key",
+      "predicate": null,
       "table": "daily_kline",
       "unique": true,
       "valid": true
@@ -6415,6 +6544,7 @@
         "source_version"
       ],
       "name": "index_daily_kline_security_id_trade_date_source_source_vers_key",
+      "predicate": null,
       "table": "index_daily_kline",
       "unique": true,
       "valid": true
@@ -6427,6 +6557,7 @@
         "source_version"
       ],
       "name": "limit_up_record_security_id_trade_date_source_source_versio_key",
+      "predicate": null,
       "table": "limit_up_record",
       "unique": true,
       "valid": true
@@ -6436,6 +6567,7 @@
         "security_id"
       ],
       "name": "security_pkey",
+      "predicate": null,
       "table": "security",
       "unique": true,
       "valid": true
@@ -6445,6 +6577,7 @@
         "sequence"
       ],
       "name": "regulation_rule_statuses_sequence_key",
+      "predicate": null,
       "table": "regulation_rule_statuses",
       "unique": true,
       "valid": true
@@ -6454,6 +6587,7 @@
         "sequence"
       ],
       "name": "withdrawal_records_sequence_key",
+      "predicate": null,
       "table": "withdrawal_records",
       "unique": true,
       "valid": true
@@ -6464,6 +6598,7 @@
         "\"position\""
       ],
       "name": "news_snapshot_items_snapshot_id_position_key",
+      "predicate": null,
       "table": "news_snapshot_items",
       "unique": true,
       "valid": true
@@ -6474,6 +6609,7 @@
         "\"position\""
       ],
       "name": "regulation_snapshot_events_snapshot_id_position_key",
+      "predicate": null,
       "table": "regulation_snapshot_events",
       "unique": true,
       "valid": true
@@ -6484,6 +6620,7 @@
         "\"position\""
       ],
       "name": "regulation_snapshot_rules_snapshot_id_position_key",
+      "predicate": null,
       "table": "regulation_snapshot_rules",
       "unique": true,
       "valid": true
@@ -6494,6 +6631,7 @@
         "article_id"
       ],
       "name": "news_snapshot_items_snapshot_id_article_id_key",
+      "predicate": null,
       "table": "news_snapshot_items",
       "unique": true,
       "valid": true
@@ -6504,6 +6642,7 @@
         "article_revision_id"
       ],
       "name": "news_snapshot_items_pkey",
+      "predicate": null,
       "table": "news_snapshot_items",
       "unique": true,
       "valid": true
@@ -6514,6 +6653,7 @@
         "event_id"
       ],
       "name": "regulation_snapshot_events_pkey",
+      "predicate": null,
       "table": "regulation_snapshot_events",
       "unique": true,
       "valid": true
@@ -6525,6 +6665,7 @@
         "security_id"
       ],
       "name": "regulation_calculations_snapshot_id_rule_record_id_security_key",
+      "predicate": null,
       "table": "regulation_calculations",
       "unique": true,
       "valid": true
@@ -6536,6 +6677,7 @@
         "security_id"
       ],
       "name": "regulation_snapshot_inputs_pkey",
+      "predicate": null,
       "table": "regulation_snapshot_inputs",
       "unique": true,
       "valid": true
@@ -6546,6 +6688,7 @@
         "rule_record_id"
       ],
       "name": "regulation_snapshot_rules_pkey",
+      "predicate": null,
       "table": "regulation_snapshot_rules",
       "unique": true,
       "valid": true
@@ -6556,6 +6699,7 @@
         "security_id"
       ],
       "name": "regulation_calculations_snapshot",
+      "predicate": null,
       "table": "regulation_calculations",
       "unique": false,
       "valid": true
@@ -6565,6 +6709,7 @@
         "snapshot_id"
       ],
       "name": "ai_tasks_snapshot_id",
+      "predicate": null,
       "table": "ai_tasks",
       "unique": false,
       "valid": true
@@ -6575,6 +6720,7 @@
         "withdrawal_id"
       ],
       "name": "withdrawal_dependencies_source_dependency",
+      "predicate": null,
       "table": "withdrawal_dependencies",
       "unique": false,
       "valid": true
@@ -6588,6 +6734,7 @@
         "derived_id"
       ],
       "name": "source_dependencies_source_id_archive_type_archive_id_deriv_key",
+      "predicate": null,
       "table": "source_dependencies",
       "unique": true,
       "valid": true
@@ -6598,6 +6745,7 @@
         "dependency_sequence"
       ],
       "name": "source_dependencies_source_sequence",
+      "predicate": null,
       "table": "source_dependencies",
       "unique": false,
       "valid": true
@@ -6608,6 +6756,7 @@
         "module"
       ],
       "name": "publication_module_controls_pkey",
+      "predicate": null,
       "table": "publication_module_controls",
       "unique": true,
       "valid": true
@@ -6618,6 +6767,7 @@
         "publication_id"
       ],
       "name": "source_dependencies_source",
+      "predicate": null,
       "table": "source_dependencies",
       "unique": false,
       "valid": true
@@ -6628,6 +6778,7 @@
         "sequence"
       ],
       "name": "withdrawal_records_source",
+      "predicate": null,
       "table": "withdrawal_records",
       "unique": false,
       "valid": true
@@ -6639,6 +6790,7 @@
         "revision"
       ],
       "name": "news_article_revisions_source_id_source_article_id_revision_key",
+      "predicate": null,
       "table": "news_article_revisions",
       "unique": true,
       "valid": true
@@ -6649,6 +6801,7 @@
         "source_article_id"
       ],
       "name": "news_articles_source_id_source_article_id_key",
+      "predicate": null,
       "table": "news_articles",
       "unique": true,
       "valid": true
@@ -6659,6 +6812,7 @@
         "source_version"
       ],
       "name": "regulation_events_source",
+      "predicate": null,
       "table": "regulation_events",
       "unique": false,
       "valid": true
@@ -6670,6 +6824,7 @@
         "revision"
       ],
       "name": "snapshots_source_id_trade_date_revision_key",
+      "predicate": null,
       "table": "snapshots",
       "unique": true,
       "valid": true
@@ -6681,6 +6836,7 @@
         "revision"
       ],
       "name": "topic_snapshots_source_id_trade_date_revision_key",
+      "predicate": null,
       "table": "topic_snapshots",
       "unique": true,
       "valid": true
@@ -6690,6 +6846,7 @@
         "source_id"
       ],
       "name": "source_grants_pkey",
+      "predicate": null,
       "table": "source_grants",
       "unique": true,
       "valid": true
@@ -6700,6 +6857,7 @@
         "target_id"
       ],
       "name": "news_associations_target",
+      "predicate": null,
       "table": "news_associations",
       "unique": false,
       "valid": true
@@ -6710,6 +6868,7 @@
         "created_at"
       ],
       "name": "ai_task_reviews_task",
+      "predicate": null,
       "table": "ai_task_reviews",
       "unique": false,
       "valid": true
@@ -6720,6 +6879,7 @@
         "revision"
       ],
       "name": "ai_task_drafts_task_id_revision_key",
+      "predicate": null,
       "table": "ai_task_drafts",
       "unique": true,
       "valid": true
@@ -6729,6 +6889,7 @@
         "token_hash"
       ],
       "name": "owner_sessions_token_hash_key",
+      "predicate": null,
       "table": "owner_sessions",
       "unique": true,
       "valid": true
@@ -6739,6 +6900,7 @@
         "continuous_boards"
       ],
       "name": "limit_up_record_date_boards",
+      "predicate": null,
       "table": "limit_up_record",
       "unique": false,
       "valid": true
@@ -6751,6 +6913,7 @@
         "id"
       ],
       "name": "topic_snapshots_listing",
+      "predicate": null,
       "table": "topic_snapshots",
       "unique": false,
       "valid": true
@@ -6762,6 +6925,7 @@
         "revision"
       ],
       "name": "snapshots_listing",
+      "predicate": null,
       "table": "snapshots",
       "unique": false,
       "valid": true
@@ -6773,6 +6937,7 @@
         "id"
       ],
       "name": "publications_listing",
+      "predicate": null,
       "table": "publications",
       "unique": false,
       "valid": true
@@ -6783,6 +6948,7 @@
         "version"
       ],
       "name": "publications_trade_date_version_key",
+      "predicate": null,
       "table": "publications",
       "unique": true,
       "valid": true
@@ -6792,6 +6958,7 @@
         "trade_date"
       ],
       "name": "daily_kline_trade_date",
+      "predicate": null,
       "table": "daily_kline",
       "unique": false,
       "valid": true
@@ -6801,6 +6968,7 @@
         "trade_date"
       ],
       "name": "index_daily_kline_trade_date",
+      "predicate": null,
       "table": "index_daily_kline",
       "unique": false,
       "valid": true
@@ -6811,6 +6979,7 @@
         "\"position\""
       ],
       "name": "role_validation_inputs_pkey",
+      "predicate": null,
       "table": "role_validation_inputs",
       "unique": true,
       "valid": true
@@ -6821,6 +6990,7 @@
         "input_role_run_id"
       ],
       "name": "role_validation_inputs_validation_id_input_role_run_id_key",
+      "predicate": null,
       "table": "role_validation_inputs",
       "unique": true,
       "valid": true
@@ -6832,6 +7002,7 @@
         "archive_id"
       ],
       "name": "withdrawal_dependencies_withdrawal_id_archive_type_archive__key",
+      "predicate": null,
       "table": "withdrawal_dependencies",
       "unique": true,
       "valid": true
@@ -6842,6 +7013,7 @@
         "source_dependency_id"
       ],
       "name": "withdrawal_dependencies_withdrawal_id_source_dependency_id_key",
+      "predicate": null,
       "table": "withdrawal_dependencies",
       "unique": true,
       "valid": true
@@ -6851,6 +7023,7 @@
         "withdrawal_id"
       ],
       "name": "withdrawal_binding_seals_pkey",
+      "predicate": null,
       "table": "withdrawal_binding_seals",
       "unique": true,
       "valid": true

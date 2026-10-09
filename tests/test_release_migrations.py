@@ -566,6 +566,41 @@ def test_readiness_rejects_exclusion_replaced_by_equivalent_named_index(database
     assert not database.ready()
 
 
+def test_readiness_rejects_partial_index_without_required_predicate(database):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        index_definition = connection.scalar(
+            text(
+                """
+                SELECT pg_get_indexdef(index_record.indexrelid)
+                FROM pg_index index_record
+                JOIN pg_class relation
+                  ON relation.oid = index_record.indrelid
+                JOIN pg_namespace namespace
+                  ON namespace.oid = relation.relnamespace
+                JOIN pg_class index_relation
+                  ON index_relation.oid = index_record.indexrelid
+                WHERE namespace.nspname = current_schema()
+                  AND relation.relname = 'publication_attempts'
+                  AND index_relation.relname =
+                      'publication_attempts_published_key'
+                """
+            )
+        )
+
+        assert index_definition is not None
+        create_without_predicate, separator, predicate = index_definition.partition(
+            " WHERE "
+        )
+        assert separator
+        assert "status" in predicate
+        assert "published" in predicate
+        connection.execute(text("DROP INDEX publication_attempts_published_key"))
+        connection.execute(text(create_without_predicate))
+
+    assert not database.ready()
+
+
 @pytest.mark.parametrize(
     ("catalog_query", "catalog_parameters", "ddl"),
     [
@@ -671,6 +706,46 @@ def test_schema_contract_loader_rejects_unknown_fields_and_unsorted_data(tmp_pat
         load_schema_contract(path)
 
 
+def test_schema_contract_requires_exact_index_predicate_field(tmp_path):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    del contract["indexes"][0]["predicate"]
+    path = tmp_path / "missing-index-predicate.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"indexes\[0\] missing field: predicate"):
+        load_schema_contract(path)
+
+
+@pytest.mark.parametrize("predicate", ["", True, 1, [], {}])
+def test_schema_contract_rejects_invalid_index_predicate(tmp_path, predicate):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    contract["indexes"][0]["predicate"] = predicate
+    contract["indexes"] = sorted(
+        contract["indexes"],
+        key=lambda item: json.dumps(
+            item,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ),
+    )
+    path = tmp_path / "invalid-index-predicate.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"indexes\[\d+\]\.predicate.*string"):
+        load_schema_contract(path)
+
+
 @pytest.mark.parametrize("major", [16, 18, True, "17"])
 def test_schema_contract_requires_exact_supported_postgresql_major(tmp_path, major):
     from dragon_radar.storage.schema_contract import (
@@ -701,6 +776,10 @@ def test_capture_uses_stable_non_pretty_expressions_and_server_major():
     assert "constraint_record.conrelid,\n            false" in CONSTRAINTS_SQL
     assert "index_record.indexrelid,\n            key_number,\n            false" in (
         INDEXES_SQL
+    )
+    assert (
+        "index_record.indpred,\n        index_record.indrelid,\n        false"
+        in INDEXES_SQL
     )
 
 

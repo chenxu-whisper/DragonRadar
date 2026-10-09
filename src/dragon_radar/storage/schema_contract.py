@@ -39,7 +39,14 @@ CONSTRAINT_FIELDS = {
     "key_expressions",
     "operators",
 }
-INDEX_FIELDS = {"table", "name", "unique", "valid", "key_expressions"}
+INDEX_FIELDS = {
+    "table",
+    "name",
+    "unique",
+    "valid",
+    "key_expressions",
+    "predicate",
+}
 TRIGGER_FIELDS = {
     "table",
     "name",
@@ -179,7 +186,12 @@ SELECT
         )
         FROM generate_series(1, index_record.indnkeyatts) AS key_number
         ORDER BY key_number
-    ) AS key_expressions
+    ) AS key_expressions,
+    pg_catalog.pg_get_expr(
+        index_record.indpred,
+        index_record.indrelid,
+        false
+    ) AS predicate
 FROM pg_catalog.pg_index index_record
 JOIN pg_catalog.pg_class relation ON relation.oid = index_record.indrelid
 JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -266,6 +278,7 @@ def capture_indexes(connection: Connection) -> list[dict[str, object]]:
                 "unique": bool(row["is_unique"]),
                 "valid": bool(row["is_valid"]),
                 "key_expressions": list(row["key_expressions"] or []),
+                "predicate": row["predicate"],
             }
         )
     return _sorted_records(records)
@@ -562,6 +575,10 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
         key_expressions = _require_string_list(
             index_record["key_expressions"],
             location=f"{location}.key_expressions",
+        )
+        _require_optional_string(
+            index_record["predicate"],
+            location=f"{location}.predicate",
         )
         if not key_expressions:
             raise ValueError(f"{location}.key_expressions must not be empty")
