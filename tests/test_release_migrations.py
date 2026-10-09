@@ -8,6 +8,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from contextlib import contextmanager
 from copy import deepcopy
@@ -651,6 +652,43 @@ def test_machine_verifier_ignores_external_pythonpath(tmp_path):
     )
 
 
+def test_machine_verifier_removes_pythonpath_before_importing_alembic(tmp_path):
+    package = tmp_path / "polluted" / "alembic"
+    package.mkdir(parents=True)
+    marker = tmp_path / "external-alembic-imported"
+    (package / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "raise RuntimeError('external alembic imported')\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(tmp_path / "polluted")
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(MIGRATIONS)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+
+
+def test_machine_verifier_rejects_pythonhome_before_third_party_import(
+    monkeypatch,
+):
+    monkeypatch.setenv("PYTHONHOME", "caller-controlled")
+
+    with pytest.raises(RuntimeError, match="PYTHONHOME"):
+        runpy.run_path(str(SCRIPT))
+
+
 def test_cli_returns_nonzero_with_actionable_errors(
     verifier, copied_migrations, capsys
 ):
@@ -852,6 +890,11 @@ def test_run_process_timeout_terminates_and_waits(verifier, monkeypatch):
         def kill(self):
             events.append(("kill", None))
 
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            self.returncode = -15
+            return self.returncode
+
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
 
     with pytest.raises(subprocess.TimeoutExpired):
@@ -860,8 +903,54 @@ def test_run_process_timeout_terminates_and_waits(verifier, monkeypatch):
     assert events == [
         ("communicate", 0.01),
         ("terminate", None),
-        ("communicate", 5),
+        ("wait", 0.5),
     ]
+
+
+def _process_exists(pid):
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        return str(pid) in result.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_run_process_timeout_kills_pipe_inheriting_process_tree(
+    verifier,
+    tmp_path,
+):
+    pid_file = tmp_path / "grandchild.pid"
+    parent = (
+        "import pathlib,subprocess,sys,time;"
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid));"
+        "time.sleep(60)"
+    )
+    started = time.perf_counter()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        verifier["_run_process"](
+            [sys.executable, "-c", parent, str(pid_file)],
+            timeout=0.2,
+        )
+
+    elapsed = time.perf_counter() - started
+    assert elapsed < 3
+    assert pid_file.exists()
+    grandchild_pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 1
+    while _process_exists(grandchild_pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not _process_exists(grandchild_pid)
 
 
 @pytest.mark.parametrize(
@@ -1131,7 +1220,7 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
 
     assert expected == actual
     assert expected["schema"] == "dragon-radar.postgresql-schema-contract"
-    assert expected["schema_version"] == 2
+    assert expected["schema_version"] == 3
     assert expected["postgresql_major"] == 17
     for collection in ("tables", "constraints", "indexes", "triggers"):
         assert expected[collection] == sorted(
@@ -1160,6 +1249,7 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
         "on_update": None,
         "operators": ["=", "=", "&&"],
         "referenced_columns": [],
+        "referenced_schema": None,
         "referenced_table": None,
         "table": "security_state_history",
     }
@@ -1184,6 +1274,11 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
         "deferrable": False,
         "initially_deferred": False,
     }
+    assert foreign_key["referenced_schema"] == "current_schema"
+    listing_index = next(
+        index for index in expected["indexes"] if index["name"] == "snapshots_listing"
+    )
+    assert listing_index["access_method"] == "btree"
     trigger = next(
         trigger
         for trigger in expected["triggers"]
@@ -1191,6 +1286,9 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
     )
     assert trigger["function_schema"] == "current_schema"
     assert trigger["function_name"] == "reject_immutable_mutation"
+    assert trigger["when"] is None
+    assert trigger["level"] == "ROW"
+    assert trigger["arguments"] == ""
     assert database.ready()
 
 
@@ -1213,6 +1311,42 @@ def test_readiness_rejects_foreign_key_action_drift(database):
         )
 
     assert not database.ready()
+
+
+def test_readiness_rejects_foreign_key_rebound_to_same_table_in_other_schema(
+    database,
+):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        current_schema = connection.scalar(text("SELECT current_schema()"))
+        alternate_schema = f"{current_schema}_fk"
+        connection.execute(text(f'CREATE SCHEMA "{alternate_schema}"'))
+        connection.execute(
+            text(
+                f'CREATE TABLE "{alternate_schema}".news_articles '
+                "(LIKE news_articles INCLUDING ALL)"
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE news_article_revisions DROP CONSTRAINT "
+                "news_article_revisions_article_id_fkey"
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE news_article_revisions "
+                "ADD CONSTRAINT news_article_revisions_article_id_fkey "
+                f'FOREIGN KEY (article_id) REFERENCES "{alternate_schema}".'
+                "news_articles(id) ON DELETE RESTRICT"
+            )
+        )
+
+    try:
+        assert not database.ready()
+    finally:
+        with database.engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{alternate_schema}" CASCADE'))
 
 
 def test_readiness_rejects_trigger_function_schema_drift(database):
@@ -1252,6 +1386,45 @@ def test_readiness_rejects_trigger_function_schema_drift(database):
     finally:
         with database.engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA "{alternate_schema}" CASCADE'))
+
+
+def test_readiness_rejects_trigger_when_condition_drift(database):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE OR REPLACE TRIGGER immutable_rows "
+                "BEFORE UPDATE OR DELETE ON snapshots "
+                "FOR EACH ROW WHEN (false) "
+                "EXECUTE FUNCTION reject_immutable_mutation()"
+            )
+        )
+
+    from dragon_radar.storage.schema_contract import capture_schema_contract
+
+    with database.engine.connect() as connection:
+        actual = capture_schema_contract(connection)
+    trigger = next(
+        trigger
+        for trigger in actual["triggers"]
+        if trigger["name"] == "immutable_rows" and trigger["table"] == "snapshots"
+    )
+    assert trigger["when"] == "false"
+    assert not database.ready()
+
+
+def test_readiness_rejects_index_access_method_drift(database):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        connection.execute(text("DROP INDEX market_import_attempts_listing"))
+        connection.execute(
+            text(
+                "CREATE INDEX market_import_attempts_listing "
+                "ON market_import_attempts USING hash (attempt_sequence)"
+            )
+        )
+
+    assert not database.ready()
 
 
 def test_readiness_rejects_exclusion_replaced_by_equivalent_named_index(database):
@@ -1429,6 +1602,21 @@ def test_schema_contract_requires_exact_index_predicate_field(tmp_path):
         load_schema_contract(path)
 
 
+def test_schema_contract_requires_index_access_method(tmp_path):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    del contract["indexes"][0]["access_method"]
+    path = tmp_path / "missing-index-access-method.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"indexes\[0\] missing field: access_method"):
+        load_schema_contract(path)
+
+
 def test_schema_contract_requires_exact_foreign_key_behavior_fields(tmp_path):
     from dragon_radar.storage.schema_contract import (
         load_packaged_schema_contract,
@@ -1447,6 +1635,29 @@ def test_schema_contract_requires_exact_foreign_key_behavior_fields(tmp_path):
 
     with pytest.raises(
         ValueError, match=r"constraints\[\d+\] missing field: on_delete"
+    ):
+        load_schema_contract(path)
+
+
+def test_schema_contract_requires_foreign_key_referenced_schema(tmp_path):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    foreign_key = next(
+        constraint
+        for constraint in contract["constraints"]
+        if constraint["kind"] == "foreign_key"
+    )
+    del foreign_key["referenced_schema"]
+    path = tmp_path / "missing-foreign-key-schema.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"constraints\[\d+\] missing field: referenced_schema",
     ):
         load_schema_contract(path)
 
@@ -1508,6 +1719,25 @@ def test_schema_contract_requires_trigger_function_schema(tmp_path):
     with pytest.raises(
         ValueError,
         match=r"triggers\[0\] missing field: function_schema",
+    ):
+        load_schema_contract(path)
+
+
+@pytest.mark.parametrize("field", ["when", "level", "arguments"])
+def test_schema_contract_requires_trigger_behavior_fields(tmp_path, field):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    del contract["triggers"][0][field]
+    path = tmp_path / f"missing-trigger-{field}.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=rf"triggers\[0\] missing field: {field}",
     ):
         load_schema_contract(path)
 
@@ -1614,7 +1844,7 @@ def test_schema_contract_loader_rejects_duplicate_keys_and_wrong_version(tmp_pat
         json.dumps(
             {
                 "schema": "dragon-radar.postgresql-schema-contract",
-                "schema_version": 3,
+                "schema_version": 2,
                 "postgresql_major": 17,
                 "tables": [],
                 "constraints": [],

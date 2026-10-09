@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from collections.abc import Mapping
 from importlib import resources
@@ -15,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 CONTRACT_SCHEMA = "dragon-radar.postgresql-schema-contract"
-CONTRACT_SCHEMA_VERSION = 2
+CONTRACT_SCHEMA_VERSION = 3
 SUPPORTED_POSTGRESQL_MAJOR = 17
 CONTRACT_FIELDS = {
     "schema",
@@ -33,6 +34,7 @@ CONSTRAINT_FIELDS = {
     "name",
     "kind",
     "columns",
+    "referenced_schema",
     "referenced_table",
     "referenced_columns",
     "expression",
@@ -49,6 +51,7 @@ INDEX_FIELDS = {
     "name",
     "unique",
     "valid",
+    "access_method",
     "key_expressions",
     "predicate",
 }
@@ -58,6 +61,9 @@ TRIGGER_FIELDS = {
     "enabled",
     "timing",
     "events",
+    "level",
+    "when",
+    "arguments",
     "function_schema",
     "function_name",
 }
@@ -74,6 +80,7 @@ IDENTITY_VALUES = {"always", "by_default"}
 GENERATED_VALUES = {"stored"}
 TRIGGER_ENABLED_VALUES = {"origin", "disabled", "replica", "always"}
 TRIGGER_TIMINGS = {"BEFORE", "AFTER", "INSTEAD OF"}
+TRIGGER_LEVELS = {"ROW", "STATEMENT"}
 TRIGGER_EVENTS = ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
 
 POSTGRESQL_MAJOR_SQL = "SHOW server_version_num"
@@ -127,6 +134,11 @@ SELECT
             ORDER BY key_column.position
         )
     END AS columns,
+    CASE
+        WHEN constraint_record.contype <> 'f' THEN NULL
+        WHEN referenced_namespace.oid = namespace.oid THEN 'current_schema'
+        ELSE 'schema:' || referenced_namespace.nspname
+    END AS referenced_schema,
     referenced_relation.relname AS referenced_table,
     CASE
         WHEN constraint_record.contype = 'f' THEN ARRAY(
@@ -204,6 +216,8 @@ JOIN pg_catalog.pg_class relation ON relation.oid = constraint_record.conrelid
 JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
 LEFT JOIN pg_catalog.pg_class referenced_relation
   ON referenced_relation.oid = constraint_record.confrelid
+LEFT JOIN pg_catalog.pg_namespace referenced_namespace
+  ON referenced_namespace.oid = referenced_relation.relnamespace
 WHERE namespace.nspname = current_schema()
   AND relation.relname <> 'alembic_version'
   AND constraint_record.contype IN ('p', 'u', 'f', 'c', 'x')
@@ -216,6 +230,7 @@ SELECT
     index_relation.relname AS index_name,
     index_record.indisunique AS is_unique,
     index_record.indisvalid AS is_valid,
+    access_method.amname AS access_method,
     ARRAY(
         SELECT pg_catalog.pg_get_indexdef(
             index_record.indexrelid,
@@ -235,6 +250,8 @@ JOIN pg_catalog.pg_class relation ON relation.oid = index_record.indrelid
 JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
 JOIN pg_catalog.pg_class index_relation
   ON index_relation.oid = index_record.indexrelid
+JOIN pg_catalog.pg_am access_method
+  ON access_method.oid = index_relation.relam
 WHERE namespace.nspname = current_schema()
   AND relation.relname <> 'alembic_version'
 ORDER BY relation.relname, index_relation.relname
@@ -246,6 +263,12 @@ SELECT
     trigger_record.tgname AS trigger_name,
     trigger_record.tgenabled AS enabled_code,
     trigger_record.tgtype AS trigger_type,
+    pg_catalog.pg_get_expr(
+        trigger_record.tgqual,
+        trigger_record.tgrelid,
+        false
+    ) AS when_expression,
+    pg_catalog.encode(trigger_record.tgargs, 'hex') AS arguments,
     CASE
         WHEN function_namespace.oid = namespace.oid THEN 'current_schema'
         ELSE 'schema:' || function_namespace.nspname
@@ -301,6 +324,7 @@ def capture_constraints(connection: Connection) -> list[dict[str, object]]:
                 "name": str(row["constraint_name"]),
                 "kind": str(row["kind"]),
                 "columns": list(row["columns"] or []),
+                "referenced_schema": row["referenced_schema"],
                 "referenced_table": row["referenced_table"],
                 "referenced_columns": list(row["referenced_columns"] or []),
                 "expression": row["expression"],
@@ -326,6 +350,7 @@ def capture_indexes(connection: Connection) -> list[dict[str, object]]:
                 "name": str(row["index_name"]),
                 "unique": bool(row["is_unique"]),
                 "valid": bool(row["is_valid"]),
+                "access_method": str(row["access_method"]),
                 "key_expressions": list(row["key_expressions"] or []),
                 "predicate": row["predicate"],
             }
@@ -369,6 +394,9 @@ def capture_triggers(connection: Connection) -> list[dict[str, object]]:
                 "enabled": enabled_values[str(row["enabled_code"])],
                 "timing": _trigger_timing(trigger_type),
                 "events": _trigger_events(trigger_type),
+                "level": "ROW" if trigger_type & 1 else "STATEMENT",
+                "when": row["when_expression"],
+                "arguments": str(row["arguments"]),
                 "function_schema": str(row["function_schema"]),
                 "function_name": str(row["function_name"]),
             }
@@ -571,6 +599,10 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
             constraint["referenced_table"],
             location=f"{location}.referenced_table",
         )
+        referenced_schema = _require_optional_string(
+            constraint["referenced_schema"],
+            location=f"{location}.referenced_schema",
+        )
         referenced_columns = _require_string_list(
             constraint["referenced_columns"],
             location=f"{location}.referenced_columns",
@@ -619,6 +651,7 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
         if kind == "foreign_key":
             if (
                 not columns
+                or referenced_schema is None
                 or referenced_table is None
                 or len(columns) != len(referenced_columns)
                 or on_update is None
@@ -627,7 +660,8 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
             ):
                 raise ValueError(f"{location} has an invalid foreign key")
         elif (
-            referenced_table is not None
+            referenced_schema is not None
+            or referenced_table is not None
             or referenced_columns
             or on_update is not None
             or on_delete is not None
@@ -656,6 +690,10 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
         location = f"indexes[{index}]"
         for field in ("table", "name"):
             _require_string(index_record[field], location=f"{location}.{field}")
+        _require_string(
+            index_record["access_method"],
+            location=f"{location}.access_method",
+        )
         for field in ("unique", "valid"):
             _require_bool(index_record[field], location=f"{location}.{field}")
         key_expressions = _require_string_list(
@@ -695,6 +733,21 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
             trigger["events"],
             location=f"{location}.events",
         )
+        _require_choice(
+            trigger["level"],
+            TRIGGER_LEVELS,
+            location=f"{location}.level",
+        )
+        _require_optional_string(
+            trigger["when"],
+            location=f"{location}.when",
+        )
+        arguments = trigger["arguments"]
+        if (
+            not isinstance(arguments, str)
+            or re.fullmatch(r"[0-9a-f]*", arguments) is None
+        ):
+            raise ValueError(f"{location}.arguments must be lowercase hexadecimal")
         canonical_events = [event for event in TRIGGER_EVENTS if event in events]
         if not events or events != canonical_events:
             raise ValueError(f"{location}.events must be unique and ordered")

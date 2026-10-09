@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+import importlib
 import json
 import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -19,10 +21,6 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
-
-from alembic import command
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 
 _external_pythonpath = os.environ.pop("PYTHONPATH", None)
 if _external_pythonpath:
@@ -36,6 +34,12 @@ if _external_pythonpath:
         for entry in sys.path
         if os.path.normcase(os.path.abspath(entry)) not in external_entries
     ]
+if os.environ.pop("PYTHONHOME", None) is not None:
+    raise RuntimeError("PYTHONHOME is not allowed for release migration verification")
+
+command = importlib.import_module("alembic.command")
+Config = importlib.import_module("alembic.config").Config
+ScriptDirectory = importlib.import_module("alembic.script").ScriptDirectory
 
 MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
@@ -1712,6 +1716,10 @@ def _run_process(
     }
     if text:
         process_kwargs.update(encoding="utf-8", errors="replace")
+    if os.name == "nt":
+        process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        process_kwargs["start_new_session"] = True
     process = subprocess.Popen(
         list(argv),
         **process_kwargs,
@@ -1719,14 +1727,63 @@ def _run_process(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        process.terminate()
+        _terminate_process_tree(process, force=False)
+        for stream_name in ("stdout", "stderr"):
+            stream = getattr(process, stream_name, None)
+            if stream is not None:
+                stream.close()
+        wait = getattr(process, "wait", None)
         try:
-            process.communicate(timeout=5)
+            if wait is not None:
+                wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
+            _terminate_process_tree(process, force=True)
+            try:
+                wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
         raise exc
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen,
+    *,
+    force: bool,
+) -> None:
+    if os.name == "nt" and getattr(process, "pid", None) is not None:
+        try:
+            tree_killer = subprocess.Popen(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+            )
+            try:
+                tree_killer.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                tree_killer.kill()
+                try:
+                    tree_killer.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    pass
+            if tree_killer.returncode == 0:
+                return
+        except OSError:
+            pass
+    elif getattr(process, "pid", None) is not None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+    try:
+        process.kill() if force else process.terminate()
+    except OSError:
+        pass
 
 
 def _require_process_success(

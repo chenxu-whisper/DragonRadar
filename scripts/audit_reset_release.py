@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import ntpath
 import os
+import posixpath
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -298,6 +301,10 @@ def _run(
     }
     if text:
         process_kwargs.update(encoding="utf-8", errors="replace")
+    if os.name == "nt":
+        process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        process_kwargs["start_new_session"] = True
     process = subprocess.Popen(
         list(argv),
         **process_kwargs,
@@ -305,14 +312,63 @@ def _run(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        process.terminate()
+        _terminate_process_tree(process, force=False)
+        for stream_name in ("stdout", "stderr"):
+            stream = getattr(process, stream_name, None)
+            if stream is not None:
+                stream.close()
+        wait = getattr(process, "wait", None)
         try:
-            process.communicate(timeout=5)
+            if wait is not None:
+                wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
+            _terminate_process_tree(process, force=True)
+            try:
+                wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
         raise exc
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen,
+    *,
+    force: bool,
+) -> None:
+    if os.name == "nt" and getattr(process, "pid", None) is not None:
+        try:
+            tree_killer = subprocess.Popen(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+            )
+            try:
+                tree_killer.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                tree_killer.kill()
+                try:
+                    tree_killer.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    pass
+            if tree_killer.returncode == 0:
+                return
+        except OSError:
+            pass
+    elif getattr(process, "pid", None) is not None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+    try:
+        process.kill() if force else process.terminate()
+    except OSError:
+        pass
 
 
 def _safe_git_environment() -> dict[str, str]:
@@ -1390,6 +1446,22 @@ def derive_decisions(inputs: Mapping[str, object]) -> dict[str, str]:
     task = _exact_object(
         payload["task00_20"], TASK_FULL_FIELDS, "release inputs.task00_20"
     )
+    commit_identities = {
+        _exact_commit(
+            execution["audited_commit"],
+            "release inputs.git.execution_source.audited_commit",
+        ),
+        _exact_commit(
+            candidate["audited_commit"],
+            "release inputs.git.candidate.audited_commit",
+        ),
+        _exact_commit(
+            migration["implementation_commit"],
+            "release inputs.migration.implementation_commit",
+        ),
+    }
+    if len(commit_identities) != 1:
+        raise ValueError("release input commit identity differs")
     _validate_gate_map(
         payload["external_gates"],
         EXTERNAL_GATES,
@@ -1405,8 +1477,7 @@ def derive_decisions(inputs: Mapping[str, object]) -> dict[str, str]:
     freshness = candidate["remote_freshness"]
     assert isinstance(freshness, dict)
     branch_ready = (
-        execution["audited_commit"] == migration["implementation_commit"]
-        and candidate["tracked_dirty_paths"] == []
+        candidate["tracked_dirty_paths"] == []
         and candidate["configured_upstream"] is not None
         and candidate["base_ref"] is not None
         and candidate["base_commit"] is not None
@@ -1433,10 +1504,6 @@ def validate_manifest_safety(value: object) -> None:
         r"(?:password|token|environment|database_url|credential)",
         re.IGNORECASE,
     )
-    absolute_path = re.compile(
-        r"(?:^[A-Za-z]:[\\/]|^\\\\|^/)",
-        re.IGNORECASE,
-    )
 
     def visit(item: object, path: str) -> None:
         if isinstance(item, dict):
@@ -1448,7 +1515,13 @@ def validate_manifest_safety(value: object) -> None:
             for index, child in enumerate(item):
                 visit(child, f"{path}[{index}]")
         elif isinstance(item, str):
-            if "://" in item or absolute_path.search(item):
+            windows_drive, _tail = ntpath.splitdrive(item)
+            if (
+                "://" in item
+                or windows_drive
+                or ntpath.isabs(item)
+                or posixpath.isabs(item)
+            ):
                 raise ValueError(f"unsafe release manifest value: {path}")
 
     visit(value, "$")
@@ -1682,6 +1755,38 @@ def _validate_manifest_shape(
         raise ValueError("implementation commit relation is invalid")
     decisions = _exact_object(value["decisions"], DECISION_FIELDS, "decisions")
     inputs = {field: value[field] for field in ROOT_INPUT_FIELDS}
+    git = _exact_object(value["git"], GIT_FIELDS, "release manifest.git")
+    execution = _exact_object(
+        git["execution_source"],
+        EXECUTION_GIT_FIELDS,
+        "release manifest.git.execution_source",
+    )
+    candidate = _exact_object(
+        git["candidate"],
+        GIT_STATE_FIELDS,
+        "release manifest.git.candidate",
+    )
+    migration = _exact_object(
+        value["migration"],
+        MIGRATION_FULL_FIELDS,
+        "release manifest.migration",
+    )
+    if {
+        implementation_commit,
+        _exact_commit(
+            execution["audited_commit"],
+            "release manifest.git.execution_source.audited_commit",
+        ),
+        _exact_commit(
+            candidate["audited_commit"],
+            "release manifest.git.candidate.audited_commit",
+        ),
+        _exact_commit(
+            migration["implementation_commit"],
+            "release manifest.migration.implementation_commit",
+        ),
+    } != {implementation_commit}:
+        raise ValueError("release manifest commit identity differs")
     if root is not None:
         _validate_migration_at_commit(
             root,
@@ -1752,6 +1857,7 @@ def check_release_manifest(
     path: Path,
     *,
     now: datetime | None = None,
+    candidate_worktree: Path | None = None,
 ) -> dict[str, object]:
     root = Path(root).resolve()
     manifest_path = Path(path).resolve()
@@ -1791,6 +1897,7 @@ def check_release_manifest(
         manifest,
         implementation_commit,
         current_head,
+        candidate_worktree=candidate_worktree,
     )
     return manifest
 
@@ -1800,39 +1907,46 @@ def _validate_live_git_decisions(
     manifest: dict[str, object],
     implementation_commit: str,
     current_head: str,
+    *,
+    candidate_worktree: Path | None = None,
 ) -> None:
     stored_git = _exact_object(manifest["git"], GIT_FIELDS, "release manifest.git")
+    stored_execution = _validate_git_state(
+        stored_git["execution_source"],
+        "release manifest.git.execution_source",
+        execution=True,
+    )
     stored_candidate = _validate_git_state(
         stored_git["candidate"],
         "release manifest.git.candidate",
         execution=False,
     )
-    declared_freshness = stored_candidate["remote_freshness"]
-    assert isinstance(declared_freshness, dict)
-    refreshed = _remote_freshness(
-        root,
-        remote=declared_freshness["remote"],
-        remote_ref=declared_freshness["remote_ref"],
-        local_oid=declared_freshness["local_oid"],
-        verify_remote=True,
-        checked_at=datetime.now(UTC).isoformat(),
+    decisions = _exact_object(manifest["decisions"], DECISION_FIELDS, "decisions")
+    if decisions["branch_cut"] != "GO":
+        return
+    if candidate_worktree is None:
+        raise ValueError("branch_cut GO requires --candidate-worktree")
+    live_candidate = _validate_git_state(
+        collect_git_state(candidate_worktree, verify_remote=True),
+        "live candidate worktree",
+        execution=False,
     )
-    freshness_fields = REMOTE_FRESHNESS_FIELDS - {"checked_at"}
-    if any(refreshed[field] != declared_freshness[field] for field in freshness_fields):
+    if live_candidate["audited_commit"] != implementation_commit:
         raise ValueError("release decisions differ from live Git evidence")
-
-    live = collect_git_state(root, verify_remote=True)
-    if live["audited_commit"] != current_head:
-        raise ValueError("live Git evidence changed during manifest check")
-    execution = {
-        **live,
-        "audited_commit": implementation_commit,
-        "tracked_clean_before_and_after": True,
-    }
+    for field in GIT_STATE_FIELDS - {"remote_freshness"}:
+        if live_candidate[field] != stored_candidate[field]:
+            raise ValueError("release decisions differ from live Git evidence")
+    live_freshness = live_candidate["remote_freshness"]
+    stored_freshness = stored_candidate["remote_freshness"]
+    assert isinstance(live_freshness, dict)
+    assert isinstance(stored_freshness, dict)
+    for field in REMOTE_FRESHNESS_FIELDS - {"checked_at"}:
+        if live_freshness[field] != stored_freshness[field]:
+            raise ValueError("release decisions differ from live Git evidence")
     inputs = {field: manifest[field] for field in ROOT_INPUT_FIELDS}
     inputs["git"] = {
-        "execution_source": execution,
-        "candidate": live,
+        "execution_source": stored_execution,
+        "candidate": live_candidate,
     }
     if manifest["decisions"] != derive_decisions(inputs):
         raise ValueError("release decisions differ from live Git evidence")
@@ -1911,7 +2025,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.check is not None:
-            check_release_manifest(REPOSITORY_ROOT, args.check)
+            check_release_manifest(
+                REPOSITORY_ROOT,
+                args.check,
+                candidate_worktree=args.candidate_worktree,
+            )
             print(f"release audit manifest verified: {args.check}")
             return 0
         if not all(

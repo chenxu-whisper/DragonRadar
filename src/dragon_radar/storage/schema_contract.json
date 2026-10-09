@@ -18,6 +18,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_records"
     },
@@ -36,6 +37,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_records"
     },
@@ -54,6 +56,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -72,6 +75,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -90,6 +94,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -108,6 +113,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -127,6 +133,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
     },
@@ -147,6 +154,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_articles",
       "table": "news_article_revisions"
     },
@@ -167,6 +175,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_articles",
       "table": "news_snapshot_items"
     },
@@ -188,6 +197,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_associations"
     },
@@ -208,6 +218,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_article_revisions",
       "table": "news_associations"
     },
@@ -228,6 +239,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_article_revisions",
       "table": "news_event_articles"
     },
@@ -248,6 +260,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_article_revisions",
       "table": "news_ingest_commands"
     },
@@ -268,6 +281,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_article_revisions",
       "table": "news_snapshot_items"
     },
@@ -286,6 +300,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_event_articles"
     },
@@ -304,6 +319,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_ingest_commands"
     },
@@ -323,6 +339,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_association_reviews"
     },
@@ -343,6 +360,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_associations",
       "table": "news_association_reviews"
     },
@@ -361,6 +379,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -379,6 +398,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "analysis_jobs"
     },
@@ -397,6 +417,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_attempts"
     },
@@ -416,6 +437,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
     },
@@ -436,6 +458,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "import_batches",
       "table": "market_import_attempts"
     },
@@ -456,6 +479,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "import_batches",
       "table": "snapshots"
     },
@@ -476,6 +500,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "topic_import_batches",
       "table": "topic_import_attempts"
     },
@@ -496,6 +521,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "topic_import_batches",
       "table": "topic_snapshots"
     },
@@ -514,6 +540,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "snapshots"
     },
@@ -532,6 +559,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_snapshots"
     },
@@ -550,6 +578,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "limit_up_record"
     },
@@ -568,6 +597,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "analysis_job_cache"
     },
@@ -586,6 +616,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -604,6 +635,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -622,6 +654,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_pairings"
     },
@@ -640,6 +673,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
     },
@@ -658,6 +692,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "limit_up_record"
     },
@@ -676,6 +711,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -697,6 +733,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_reviews"
     },
@@ -715,6 +752,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_reviews"
     },
@@ -733,6 +771,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_association_reviews"
     },
@@ -751,6 +790,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "source_dependencies"
     },
@@ -771,6 +811,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rules"
     },
@@ -789,6 +830,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rules"
     },
@@ -807,6 +849,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_results"
     },
@@ -827,6 +870,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "ai_task_drafts",
       "table": "ai_task_reviews"
     },
@@ -846,6 +890,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_events"
     },
@@ -865,6 +910,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_event_articles"
     },
@@ -885,6 +931,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_events",
       "table": "news_event_articles"
     },
@@ -905,6 +952,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_events",
       "table": "news_snapshot_items"
     },
@@ -925,6 +973,7 @@
       "referenced_columns": [
         "event_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_events",
       "table": "regulation_snapshot_events"
     },
@@ -943,6 +992,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_events"
     },
@@ -963,6 +1013,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshots"
     },
@@ -981,6 +1032,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_events"
     },
@@ -1000,6 +1052,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_events"
     },
@@ -1018,6 +1071,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_events"
     },
@@ -1039,6 +1093,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_topic_statuses"
     },
@@ -1058,6 +1113,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_reviews"
     },
@@ -1076,6 +1132,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_association_reviews"
     },
@@ -1094,6 +1151,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_pairing_limits"
     },
@@ -1112,6 +1170,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -1130,6 +1189,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -1149,6 +1209,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "source_grants"
     },
@@ -1167,6 +1228,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "security_state_history"
     },
@@ -1185,6 +1247,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_reviews"
     },
@@ -1203,6 +1266,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -1224,6 +1288,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_results"
     },
@@ -1242,6 +1307,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_pairing_limits"
     },
@@ -1260,6 +1326,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_cancellations"
     },
@@ -1278,6 +1345,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_drafts"
     },
@@ -1296,6 +1364,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_reviews"
     },
@@ -1314,6 +1383,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -1332,6 +1402,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "analysis_job_cache"
     },
@@ -1350,6 +1421,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "analysis_jobs"
     },
@@ -1368,6 +1440,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "audit_events"
     },
@@ -1386,6 +1459,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "import_batches"
     },
@@ -1404,6 +1478,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_attempts"
     },
@@ -1422,6 +1497,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_tasks"
     },
@@ -1440,6 +1516,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
     },
@@ -1458,6 +1535,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_articles"
     },
@@ -1476,6 +1554,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_association_reviews"
     },
@@ -1494,6 +1573,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_associations"
     },
@@ -1512,6 +1592,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_events"
     },
@@ -1530,6 +1611,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_ingest_commands"
     },
@@ -1548,6 +1630,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_review_audit_events"
     },
@@ -1566,6 +1649,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_review_commands"
     },
@@ -1584,6 +1668,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshots"
     },
@@ -1602,6 +1687,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_pairing_limits"
     },
@@ -1620,6 +1706,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_pairings"
     },
@@ -1638,6 +1725,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_principals"
     },
@@ -1656,6 +1744,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_sessions"
     },
@@ -1674,6 +1763,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "private_audit_events"
     },
@@ -1692,6 +1782,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_attempts"
     },
@@ -1710,6 +1801,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
     },
@@ -1728,6 +1820,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_calculations"
     },
@@ -1746,6 +1839,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_commands"
     },
@@ -1764,6 +1858,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rule_statuses"
     },
@@ -1782,6 +1877,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rules"
     },
@@ -1800,6 +1896,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshots"
     },
@@ -1818,6 +1915,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_note_revisions"
     },
@@ -1836,6 +1934,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_notes"
     },
@@ -1854,6 +1953,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_verifications"
     },
@@ -1872,6 +1972,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_changes"
     },
@@ -1890,6 +1991,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_materialization_attempts"
     },
@@ -1908,6 +2010,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_pending_validations"
     },
@@ -1926,6 +2029,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_results"
     },
@@ -1944,6 +2048,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_runs"
     },
@@ -1962,6 +2067,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validation_commands"
     },
@@ -1980,6 +2086,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validations"
     },
@@ -1998,6 +2105,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "snapshots"
     },
@@ -2016,6 +2124,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "source_dependencies"
     },
@@ -2034,6 +2143,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_import_attempts"
     },
@@ -2052,6 +2162,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_import_batches"
     },
@@ -2070,6 +2181,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_snapshots"
     },
@@ -2088,6 +2200,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "watch_entries"
     },
@@ -2106,6 +2219,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_dependencies"
     },
@@ -2124,6 +2238,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_records"
     },
@@ -2142,6 +2257,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "import_batches"
     },
@@ -2160,6 +2276,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_attempts"
     },
@@ -2178,6 +2295,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_tasks"
     },
@@ -2196,6 +2314,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_ingest_commands"
     },
@@ -2214,6 +2333,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshots"
     },
@@ -2232,6 +2352,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_commands"
     },
@@ -2250,6 +2371,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshots"
     },
@@ -2268,6 +2390,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_runs"
     },
@@ -2286,6 +2409,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validation_commands"
     },
@@ -2304,6 +2428,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_import_attempts"
     },
@@ -2322,6 +2447,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_import_batches"
     },
@@ -2342,6 +2468,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_validation_inputs"
     },
@@ -2360,6 +2487,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_calculations"
     },
@@ -2378,6 +2506,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_inputs"
     },
@@ -2396,6 +2525,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_notes"
     },
@@ -2414,6 +2544,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -2432,6 +2563,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_principals"
     },
@@ -2450,6 +2582,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_principals"
     },
@@ -2470,6 +2603,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "publications"
     },
@@ -2490,6 +2624,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "regulation_snapshots"
     },
@@ -2510,6 +2645,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "role_runs"
     },
@@ -2529,6 +2665,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validation_commands"
     },
@@ -2547,6 +2684,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_associations"
     },
@@ -2567,6 +2705,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_snapshots",
       "table": "publications"
     },
@@ -2585,6 +2724,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
     },
@@ -2607,6 +2747,7 @@
         "role_run_id",
         "topic_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_run_topics",
       "table": "role_pending_validations"
     },
@@ -2627,6 +2768,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_pending_validations"
     },
@@ -2645,6 +2787,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_verifications"
     },
@@ -2663,6 +2806,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validations"
     },
@@ -2685,6 +2829,7 @@
         "owner_id",
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "review_note_revisions",
       "table": "review_notes"
     },
@@ -2704,6 +2849,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "private_audit_events"
     },
@@ -2723,6 +2869,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_note_revisions"
     },
@@ -2742,6 +2889,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_notes"
     },
@@ -2761,6 +2909,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_verifications"
     },
@@ -2780,6 +2929,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "watch_entries"
     },
@@ -2799,6 +2949,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_cancellations"
     },
@@ -2818,6 +2969,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_reviews"
     },
@@ -2837,6 +2989,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -2856,6 +3009,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "analysis_jobs"
     },
@@ -2875,6 +3029,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_review_commands"
     },
@@ -2894,6 +3049,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_commands"
     },
@@ -2914,6 +3070,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_note_revisions"
     },
@@ -2935,6 +3092,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_verifications"
     },
@@ -2961,6 +3119,7 @@
         "revision_id",
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "review_verifications",
       "table": "review_verifications"
     },
@@ -2985,6 +3144,7 @@
         "note_id",
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "review_note_revisions",
       "table": "review_verifications"
     },
@@ -3005,6 +3165,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_note_revisions"
     },
@@ -3027,6 +3188,7 @@
         "owner_id",
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "review_notes",
       "table": "review_note_revisions"
     },
@@ -3049,6 +3211,7 @@
         "owner_id",
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "review_notes",
       "table": "review_verifications"
     },
@@ -3068,6 +3231,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "watch_entries"
     },
@@ -3088,6 +3252,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "ai_task_cancellations"
     },
@@ -3108,6 +3273,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "ai_task_reviews"
     },
@@ -3128,6 +3294,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "ai_tasks"
     },
@@ -3148,6 +3315,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "analysis_jobs"
     },
@@ -3168,6 +3336,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "news_association_reviews"
     },
@@ -3188,6 +3357,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "news_review_audit_events"
     },
@@ -3208,6 +3378,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "news_review_commands"
     },
@@ -3228,6 +3399,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "owner_commands"
     },
@@ -3248,6 +3420,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "owner_pairings"
     },
@@ -3268,6 +3441,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "owner_sessions"
     },
@@ -3288,6 +3462,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "private_audit_events"
     },
@@ -3308,6 +3483,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "review_note_revisions"
     },
@@ -3328,6 +3504,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "review_notes"
     },
@@ -3348,6 +3525,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "review_verifications"
     },
@@ -3368,6 +3546,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "watch_entries"
     },
@@ -3394,6 +3573,7 @@
         "topic_id",
         "role"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_results",
       "table": "role_pending_validations"
     },
@@ -3414,6 +3594,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_results",
       "table": "role_pending_validations"
     },
@@ -3432,6 +3613,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_pending_validations"
     },
@@ -3450,6 +3632,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_pending_validations"
     },
@@ -3469,6 +3652,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validations"
     },
@@ -3489,6 +3673,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_pending_validations",
       "table": "role_validations"
     },
@@ -3507,6 +3692,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validation_inputs"
     },
@@ -3525,6 +3711,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshot_items"
     },
@@ -3543,6 +3730,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_events"
     },
@@ -3561,6 +3749,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_rules"
     },
@@ -3581,6 +3770,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_runs"
     },
@@ -3601,6 +3791,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_change_summaries"
     },
@@ -3620,6 +3811,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_results"
     },
@@ -3640,6 +3832,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "publications",
       "table": "publication_attempts"
     },
@@ -3660,6 +3853,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "publications",
       "table": "publication_results"
     },
@@ -3680,6 +3874,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "publications",
       "table": "source_dependencies"
     },
@@ -3698,6 +3893,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
     },
@@ -3716,6 +3912,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_snapshots"
     },
@@ -3736,6 +3933,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_snapshots",
       "table": "publications"
     },
@@ -3754,6 +3952,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_commands"
     },
@@ -3774,6 +3973,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_association_reviews",
       "table": "news_review_commands"
     },
@@ -3792,6 +3992,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rules"
     },
@@ -3810,6 +4011,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_drafts"
     },
@@ -3828,6 +4030,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
     },
@@ -3846,6 +4049,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_association_reviews"
     },
@@ -3864,6 +4068,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshot_items"
     },
@@ -3882,6 +4087,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "snapshots"
     },
@@ -3900,6 +4106,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_snapshots"
     },
@@ -3918,6 +4125,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_change_summaries"
     },
@@ -3936,6 +4144,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_changes"
     },
@@ -3954,6 +4163,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_results"
     },
@@ -3972,6 +4182,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_topic_statuses"
     },
@@ -3992,6 +4203,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "publications"
     },
@@ -4012,6 +4224,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_change_summaries"
     },
@@ -4032,6 +4245,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_topic_statuses"
     },
@@ -4055,6 +4269,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_factor_observations"
     },
@@ -4078,6 +4293,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_results"
     },
@@ -4099,6 +4315,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_changes"
     },
@@ -4119,6 +4336,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_limit_rows"
     },
@@ -4141,6 +4359,7 @@
         "role_run_id",
         "topic_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_run_topics",
       "table": "role_change_summaries"
     },
@@ -4163,6 +4382,7 @@
         "role_run_id",
         "topic_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_run_topics",
       "table": "role_changes"
     },
@@ -4185,6 +4405,7 @@
         "role_run_id",
         "topic_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_run_topics",
       "table": "role_factor_observations"
     },
@@ -4207,6 +4428,7 @@
         "role_run_id",
         "topic_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_run_topics",
       "table": "role_limit_rows"
     },
@@ -4229,6 +4451,7 @@
         "role_run_id",
         "topic_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_run_topics",
       "table": "role_results"
     },
@@ -4251,6 +4474,7 @@
         "role_run_id",
         "topic_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_run_topics",
       "table": "role_topic_statuses"
     },
@@ -4270,6 +4494,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_run_topics"
     },
@@ -4290,6 +4515,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_change_summaries"
     },
@@ -4310,6 +4536,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_changes"
     },
@@ -4330,6 +4557,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_factor_observations"
     },
@@ -4350,6 +4578,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_limit_rows"
     },
@@ -4370,6 +4599,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_materialization_attempts"
     },
@@ -4390,6 +4620,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_results"
     },
@@ -4410,6 +4641,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_run_topics"
     },
@@ -4430,6 +4662,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_topic_statuses"
     },
@@ -4452,6 +4685,7 @@
         "rule_id",
         "rule_version"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_rules",
       "table": "regulation_events"
     },
@@ -4471,6 +4705,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rules"
     },
@@ -4491,6 +4726,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_rules",
       "table": "regulation_calculations"
     },
@@ -4511,6 +4747,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_rules",
       "table": "regulation_rule_statuses"
     },
@@ -4531,6 +4768,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_rules",
       "table": "regulation_snapshot_inputs"
     },
@@ -4551,6 +4789,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_rules",
       "table": "regulation_snapshot_rules"
     },
@@ -4569,6 +4808,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_records"
     },
@@ -4587,6 +4827,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "limit_up_record"
     },
@@ -4607,6 +4848,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "security_state_history"
     },
@@ -4628,6 +4870,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -4649,6 +4892,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -4670,6 +4914,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "limit_up_record"
     },
@@ -4690,6 +4935,7 @@
       "referenced_columns": [
         "security_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "security",
       "table": "daily_kline"
     },
@@ -4710,6 +4956,7 @@
       "referenced_columns": [
         "security_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "security",
       "table": "index_daily_kline"
     },
@@ -4730,6 +4977,7 @@
       "referenced_columns": [
         "security_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "security",
       "table": "limit_up_record"
     },
@@ -4750,6 +4998,7 @@
       "referenced_columns": [
         "security_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "security",
       "table": "security_state_history"
     },
@@ -4768,6 +5017,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "security"
     },
@@ -4786,6 +5036,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -4804,6 +5055,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rule_statuses"
     },
@@ -4822,6 +5074,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_records"
     },
@@ -4841,6 +5094,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshot_items"
     },
@@ -4860,6 +5114,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshot_items"
     },
@@ -4879,6 +5134,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_events"
     },
@@ -4898,6 +5154,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshot_items"
     },
@@ -4917,6 +5174,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_events"
     },
@@ -4936,6 +5194,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_rules"
     },
@@ -4960,6 +5219,7 @@
         "rule_record_id",
         "security_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_snapshot_inputs",
       "table": "regulation_calculations"
     },
@@ -4980,6 +5240,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_inputs"
     },
@@ -5000,6 +5261,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_calculations"
     },
@@ -5019,6 +5281,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_snapshot_rules"
     },
@@ -5039,6 +5302,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "publications",
       "table": "ai_tasks"
     },
@@ -5059,6 +5323,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "publications",
       "table": "analysis_jobs"
     },
@@ -5079,6 +5344,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "news_snapshots",
       "table": "news_snapshot_items"
     },
@@ -5099,6 +5365,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_snapshots",
       "table": "regulation_calculations"
     },
@@ -5119,6 +5386,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_snapshots",
       "table": "regulation_snapshot_events"
     },
@@ -5139,6 +5407,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_snapshots",
       "table": "regulation_snapshot_inputs"
     },
@@ -5159,6 +5428,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "regulation_snapshots",
       "table": "regulation_snapshot_rules"
     },
@@ -5179,6 +5449,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "review_notes"
     },
@@ -5199,6 +5470,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "review_verifications"
     },
@@ -5219,6 +5491,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "watch_entries"
     },
@@ -5242,6 +5515,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_drafts"
     },
@@ -5260,6 +5534,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_drafts"
     },
@@ -5280,6 +5555,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "import_batches",
       "table": "daily_kline"
     },
@@ -5300,6 +5576,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "import_batches",
       "table": "index_daily_kline"
     },
@@ -5320,6 +5597,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "import_batches",
       "table": "limit_up_record"
     },
@@ -5340,6 +5618,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "import_batches",
       "table": "security"
     },
@@ -5360,6 +5639,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "import_batches",
       "table": "security_state_history"
     },
@@ -5380,6 +5660,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_dependencies"
     },
@@ -5400,6 +5681,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_dependencies",
       "table": "withdrawal_dependencies"
     },
@@ -5422,6 +5704,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "source_dependencies"
     },
@@ -5441,6 +5724,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_module_controls"
     },
@@ -5461,6 +5745,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
     },
@@ -5480,6 +5765,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_articles"
     },
@@ -5499,6 +5785,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_events"
     },
@@ -5518,6 +5805,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_events"
     },
@@ -5538,6 +5826,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "snapshots"
     },
@@ -5558,6 +5847,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_snapshots"
     },
@@ -5578,6 +5868,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "import_batches"
     },
@@ -5598,6 +5889,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "market_import_attempts"
     },
@@ -5618,6 +5910,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "market_import_tasks"
     },
@@ -5638,6 +5931,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "news_article_revisions"
     },
@@ -5658,6 +5952,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "news_articles"
     },
@@ -5678,6 +5973,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "regulation_events"
     },
@@ -5698,6 +5994,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "snapshots"
     },
@@ -5718,6 +6015,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "source_dependencies"
     },
@@ -5738,6 +6036,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "topic_import_attempts"
     },
@@ -5758,6 +6057,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "topic_import_batches"
     },
@@ -5778,6 +6078,7 @@
       "referenced_columns": [
         "source_id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "topic_snapshots"
     },
@@ -5796,6 +6097,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "source_grants"
     },
@@ -5815,6 +6117,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_calculations"
     },
@@ -5833,6 +6136,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_notes"
     },
@@ -5851,6 +6155,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_note_revisions"
     },
@@ -5869,6 +6174,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_calculations"
     },
@@ -5891,6 +6197,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -5915,6 +6222,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "analysis_jobs"
     },
@@ -5934,6 +6242,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_runs"
     },
@@ -5953,6 +6262,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_attempts"
     },
@@ -5972,6 +6282,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
     },
@@ -5991,6 +6302,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_materialization_attempts"
     },
@@ -6009,6 +6321,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_associations"
     },
@@ -6027,6 +6340,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rule_statuses"
     },
@@ -6045,6 +6359,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_runs"
     },
@@ -6063,6 +6378,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
     },
@@ -6081,6 +6397,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_materialization_attempts"
     },
@@ -6099,6 +6416,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_attempts"
     },
@@ -6117,6 +6435,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "topic_import_attempts"
     },
@@ -6135,6 +6454,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -6153,6 +6473,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_attempts"
     },
@@ -6171,6 +6492,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_tasks"
     },
@@ -6189,6 +6511,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "analysis_jobs"
     },
@@ -6207,6 +6530,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_results"
     },
@@ -6227,6 +6551,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "publications",
       "table": "publications"
     },
@@ -6247,6 +6572,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_validations",
       "table": "role_validations"
     },
@@ -6267,6 +6593,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "snapshots"
     },
@@ -6287,6 +6614,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "topic_snapshots",
       "table": "topic_snapshots"
     },
@@ -6305,6 +6633,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "news_associations"
     },
@@ -6324,6 +6653,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_drafts"
     },
@@ -6344,6 +6674,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "ai_tasks",
       "table": "ai_task_cancellations"
     },
@@ -6364,6 +6695,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "ai_tasks",
       "table": "ai_task_drafts"
     },
@@ -6384,6 +6716,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "ai_tasks",
       "table": "ai_task_reviews"
     },
@@ -6404,6 +6737,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "market_import_tasks",
       "table": "market_import_attempts"
     },
@@ -6422,6 +6756,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -6442,6 +6777,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "snapshots",
       "table": "role_validation_commands"
     },
@@ -6460,6 +6796,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_sessions"
     },
@@ -6478,6 +6815,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -6498,6 +6836,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "topic_snapshots",
       "table": "publications"
     },
@@ -6518,6 +6857,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "topic_snapshots",
       "table": "role_runs"
     },
@@ -6536,6 +6876,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -6554,6 +6895,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -6573,6 +6915,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
     },
@@ -6591,6 +6934,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -6609,6 +6953,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -6628,6 +6973,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "security_state_history"
     },
@@ -6647,6 +6993,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validation_inputs"
     },
@@ -6666,6 +7013,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validation_inputs"
     },
@@ -6686,6 +7034,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "role_validations",
       "table": "role_validation_inputs"
     },
@@ -6704,6 +7053,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_reviews"
     },
@@ -6722,6 +7072,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
     },
@@ -6740,6 +7091,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_notes"
     },
@@ -6758,6 +7110,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
     },
@@ -6776,6 +7129,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "review_note_revisions"
     },
@@ -6794,6 +7148,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "watch_entries"
     },
@@ -6812,6 +7167,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "role_runs"
     },
@@ -6830,6 +7186,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "daily_kline"
     },
@@ -6848,6 +7205,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
     },
@@ -6866,6 +7224,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_rules"
     },
@@ -6886,6 +7245,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_dependencies"
     },
@@ -6905,6 +7265,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_dependencies"
     },
@@ -6925,6 +7286,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "withdrawal_records",
       "table": "withdrawal_binding_seals"
     },
@@ -6945,6 +7307,7 @@
       "referenced_columns": [
         "id"
       ],
+      "referenced_schema": "current_schema",
       "referenced_table": "withdrawal_records",
       "table": "withdrawal_dependencies"
     },
@@ -6963,6 +7326,7 @@
       "on_update": null,
       "operators": [],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_binding_seals"
     },
@@ -6987,12 +7351,14 @@
         "&&"
       ],
       "referenced_columns": [],
+      "referenced_schema": null,
       "referenced_table": null,
       "table": "security_state_history"
     }
   ],
   "indexes": [
     {
+      "access_method": "btree",
       "key_expressions": [
         "archive_type",
         "archive_id",
@@ -7005,6 +7371,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "article_id",
         "revision"
@@ -7016,6 +7383,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "article_revision_id",
         "target_type",
@@ -7029,6 +7397,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "article_revision_id"
       ],
@@ -7039,6 +7408,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "article_revision_id"
       ],
@@ -7049,6 +7419,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "association_id",
         "revision"
@@ -7060,6 +7431,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "attempt_sequence"
       ],
@@ -7070,6 +7442,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "attempt_sequence"
       ],
@@ -7080,6 +7453,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "available_at",
         "article_id",
@@ -7092,6 +7466,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "available_at",
         "created_at"
@@ -7103,6 +7478,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "available_at",
         "created_at"
@@ -7114,6 +7490,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "batch_id"
       ],
@@ -7124,6 +7501,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "batch_id"
       ],
@@ -7134,6 +7512,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "cache_key"
       ],
@@ -7144,6 +7523,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "code_hash"
       ],
@@ -7154,6 +7534,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "created_at",
         "id"
@@ -7165,6 +7546,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "dependency_sequence"
       ],
@@ -7175,6 +7557,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "effective_from",
         "effective_to",
@@ -7187,6 +7570,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "event_id",
         "announcement_id"
@@ -7198,6 +7582,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "event_id",
         "article_revision_id"
@@ -7209,6 +7594,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "event_id"
       ],
@@ -7219,6 +7605,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "evidence_kind",
         "evidence_value"
@@ -7230,6 +7617,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "exchange",
         "board"
@@ -7241,6 +7629,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "exchange",
         "code"
@@ -7252,6 +7641,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "history_id"
       ],
@@ -7262,6 +7652,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id",
         "role_run_id",
@@ -7275,6 +7666,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7285,6 +7677,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7295,6 +7688,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7305,6 +7699,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7315,6 +7710,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7325,6 +7721,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7335,6 +7732,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7345,6 +7743,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7355,6 +7754,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7365,6 +7765,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7375,6 +7776,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7385,6 +7787,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7395,6 +7798,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7405,6 +7809,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7415,6 +7820,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7425,6 +7831,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7435,6 +7842,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7445,6 +7853,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7455,6 +7864,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7465,6 +7875,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7475,6 +7886,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7485,6 +7897,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7495,6 +7908,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7505,6 +7919,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7515,6 +7930,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7525,6 +7941,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7535,6 +7952,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7545,6 +7963,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7555,6 +7974,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7565,6 +7985,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7575,6 +7996,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7585,6 +8007,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7595,6 +8018,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7605,6 +8029,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7615,6 +8040,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7625,6 +8051,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7635,6 +8062,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7645,6 +8073,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7655,6 +8084,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7665,6 +8095,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7675,6 +8106,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7685,6 +8117,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7695,6 +8128,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7705,6 +8139,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7715,6 +8150,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7725,6 +8161,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7735,6 +8172,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7745,6 +8183,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7755,6 +8194,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "id"
       ],
@@ -7765,6 +8205,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7775,6 +8216,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7785,6 +8227,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7795,6 +8238,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7805,6 +8249,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7815,6 +8260,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7825,6 +8271,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7835,6 +8282,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7845,6 +8293,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7855,6 +8304,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7865,6 +8315,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7875,6 +8326,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "idempotency_key"
       ],
@@ -7885,6 +8337,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "local_key"
       ],
@@ -7895,6 +8348,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "market_snapshot_id"
       ],
@@ -7905,6 +8359,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "id"
@@ -7916,6 +8371,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "id"
@@ -7927,6 +8383,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "id"
@@ -7938,6 +8395,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "id"
@@ -7949,6 +8407,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "id"
@@ -7960,6 +8419,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "idempotency_key"
@@ -7971,6 +8431,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "idempotency_key"
@@ -7982,6 +8443,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "idempotency_key"
@@ -7993,6 +8455,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "idempotency_key"
@@ -8004,6 +8467,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "idempotency_key"
@@ -8015,6 +8479,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "key"
@@ -8026,6 +8491,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "note_id",
@@ -8038,6 +8504,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "note_id",
@@ -8051,6 +8518,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "note_id",
@@ -8063,6 +8531,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "note_id"
@@ -8074,6 +8543,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "security_id"
@@ -8085,6 +8555,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "updated_at",
@@ -8097,6 +8568,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id",
         "updated_at",
@@ -8109,6 +8581,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id"
       ],
@@ -8119,6 +8592,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "owner_id"
       ],
@@ -8129,6 +8603,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "pending_result_id"
       ],
@@ -8139,6 +8614,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "pending_validation_id",
         "revision"
@@ -8150,6 +8626,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "publication_id",
         "domain"
@@ -8161,6 +8638,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "publication_sequence"
       ],
@@ -8171,6 +8649,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "publication_sequence"
       ],
@@ -8181,6 +8660,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "regulation_input_id"
       ],
@@ -8191,6 +8671,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "role_run_id",
         "topic_id",
@@ -8203,6 +8684,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "role_run_id",
         "topic_id",
@@ -8215,6 +8697,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "role_run_id",
         "topic_id",
@@ -8230,6 +8713,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "role_run_id",
         "topic_id",
@@ -8245,6 +8729,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "role_run_id",
         "topic_id",
@@ -8258,6 +8743,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "role_run_id",
         "topic_id",
@@ -8270,6 +8756,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "role_run_id",
         "topic_id"
@@ -8281,6 +8768,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "rule_id",
         "rule_version"
@@ -8292,6 +8780,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "rule_record_id",
         "sequence"
@@ -8303,6 +8792,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "security_id",
         "effective_from"
@@ -8314,18 +8804,7 @@
       "valid": true
     },
     {
-      "key_expressions": [
-        "security_id",
-        "state_type",
-        "daterange(valid_from, valid_to, '[)'::text)"
-      ],
-      "name": "security_state_history_no_overlap",
-      "predicate": null,
-      "table": "security_state_history",
-      "unique": false,
-      "valid": true
-    },
-    {
+      "access_method": "btree",
       "key_expressions": [
         "security_id",
         "state_type",
@@ -8338,6 +8817,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "security_id",
         "state_type"
@@ -8349,6 +8829,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "security_id",
         "trade_date",
@@ -8362,6 +8843,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "security_id",
         "trade_date",
@@ -8375,6 +8857,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "security_id",
         "trade_date",
@@ -8388,6 +8871,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "security_id"
       ],
@@ -8398,6 +8882,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "sequence"
       ],
@@ -8408,6 +8893,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "sequence"
       ],
@@ -8418,6 +8904,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "\"position\""
@@ -8429,6 +8916,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "\"position\""
@@ -8440,6 +8928,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "\"position\""
@@ -8451,6 +8940,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "article_id"
@@ -8462,6 +8952,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "article_revision_id"
@@ -8473,6 +8964,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "event_id"
@@ -8484,6 +8976,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "rule_record_id",
@@ -8496,6 +8989,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "rule_record_id",
@@ -8508,6 +9002,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "rule_record_id"
@@ -8519,6 +9014,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id",
         "security_id"
@@ -8530,6 +9026,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "snapshot_id"
       ],
@@ -8540,6 +9037,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_dependency_id",
         "withdrawal_id"
@@ -8551,6 +9049,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "archive_type",
@@ -8565,6 +9064,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "dependency_sequence"
@@ -8576,6 +9076,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "module"
@@ -8587,6 +9088,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "publication_id"
@@ -8598,6 +9100,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "sequence"
@@ -8609,6 +9112,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "source_article_id",
@@ -8621,6 +9125,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "source_article_id"
@@ -8632,6 +9137,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "source_version"
@@ -8643,6 +9149,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "trade_date",
@@ -8655,6 +9162,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id",
         "trade_date",
@@ -8667,6 +9175,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "source_id"
       ],
@@ -8677,6 +9186,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "target_type",
         "target_id"
@@ -8688,6 +9198,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "task_id",
         "created_at"
@@ -8699,6 +9210,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "task_id",
         "revision"
@@ -8710,6 +9222,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "token_hash"
       ],
@@ -8720,6 +9233,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "trade_date",
         "continuous_boards"
@@ -8731,6 +9245,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "trade_date",
         "source_id",
@@ -8744,6 +9259,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "trade_date",
         "source_id",
@@ -8756,6 +9272,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "trade_date",
         "version",
@@ -8768,6 +9285,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "trade_date",
         "version"
@@ -8779,6 +9297,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "trade_date"
       ],
@@ -8789,6 +9308,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "trade_date"
       ],
@@ -8799,6 +9319,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "validation_id",
         "\"position\""
@@ -8810,6 +9331,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "validation_id",
         "input_role_run_id"
@@ -8821,6 +9343,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "withdrawal_id",
         "archive_type",
@@ -8833,6 +9356,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "withdrawal_id",
         "source_dependency_id"
@@ -8844,6 +9368,7 @@
       "valid": true
     },
     {
+      "access_method": "btree",
       "key_expressions": [
         "withdrawal_id"
       ],
@@ -8852,11 +9377,24 @@
       "table": "withdrawal_binding_seals",
       "unique": true,
       "valid": true
+    },
+    {
+      "access_method": "gist",
+      "key_expressions": [
+        "security_id",
+        "state_type",
+        "daterange(valid_from, valid_to, '[)'::text)"
+      ],
+      "name": "security_state_history_no_overlap",
+      "predicate": null,
+      "table": "security_state_history",
+      "unique": false,
+      "valid": true
     }
   ],
   "postgresql_major": 17,
   "schema": "dragon-radar.postgresql-schema-contract",
-  "schema_version": 2,
+  "schema_version": 3,
   "tables": [
     {
       "columns": [
@@ -13892,6 +14430,7 @@
   ],
   "triggers": [
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT",
@@ -13900,11 +14439,14 @@
       ],
       "function_name": "audit_source_grant",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "grant_audit",
       "table": "source_grants",
-      "timing": "AFTER"
+      "timing": "AFTER",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT",
@@ -13913,11 +14455,14 @@
       ],
       "function_name": "guard_publication_transition",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "publications_transition",
       "table": "publications",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT",
@@ -13926,11 +14471,14 @@
       ],
       "function_name": "guard_role_run_transition",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_runs_transition",
       "table": "role_runs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT",
@@ -13938,1001 +14486,1274 @@
       ],
       "function_name": "guard_publication_attempt_authority",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "publication_attempts_authority",
       "table": "publication_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_news_review_revision",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "news_association_reviews_revision",
       "table": "news_association_reviews",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_news_snapshot_item",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "news_snapshot_items_guard",
       "table": "news_snapshot_items",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_news_withdrawal_seal",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "withdrawal_binding_seals_news_guard",
       "table": "withdrawal_binding_seals",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_calculation",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_calculations_guard",
       "table": "regulation_calculations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_event_structure",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_events_structure_guard",
       "table": "regulation_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_rule_initial_activation",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_rules_activation_guard",
       "table": "regulation_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_rule_status_activation",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_rule_statuses_activation_guard",
       "table": "regulation_rule_statuses",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_rule_structure",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_rules_structure_guard",
       "table": "regulation_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_child_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_calculations_publication_seal",
       "table": "regulation_calculations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_child_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_snapshot_events_publication_seal",
       "table": "regulation_snapshot_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_child_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_snapshot_inputs_publication_seal",
       "table": "regulation_snapshot_inputs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_child_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_snapshot_rules_publication_seal",
       "table": "regulation_snapshot_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_event",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_snapshot_events_guard",
       "table": "regulation_snapshot_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_input",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_snapshot_inputs_guard",
       "table": "regulation_snapshot_inputs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_root",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_snapshots_root_guard",
       "table": "regulation_snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_regulation_snapshot_rule",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "regulation_snapshot_rules_guard",
       "table": "regulation_snapshot_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_evidence_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_change_summaries_draft_insert",
       "table": "role_change_summaries",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_evidence_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_changes_draft_insert",
       "table": "role_changes",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_evidence_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_factor_observations_draft_insert",
       "table": "role_factor_observations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_evidence_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_limit_rows_draft_insert",
       "table": "role_limit_rows",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_evidence_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_results_draft_insert",
       "table": "role_results",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_evidence_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_run_topics_draft_insert",
       "table": "role_run_topics",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_evidence_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_topic_statuses_draft_insert",
       "table": "role_topic_statuses",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_pending_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_pending_validations_draft_insert",
       "table": "role_pending_validations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_validation_chain",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_validations_chain",
       "table": "role_validations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_validation_input_completeness",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_validation_inputs_completeness",
       "table": "role_validation_inputs",
-      "timing": "AFTER"
+      "timing": "AFTER",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_role_validation_input_completeness",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "role_validations_input_completeness",
       "table": "role_validations",
-      "timing": "AFTER"
+      "timing": "AFTER",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_withdrawal_binding_seal_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "withdrawal_binding_seals_insert_guard",
       "table": "withdrawal_binding_seals",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "guard_withdrawal_dependency_insert",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "withdrawal_dependencies_insert_guard",
       "table": "withdrawal_dependencies",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
       "function_name": "require_withdrawal_binding_seal",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "withdrawal_records_binding_sealed",
       "table": "withdrawal_records",
-      "timing": "AFTER"
+      "timing": "AFTER",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "ai_task_cancellations_no_truncate",
       "table": "ai_task_cancellations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "ai_task_drafts_no_truncate",
       "table": "ai_task_drafts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "ai_task_reviews_no_truncate",
       "table": "ai_task_reviews",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "analysis_job_cache_no_truncate",
       "table": "analysis_job_cache",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "daily_kline_no_truncate",
       "table": "daily_kline",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "audit_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "import_batches",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "source_grants",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "index_daily_kline_no_truncate",
       "table": "index_daily_kline",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "limit_up_record_no_truncate",
       "table": "limit_up_record",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "market_import_attempts_no_truncate",
       "table": "market_import_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_article_revisions_no_truncate",
       "table": "news_article_revisions",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_articles_no_truncate",
       "table": "news_articles",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_association_reviews_no_truncate",
       "table": "news_association_reviews",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_associations_no_truncate",
       "table": "news_associations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_event_articles_no_truncate",
       "table": "news_event_articles",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_events_no_truncate",
       "table": "news_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_ingest_commands_no_truncate",
       "table": "news_ingest_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_review_audit_events_no_truncate",
       "table": "news_review_audit_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_review_commands_no_truncate",
       "table": "news_review_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_snapshot_items_no_truncate",
       "table": "news_snapshot_items",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_snapshots_no_truncate",
       "table": "news_snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "owner_commands_no_truncate",
       "table": "owner_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "private_audit_events_no_truncate",
       "table": "private_audit_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "publication_attempts_no_truncate",
       "table": "publication_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "publication_results_no_truncate",
       "table": "publication_results",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "publications_no_truncate",
       "table": "publications",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_calculations_no_truncate",
       "table": "regulation_calculations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_commands_no_truncate",
       "table": "regulation_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_events_no_truncate",
       "table": "regulation_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_rule_statuses_no_truncate",
       "table": "regulation_rule_statuses",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_rules_no_truncate",
       "table": "regulation_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshot_events_no_truncate",
       "table": "regulation_snapshot_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshot_inputs_no_truncate",
       "table": "regulation_snapshot_inputs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshot_rules_no_truncate",
       "table": "regulation_snapshot_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshots_no_truncate",
       "table": "regulation_snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "review_note_revisions_no_truncate",
       "table": "review_note_revisions",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "review_verifications_no_truncate",
       "table": "review_verifications",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_change_summaries_no_truncate",
       "table": "role_change_summaries",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_changes_no_truncate",
       "table": "role_changes",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_factor_observations_no_truncate",
       "table": "role_factor_observations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_limit_rows_no_truncate",
       "table": "role_limit_rows",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_materialization_attempts_no_truncate",
       "table": "role_materialization_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_pending_validations_no_truncate",
       "table": "role_pending_validations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_results_no_truncate",
       "table": "role_results",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_run_topics_no_truncate",
       "table": "role_run_topics",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_runs_no_truncate",
       "table": "role_runs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_topic_statuses_no_truncate",
       "table": "role_topic_statuses",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_validation_commands_no_truncate",
       "table": "role_validation_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_validation_inputs_no_truncate",
       "table": "role_validation_inputs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_validations_no_truncate",
       "table": "role_validations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "security_state_history_no_truncate",
       "table": "security_state_history",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "source_dependencies_no_truncate",
       "table": "source_dependencies",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "topic_import_attempts_no_truncate",
       "table": "topic_import_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "topic_import_batches_no_truncate",
       "table": "topic_import_batches",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "topic_snapshots_no_truncate",
       "table": "topic_snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "withdrawal_binding_seals_no_truncate",
       "table": "withdrawal_binding_seals",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "withdrawal_dependencies_no_truncate",
       "table": "withdrawal_dependencies",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "withdrawal_records_no_truncate",
       "table": "withdrawal_records",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -14940,11 +15761,14 @@
       ],
       "function_name": "guard_publication_result_retention",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "publication_results_retention",
       "table": "publication_results",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -14952,71 +15776,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
-      "name": "ai_task_cancellations_append_only",
-      "table": "ai_task_cancellations",
-      "timing": "BEFORE"
-    },
-    {
-      "enabled": "origin",
-      "events": [
-        "UPDATE",
-        "DELETE"
-      ],
-      "function_name": "reject_immutable_mutation",
-      "function_schema": "current_schema",
-      "name": "ai_task_drafts_append_only",
-      "table": "ai_task_drafts",
-      "timing": "BEFORE"
-    },
-    {
-      "enabled": "origin",
-      "events": [
-        "UPDATE",
-        "DELETE"
-      ],
-      "function_name": "reject_immutable_mutation",
-      "function_schema": "current_schema",
-      "name": "ai_task_reviews_append_only",
-      "table": "ai_task_reviews",
-      "timing": "BEFORE"
-    },
-    {
-      "enabled": "origin",
-      "events": [
-        "UPDATE",
-        "DELETE"
-      ],
-      "function_name": "reject_immutable_mutation",
-      "function_schema": "current_schema",
-      "name": "analysis_job_cache_immutable",
-      "table": "analysis_job_cache",
-      "timing": "BEFORE"
-    },
-    {
-      "enabled": "origin",
-      "events": [
-        "UPDATE",
-        "DELETE"
-      ],
-      "function_name": "reject_immutable_mutation",
-      "function_schema": "current_schema",
-      "name": "daily_kline_immutable",
-      "table": "daily_kline",
-      "timing": "BEFORE"
-    },
-    {
-      "enabled": "origin",
-      "events": [
-        "UPDATE",
-        "DELETE"
-      ],
-      "function_name": "reject_immutable_mutation",
-      "function_schema": "current_schema",
+      "level": "ROW",
       "name": "immutable_rows",
       "table": "audit_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15024,11 +15791,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "immutable_rows",
       "table": "import_batches",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15036,11 +15806,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "immutable_rows",
       "table": "snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15048,11 +15821,89 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
+      "name": "ai_task_cancellations_append_only",
+      "table": "ai_task_cancellations",
+      "timing": "BEFORE",
+      "when": null
+    },
+    {
+      "arguments": "",
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "level": "STATEMENT",
+      "name": "ai_task_drafts_append_only",
+      "table": "ai_task_drafts",
+      "timing": "BEFORE",
+      "when": null
+    },
+    {
+      "arguments": "",
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "level": "STATEMENT",
+      "name": "ai_task_reviews_append_only",
+      "table": "ai_task_reviews",
+      "timing": "BEFORE",
+      "when": null
+    },
+    {
+      "arguments": "",
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "level": "STATEMENT",
+      "name": "analysis_job_cache_immutable",
+      "table": "analysis_job_cache",
+      "timing": "BEFORE",
+      "when": null
+    },
+    {
+      "arguments": "",
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "level": "STATEMENT",
+      "name": "daily_kline_immutable",
+      "table": "daily_kline",
+      "timing": "BEFORE",
+      "when": null
+    },
+    {
+      "arguments": "",
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "index_daily_kline_immutable",
       "table": "index_daily_kline",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15060,11 +15911,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "limit_up_record_immutable",
       "table": "limit_up_record",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15072,11 +15926,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "market_import_attempts_immutable",
       "table": "market_import_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15084,11 +15941,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_article_revisions_immutable",
       "table": "news_article_revisions",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15096,11 +15956,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_articles_immutable",
       "table": "news_articles",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15108,11 +15971,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_association_reviews_immutable",
       "table": "news_association_reviews",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15120,11 +15986,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_associations_immutable",
       "table": "news_associations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15132,11 +16001,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_event_articles_immutable",
       "table": "news_event_articles",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15144,11 +16016,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_events_immutable",
       "table": "news_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15156,11 +16031,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_ingest_commands_immutable",
       "table": "news_ingest_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15168,11 +16046,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_review_audit_events_immutable",
       "table": "news_review_audit_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15180,11 +16061,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_review_commands_immutable",
       "table": "news_review_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15192,11 +16076,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_snapshot_items_immutable",
       "table": "news_snapshot_items",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15204,11 +16091,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "news_snapshots_immutable",
       "table": "news_snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15216,11 +16106,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "owner_commands_immutable",
       "table": "owner_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15228,11 +16121,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "private_audit_events_immutable",
       "table": "private_audit_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15240,11 +16136,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "publication_attempts_immutable",
       "table": "publication_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15252,11 +16151,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_calculations_immutable",
       "table": "regulation_calculations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15264,11 +16166,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_commands_immutable",
       "table": "regulation_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15276,11 +16181,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_events_immutable",
       "table": "regulation_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15288,11 +16196,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_rule_statuses_immutable",
       "table": "regulation_rule_statuses",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15300,11 +16211,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_rules_immutable",
       "table": "regulation_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15312,11 +16226,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshot_events_immutable",
       "table": "regulation_snapshot_events",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15324,11 +16241,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshot_inputs_immutable",
       "table": "regulation_snapshot_inputs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15336,11 +16256,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshot_rules_immutable",
       "table": "regulation_snapshot_rules",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15348,11 +16271,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "regulation_snapshots_immutable",
       "table": "regulation_snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15360,11 +16286,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "review_note_revisions_immutable",
       "table": "review_note_revisions",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15372,11 +16301,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "review_verifications_immutable",
       "table": "review_verifications",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15384,11 +16316,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_change_summaries_immutable",
       "table": "role_change_summaries",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15396,11 +16331,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_changes_immutable",
       "table": "role_changes",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15408,11 +16346,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_factor_observations_immutable",
       "table": "role_factor_observations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15420,11 +16361,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_limit_rows_immutable",
       "table": "role_limit_rows",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15432,11 +16376,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_materialization_attempts_immutable",
       "table": "role_materialization_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15444,11 +16391,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_pending_validations_immutable",
       "table": "role_pending_validations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15456,11 +16406,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_results_immutable",
       "table": "role_results",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15468,11 +16421,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_run_topics_immutable",
       "table": "role_run_topics",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15480,11 +16436,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_topic_statuses_immutable",
       "table": "role_topic_statuses",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15492,11 +16451,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_validation_commands_immutable",
       "table": "role_validation_commands",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15504,11 +16466,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_validation_inputs_immutable",
       "table": "role_validation_inputs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15516,11 +16481,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "role_validations_immutable",
       "table": "role_validations",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15528,11 +16496,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "security_state_history_immutable",
       "table": "security_state_history",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15540,11 +16511,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "source_dependencies_immutable",
       "table": "source_dependencies",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15552,11 +16526,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "topic_import_attempts_immutable",
       "table": "topic_import_attempts",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15564,11 +16541,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "topic_import_batches_immutable",
       "table": "topic_import_batches",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15576,11 +16556,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "topic_snapshots_immutable",
       "table": "topic_snapshots",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15588,11 +16571,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "withdrawal_binding_seals_immutable",
       "table": "withdrawal_binding_seals",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15600,11 +16586,14 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "withdrawal_dependencies_immutable",
       "table": "withdrawal_dependencies",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE",
@@ -15612,64 +16601,81 @@
       ],
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "level": "STATEMENT",
       "name": "withdrawal_records_immutable",
       "table": "withdrawal_records",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE"
       ],
       "function_name": "guard_ai_task_inputs",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "ai_tasks_guard",
       "table": "ai_tasks",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE"
       ],
       "function_name": "guard_analysis_job_inputs",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "analysis_jobs_immutable_inputs",
       "table": "analysis_jobs",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE"
       ],
       "function_name": "guard_publication_news_binding",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "publications_news_binding",
       "table": "publications",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE"
       ],
       "function_name": "guard_publication_regulation_binding",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "publications_regulation_binding",
       "table": "publications",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     },
     {
+      "arguments": "",
       "enabled": "origin",
       "events": [
         "UPDATE"
       ],
       "function_name": "guard_publication_role_binding",
       "function_schema": "current_schema",
+      "level": "ROW",
       "name": "publications_role_binding",
       "table": "publications",
-      "timing": "BEFORE"
+      "timing": "BEFORE",
+      "when": null
     }
   ]
 }

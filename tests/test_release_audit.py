@@ -7,6 +7,8 @@ import json
 import os
 import runpy
 import subprocess
+import sys
+import time
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -199,6 +201,22 @@ def test_dirty_or_unbased_or_stale_branch_blocks_branch_cut(auditor):
         mutation(payload["git"]["candidate"])
 
         assert auditor["derive_decisions"](payload)["branch_cut"] == "NO_GO"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value["git"]["execution_source"].update(audited_commit="d" * 40),
+        lambda value: value["git"]["candidate"].update(audited_commit="d" * 40),
+        lambda value: value["migration"].update(implementation_commit="d" * 40),
+    ],
+)
+def test_decision_derivation_rejects_commit_identity_drift(auditor, mutation):
+    payload = valid_inputs()
+    mutation(payload)
+
+    with pytest.raises(ValueError, match="commit identity"):
+        auditor["derive_decisions"](payload)
 
 
 def test_collect_git_state_uses_argv_and_captures_before_output_creation(
@@ -953,10 +971,111 @@ def test_check_accepts_truthful_no_go_and_docs_only_head_relation(
     monkeypatch.setitem(
         globals_,
         "collect_git_state",
-        lambda *_args, **_kwargs: deepcopy(live),
+        lambda *_args, **_kwargs: pytest.fail(
+            "NO_GO check must not treat the detached checkout as the candidate"
+        ),
     )
 
     assert auditor["check_release_manifest"](tmp_path, path) == payload
+
+
+def test_live_git_check_accepts_go_from_explicit_candidate_worktree(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    manifest = _release_manifest_payload()
+    candidate_worktree = tmp_path / "candidate"
+    candidate_worktree.mkdir()
+    calls = []
+    globals_ = auditor["_validate_live_git_decisions"].__globals__
+
+    def collect(root, *, verify_remote=False):
+        calls.append((Path(root), verify_remote))
+        assert Path(root) == candidate_worktree
+        assert verify_remote is True
+        return deepcopy(manifest["git"]["candidate"])
+
+    monkeypatch.setitem(globals_, "collect_git_state", collect)
+
+    auditor["_validate_live_git_decisions"](
+        tmp_path,
+        manifest,
+        "a" * 40,
+        "b" * 40,
+        candidate_worktree=candidate_worktree,
+    )
+
+    assert calls == [(candidate_worktree, True)]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value["tracked_dirty_paths"].append("tracked.txt"),
+        lambda value: value.update(configured_upstream=None),
+    ],
+)
+def test_live_git_check_rejects_forged_candidate_state(
+    auditor,
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    manifest = _release_manifest_payload()
+    live_candidate = deepcopy(manifest["git"]["candidate"])
+    mutation(live_candidate)
+    candidate_worktree = tmp_path / "candidate"
+    candidate_worktree.mkdir()
+    globals_ = auditor["_validate_live_git_decisions"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "collect_git_state",
+        lambda *_args, **_kwargs: deepcopy(live_candidate),
+    )
+
+    with pytest.raises(ValueError, match="live Git evidence"):
+        auditor["_validate_live_git_decisions"](
+            tmp_path,
+            manifest,
+            "a" * 40,
+            "b" * 40,
+            candidate_worktree=candidate_worktree,
+        )
+
+
+def test_check_cli_forwards_explicit_candidate_worktree(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    manifest = tmp_path / "manifest.json"
+    candidate = tmp_path / "candidate"
+    observed = {}
+    globals_ = auditor["main"].__globals__
+
+    def check(root, path, *, candidate_worktree=None):
+        observed.update(
+            root=Path(root),
+            path=Path(path),
+            candidate_worktree=Path(candidate_worktree),
+        )
+
+    monkeypatch.setitem(globals_, "check_release_manifest", check)
+
+    assert (
+        auditor["main"](
+            [
+                "--check",
+                str(manifest),
+                "--candidate-worktree",
+                str(candidate),
+            ]
+        )
+        == 0
+    )
+    assert observed["path"] == manifest
+    assert observed["candidate_worktree"] == candidate
 
 
 def test_commit_relation_rejects_non_docs_child(auditor, tmp_path, monkeypatch):
@@ -1267,6 +1386,10 @@ def _release_manifest_payload():
         lambda value: value["task00_20"]["executed_gates"].update(required=20),
         lambda value: value["task00_20"].update(bundle_manifest_sha256="6" * 64),
         lambda value: value["task00_20"].update(implementation_commit="d" * 40),
+        lambda value: value["git"]["execution_source"].update(audited_commit="d" * 40),
+        lambda value: value["git"]["candidate"].update(audited_commit="d" * 40),
+        lambda value: value["migration"].update(implementation_commit="d" * 40),
+        lambda value: value["git"]["candidate"].update(audited_commit=[]),
         lambda value: value["task00_20"]["inventory"].pop(),
         lambda value: value["task00_20"]["inventory"].append(
             deepcopy(value["task00_20"]["inventory"][0])
@@ -1337,7 +1460,11 @@ def test_check_recomputes_all_decisive_evidence_and_rejects_tamper(
             "errors": [],
         },
     )
-    monkeypatch.setitem(globals_, "_validate_live_git_decisions", lambda *_: None)
+    monkeypatch.setitem(
+        globals_,
+        "_validate_live_git_decisions",
+        lambda *_args, **_kwargs: None,
+    )
     path.write_text(json.dumps(payload), encoding="utf-8")
     assert auditor["check_release_manifest"](tmp_path, path) == payload
 
@@ -1438,7 +1565,7 @@ def test_check_recollects_git_and_rejects_self_consistent_branch_cut_forgery(
         lambda *_args, **_kwargs: deepcopy(live),
     )
 
-    with pytest.raises(ValueError, match="live Git evidence"):
+    with pytest.raises(ValueError, match="candidate-worktree"):
         auditor["check_release_manifest"](tmp_path, path)
 
 
@@ -1676,6 +1803,10 @@ def test_audit_process_timeout_terminates_and_waits(
         def kill(self):
             events.append(("kill", None))
 
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            return self.returncode
+
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
 
     with pytest.raises(subprocess.TimeoutExpired):
@@ -1684,8 +1815,55 @@ def test_audit_process_timeout_terminates_and_waits(
     assert events == [
         ("communicate", 0.01),
         ("terminate", None),
-        ("communicate", 5),
+        ("wait", 0.5),
     ]
+
+
+def _process_exists(pid):
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        return str(pid) in result.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_audit_process_timeout_kills_pipe_inheriting_process_tree(
+    auditor,
+    tmp_path,
+):
+    pid_file = tmp_path / "grandchild.pid"
+    parent = (
+        "import pathlib,subprocess,sys,time;"
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid));"
+        "time.sleep(60)"
+    )
+    started = time.perf_counter()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        auditor["_run"](
+            [sys.executable, "-c", parent, str(pid_file)],
+            cwd=tmp_path,
+            timeout=0.2,
+        )
+
+    elapsed = time.perf_counter() - started
+    assert elapsed < 3
+    assert pid_file.exists()
+    grandchild_pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 1
+    while _process_exists(grandchild_pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not _process_exists(grandchild_pid)
 
 
 @pytest.mark.parametrize(
@@ -1693,6 +1871,7 @@ def test_audit_process_timeout_terminates_and_waits(
     [
         "/etc/dragon-radar/evidence.json",
         "/var/lib/dragon-radar/evidence.json",
+        r"\Windows\System32\evidence.json",
         r"\\server\share\evidence.json",
         r"D:\evidence.json",
     ],
