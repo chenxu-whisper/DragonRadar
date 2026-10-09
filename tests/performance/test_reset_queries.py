@@ -12,7 +12,6 @@ from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from threading import Lock
 
 import pytest
 from factories import NOW, bar, batch, grant, state
@@ -78,6 +77,12 @@ WRITE_VERBS = {
     "ALTER",
     "DROP",
     "TRUNCATE",
+}
+PAYLOAD_PROJECTION_RELATIONS = {
+    "publication_results",
+    "source_dependencies",
+    "withdrawal_dependencies",
+    "withdrawal_records",
 }
 
 
@@ -397,17 +402,29 @@ def _normalized_plan(plan) -> dict:
     }
 
 
+def _plan_role(statement: str, relations: tuple[str, ...]) -> str | None:
+    if list(relations) == ["publications"] and re.search(
+        r"\bWHERE\s+publications\.id\s*=", statement, flags=re.IGNORECASE
+    ):
+        return "generic_publication_lookup"
+    if set(relations) & PAYLOAD_PROJECTION_RELATIONS:
+        return "payload_projection_read"
+    return None
+
+
 def _observed_query_shapes(captured) -> dict[str, dict]:
     shapes = {}
     for item in captured:
         normalized = _normalized_sql(item["statement"])
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        relations = _sql_relations(normalized)
         shape = shapes.setdefault(
             digest,
             {
                 "normalized_sql": normalized,
                 "verb": item["verb"],
-                "relations": list(_sql_relations(normalized)),
+                "relations": list(relations),
+                "plan_role": _plan_role(normalized, relations),
                 "endpoint_observations": {},
             },
         )
@@ -440,12 +457,31 @@ def _endpoint_shape_hashes(shapes) -> dict[str, list[str]]:
     }
 
 
-def _query_plan_evidence(database, captured):
+def _query_attribution_groups(endpoint_hashes) -> list[dict]:
+    grouped = {}
+    for path, hashes in endpoint_hashes.items():
+        grouped.setdefault(tuple(hashes), []).append(path)
+    groups = [
+        {
+            "scope": (
+                "shared_repository_projection"
+                if len(endpoints) > 1
+                else "endpoint_repository_projection"
+            ),
+            "endpoints": sorted(endpoints),
+            "sql_hashes": list(hashes),
+        }
+        for hashes, endpoints in grouped.items()
+    ]
+    return sorted(groups, key=lambda item: item["endpoints"])
+
+
+def _query_plan_evidence(database, captured, shapes):
     representatives = {}
     for item in captured:
         normalized = _normalized_sql(item["statement"])
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        if item["verb"] == "SELECT" and _sql_relations(normalized):
+        if shapes[digest]["plan_role"] == "payload_projection_read":
             representatives.setdefault(digest, item)
     plans = {}
     for digest in sorted(representatives):
@@ -453,21 +489,10 @@ def _query_plan_evidence(database, captured):
         normalized_sql = _normalized_sql(selected["statement"])
         assert hashlib.sha256(normalized_sql.encode("utf-8")).hexdigest() == digest
         with database.engine.connect() as connection:
-            try:
-                plan = connection.exec_driver_sql(
-                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + selected["statement"],
-                    selected["parameters"],
-                ).scalar()
-            except Exception as error:
-                plans[digest] = {
-                    "status": "unsupported",
-                    "sql_relations": list(_sql_relations(normalized_sql)),
-                    "reason": (
-                        "PostgreSQL rejected EXPLAIN ANALYZE for the captured "
-                        f"read shape with {type(error).__name__}."
-                    ),
-                }
-                continue
+            plan = connection.exec_driver_sql(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + selected["statement"],
+                selected["parameters"],
+            ).scalar()
             plans[digest] = {
                 "status": "explained",
                 "sql_relations": list(_sql_relations(normalized_sql)),
@@ -579,31 +604,27 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
     paths = _request_paths(publication.id, sessions, security_id)
     assert tuple(_path_label(path) for path in paths) == MEASURED_PATHS
     captured = []
-    active_queries = {}
-    capture_lock = Lock()
 
     def start_query(_conn, _cursor, statement, parameters, context, _executemany):
-        with capture_lock:
-            active_queries[id(context)] = (
-                time.perf_counter(),
-                {
-                    "path": CURRENT_PUBLIC_PATH.get(),
-                    "verb": _statement_verb(statement),
-                    "statement": statement,
-                    "parameters": parameters,
-                },
-            )
+        context.task20_evidence = (
+            time.perf_counter(),
+            {
+                "path": CURRENT_PUBLIC_PATH.get(),
+                "verb": _statement_verb(statement),
+                "statement": statement,
+                "parameters": parameters,
+            },
+        )
 
     def finish_query(_conn, _cursor, _statement, _parameters, context, _executemany):
         finished = time.perf_counter()
-        with capture_lock:
-            started, item = active_queries.pop(id(context))
-            captured.append(
-                {
-                    **item,
-                    "duration_seconds": finished - started,
-                }
-            )
+        started, item = context.task20_evidence
+        captured.append(
+            {
+                **item,
+                "duration_seconds": finished - started,
+            }
+        )
 
     public = public_publication_repository(database, repository, clock=lambda: NOW)
     app = create_public_app(repository=public)
@@ -645,10 +666,12 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         finally:
             event.remove(database.engine, "before_cursor_execute", start_query)
             event.remove(database.engine, "after_cursor_execute", finish_query)
-    assert not active_queries
     observed_query_shapes = _observed_query_shapes(captured)
     endpoint_shape_hashes = _endpoint_shape_hashes(observed_query_shapes)
-    query_plan_evidence = _query_plan_evidence(database, captured)
+    query_attribution_groups = _query_attribution_groups(endpoint_shape_hashes)
+    query_plan_evidence = _query_plan_evidence(
+        database, captured, observed_query_shapes
+    )
     state_after = _application_state(database)
 
     for run in runs:
@@ -705,6 +728,7 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         },
         "observed_query_shapes": observed_query_shapes,
         "endpoint_shape_hashes": endpoint_shape_hashes,
+        "query_attribution_groups": query_attribution_groups,
         "application_state_before": state_before,
         "application_state_after": state_after,
         "query_plan_evidence": query_plan_evidence,
@@ -727,10 +751,17 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
     assert len(evidence["application_state_before"]) > 8
     assert set(evidence["endpoint_shape_hashes"]) == set(MEASURED_PATHS)
     assert all(evidence["endpoint_shape_hashes"].values())
+    assert evidence["query_attribution_groups"] == [
+        {
+            "scope": "shared_repository_projection",
+            "endpoints": sorted(MEASURED_PATHS),
+            "sql_hashes": sorted(evidence["observed_query_shapes"]),
+        }
+    ]
     assert set(evidence["query_plan_evidence"]) == {
         digest
         for digest, shape in evidence["observed_query_shapes"].items()
-        if shape["verb"] == "SELECT" and shape["relations"]
+        if shape["plan_role"] == "payload_projection_read"
     }
     assert all(run["rss_bytes"] > 0 for run in evidence["runs"])
     artifact = Path(".temp/acceptance/reset-performance.json")

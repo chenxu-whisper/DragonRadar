@@ -114,7 +114,7 @@ def performance_raw():
         "/api/stock/{id}",
     )
     normalized_sql = (
-        "SELECT id FROM publications WHERE id = %(id)s",
+        "SELECT publications.id FROM publications WHERE publications.id = %(id)s",
         "SELECT payload FROM publication_results WHERE publication_id = %(id)s",
         "SELECT source_id FROM source_dependencies WHERE publication_id = %(id)s",
         "SELECT id FROM withdrawal_records WHERE source_id = %(source_id)s",
@@ -125,6 +125,8 @@ def performance_raw():
         statement: hashlib.sha256(statement.encode("utf-8")).hexdigest()
         for statement in normalized_sql
     }
+    generic_lookup_hash = shape_hashes[normalized_sql[0]]
+    projection_hashes = sorted(set(shape_hashes.values()) - {generic_lookup_hash})
     runs = [
         {
             "round": index,
@@ -194,6 +196,11 @@ def performance_raw():
                 "relations": [
                     statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
                 ],
+                "plan_role": (
+                    "generic_publication_lookup"
+                    if shape_hashes[statement] == generic_lookup_hash
+                    else "payload_projection_read"
+                ),
                 "endpoint_observations": {
                     path: {
                         "count": 15,
@@ -209,6 +216,13 @@ def performance_raw():
         "endpoint_shape_hashes": {
             path: sorted(shape_hashes.values()) for path in paths
         },
+        "query_attribution_groups": [
+            {
+                "scope": "shared_repository_projection",
+                "endpoints": sorted(paths),
+                "sql_hashes": sorted(shape_hashes.values()),
+            }
+        ],
         "application_state_before": {"table": {"rows": 1, "fingerprint": "a"}},
         "application_state_after": {"table": {"rows": 1, "fingerprint": "a"}},
         "query_plan_evidence": {
@@ -231,6 +245,7 @@ def performance_raw():
             for relation in [
                 statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
             ]
+            if digest in projection_hashes
         },
     }
 
@@ -275,6 +290,7 @@ def evidence_manifest(tmp_path):
                 "fingerprints_equal": True,
                 "application_table_count": 1,
                 "endpoint_shape_hashes": raw["endpoint_shape_hashes"],
+                "query_attribution_groups": raw["query_attribution_groups"],
                 "query_plan_evidence": raw["query_plan_evidence"],
             }
         elif gate == "async_over_five_seconds":
@@ -493,12 +509,42 @@ def test_performance_contract_rejects_endpoint_map_not_matching_observed_shapes(
     assert any("observed shape set" in error.lower() for error in errors(hard_coded))
 
 
+def test_performance_contract_rejects_legacy_distinct_endpoint_representatives():
+    errors = VERIFIER["_performance_errors"]
+    legacy = performance_raw()
+    hashes = iter(legacy["observed_query_shapes"])
+    legacy["measured_path_explains"] = {
+        path: {"sql_sha256": next(hashes)} for path in legacy["endpoint_shape_hashes"]
+    }
+
+    assert any("legacy" in error.lower() for error in errors(legacy))
+
+
+def test_performance_contract_rejects_tampered_attribution_group():
+    errors = VERIFIER["_performance_errors"]
+    tampered = performance_raw()
+    tampered["query_attribution_groups"][0]["endpoints"].pop()
+
+    assert any("attribution groups" in error.lower() for error in errors(tampered))
+
+
 def test_performance_contract_rejects_missing_shared_shape_plan():
     errors = VERIFIER["_performance_errors"]
     missing = performance_raw()
-    missing["query_plan_evidence"].pop(next(iter(missing["observed_query_shapes"])))
+    missing["query_plan_evidence"].pop(next(iter(missing["query_plan_evidence"])))
 
     assert any("plan coverage" in error.lower() for error in errors(missing))
+
+
+def test_performance_contract_rejects_uncaptured_plan_hash():
+    errors = VERIFIER["_performance_errors"]
+    uncaptured = performance_raw()
+    plan = deepcopy(next(iter(uncaptured["query_plan_evidence"].values())))
+    uncaptured["query_plan_evidence"]["f" * 64] = plan
+
+    plan_errors = errors(uncaptured)
+    assert any("plan coverage" in error.lower() for error in plan_errors)
+    assert any("captured payload projection" in error.lower() for error in plan_errors)
 
 
 def test_performance_contract_rejects_fabricated_distinct_endpoint_mappings():

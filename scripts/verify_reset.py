@@ -88,6 +88,12 @@ PLAN_BUFFER_FIELDS = {
     "temp_read_blocks",
     "temp_written_blocks",
 }
+PAYLOAD_PROJECTION_RELATIONS = {
+    "publication_results",
+    "source_dependencies",
+    "withdrawal_dependencies",
+    "withdrawal_records",
+}
 URL_CREDENTIAL = re.compile(r"(://[^:/\s]+:)[^@\s]+(@)")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SUMMARY_COUNT = re.compile(r"(?<![\w-])(\d+)\s+(passed|failed|skipped)\b")
@@ -641,6 +647,37 @@ def _sql_relations(statement: str) -> list[str]:
     )
 
 
+def _plan_role(statement: str, relations: list[str]) -> str | None:
+    if relations == ["publications"] and re.search(
+        r"\bWHERE\s+publications\.id\s*=", statement, flags=re.IGNORECASE
+    ):
+        return "generic_publication_lookup"
+    if set(relations) & PAYLOAD_PROJECTION_RELATIONS:
+        return "payload_projection_read"
+    return None
+
+
+def _attribution_groups(
+    endpoint_hashes: dict[str, set[str]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, ...], list[str]] = {}
+    for path, hashes in endpoint_hashes.items():
+        grouped.setdefault(tuple(sorted(hashes)), []).append(path)
+    groups = [
+        {
+            "scope": (
+                "shared_repository_projection"
+                if len(endpoints) > 1
+                else "endpoint_repository_projection"
+            ),
+            "endpoints": sorted(endpoints),
+            "sql_hashes": list(hashes),
+        }
+        for hashes, endpoints in grouped.items()
+    ]
+    return sorted(groups, key=lambda item: item["endpoints"])
+
+
 def _plan_errors(plan: Any, sql_relations: list[str], label: str) -> list[str]:
     errors: list[str] = []
     field_errors = _exact_fields(
@@ -684,13 +721,14 @@ def _plan_errors(plan: Any, sql_relations: list[str], label: str) -> list[str]:
 def _query_evidence_errors(
     shapes: Any,
     endpoint_hashes: Any,
+    attribution_groups: Any,
     plans: Any,
 ) -> tuple[list[str], int, int]:
     errors: list[str] = []
     statement_count = 0
     write_count = 0
     derived_endpoint_hashes = {path: set() for path in MEASURED_PATHS}
-    nontrivial_read_hashes = set()
+    relevant_read_hashes = set()
     shape_relations: dict[str, list[str]] = {}
     if not isinstance(shapes, dict) or not shapes:
         return ["Observed normalized SQL shapes are missing."], 0, 0
@@ -705,6 +743,7 @@ def _query_evidence_errors(
                 "normalized_sql",
                 "verb",
                 "relations",
+                "plan_role",
                 "endpoint_observations",
             },
             label,
@@ -728,8 +767,13 @@ def _query_evidence_errors(
             errors.append(f"{label} relations do not match normalized SQL.")
             continue
         shape_relations[digest] = relations
-        if verb == "SELECT" and relations:
-            nontrivial_read_hashes.add(digest)
+        expected_role = _plan_role(statement, relations) if verb == "SELECT" else None
+        if shape["plan_role"] != expected_role:
+            errors.append(f"{label} plan role does not match its SQL shape.")
+        if expected_role == "payload_projection_read":
+            relevant_read_hashes.add(digest)
+        elif verb == "SELECT" and relations and expected_role is None:
+            errors.append(f"{label} relational read has no explicit plan role.")
         observations = shape["endpoint_observations"]
         if not isinstance(observations, dict) or not observations:
             errors.append(f"{label} endpoint observations are missing.")
@@ -780,25 +824,27 @@ def _query_evidence_errors(
                 errors.append(
                     f"Endpoint {path} mapping does not match its observed shape set."
                 )
-    if not isinstance(plans, dict) or set(plans) != nontrivial_read_hashes:
-        errors.append("Nontrivial observed read shape plan coverage is incomplete.")
+    expected_groups = _attribution_groups(derived_endpoint_hashes)
+    if attribution_groups != expected_groups:
+        errors.append(
+            "Query attribution groups do not match the captured endpoint matrix."
+        )
+    if not isinstance(plans, dict) or set(plans) != relevant_read_hashes:
+        errors.append("Payload projection read plan coverage is incomplete.")
         plans = plans if isinstance(plans, dict) else {}
-    explained_non_generic = False
     for digest, item in plans.items():
         label = f"Query plan {digest}"
-        if digest not in nontrivial_read_hashes:
-            errors.append(f"{label} does not identify a nontrivial observed read.")
+        if digest not in relevant_read_hashes:
+            errors.append(
+                f"{label} does not identify a captured payload projection read."
+            )
             continue
         if not isinstance(item, dict):
             errors.append(f"{label} is malformed.")
             continue
         sql_relations = shape_relations.get(digest, [])
         status = item.get("status")
-        expected_fields = (
-            {"status", "sql_relations", "plan"}
-            if status == "explained"
-            else {"status", "sql_relations", "reason"}
-        )
+        expected_fields = {"status", "sql_relations", "plan"}
         field_errors = _exact_fields(item, expected_fields, label)
         if field_errors:
             errors.extend(field_errors)
@@ -807,16 +853,10 @@ def _query_evidence_errors(
             errors.append(f"{label} relations do not match its observed SQL shape.")
         if status == "explained":
             errors.extend(_plan_errors(item["plan"], sql_relations, label))
-            if sql_relations != ["publications"]:
-                explained_non_generic = True
-        elif status == "unsupported":
-            reason = item["reason"]
-            if not isinstance(reason, str) or len(reason.strip()) < 20:
-                errors.append(f"{label} unsupported reason is not justified.")
         else:
-            errors.append(f"{label} status is invalid.")
-    if nontrivial_read_hashes and not explained_non_generic:
-        errors.append("Generic publication lookup cannot be the only explained plan.")
+            errors.append(
+                f"{label} required payload projection plan was not explained."
+            )
     return errors, statement_count, write_count
 
 
@@ -824,6 +864,13 @@ def _performance_errors(value: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(value, dict):
         return ["Performance artifact is not an object."]
+    legacy_fields = {"measured_path_explains", "public_sql_statements"} & set(value)
+    if legacy_fields:
+        errors.append(
+            "Legacy endpoint-representative SQL evidence is forbidden: "
+            + ", ".join(sorted(legacy_fields))
+            + "."
+        )
     runs = value.get("runs")
     if not isinstance(runs, list) or len(runs) < 2:
         errors.append("Multiple measured performance rounds are required.")
@@ -950,6 +997,7 @@ def _performance_errors(value: Any) -> list[str]:
     query_errors, statement_count, write_count = _query_evidence_errors(
         value.get("observed_query_shapes"),
         value.get("endpoint_shape_hashes"),
+        value.get("query_attribution_groups"),
         value.get("query_plan_evidence"),
     )
     errors.extend(query_errors)
@@ -1013,6 +1061,7 @@ def _public_observations(value: dict[str, Any]) -> dict[str, Any]:
         ),
         "application_table_count": len(value["application_state_before"]),
         "endpoint_shape_hashes": value["endpoint_shape_hashes"],
+        "query_attribution_groups": value["query_attribution_groups"],
         "query_plan_evidence": value["query_plan_evidence"],
     }
 
