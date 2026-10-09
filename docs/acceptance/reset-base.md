@@ -1,7 +1,7 @@
 # Reset Base Acceptance
 
 Generated on 2026-10-09 from a clean detached worktree at implementation
-commit `2b7f2801be131fe273f5a8cca3831ea69d7eafec`. The verifier recorded that
+commit `f82b68384f3fd38b76327eae74aecc271b22801d`. The verifier recorded that
 same tracked-clean HEAD before and after both focused and full execution.
 Only generated, ignored `.temp/` content was present.
 
@@ -47,7 +47,7 @@ not committed.
 | [manifest](evidence/task20/manifest.json) | Relative paths, byte counts, SHA-256 values, and execution provenance |
 | [acceptance summary](evidence/task20/acceptance-summary.json) | Gate status, native counts, and external blockers |
 | [performance raw](evidence/task20/performance-raw.json) | Sanitized synthetic raw metrics, SQL hashes, and normalized plans |
-| [performance summary](evidence/task20/performance-summary.json) | Compact performance and endpoint-plan metrics |
+| [performance summary](evidence/task20/performance-summary.json) | Compact performance, shared attribution, and hash-keyed plan metrics |
 | [native output](evidence/task20/native-output.txt) | Concise command-native result lines |
 
 Run `uv run python scripts/verify_task20_bundle.py` to require every manifest
@@ -60,7 +60,7 @@ entry to be Git-tracked and to recompute every byte count and SHA-256 value.
 | CSV contract | 15 passed |
 | Responsive acceptance E2E | 35 passed |
 | Recovery drills | Backend 8, recovery E2E 5, AI-off E2E 1 passed |
-| Full backend | 2,557 passed, 0 failed, 0 skipped in 1,447.68s |
+| Full backend | 2,562 passed, 0 failed, 0 skipped in 1,598.98s |
 | Ruff, format, compileall | Exit 0 |
 | Frontend unit and scripts | 335 Vitest and 8 Node tests passed |
 | Builds and bundle | Default/private builds passed; entry 315,419 bytes |
@@ -80,21 +80,25 @@ caches were not controlled; the evidence therefore makes no cold-cache claim.
 
 | Round | Success | P50 | P95 | Max | CPU | RSS |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 20/20 | 0.934725s | 1.427671s | 1.450128s | 1.562500s | 290,877,440 bytes |
-| 2 | 20/20 | 1.236827s | 1.417923s | 1.484724s | 1.562500s | 298,672,128 bytes |
-| 3 | 20/20 | 0.778479s | 1.301985s | 1.451968s | 1.578125s | 296,574,976 bytes |
-| Aggregate | 60/60 | 1.194883s | 1.427671s | 1.484724s | 4.703125s | Per-round above |
+| 1 | 20/20 | 0.864003s | 1.493960s | 1.498414s | 1.671875s | 265,150,464 bytes |
+| 2 | 20/20 | 0.954087s | 1.482592s | 1.500350s | 1.562500s | 271,745,024 bytes |
+| 3 | 20/20 | 0.850483s | 1.421611s | 1.492030s | 1.656250s | 273,367,040 bytes |
+| Aggregate | 60/60 | 0.953132s | 1.492030s | 1.500350s | 4.890625s | Per-round above |
 
 Each round includes per-path snapshot, overview, rank, and stock metrics in
 the raw artifact. The measured requests executed 300 SQL statements and zero
 writes or DDL. Fingerprints for all 72 application tables were unchanged.
-The raw artifact compacts those 300 executions into 20 unique path/query
-shapes. Four distinct selected SQL hashes bind snapshot, overview, rank, and
-stock to appropriate relations. Normalized evidence records relations,
-indexes, node types/counts, and buffers; it contains no SQL text or parameters.
+The raw artifact compacts those executions into five captured SQL hashes.
+Every measured endpoint executed the same five-hash repository projection
+set, encoded as one shared attribution group rather than four endpoint-specific
+plans. Four payload/projection reads have one `EXPLAIN ANALYZE` record per
+distinct captured hash. The publications-only primary-key lookup is retained
+in the endpoint matrix but explicitly excluded from plan evidence as a generic
+lookup. Normalized SQL contains placeholders rather than parameter values;
+plan evidence records relations, indexes, node types/counts, and buffers.
 
 The controlled slow-work drill is labelled synthetic. Owner submission
-returned `queued` in 0.319341s; the worker ran for 5.416536s and persisted
+returned `queued` in 0.307472s; the worker ran for 5.482976s and persisted
 `succeeded`. Public requests did not expose or create analysis jobs.
 
 ## Implementation Notes

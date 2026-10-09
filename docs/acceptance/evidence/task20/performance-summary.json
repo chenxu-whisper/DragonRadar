@@ -1,7 +1,7 @@
 {
   "schema": "dragon-radar.task20-performance-summary",
-  "schema_version": 1,
-  "implementation_commit": "2b7f2801be131fe273f5a8cca3831ea69d7eafec",
+  "schema_version": 2,
+  "implementation_commit": "f82b68384f3fd38b76327eae74aecc271b22801d",
   "fixture": {
     "kind": "synthetic",
     "securities": 100,
@@ -14,11 +14,12 @@
     "request_count": 60,
     "successful": 60,
     "error_rate": 0.0,
-    "p50_seconds": 1.1948830999899656,
-    "p95_seconds": 1.4276709000114352,
-    "max_seconds": 1.484724200097844,
+    "p50_seconds": 0.9531316999346018,
+    "p95_seconds": 1.492029899964109,
+    "max_seconds": 1.5003503998741508,
     "sql_statement_count": 300,
-    "sql_shape_count": 20,
+    "captured_sql_shape_count": 5,
+    "planned_sql_shape_count": 4,
     "sql_write_count": 0,
     "application_table_fingerprints_equal": true,
     "application_table_count": 72
@@ -26,71 +27,92 @@
   "runs": [
     {
       "round": 1,
-      "p50_seconds": 0.9347253001760691,
-      "p95_seconds": 1.4276709000114352,
-      "max_seconds": 1.4501275999937207,
-      "process_cpu_seconds": 1.5625,
-      "rss_bytes": 290877440
+      "p50_seconds": 0.8640030999667943,
+      "p95_seconds": 1.4939602999947965,
+      "max_seconds": 1.4984136999119073,
+      "process_cpu_seconds": 1.671875,
+      "rss_bytes": 265150464
     },
     {
       "round": 2,
-      "p50_seconds": 1.236827400047332,
-      "p95_seconds": 1.4179225000552833,
-      "max_seconds": 1.484724200097844,
+      "p50_seconds": 0.9540870001073927,
+      "p95_seconds": 1.4825922998134047,
+      "max_seconds": 1.5003503998741508,
       "process_cpu_seconds": 1.5625,
-      "rss_bytes": 298672128
+      "rss_bytes": 271745024
     },
     {
       "round": 3,
-      "p50_seconds": 0.7784791002050042,
-      "p95_seconds": 1.3019847001414746,
-      "max_seconds": 1.4519681998062879,
-      "process_cpu_seconds": 1.578125,
-      "rss_bytes": 296574976
+      "p50_seconds": 0.8504829998128116,
+      "p95_seconds": 1.4216106000822037,
+      "max_seconds": 1.492029899964109,
+      "process_cpu_seconds": 1.65625,
+      "rss_bytes": 273367040
     }
   ],
   "async_work": {
-    "submission_seconds": 0.31934050004929304,
-    "worker_elapsed_seconds": 5.416536200093105,
+    "submission_seconds": 0.30747230001725256,
+    "worker_elapsed_seconds": 5.482976000057533,
     "status": "succeeded"
   },
-  "endpoint_plans": {
-    "/api/snapshots/{id}": {
-      "sql_sha256": "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+  "endpoint_shape_hashes": {
+    "/api/snapshots/{id}": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/market/overview": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/rank/range": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/stock/{id}": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ]
+  },
+  "query_attribution_groups": [
+    {
+      "scope": "shared_repository_projection",
+      "endpoints": [
+        "/api/market/overview",
+        "/api/rank/range",
+        "/api/snapshots/{id}",
+        "/api/stock/{id}"
+      ],
+      "sql_hashes": [
+        "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+        "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+        "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+        "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+        "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+      ]
+    }
+  ],
+  "excluded_plan_shapes": {
+    "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9": {
+      "role": "generic_publication_lookup",
       "relations": [
-        "source_dependencies",
-        "source_grants"
-      ],
-      "indexes": [
-        "source_grants_pkey"
-      ],
-      "node_count": 3,
-      "shared_hit_blocks": 3
-    },
-    "/api/market/overview": {
-      "sql_sha256": "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
-      "relations": [
-        "publication_results"
-      ],
-      "indexes": [
-        "publication_results_pkey"
-      ],
-      "node_count": 3,
-      "shared_hit_blocks": 2
-    },
-    "/api/rank/range": {
-      "sql_sha256": "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
-      "relations": [
-        "withdrawal_records"
-      ],
-      "indexes": [
-        "withdrawal_records_source"
-      ],
-      "node_count": 2,
-      "shared_hit_blocks": 2
-    },
-    "/api/stock/{id}": {
-      "sql_sha256": "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+        "publications"
+      ]
+    }
+  },
+  "query_plans": {
+    "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113": {
       "relations": [
         "source_dependencies",
         "withdrawal_dependencies",
@@ -101,7 +123,59 @@
         "withdrawal_dependencies_withdrawal_id_archive_type_archive__key",
         "withdrawal_records_source"
       ],
+      "nodes": [
+        "Bitmap Heap Scan",
+        "Bitmap Index Scan",
+        "Index Scan",
+        "Limit",
+        "Nested Loop"
+      ],
       "node_count": 7,
+      "shared_hit_blocks": 2
+    },
+    "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457": {
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "indexes": [
+        "source_grants_pkey"
+      ],
+      "nodes": [
+        "Index Scan",
+        "Nested Loop",
+        "Seq Scan"
+      ],
+      "node_count": 3,
+      "shared_hit_blocks": 3
+    },
+    "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52": {
+      "relations": [
+        "withdrawal_records"
+      ],
+      "indexes": [
+        "withdrawal_records_source"
+      ],
+      "nodes": [
+        "Index Scan",
+        "Limit"
+      ],
+      "node_count": 2,
+      "shared_hit_blocks": 2
+    },
+    "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2": {
+      "relations": [
+        "publication_results"
+      ],
+      "indexes": [
+        "publication_results_pkey"
+      ],
+      "nodes": [
+        "Bitmap Heap Scan",
+        "Bitmap Index Scan",
+        "Sort"
+      ],
+      "node_count": 3,
       "shared_hit_blocks": 2
     }
   }

@@ -1,7 +1,7 @@
 {
   "schema": "dragon-radar.task20-acceptance-summary",
   "schema_version": 1,
-  "implementation_commit": "2b7f2801be131fe273f5a8cca3831ea69d7eafec",
+  "implementation_commit": "f82b68384f3fd38b76327eae74aecc271b22801d",
   "execution_provenance": {
     "source": "Executed by scripts/verify_reset.py in a clean detached worktree at implementation_commit.",
     "tracked_clean_before_and_after": true,
@@ -26,7 +26,7 @@
     "recovery_e2e": 5,
     "recovery_ai_public": 1,
     "performance": 1,
-    "full_backend": 2557,
+    "full_backend": 2562,
     "frontend_vitest": 335,
     "frontend_node": 8,
     "frontend_e2e_legacy": 80,
