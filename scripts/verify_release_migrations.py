@@ -242,12 +242,15 @@ def inspect_alembic_graph(root: Path) -> dict[str, object]:
 
 
 def _resolve_migration_root(root: Path) -> Path:
-    root = root.resolve()
+    if root.is_symlink() or _is_junction(root):
+        raise ValueError("unsafe migration path: root")
     if (root / "release_manifest.json").is_file():
         return root
     package_root = root / "src" / "dragon_radar" / "migrations"
+    if package_root.is_symlink() or _is_junction(package_root):
+        raise ValueError("unsafe migration path: root")
     if package_root.is_dir():
-        return package_root.resolve()
+        return package_root
     return root
 
 
@@ -310,6 +313,14 @@ def _validate_migration_files(
 def verify_manifest(root: Path) -> dict[str, object]:
     """Compare the graph and raw migration files with the release manifest."""
     root = _resolve_migration_root(root)
+    versions_root = root / "versions"
+    if versions_root.is_symlink() or _is_junction(versions_root):
+        return {
+            "head": None,
+            "revision_count": 0,
+            "errors": ["unsafe migration path: versions"],
+        }
+    root = root.resolve()
     manifest = load_release_manifest(root / "release_manifest.json")
     errors = _validate_migration_files(root, manifest)
     if errors:

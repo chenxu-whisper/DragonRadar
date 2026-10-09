@@ -83,6 +83,18 @@ def append_import_marker(path, marker):
     )
 
 
+def refresh_manifest_fingerprint(root, filename):
+    path = root / "versions" / filename
+    content = path.read_bytes().replace(b"\r\n", b"\n")
+    manifest = read_manifest(root)
+    entry = next(
+        entry for entry in manifest["revisions"] if entry["filename"] == filename
+    )
+    entry["sha256"] = hashlib.sha256(content).hexdigest()
+    entry["bytes"] = len(content)
+    write_manifest(root, manifest)
+
+
 def test_release_manifest_matches_single_linear_graph(verifier):
     manifest = verifier["load_release_manifest"](MIGRATIONS / "release_manifest.json")
     graph = verifier["inspect_alembic_graph"](MIGRATIONS)
@@ -217,6 +229,27 @@ def test_release_manifest_rejects_symlink_escape_before_import(
     assert not marker.exists()
 
 
+def test_release_manifest_rejects_symlink_root_before_import(
+    verifier, copied_migrations, tmp_path
+):
+    marker = tmp_path / "root-symlink-imported"
+    append_import_marker(
+        copied_migrations / "versions" / "0001_foundation.py",
+        marker,
+    )
+    refresh_manifest_fingerprint(copied_migrations, "0001_foundation.py")
+    linked_root = tmp_path / "linked-migrations"
+    try:
+        linked_root.symlink_to(copied_migrations, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="unsafe migration path.*root"):
+        verifier["verify_manifest"](linked_root)
+
+    assert not marker.exists()
+
+
 @pytest.mark.skipif(
     sys.platform != "win32" or not hasattr(os.path, "isjunction"),
     reason="Windows junctions require os.path.isjunction",
@@ -242,6 +275,36 @@ def test_release_manifest_rejects_junction_before_import(
     errors = verifier["verify_manifest"](copied_migrations)["errors"]
 
     assert any("unsafe migration path" in error for error in errors)
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or not hasattr(os.path, "isjunction"),
+    reason="Windows junctions require os.path.isjunction",
+)
+def test_release_manifest_rejects_junction_root_before_import(
+    verifier, copied_migrations, tmp_path
+):
+    marker = tmp_path / "root-junction-imported"
+    append_import_marker(
+        copied_migrations / "versions" / "0001_foundation.py",
+        marker,
+    )
+    refresh_manifest_fingerprint(copied_migrations, "0001_foundation.py")
+    linked_root = tmp_path / "linked-migrations"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(linked_root), str(copied_migrations)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"directory junctions are unavailable: {result.stderr}")
+    assert os.path.isjunction(linked_root)
+
+    with pytest.raises(ValueError, match="unsafe migration path.*root"):
+        verifier["verify_manifest"](linked_root)
+
     assert not marker.exists()
 
 
