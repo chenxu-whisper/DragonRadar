@@ -1,0 +1,503 @@
+{
+  "decisions": {
+    "branch_cut": "NO_GO",
+    "migration_readiness": "GO",
+    "overall_status": "NO_GO",
+    "production_release": "NO_GO",
+    "task00_20_engineering": "GO"
+  },
+  "external_gates": {
+    "approved_official_rules": "BLOCKED",
+    "licensed_real_input": "BLOCKED",
+    "public_sharing_permit": "BLOCKED",
+    "real_model_evaluation": "BLOCKED",
+    "twenty_trading_day_shadow_run": "BLOCKED"
+  },
+  "git": {
+    "ahead": 295,
+    "audited_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
+    "base_commit": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+    "base_ref": "origin/main",
+    "behind": 0,
+    "branch": "feature/prd-reset",
+    "configured_upstream": null,
+    "detached": false,
+    "merge_base": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+    "remote_freshness": {
+      "fetch_age_seconds": 1663711,
+      "fetch_head_present": true,
+      "status": "STALE"
+    },
+    "tracked_dirty_paths": [
+      "deploy/private.Caddyfile",
+      "deploy/private.Dockerfile",
+      "deploy/workbench.Caddyfile",
+      "scripts/verify_task20_bundle.py",
+      "src/dragon_radar/cli.py",
+      "src/dragon_radar/domain/quality.py",
+      "src/dragon_radar/http/public_app.py",
+      "src/dragon_radar/http/routes/stock.py",
+      "src/dragon_radar/ingestion/runner.py",
+      "src/dragon_radar/storage/repository.py",
+      "tests/test_cli.py",
+      "tests/test_domain.py",
+      "tests/test_reset_ingestion.py",
+      "tests/test_reset_market.py",
+      "tests/test_reset_publication.py",
+      "tests/test_reset_retention.py",
+      "tests/test_storage.py",
+      "web/scripts/check-default-bundle.mjs",
+      "web/src/App.tsx",
+      "web/src/hooks/useLocation.ts",
+      "web/src/hooks/useResource.tsx",
+      "web/src/pages/Leaders.tsx",
+      "web/src/vite-env.d.ts",
+      "web/tests/e2e/private-deep-link.spec.ts",
+      "web/tests/fixtures/market.ts",
+      "web/tests/private/private-deep-link.spec.ts",
+      "web/tests/unit/reset-local.test.ts"
+    ],
+    "untracked_count": 0
+  },
+  "implementation_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
+  "implementation_commit_relation": "same_head_or_docs_evidence_only_child",
+  "migration": {
+    "graph": {
+      "head": "0010_ai_tasks",
+      "release_manifest_sha256": "03a3e71c4b7460519290efb32bffe5fd533dedc846e976b7026827196059ee10",
+      "revision_count": 18,
+      "schema_contract_sha256": "7d2289a284089ad2dac5adb24f5fd70d8ab001bbf59d716fde3933fd5dc58e0c"
+    },
+    "implementation_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
+    "restore": {
+      "app_semantics_verified": true,
+      "backup_format": "custom",
+      "backup_sha256": "118d454e18d22c0685d0a281a07b1e115260c17cbdaabadf67e79d2883c735e1",
+      "canonicalized_schema_objects": 50,
+      "cleanup": {
+        "app_role_removed": true,
+        "backup_file_removed": true,
+        "restore_database_removed": true,
+        "source_database_removed": true
+      },
+      "data_loss_window_seconds": 0.0,
+      "elapsed_seconds": 8.343000000109896,
+      "measured_data_loss_rows": 0,
+      "permissions_preserved": true,
+      "quiescence_enforced": true,
+      "ready_before_canonicalization": false,
+      "restore_fingerprint": "0edd4127887ee63316932a7ced46e1bd6dff7f5caa3c929538544be5a161348a",
+      "restored_counts": {
+        "audit_events": 1,
+        "import_batches": 1,
+        "snapshots": 1,
+        "source_grants": 1
+      },
+      "restored_ready": true,
+      "revision": "0010_ai_tasks",
+      "rollback_mode": "backup_restore_only",
+      "schema": "dragon-radar.backup-restore-drill",
+      "schema_version": 1,
+      "sentinel_preserved": true,
+      "source_counts": {
+        "audit_events": 1,
+        "import_batches": 1,
+        "snapshots": 1,
+        "source_grants": 1
+      },
+      "source_fingerprint": "0edd4127887ee63316932a7ced46e1bd6dff7f5caa3c929538544be5a161348a",
+      "source_unchanged": true,
+      "targets": {
+        "approval_status": "suggested_unapproved",
+        "rpo_seconds": 3600,
+        "rto_seconds": 14400
+      },
+      "write_freeze_seconds": 4.077999999979511
+    },
+    "source_artifacts": {
+      "restore": {
+        "bytes": 1732,
+        "sha256": "d873aae9f1cae57e657e7764ebdf690bc2bb84fe4160a5351dc73eb5f31fbd4e"
+      },
+      "wheel": {
+        "bytes": 3601,
+        "sha256": "0f0841295541642c8e6c612af4f8c16f8a09598989d7b972db52d5a593eacaa5"
+      }
+    },
+    "valid": true,
+    "wheel": {
+      "audited_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
+      "fresh": {
+        "ready": true,
+        "to_revision": "0010_ai_tasks"
+      },
+      "schema": "dragon-radar.installed-wheel-migrations",
+      "schema_version": 1,
+      "supported_upgrades": [
+        {
+          "from_revision": "0001_foundation",
+          "ready": true,
+          "sentinel": "foundation_archive",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0003_private_review",
+          "ready": true,
+          "sentinel": "private_audit",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0004a_topic_attempt_ranges",
+          "ready": true,
+          "sentinel": "topic_attempt_batch",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0006_market_readmodels",
+          "ready": true,
+          "sentinel": "security_market_attempt",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0007_role_readmodels",
+          "ready": true,
+          "sentinel": "role_run_root",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0007c_analysis_jobs",
+          "ready": true,
+          "sentinel": "analysis_job",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0008_news",
+          "ready": true,
+          "sentinel": "news_article_revision",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0009_regulation",
+          "ready": true,
+          "sentinel": "legacy_regulation_graph",
+          "sentinel_after": {
+            "binding_event_id": "E4b8eb51af5f4",
+            "binding_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
+            "event_id": "E4b8eb51af5f4",
+            "event_source_completeness": "unknown",
+            "event_source_id": null,
+            "event_source_version": null,
+            "regulation_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
+            "rule_record_id": "f5970e0c-961a-4803-baf0-dd9e5edecdff",
+            "source_id": null,
+            "source_version": null
+          },
+          "sentinel_before": {
+            "binding_event_id": "E4b8eb51af5f4",
+            "binding_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
+            "event_id": "E4b8eb51af5f4",
+            "event_source_completeness": "unknown",
+            "event_source_id": null,
+            "event_source_version": null,
+            "regulation_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
+            "rule_record_id": "f5970e0c-961a-4803-baf0-dd9e5edecdff",
+            "source_id": null,
+            "source_version": null
+          },
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0009d_reg_event_complete_set",
+          "ready": true,
+          "sentinel": "regulation_event_provenance",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        },
+        {
+          "from_revision": "0010_ai_tasks",
+          "ready": true,
+          "sentinel": "ai_task",
+          "sentinel_preserved": true,
+          "to_revision": "0010_ai_tasks"
+        }
+      ],
+      "wheel_filename": "dragon_radar-0.1.0-py3-none-any.whl",
+      "wheel_sha256": "81d7b37fabe344277856cfe2d1f13edcd1e7d3155ffc8c588e5ecea3d5e4d5e1"
+    }
+  },
+  "schema": "dragon-radar.reset-release-audit",
+  "schema_version": 1,
+  "supply_chain": {
+    "container_scan": "BLOCKED",
+    "node_dependency_scan": "BLOCKED",
+    "python_dependency_scan": "BLOCKED",
+    "sbom": "BLOCKED",
+    "secret_scan": "BLOCKED"
+  },
+  "task00_20": {
+    "attestation": "committed_execution_provenance_only",
+    "bundle_manifest_sha256": "2d1cd5c328db3f8055fa98ba23bcd476c172a116d5994a7e0b5e2c3fcfcd5740",
+    "executed_gates": {
+      "failed": 0,
+      "required": 21,
+      "skipped": 0
+    },
+    "implementation_commit": "e29cf5bc242f7cb518ed30a25e96b57c05512f5e",
+    "inventory": [
+      {
+        "files": [
+          {
+            "bytes": 2252,
+            "path": "docs/acceptance/reset-baseline.md",
+            "sha256": "f3d53385c0f0b39691153a6cf2e3461cf9149b75b0ac0dfd2f0977a2f671bf28"
+          }
+        ],
+        "task": 0
+      },
+      {
+        "files": [
+          {
+            "bytes": 105015,
+            "path": "docs/DragonRadar_\u5f00\u53d1\u9700\u6c42PRD.md",
+            "sha256": "7f991dd4250ddf23f79a75b05480c70ec3783eaf22267e87fbb0471a6be62377"
+          },
+          {
+            "bytes": 12457,
+            "path": "docs/contracts/workbench-api.md",
+            "sha256": "cf767d9ae04550993074a736d34ac57453fb8488092a8656bb7ce84d9ed1ccbc"
+          },
+          {
+            "bytes": 6586,
+            "path": "docs/superpowers/specs/2026-09-20-prd-reset-decisions.md",
+            "sha256": "98eccd88bfab7835a2548672282f4f823325912aef5fa8a6ef80bd9285aa2295"
+          }
+        ],
+        "task": 1
+      },
+      {
+        "files": [
+          {
+            "bytes": 2478,
+            "path": "docs/acceptance/reset-api-navigation-local.md",
+            "sha256": "70fb9588064676e1e1362457ee332653c5b46aa4ac89f338442fd25484d1151c"
+          }
+        ],
+        "task": 2
+      },
+      {
+        "files": [
+          {
+            "bytes": 2478,
+            "path": "docs/acceptance/reset-api-navigation-local.md",
+            "sha256": "70fb9588064676e1e1362457ee332653c5b46aa4ac89f338442fd25484d1151c"
+          }
+        ],
+        "task": 3
+      },
+      {
+        "files": [
+          {
+            "bytes": 2478,
+            "path": "docs/acceptance/reset-api-navigation-local.md",
+            "sha256": "70fb9588064676e1e1362457ee332653c5b46aa4ac89f338442fd25484d1151c"
+          }
+        ],
+        "task": 4
+      },
+      {
+        "files": [
+          {
+            "bytes": 2478,
+            "path": "docs/acceptance/reset-api-navigation-local.md",
+            "sha256": "70fb9588064676e1e1362457ee332653c5b46aa4ac89f338442fd25484d1151c"
+          }
+        ],
+        "task": 5
+      },
+      {
+        "files": [
+          {
+            "bytes": 2478,
+            "path": "docs/acceptance/reset-api-navigation-local.md",
+            "sha256": "70fb9588064676e1e1362457ee332653c5b46aa4ac89f338442fd25484d1151c"
+          }
+        ],
+        "task": 6
+      },
+      {
+        "files": [
+          {
+            "bytes": 2443,
+            "path": "docs/acceptance/reset-ingestion.md",
+            "sha256": "cc1a040202192dfbf30679a7cdd4c1c44e0fdf541b16bf6d5f1c427dc9e01afb"
+          }
+        ],
+        "task": 7
+      },
+      {
+        "files": [
+          {
+            "bytes": 2773,
+            "path": "docs/acceptance/reset-publication.md",
+            "sha256": "2de2923f923d49bd88aa9aaa72345aa0407009ed69cf1c96c1b719c04e8c1006"
+          }
+        ],
+        "task": 8
+      },
+      {
+        "files": [
+          {
+            "bytes": 2299,
+            "path": "docs/acceptance/reset-market.md",
+            "sha256": "624e4c66d477cbbd77c053de9f8dbef771f658e0ce6c782f8e8772e1274493ab"
+          }
+        ],
+        "task": 9
+      },
+      {
+        "files": [
+          {
+            "bytes": 2106,
+            "path": "docs/acceptance/reset-role-contracts.md",
+            "sha256": "42878fe06553e815586bd0a2c5e87f05c8e5c460200bc3a2cc2aedc3bd529e8c"
+          }
+        ],
+        "task": 10
+      },
+      {
+        "files": [
+          {
+            "bytes": 2422,
+            "path": "docs/acceptance/reset-role-publication.md",
+            "sha256": "505250fa7387c71cb2feb9e593e1551ca65c82f230f94d0dd471e41472a16836"
+          }
+        ],
+        "task": 11
+      },
+      {
+        "files": [
+          {
+            "bytes": 3048,
+            "path": "docs/acceptance/reset-leaders.md",
+            "sha256": "139bad1bdc05f8fccf611668e5e6b1817bd291a70f5423f5316cb1c5f995e7d7"
+          }
+        ],
+        "task": 12
+      },
+      {
+        "files": [
+          {
+            "bytes": 5311,
+            "path": "docs/acceptance/reset-analysis.md",
+            "sha256": "d690ac938a785af4c5d1c51e86687da1365bc49fba7e87bc2ad5b13693166d5b"
+          }
+        ],
+        "task": 13
+      },
+      {
+        "files": [
+          {
+            "bytes": 3564,
+            "path": "docs/acceptance/reset-news.md",
+            "sha256": "07279059e4e18961d8563addd1b6d3ca28d7471e3c3d20eea0f5741875f77255"
+          }
+        ],
+        "task": 14
+      },
+      {
+        "files": [
+          {
+            "bytes": 5168,
+            "path": "docs/acceptance/reset-regulation-rules.md",
+            "sha256": "09aff487bf063dd70c4d09a57b1550321d7abaab6da196442ca9271b640ac2bb"
+          }
+        ],
+        "task": 15
+      },
+      {
+        "files": [
+          {
+            "bytes": 5168,
+            "path": "docs/acceptance/reset-regulation-rules.md",
+            "sha256": "09aff487bf063dd70c4d09a57b1550321d7abaab6da196442ca9271b640ac2bb"
+          }
+        ],
+        "task": 16
+      },
+      {
+        "files": [
+          {
+            "bytes": 5825,
+            "path": "docs/acceptance/reset-base.md",
+            "sha256": "87e7dc7c2ea899b0a4d5f785a4e9a91217bc4657aa1a83fbd13ef30f55878bc9"
+          }
+        ],
+        "task": 17
+      },
+      {
+        "files": [
+          {
+            "bytes": 5825,
+            "path": "docs/acceptance/reset-base.md",
+            "sha256": "87e7dc7c2ea899b0a4d5f785a4e9a91217bc4657aa1a83fbd13ef30f55878bc9"
+          }
+        ],
+        "task": 18
+      },
+      {
+        "files": [
+          {
+            "bytes": 5825,
+            "path": "docs/acceptance/reset-base.md",
+            "sha256": "87e7dc7c2ea899b0a4d5f785a4e9a91217bc4657aa1a83fbd13ef30f55878bc9"
+          }
+        ],
+        "task": 19
+      },
+      {
+        "files": [
+          {
+            "bytes": 5825,
+            "path": "docs/acceptance/reset-base.md",
+            "sha256": "87e7dc7c2ea899b0a4d5f785a4e9a91217bc4657aa1a83fbd13ef30f55878bc9"
+          },
+          {
+            "bytes": 1257,
+            "path": "docs/acceptance/evidence/task20/manifest.json",
+            "sha256": "2d1cd5c328db3f8055fa98ba23bcd476c172a116d5994a7e0b5e2c3fcfcd5740"
+          },
+          {
+            "bytes": 1638,
+            "path": "docs/acceptance/evidence/task20/acceptance-summary.json",
+            "sha256": "0b5985cbfccad209c18bf64e70ea6c24d4ebbf1246855efb2d6894cfa6d1ffd7"
+          },
+          {
+            "bytes": 787,
+            "path": "docs/acceptance/evidence/task20/native-output.txt",
+            "sha256": "ed694dcb8237c9aa9889e2e6190614c6446cf5ee81088b7362a52970ea0131fb"
+          },
+          {
+            "bytes": 35450,
+            "path": "docs/acceptance/evidence/task20/performance-raw.json",
+            "sha256": "ccde99d3fc5ada7e4525d9dbb8c03e95bbfdf7ecc2d383456d843bc662f6e046"
+          },
+          {
+            "bytes": 5777,
+            "path": "docs/acceptance/evidence/task20/performance-summary.json",
+            "sha256": "631ca70c1308cd843f33cd3bdeecf3fa5c0df1861f3f43cf1f46232c8af6a8cd"
+          }
+        ],
+        "task": 20
+      }
+    ],
+    "valid": true
+  }
+}
