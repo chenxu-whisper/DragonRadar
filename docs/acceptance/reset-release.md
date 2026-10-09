@@ -1,7 +1,7 @@
 # Reset Release Audit
 
 Audited implementation:
-`93bdcaae5184ebe5fc24f6f8ea97c668f2288671`.
+`4a7c53115a421d8c51b86d6852556113be4b2e9e`.
 Machine evidence:
 [release-manifest.json](evidence/task21/release-manifest.json).
 
@@ -11,7 +11,7 @@ Machine evidence:
    override the independent branch-cut and production-release gates.
 2. **Branch cut is NO_GO.** `feature/prd-reset` has no configured upstream,
    remote freshness is therefore absent, and 27 tracked paths were dirty when
-   the audit captured Git state. The audited commit is 303 commits ahead and
+   the audit captured Git state. The audited commit is 305 commits ahead and
    zero behind the local `origin/main` base, but that local relation is not
    remote proof.
 3. **Production release is NO_GO.** All five external gates and all five
@@ -49,9 +49,9 @@ The frozen single-head chain contains 18 revisions:
 - Release-manifest SHA-256:
   `03a3e71c4b7460519290efb32bffe5fd533dedc846e976b7026827196059ee10`
 - Schema-contract SHA-256:
-  `ec32e43b80cc427c6e0a89817a183c47d094cb0be595aa09a124ca68dd11965b`
+  `39577c995eee36b30845ebfa531bcd82eca167855dc6034e451c63d4b5fab661`
 - Wheel SHA-256:
-  `5352a9438f7c743ad87a1824705547a3b9a7e57e29c0930259f04d3f3019fb4c`
+  `c0a1a330fcb1dd09a74f5ff36f1269d5be35a15500af92cf8e9480f50867ce1d`
 
 ## Upgrade Matrix
 
@@ -78,11 +78,11 @@ in the machine manifest.
 ## Restore Evidence
 
 - Custom-format backup SHA-256:
-  `b5c82cc282f1b2560b78ccca7e4793f15243ad80b6042156dc3e66a47c0a24cd`
+  `bdb6eae54cbb841dbc611a2788705e37d72df0667d9aa6953479e702cfdd8232`
 - Source and restored fingerprint:
-  `d213a844e0f6340c07f2545390e5c6a8964ca0680969dd56d794b40677f1197d`
-- Elapsed time: `8.5` seconds
-- Write-freeze time: `4.344000000040978` seconds
+  `e3983e747836d3bfb43d34ff452f711cbff6ef07640004ddd93cca4f21a1e6c1`
+- Elapsed time: `8.609000000171363` seconds
+- Write-freeze time: `4.109000000171363` seconds
 - Quiescence enforced, source unchanged, sentinel and permissions preserved,
   app semantics verified, and all disposable resources cleaned up
 - Measured data-loss rows and data-loss window: zero
