@@ -43,43 +43,43 @@
       "concurrency": 20,
       "successful": 20,
       "error_rate": 0.0,
-      "p50_seconds": 0.8640030999667943,
-      "p95_seconds": 1.4939602999947965,
-      "max_seconds": 1.4984136999119073,
-      "wall_seconds": 1.502672699978575,
-      "process_cpu_seconds": 1.671875,
-      "peak_memory_bytes": 280440832,
-      "rss_bytes": 265150464,
+      "p50_seconds": 1.0653773001395166,
+      "p95_seconds": 1.5186787999700755,
+      "max_seconds": 1.5713685001246631,
+      "wall_seconds": 1.573924700031057,
+      "process_cpu_seconds": 1.71875,
+      "peak_memory_bytes": 323268608,
+      "rss_bytes": 270077952,
       "memory_measurement": "windows_working_set",
       "sql_statement_count": 100,
       "path_metrics": {
         "/api/snapshots/{id}": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.5415751999244094,
-          "p95_seconds": 1.4984136999119073,
-          "max_seconds": 1.4984136999119073
+          "p50_seconds": 1.0661347000859678,
+          "p95_seconds": 1.4608553999569267,
+          "max_seconds": 1.4608553999569267
         },
         "/api/market/overview": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 1.3768955001141876,
-          "p95_seconds": 1.4939602999947965,
-          "max_seconds": 1.4939602999947965
+          "p50_seconds": 1.5148004000075161,
+          "p95_seconds": 1.5713685001246631,
+          "max_seconds": 1.5713685001246631
         },
         "/api/rank/range": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.8632186998147517,
-          "p95_seconds": 1.0479383999481797,
-          "max_seconds": 1.0479383999481797
+          "p50_seconds": 0.6192985000088811,
+          "p95_seconds": 1.0672148000448942,
+          "max_seconds": 1.0672148000448942
         },
         "/api/stock/{id}": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 1.2555229000281543,
-          "p95_seconds": 1.2645796998403966,
-          "max_seconds": 1.2645796998403966
+          "p50_seconds": 1.0649794000200927,
+          "p95_seconds": 1.5186787999700755,
+          "max_seconds": 1.5186787999700755
         }
       }
     },
@@ -90,43 +90,43 @@
       "concurrency": 20,
       "successful": 20,
       "error_rate": 0.0,
-      "p50_seconds": 0.9540870001073927,
-      "p95_seconds": 1.4825922998134047,
-      "max_seconds": 1.5003503998741508,
-      "wall_seconds": 1.5096291999798268,
-      "process_cpu_seconds": 1.5625,
-      "peak_memory_bytes": 280440832,
-      "rss_bytes": 271745024,
+      "p50_seconds": 1.1022435000631958,
+      "p95_seconds": 1.5047144999261945,
+      "max_seconds": 1.5340642998926342,
+      "wall_seconds": 1.5423483999911696,
+      "process_cpu_seconds": 1.640625,
+      "peak_memory_bytes": 323268608,
+      "rss_bytes": 271147008,
       "memory_measurement": "windows_working_set",
       "sql_statement_count": 100,
       "path_metrics": {
         "/api/snapshots/{id}": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.9531316999346018,
-          "p95_seconds": 1.4768243997823447,
-          "max_seconds": 1.4768243997823447
+          "p50_seconds": 1.1064286998007447,
+          "p95_seconds": 1.2701904000714421,
+          "max_seconds": 1.2701904000714421
         },
         "/api/market/overview": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 1.171498800162226,
-          "p95_seconds": 1.5003503998741508,
-          "max_seconds": 1.5003503998741508
+          "p50_seconds": 1.103499700082466,
+          "p95_seconds": 1.5340642998926342,
+          "max_seconds": 1.5340642998926342
         },
         "/api/rank/range": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.9565292000770569,
-          "p95_seconds": 1.477449500001967,
-          "max_seconds": 1.477449500001967
+          "p50_seconds": 1.1823147998657078,
+          "p95_seconds": 1.5035749000962824,
+          "max_seconds": 1.5035749000962824
         },
         "/api/stock/{id}": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.9540870001073927,
-          "p95_seconds": 1.4047312999609858,
-          "max_seconds": 1.4047312999609858
+          "p50_seconds": 0.6365008999127895,
+          "p95_seconds": 1.5047144999261945,
+          "max_seconds": 1.5047144999261945
         }
       }
     },
@@ -137,43 +137,43 @@
       "concurrency": 20,
       "successful": 20,
       "error_rate": 0.0,
-      "p50_seconds": 0.8504829998128116,
-      "p95_seconds": 1.4216106000822037,
-      "max_seconds": 1.492029899964109,
-      "wall_seconds": 1.4999963000882417,
-      "process_cpu_seconds": 1.65625,
-      "peak_memory_bytes": 280440832,
-      "rss_bytes": 273367040,
+      "p50_seconds": 0.9161765999160707,
+      "p95_seconds": 1.4840281000360847,
+      "max_seconds": 1.4849636000581086,
+      "wall_seconds": 1.4871425998862833,
+      "process_cpu_seconds": 1.515625,
+      "peak_memory_bytes": 323268608,
+      "rss_bytes": 271335424,
       "memory_measurement": "windows_working_set",
       "sql_statement_count": 100,
       "path_metrics": {
         "/api/snapshots/{id}": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.5328072998672724,
-          "p95_seconds": 0.9112050998955965,
-          "max_seconds": 0.9112050998955965
+          "p50_seconds": 0.9161765999160707,
+          "p95_seconds": 0.9693331001326442,
+          "max_seconds": 0.9693331001326442
         },
         "/api/market/overview": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 1.1290172999724746,
-          "p95_seconds": 1.3941236999817193,
-          "max_seconds": 1.3941236999817193
+          "p50_seconds": 0.9156332998536527,
+          "p95_seconds": 1.4840281000360847,
+          "max_seconds": 1.4840281000360847
         },
         "/api/rank/range": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.8465347997844219,
-          "p95_seconds": 1.3852961000520736,
-          "max_seconds": 1.3852961000520736
+          "p50_seconds": 1.364239800022915,
+          "p95_seconds": 1.4461592000443488,
+          "max_seconds": 1.4461592000443488
         },
         "/api/stock/{id}": {
           "request_count": 5,
           "successful": 5,
-          "p50_seconds": 0.9872090998105705,
-          "p95_seconds": 1.492029899964109,
-          "max_seconds": 1.492029899964109
+          "p50_seconds": 1.3661416000686586,
+          "p95_seconds": 1.4849636000581086,
+          "max_seconds": 1.4849636000581086
         }
       }
     }
@@ -183,18 +183,18 @@
     "request_count": 60,
     "successful": 60,
     "error_rate": 0.0,
-    "p50_seconds": 0.9531316999346018,
-    "p95_seconds": 1.492029899964109,
-    "max_seconds": 1.5003503998741508,
-    "wall_seconds": 4.512298200046644,
-    "process_cpu_seconds": 4.890625
+    "p50_seconds": 1.0649794000200927,
+    "p95_seconds": 1.5180771998129785,
+    "max_seconds": 1.5713685001246631,
+    "wall_seconds": 4.60341569990851,
+    "process_cpu_seconds": 4.875
   },
   "async_work": {
     "synthetic": true,
     "label": "controlled_worker_delay",
-    "submission_seconds": 0.30747230001725256,
+    "submission_seconds": 0.25642689992673695,
     "submitted_status": "queued",
-    "worker_elapsed_seconds": 5.482976000057533,
+    "worker_elapsed_seconds": 5.414923599921167,
     "status": "succeeded"
   },
   "observed_query_shapes": {
@@ -208,29 +208,29 @@
       ],
       "plan_role": "payload_projection_read",
       "endpoint_observations": {
-        "/api/rank/range": {
-          "count": 15,
-          "total_seconds": 0.7825432000681758,
-          "min_seconds": 0.0036146000493317842,
-          "max_seconds": 0.3109563000034541
-        },
         "/api/stock/{id}": {
           "count": 15,
-          "total_seconds": 0.8654135004617274,
-          "min_seconds": 0.002113600028678775,
-          "max_seconds": 0.23749630013480783
+          "total_seconds": 0.44306019973009825,
+          "min_seconds": 0.0016338999848812819,
+          "max_seconds": 0.09900530008599162
         },
-        "/api/market/overview": {
+        "/api/rank/range": {
           "count": 15,
-          "total_seconds": 1.4176230994053185,
-          "min_seconds": 0.0020308999810367823,
-          "max_seconds": 0.23956279992125928
+          "total_seconds": 0.8237769997213036,
+          "min_seconds": 0.002015399979427457,
+          "max_seconds": 0.27776310010813177
         },
         "/api/snapshots/{id}": {
           "count": 15,
-          "total_seconds": 0.9242323997896165,
-          "min_seconds": 0.0030984999611973763,
-          "max_seconds": 0.22601639991626143
+          "total_seconds": 0.6670381997246295,
+          "min_seconds": 0.0017943000420928001,
+          "max_seconds": 0.24644559994339943
+        },
+        "/api/market/overview": {
+          "count": 15,
+          "total_seconds": 1.479834699537605,
+          "min_seconds": 0.002284199930727482,
+          "max_seconds": 0.3995132998097688
         }
       }
     },
@@ -243,29 +243,29 @@
       ],
       "plan_role": "payload_projection_read",
       "endpoint_observations": {
+        "/api/rank/range": {
+          "count": 15,
+          "total_seconds": 0.38802379951812327,
+          "min_seconds": 0.001379899913445115,
+          "max_seconds": 0.16402669996023178
+        },
         "/api/stock/{id}": {
           "count": 15,
-          "total_seconds": 0.5990089999977499,
-          "min_seconds": 0.001640500035136938,
-          "max_seconds": 0.15583459986373782
+          "total_seconds": 0.3139636004343629,
+          "min_seconds": 0.0019431998953223228,
+          "max_seconds": 0.14232540014199913
         },
         "/api/snapshots/{id}": {
           "count": 15,
-          "total_seconds": 0.9008871999103576,
-          "min_seconds": 0.0023475000634789467,
-          "max_seconds": 0.19899690011516213
-        },
-        "/api/rank/range": {
-          "count": 15,
-          "total_seconds": 0.6945379001554102,
-          "min_seconds": 0.0022771998774260283,
-          "max_seconds": 0.15489109978079796
+          "total_seconds": 1.2293156997766346,
+          "min_seconds": 0.0027669998817145824,
+          "max_seconds": 0.25290670013055205
         },
         "/api/market/overview": {
           "count": 15,
-          "total_seconds": 1.2604221005458385,
-          "min_seconds": 0.0022236001677811146,
-          "max_seconds": 0.3528313999995589
+          "total_seconds": 0.9936494005378336,
+          "min_seconds": 0.0017019000370055437,
+          "max_seconds": 0.21650129999034107
         }
       }
     },
@@ -277,29 +277,29 @@
       ],
       "plan_role": "payload_projection_read",
       "endpoint_observations": {
-        "/api/stock/{id}": {
-          "count": 15,
-          "total_seconds": 0.5505570999812335,
-          "min_seconds": 0.0013359000440686941,
-          "max_seconds": 0.21159520000219345
-        },
         "/api/rank/range": {
           "count": 15,
-          "total_seconds": 0.4777795006521046,
-          "min_seconds": 0.0016811001114547253,
-          "max_seconds": 0.10845880000852048
+          "total_seconds": 0.5485117011703551,
+          "min_seconds": 0.0015071001835167408,
+          "max_seconds": 0.1763812000863254
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 0.7140836988110095,
+          "min_seconds": 0.002072099829092622,
+          "max_seconds": 0.18444979982450604
         },
         "/api/snapshots/{id}": {
           "count": 15,
-          "total_seconds": 0.9828544002957642,
-          "min_seconds": 0.0015179000329226255,
-          "max_seconds": 0.27425660006701946
+          "total_seconds": 0.9945262994151562,
+          "min_seconds": 0.0018524997867643833,
+          "max_seconds": 0.17197149991989136
         },
         "/api/market/overview": {
           "count": 15,
-          "total_seconds": 0.835585699416697,
-          "min_seconds": 0.002905100118368864,
-          "max_seconds": 0.3267978001385927
+          "total_seconds": 1.0257478998973966,
+          "min_seconds": 0.0020534999202936888,
+          "max_seconds": 0.3190164999105036
         }
       }
     },
@@ -311,29 +311,29 @@
       ],
       "plan_role": "payload_projection_read",
       "endpoint_observations": {
-        "/api/stock/{id}": {
-          "count": 15,
-          "total_seconds": 1.4635067994240671,
-          "min_seconds": 0.0018670998979359865,
-          "max_seconds": 0.30188199994154274
-        },
-        "/api/market/overview": {
-          "count": 15,
-          "total_seconds": 2.4084390997886658,
-          "min_seconds": 0.0018484999891370535,
-          "max_seconds": 0.4945017001591623
-        },
         "/api/rank/range": {
           "count": 15,
-          "total_seconds": 1.1699196996632963,
-          "min_seconds": 0.0019443000201135874,
-          "max_seconds": 0.31759789981879294
+          "total_seconds": 1.334786599734798,
+          "min_seconds": 0.0012972999829798937,
+          "max_seconds": 0.3656458999030292
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 2.3771240001078695,
+          "min_seconds": 0.0014355999883264303,
+          "max_seconds": 0.38436860009096563
         },
         "/api/snapshots/{id}": {
           "count": 15,
-          "total_seconds": 1.9342856998555362,
-          "min_seconds": 0.002012799959629774,
-          "max_seconds": 0.415155699942261
+          "total_seconds": 1.8548751997295767,
+          "min_seconds": 0.0016367000062018633,
+          "max_seconds": 0.4788867998868227
+        },
+        "/api/market/overview": {
+          "count": 15,
+          "total_seconds": 1.7966953003779054,
+          "min_seconds": 0.0028423001058399677,
+          "max_seconds": 0.2895483002066612
         }
       }
     },
@@ -345,29 +345,29 @@
       ],
       "plan_role": "generic_publication_lookup",
       "endpoint_observations": {
-        "/api/stock/{id}": {
-          "count": 15,
-          "total_seconds": 1.8891359001863748,
-          "min_seconds": 0.0032750999089330435,
-          "max_seconds": 0.35186349996365607
-        },
         "/api/rank/range": {
           "count": 15,
-          "total_seconds": 2.5807690997608006,
-          "min_seconds": 0.0031522000208497047,
-          "max_seconds": 0.39494399982504547
+          "total_seconds": 2.2037983995396644,
+          "min_seconds": 0.002968299901112914,
+          "max_seconds": 0.36795439990237355
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 2.3148134001530707,
+          "min_seconds": 0.0025924998335540295,
+          "max_seconds": 0.42094550002366304
         },
         "/api/snapshots/{id}": {
           "count": 15,
-          "total_seconds": 2.10978509997949,
-          "min_seconds": 0.004551299847662449,
-          "max_seconds": 0.3625603001564741
+          "total_seconds": 2.8977389000356197,
+          "min_seconds": 0.002848300151526928,
+          "max_seconds": 0.36491940007545054
         },
         "/api/market/overview": {
           "count": 15,
-          "total_seconds": 1.8261957003269345,
-          "min_seconds": 0.004651700146496296,
-          "max_seconds": 0.40424239984713495
+          "total_seconds": 2.0994560995604843,
+          "min_seconds": 0.002968799788504839,
+          "max_seconds": 0.2881907999981195
         }
       }
     }
@@ -443,15 +443,15 @@
     },
     "analysis_job_cache": {
       "rows": 1,
-      "fingerprint": "6b3152bccd12d4b1e9890a4da7f84fad"
+      "fingerprint": "d38451efa14dae708a42bddd335b4271"
     },
     "analysis_jobs": {
       "rows": 1,
-      "fingerprint": "1e4862e0068f16d4cbf70ae429e8cf73"
+      "fingerprint": "89964f850209846845b2b8c2a8680f02"
     },
     "audit_events": {
       "rows": 4,
-      "fingerprint": "3e4386ab23af719bd951843d030dd6dd"
+      "fingerprint": "8684ab56bea63a838160e6be99c97fd5"
     },
     "daily_kline": {
       "rows": 0,
@@ -459,7 +459,7 @@
     },
     "import_batches": {
       "rows": 1,
-      "fingerprint": "1aaafba6f85f0ec902190b561e215e0a"
+      "fingerprint": "68fc586db68c0ed4b4c1ae53dd42c79c"
     },
     "index_daily_kline": {
       "rows": 0,
@@ -531,15 +531,15 @@
     },
     "owner_pairings": {
       "rows": 1,
-      "fingerprint": "6f7a6bf4e0e6d09b6d440bd8e7f424b7"
+      "fingerprint": "c6113883e7eabba8552fbc677430192a"
     },
     "owner_principals": {
       "rows": 1,
-      "fingerprint": "82cc115ddeb8c911c7ae84f0be1b6f92"
+      "fingerprint": "5c48b2f74545409cca59b599e10d641e"
     },
     "owner_sessions": {
       "rows": 1,
-      "fingerprint": "4e18e07e462e69a6a4afb3a1c3562bd9"
+      "fingerprint": "e04fd5cada9cd9220919e6e79ed74067"
     },
     "private_audit_events": {
       "rows": 0,
@@ -547,7 +547,7 @@
     },
     "publication_attempts": {
       "rows": 1,
-      "fingerprint": "e4319deb62aabc16d6cf5209d631795d"
+      "fingerprint": "aeaa75a180e8371666b1d8335c6b9e51"
     },
     "publication_module_controls": {
       "rows": 0,
@@ -555,11 +555,11 @@
     },
     "publication_results": {
       "rows": 5,
-      "fingerprint": "fa29c024c9d17f4d4d2e025f96483122"
+      "fingerprint": "eb22cb87cd0d5321004bdcf2a3baaaee"
     },
     "publications": {
       "rows": 1,
-      "fingerprint": "9192e9f6e4aa1b9f6bf61d6d379e2547"
+      "fingerprint": "ebb2d1319a8513459426defa94e9bcf6"
     },
     "regulation_calculations": {
       "rows": 0,
@@ -671,11 +671,11 @@
     },
     "snapshots": {
       "rows": 1,
-      "fingerprint": "ab2e2a61b9d65dccb7b3d9c72c57456b"
+      "fingerprint": "e796c57a997783530c36171da3c67f89"
     },
     "source_dependencies": {
       "rows": 1,
-      "fingerprint": "f48818f4181ea659832775f388e3e524"
+      "fingerprint": "cd56becc4a9bb1ac3979ff8224ca2357"
     },
     "source_grants": {
       "rows": 1,
@@ -733,15 +733,15 @@
     },
     "analysis_job_cache": {
       "rows": 1,
-      "fingerprint": "6b3152bccd12d4b1e9890a4da7f84fad"
+      "fingerprint": "d38451efa14dae708a42bddd335b4271"
     },
     "analysis_jobs": {
       "rows": 1,
-      "fingerprint": "1e4862e0068f16d4cbf70ae429e8cf73"
+      "fingerprint": "89964f850209846845b2b8c2a8680f02"
     },
     "audit_events": {
       "rows": 4,
-      "fingerprint": "3e4386ab23af719bd951843d030dd6dd"
+      "fingerprint": "8684ab56bea63a838160e6be99c97fd5"
     },
     "daily_kline": {
       "rows": 0,
@@ -749,7 +749,7 @@
     },
     "import_batches": {
       "rows": 1,
-      "fingerprint": "1aaafba6f85f0ec902190b561e215e0a"
+      "fingerprint": "68fc586db68c0ed4b4c1ae53dd42c79c"
     },
     "index_daily_kline": {
       "rows": 0,
@@ -821,15 +821,15 @@
     },
     "owner_pairings": {
       "rows": 1,
-      "fingerprint": "6f7a6bf4e0e6d09b6d440bd8e7f424b7"
+      "fingerprint": "c6113883e7eabba8552fbc677430192a"
     },
     "owner_principals": {
       "rows": 1,
-      "fingerprint": "82cc115ddeb8c911c7ae84f0be1b6f92"
+      "fingerprint": "5c48b2f74545409cca59b599e10d641e"
     },
     "owner_sessions": {
       "rows": 1,
-      "fingerprint": "4e18e07e462e69a6a4afb3a1c3562bd9"
+      "fingerprint": "e04fd5cada9cd9220919e6e79ed74067"
     },
     "private_audit_events": {
       "rows": 0,
@@ -837,7 +837,7 @@
     },
     "publication_attempts": {
       "rows": 1,
-      "fingerprint": "e4319deb62aabc16d6cf5209d631795d"
+      "fingerprint": "aeaa75a180e8371666b1d8335c6b9e51"
     },
     "publication_module_controls": {
       "rows": 0,
@@ -845,11 +845,11 @@
     },
     "publication_results": {
       "rows": 5,
-      "fingerprint": "fa29c024c9d17f4d4d2e025f96483122"
+      "fingerprint": "eb22cb87cd0d5321004bdcf2a3baaaee"
     },
     "publications": {
       "rows": 1,
-      "fingerprint": "9192e9f6e4aa1b9f6bf61d6d379e2547"
+      "fingerprint": "ebb2d1319a8513459426defa94e9bcf6"
     },
     "regulation_calculations": {
       "rows": 0,
@@ -961,11 +961,11 @@
     },
     "snapshots": {
       "rows": 1,
-      "fingerprint": "ab2e2a61b9d65dccb7b3d9c72c57456b"
+      "fingerprint": "e796c57a997783530c36171da3c67f89"
     },
     "source_dependencies": {
       "rows": 1,
-      "fingerprint": "f48818f4181ea659832775f388e3e524"
+      "fingerprint": "cd56becc4a9bb1ac3979ff8224ca2357"
     },
     "source_grants": {
       "rows": 1,

@@ -1,33 +1,33 @@
 {
   "schema": "dragon-radar.task20-committed-evidence",
   "schema_version": 1,
-  "implementation_commit": "f82b68384f3fd38b76327eae74aecc271b22801d",
+  "implementation_commit": "e29cf5bc242f7cb518ed30a25e96b57c05512f5e",
   "execution_provenance": "Files were copied or distilled from scripts/verify_reset.py focused and full executions in a tracked-clean detached worktree at implementation_commit. Machine-local verifier reports, command graphs, absolute paths, credentials, private keys, and full logs are intentionally not committed.",
   "files": [
     {
       "path": ".gitattributes",
-      "sha256": "eee31f63511ef7e43e7afe24a41003b895ad633fd32b01fbe82d0e5509544cd5",
-      "bytes": 25
+      "sha256": "a0b9028a0db35570e0f1b4a095a942a729218f6260b8ed4934c3201d3aacbfea",
+      "bytes": 52
     },
     {
       "path": "acceptance-summary.json",
-      "sha256": "68bc510d79a8df50a8153610b0fa9d1ad2a54b8ff569b02b803c2594e1f94495",
+      "sha256": "0b5985cbfccad209c18bf64e70ea6c24d4ebbf1246855efb2d6894cfa6d1ffd7",
       "bytes": 1638
     },
     {
       "path": "native-output.txt",
-      "sha256": "7d9cb52a05766de49e087ed5c933162dd066c04a982baeccec57ea8269182e83",
-      "bytes": 754
+      "sha256": "ed694dcb8237c9aa9889e2e6190614c6446cf5ee81088b7362a52970ea0131fb",
+      "bytes": 787
     },
     {
       "path": "performance-raw.json",
-      "sha256": "4593dc87f9061bceea15092b841b3509aabc1d8294b5cf307963b0f564035cb7",
-      "bytes": 35445
+      "sha256": "ccde99d3fc5ada7e4525d9dbb8c03e95bbfdf7ecc2d383456d843bc662f6e046",
+      "bytes": 35450
     },
     {
       "path": "performance-summary.json",
-      "sha256": "5c65e4b34ffc345642854ef23ae66b2dddfece14e4fec05eac97e3605c41b00a",
-      "bytes": 5773
+      "sha256": "631ca70c1308cd843f33cd3bdeecf3fa5c0df1861f3f43cf1f46232c8af6a8cd",
+      "bytes": 5777
     }
   ]
 }

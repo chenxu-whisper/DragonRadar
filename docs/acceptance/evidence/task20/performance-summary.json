@@ -1,7 +1,7 @@
 {
   "schema": "dragon-radar.task20-performance-summary",
   "schema_version": 2,
-  "implementation_commit": "f82b68384f3fd38b76327eae74aecc271b22801d",
+  "implementation_commit": "e29cf5bc242f7cb518ed30a25e96b57c05512f5e",
   "fixture": {
     "kind": "synthetic",
     "securities": 100,
@@ -14,9 +14,9 @@
     "request_count": 60,
     "successful": 60,
     "error_rate": 0.0,
-    "p50_seconds": 0.9531316999346018,
-    "p95_seconds": 1.492029899964109,
-    "max_seconds": 1.5003503998741508,
+    "p50_seconds": 1.0649794000200927,
+    "p95_seconds": 1.5180771998129785,
+    "max_seconds": 1.5713685001246631,
     "sql_statement_count": 300,
     "captured_sql_shape_count": 5,
     "planned_sql_shape_count": 4,
@@ -27,32 +27,32 @@
   "runs": [
     {
       "round": 1,
-      "p50_seconds": 0.8640030999667943,
-      "p95_seconds": 1.4939602999947965,
-      "max_seconds": 1.4984136999119073,
-      "process_cpu_seconds": 1.671875,
-      "rss_bytes": 265150464
+      "p50_seconds": 1.0653773001395166,
+      "p95_seconds": 1.5186787999700755,
+      "max_seconds": 1.5713685001246631,
+      "process_cpu_seconds": 1.71875,
+      "rss_bytes": 270077952
     },
     {
       "round": 2,
-      "p50_seconds": 0.9540870001073927,
-      "p95_seconds": 1.4825922998134047,
-      "max_seconds": 1.5003503998741508,
-      "process_cpu_seconds": 1.5625,
-      "rss_bytes": 271745024
+      "p50_seconds": 1.1022435000631958,
+      "p95_seconds": 1.5047144999261945,
+      "max_seconds": 1.5340642998926342,
+      "process_cpu_seconds": 1.640625,
+      "rss_bytes": 271147008
     },
     {
       "round": 3,
-      "p50_seconds": 0.8504829998128116,
-      "p95_seconds": 1.4216106000822037,
-      "max_seconds": 1.492029899964109,
-      "process_cpu_seconds": 1.65625,
-      "rss_bytes": 273367040
+      "p50_seconds": 0.9161765999160707,
+      "p95_seconds": 1.4840281000360847,
+      "max_seconds": 1.4849636000581086,
+      "process_cpu_seconds": 1.515625,
+      "rss_bytes": 271335424
     }
   ],
   "async_work": {
-    "submission_seconds": 0.30747230001725256,
-    "worker_elapsed_seconds": 5.482976000057533,
+    "submission_seconds": 0.25642689992673695,
+    "worker_elapsed_seconds": 5.414923599921167,
     "status": "succeeded"
   },
   "endpoint_shape_hashes": {

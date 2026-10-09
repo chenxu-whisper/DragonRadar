@@ -1,22 +1,22 @@
-Task20 clean full acceptance at f82b68384f3fd38b76327eae74aecc271b22801d
+Task20 clean focused and full acceptance at e29cf5bc242f7cb518ed30a25e96b57c05512f5e
 
 [csv_units]
 Test Files  1 passed (1)
 Tests       15 passed (15)
 
 [reset_acceptance_e2e]
-35 passed (1.1m)
+35 passed (1.2m)
 
 [recovery_drills]
-8 passed in 14.72s
-5 passed (16.4s)
-1 passed (4.4s)
+8 passed in 13.85s
+5 passed (15.8s)
+1 passed (4.2s)
 
 [performance]
-1 passed in 19.57s
+1 passed in 18.99s
 
 [full_backend]
-2562 passed in 1598.98s (0:26:38)
+2565 passed, 0 failed, 0 skipped in 1763.69s (0:29:23)
 
 [quality]
 All checks passed!

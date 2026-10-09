@@ -1,7 +1,7 @@
 # Reset Base Acceptance
 
 Generated on 2026-10-09 from a clean detached worktree at implementation
-commit `f82b68384f3fd38b76327eae74aecc271b22801d`. The verifier recorded that
+commit `e29cf5bc242f7cb518ed30a25e96b57c05512f5e`. The verifier recorded that
 same tracked-clean HEAD before and after both focused and full execution.
 Only generated, ignored `.temp/` content was present.
 
@@ -60,7 +60,7 @@ entry to be Git-tracked and to recompute every byte count and SHA-256 value.
 | CSV contract | 15 passed |
 | Responsive acceptance E2E | 35 passed |
 | Recovery drills | Backend 8, recovery E2E 5, AI-off E2E 1 passed |
-| Full backend | 2,562 passed, 0 failed, 0 skipped in 1,598.98s |
+| Full backend | 2,565 passed, 0 failed, 0 skipped in 1,763.69s |
 | Ruff, format, compileall | Exit 0 |
 | Frontend unit and scripts | 335 Vitest and 8 Node tests passed |
 | Builds and bundle | Default/private builds passed; entry 315,419 bytes |
@@ -80,25 +80,24 @@ caches were not controlled; the evidence therefore makes no cold-cache claim.
 
 | Round | Success | P50 | P95 | Max | CPU | RSS |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 20/20 | 0.864003s | 1.493960s | 1.498414s | 1.671875s | 265,150,464 bytes |
-| 2 | 20/20 | 0.954087s | 1.482592s | 1.500350s | 1.562500s | 271,745,024 bytes |
-| 3 | 20/20 | 0.850483s | 1.421611s | 1.492030s | 1.656250s | 273,367,040 bytes |
-| Aggregate | 60/60 | 0.953132s | 1.492030s | 1.500350s | 4.890625s | Per-round above |
+| 1 | 20/20 | 1.065377s | 1.518679s | 1.571369s | 1.718750s | 270,077,952 bytes |
+| 2 | 20/20 | 1.102244s | 1.504714s | 1.534064s | 1.640625s | 271,147,008 bytes |
+| 3 | 20/20 | 0.916177s | 1.484028s | 1.484964s | 1.515625s | 271,335,424 bytes |
+| Aggregate | 60/60 | 1.064979s | 1.518077s | 1.571369s | 4.875000s | Per-round above |
 
 Each round includes per-path snapshot, overview, rank, and stock metrics in
 the raw artifact. The measured requests executed 300 SQL statements and zero
 writes or DDL. Fingerprints for all 72 application tables were unchanged.
 The raw artifact compacts those executions into five captured SQL hashes.
 Every measured endpoint executed the same five-hash repository projection
-set, encoded as one shared attribution group rather than four endpoint-specific
-plans. Four payload/projection reads have one `EXPLAIN ANALYZE` record per
+set, encoded as one shared attribution group. Four payload/projection reads have one `EXPLAIN ANALYZE` record per
 distinct captured hash. The publications-only primary-key lookup is retained
 in the endpoint matrix but explicitly excluded from plan evidence as a generic
 lookup. Normalized SQL contains placeholders rather than parameter values;
 plan evidence records relations, indexes, node types/counts, and buffers.
 
 The controlled slow-work drill is labelled synthetic. Owner submission
-returned `queued` in 0.307472s; the worker ran for 5.482976s and persisted
+returned `queued` in 0.256427s; the worker ran for 5.414924s and persisted
 `succeeded`. Public requests did not expose or create analysis jobs.
 
 ## Implementation Notes

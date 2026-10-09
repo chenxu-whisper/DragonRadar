@@ -1,2 +1,3 @@
 *.json -text
 *.txt -text
+.gitattributes text eol=lf
