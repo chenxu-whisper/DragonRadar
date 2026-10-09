@@ -693,9 +693,9 @@ def _plan_errors(plan: Any, sql_relations: list[str], label: str) -> list[str]:
     if (
         not isinstance(relations, list)
         or relations != sorted(set(relations))
-        or not set(sql_relations).issubset(relations)
+        or relations != sql_relations
     ):
-        errors.append(f"{label} plan relations do not cover its SQL relations.")
+        errors.append(f"{label} plan relations do not match its SQL relations.")
     if not isinstance(indexes, list) or indexes != sorted(set(indexes)):
         errors.append(f"{label} plan indexes are not normalized.")
     if (
@@ -816,6 +816,8 @@ def _query_evidence_errors(
     else:
         for path in sorted(MEASURED_PATHS):
             hashes = endpoint_hashes[path]
+            if not derived_endpoint_hashes[path]:
+                errors.append(f"Endpoint {path} has no observed SQL.")
             if (
                 not isinstance(hashes, list)
                 or hashes != sorted(set(hashes))
@@ -864,6 +866,26 @@ def _performance_errors(value: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(value, dict):
         return ["Performance artifact is not an object."]
+    errors.extend(
+        _exact_fields(
+            value,
+            {
+                "fixture",
+                "environment",
+                "warmup",
+                "runs",
+                "aggregate",
+                "async_work",
+                "observed_query_shapes",
+                "endpoint_shape_hashes",
+                "query_attribution_groups",
+                "application_state_before",
+                "application_state_after",
+                "query_plan_evidence",
+            },
+            "Performance artifact",
+        )
+    )
     legacy_fields = {"measured_path_explains", "public_sql_statements"} & set(value)
     if legacy_fields:
         errors.append(

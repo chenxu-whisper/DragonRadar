@@ -520,6 +520,18 @@ def test_performance_contract_rejects_legacy_distinct_endpoint_representatives()
     assert any("legacy" in error.lower() for error in errors(legacy))
 
 
+def test_performance_contract_rejects_endpoint_plan_representatives():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    hashes = iter(fabricated["observed_query_shapes"])
+    fabricated["endpoint_plans"] = {
+        path: {"sql_sha256": next(hashes)}
+        for path in fabricated["endpoint_shape_hashes"]
+    }
+
+    assert any("field" in error.lower() for error in errors(fabricated))
+
+
 def test_performance_contract_rejects_tampered_attribution_group():
     errors = VERIFIER["_performance_errors"]
     tampered = performance_raw()
@@ -545,6 +557,37 @@ def test_performance_contract_rejects_uncaptured_plan_hash():
     plan_errors = errors(uncaptured)
     assert any("plan coverage" in error.lower() for error in plan_errors)
     assert any("captured payload projection" in error.lower() for error in plan_errors)
+
+
+def test_performance_contract_rejects_extra_normalized_plan_relation():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    plan = next(iter(fabricated["query_plan_evidence"].values()))["plan"]
+    plan["relations"].append("fabricated_relation")
+    plan["relations"].sort()
+
+    assert any("plan relations" in error.lower() for error in errors(fabricated))
+
+
+def test_performance_contract_rejects_endpoint_without_observed_sql():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    missing_path = "/api/stock/{id}"
+    reassigned_path = "/api/snapshots/{id}"
+    for shape in fabricated["observed_query_shapes"].values():
+        shape["endpoint_observations"].pop(missing_path)
+        timing = shape["endpoint_observations"][reassigned_path]
+        timing["count"] *= 2
+        timing["total_seconds"] *= 2
+    fabricated["endpoint_shape_hashes"][missing_path] = []
+    fabricated["query_attribution_groups"] = VERIFIER["_attribution_groups"](
+        {
+            path: set(hashes)
+            for path, hashes in fabricated["endpoint_shape_hashes"].items()
+        }
+    )
+
+    assert any("no observed sql" in error.lower() for error in errors(fabricated))
 
 
 def test_performance_contract_rejects_fabricated_distinct_endpoint_mappings():
