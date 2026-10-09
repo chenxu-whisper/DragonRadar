@@ -14,65 +14,97 @@
     "twenty_trading_day_shadow_run": "BLOCKED"
   },
   "git": {
-    "ahead": 295,
-    "audited_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
-    "base_commit": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
-    "base_ref": "origin/main",
-    "behind": 0,
-    "branch": "feature/prd-reset",
-    "configured_upstream": null,
-    "detached": false,
-    "merge_base": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
-    "remote_freshness": {
-      "fetch_age_seconds": 1663711,
-      "fetch_head_present": true,
-      "status": "STALE"
+    "candidate": {
+      "ahead": 297,
+      "audited_commit": "884a78688b9d68e082870d44a6a768bf97242ebd",
+      "base_commit": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+      "base_ref": "origin/main",
+      "behind": 0,
+      "branch": "feature/prd-reset",
+      "configured_upstream": null,
+      "detached": false,
+      "merge_base": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+      "remote_freshness": {
+        "checked_at": "2026-10-09T14:28:50.017544+00:00",
+        "error": null,
+        "local_oid": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+        "method": "git_ls_remote",
+        "remote": null,
+        "remote_oid": null,
+        "remote_ref": null,
+        "status": "ABSENT"
+      },
+      "tracked_dirty_paths": [
+        "deploy/private.Caddyfile",
+        "deploy/private.Dockerfile",
+        "deploy/workbench.Caddyfile",
+        "scripts/verify_task20_bundle.py",
+        "src/dragon_radar/cli.py",
+        "src/dragon_radar/domain/quality.py",
+        "src/dragon_radar/http/public_app.py",
+        "src/dragon_radar/http/routes/stock.py",
+        "src/dragon_radar/ingestion/runner.py",
+        "src/dragon_radar/storage/repository.py",
+        "tests/test_cli.py",
+        "tests/test_domain.py",
+        "tests/test_reset_ingestion.py",
+        "tests/test_reset_market.py",
+        "tests/test_reset_publication.py",
+        "tests/test_reset_retention.py",
+        "tests/test_storage.py",
+        "web/scripts/check-default-bundle.mjs",
+        "web/src/App.tsx",
+        "web/src/hooks/useLocation.ts",
+        "web/src/hooks/useResource.tsx",
+        "web/src/pages/Leaders.tsx",
+        "web/src/vite-env.d.ts",
+        "web/tests/e2e/private-deep-link.spec.ts",
+        "web/tests/fixtures/market.ts",
+        "web/tests/private/private-deep-link.spec.ts",
+        "web/tests/unit/reset-local.test.ts"
+      ],
+      "untracked_count": 0
     },
-    "tracked_dirty_paths": [
-      "deploy/private.Caddyfile",
-      "deploy/private.Dockerfile",
-      "deploy/workbench.Caddyfile",
-      "scripts/verify_task20_bundle.py",
-      "src/dragon_radar/cli.py",
-      "src/dragon_radar/domain/quality.py",
-      "src/dragon_radar/http/public_app.py",
-      "src/dragon_radar/http/routes/stock.py",
-      "src/dragon_radar/ingestion/runner.py",
-      "src/dragon_radar/storage/repository.py",
-      "tests/test_cli.py",
-      "tests/test_domain.py",
-      "tests/test_reset_ingestion.py",
-      "tests/test_reset_market.py",
-      "tests/test_reset_publication.py",
-      "tests/test_reset_retention.py",
-      "tests/test_storage.py",
-      "web/scripts/check-default-bundle.mjs",
-      "web/src/App.tsx",
-      "web/src/hooks/useLocation.ts",
-      "web/src/hooks/useResource.tsx",
-      "web/src/pages/Leaders.tsx",
-      "web/src/vite-env.d.ts",
-      "web/tests/e2e/private-deep-link.spec.ts",
-      "web/tests/fixtures/market.ts",
-      "web/tests/private/private-deep-link.spec.ts",
-      "web/tests/unit/reset-local.test.ts"
-    ],
-    "untracked_count": 0
+    "execution_source": {
+      "ahead": 297,
+      "audited_commit": "884a78688b9d68e082870d44a6a768bf97242ebd",
+      "base_commit": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+      "base_ref": "origin/main",
+      "behind": 0,
+      "branch": null,
+      "configured_upstream": null,
+      "detached": true,
+      "merge_base": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+      "remote_freshness": {
+        "checked_at": "2026-10-09T14:28:49.272369+00:00",
+        "error": null,
+        "local_oid": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
+        "method": "git_ls_remote",
+        "remote": null,
+        "remote_oid": null,
+        "remote_ref": null,
+        "status": "ABSENT"
+      },
+      "tracked_clean_before_and_after": true,
+      "tracked_dirty_paths": [],
+      "untracked_count": 0
+    }
   },
-  "implementation_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
+  "implementation_commit": "884a78688b9d68e082870d44a6a768bf97242ebd",
   "implementation_commit_relation": "same_head_or_docs_evidence_only_child",
   "migration": {
     "graph": {
       "head": "0010_ai_tasks",
       "release_manifest_sha256": "03a3e71c4b7460519290efb32bffe5fd533dedc846e976b7026827196059ee10",
       "revision_count": 18,
-      "schema_contract_sha256": "7d2289a284089ad2dac5adb24f5fd70d8ab001bbf59d716fde3933fd5dc58e0c"
+      "schema_contract_sha256": "907d2005518353538072807f05e0236d0fc890d4d5c012c6e1f504cc59e9037d"
     },
-    "implementation_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
+    "implementation_commit": "884a78688b9d68e082870d44a6a768bf97242ebd",
     "restore": {
       "app_semantics_verified": true,
+      "audited_commit": "884a78688b9d68e082870d44a6a768bf97242ebd",
       "backup_format": "custom",
-      "backup_sha256": "118d454e18d22c0685d0a281a07b1e115260c17cbdaabadf67e79d2883c735e1",
+      "backup_sha256": "6108ec0a469f91ee4bf46f830365718b092bf2a4cdbc7ac774778f2134b852e8",
       "canonicalized_schema_objects": 50,
       "cleanup": {
         "app_role_removed": true,
@@ -81,12 +113,13 @@
         "source_database_removed": true
       },
       "data_loss_window_seconds": 0.0,
-      "elapsed_seconds": 8.343000000109896,
+      "elapsed_seconds": 8.796999999787658,
+      "generated_at": "2026-10-09T14:28:24.278116+00:00",
       "measured_data_loss_rows": 0,
       "permissions_preserved": true,
       "quiescence_enforced": true,
       "ready_before_canonicalization": false,
-      "restore_fingerprint": "0edd4127887ee63316932a7ced46e1bd6dff7f5caa3c929538544be5a161348a",
+      "restore_fingerprint": "1e4e470a199b832edbd3debd019accc8b981669c0a6b76b1b8f7f87b7acc388f",
       "restored_counts": {
         "audit_events": 1,
         "import_batches": 1,
@@ -105,32 +138,39 @@
         "snapshots": 1,
         "source_grants": 1
       },
-      "source_fingerprint": "0edd4127887ee63316932a7ced46e1bd6dff7f5caa3c929538544be5a161348a",
+      "source_fingerprint": "1e4e470a199b832edbd3debd019accc8b981669c0a6b76b1b8f7f87b7acc388f",
       "source_unchanged": true,
       "targets": {
         "approval_status": "suggested_unapproved",
         "rpo_seconds": 3600,
         "rto_seconds": 14400
       },
-      "write_freeze_seconds": 4.077999999979511
+      "write_freeze_seconds": 4.6100000001024455
     },
     "source_artifacts": {
       "restore": {
-        "bytes": 1732,
-        "sha256": "d873aae9f1cae57e657e7764ebdf690bc2bb84fe4160a5351dc73eb5f31fbd4e"
+        "age_seconds_at_audit": 25.739428,
+        "bytes": 1853,
+        "generated_at": "2026-10-09T14:28:24.278116+00:00",
+        "sha256": "9598ce6afe2aa5a372aa5aa18328f2fb24a24de7404bc0ec194785f014644802",
+        "validated_at": "2026-10-09T14:28:50.017544+00:00"
       },
       "wheel": {
-        "bytes": 3601,
-        "sha256": "0f0841295541642c8e6c612af4f8c16f8a09598989d7b972db52d5a593eacaa5"
+        "age_seconds_at_audit": 35.534725,
+        "bytes": 3656,
+        "generated_at": "2026-10-09T14:28:14.482819+00:00",
+        "sha256": "f7893cf67d234010e616187a165fc275e7cbbfa84ace5c5321046bfaf9c8088b",
+        "validated_at": "2026-10-09T14:28:50.017544+00:00"
       }
     },
     "valid": true,
     "wheel": {
-      "audited_commit": "daeb5a18e6ed449fa32dfbc99222acb90b837df7",
+      "audited_commit": "884a78688b9d68e082870d44a6a768bf97242ebd",
       "fresh": {
         "ready": true,
         "to_revision": "0010_ai_tasks"
       },
+      "generated_at": "2026-10-09T14:28:14.482819+00:00",
       "schema": "dragon-radar.installed-wheel-migrations",
       "schema_version": 1,
       "supported_upgrades": [
@@ -188,26 +228,26 @@
           "ready": true,
           "sentinel": "legacy_regulation_graph",
           "sentinel_after": {
-            "binding_event_id": "E4b8eb51af5f4",
-            "binding_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
-            "event_id": "E4b8eb51af5f4",
+            "binding_event_id": "E6ba05ea9c64f",
+            "binding_snapshot_id": "0ce61aed-b67e-496d-9027-19d2a58925a7",
+            "event_id": "E6ba05ea9c64f",
             "event_source_completeness": "unknown",
             "event_source_id": null,
             "event_source_version": null,
-            "regulation_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
-            "rule_record_id": "f5970e0c-961a-4803-baf0-dd9e5edecdff",
+            "regulation_snapshot_id": "0ce61aed-b67e-496d-9027-19d2a58925a7",
+            "rule_record_id": "97fbcc01-c19c-4686-9938-a49d44b9dabe",
             "source_id": null,
             "source_version": null
           },
           "sentinel_before": {
-            "binding_event_id": "E4b8eb51af5f4",
-            "binding_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
-            "event_id": "E4b8eb51af5f4",
+            "binding_event_id": "E6ba05ea9c64f",
+            "binding_snapshot_id": "0ce61aed-b67e-496d-9027-19d2a58925a7",
+            "event_id": "E6ba05ea9c64f",
             "event_source_completeness": "unknown",
             "event_source_id": null,
             "event_source_version": null,
-            "regulation_snapshot_id": "df49793d-f367-46d1-8ce3-43ea6e16c4f5",
-            "rule_record_id": "f5970e0c-961a-4803-baf0-dd9e5edecdff",
+            "regulation_snapshot_id": "0ce61aed-b67e-496d-9027-19d2a58925a7",
+            "rule_record_id": "97fbcc01-c19c-4686-9938-a49d44b9dabe",
             "source_id": null,
             "source_version": null
           },
@@ -234,7 +274,7 @@
     }
   },
   "schema": "dragon-radar.reset-release-audit",
-  "schema_version": 1,
+  "schema_version": 2,
   "supply_chain": {
     "container_scan": "BLOCKED",
     "node_dependency_scan": "BLOCKED",
@@ -265,9 +305,9 @@
       {
         "files": [
           {
-            "bytes": 105015,
+            "bytes": 103340,
             "path": "docs/DragonRadar_\u5f00\u53d1\u9700\u6c42PRD.md",
-            "sha256": "7f991dd4250ddf23f79a75b05480c70ec3783eaf22267e87fbb0471a6be62377"
+            "sha256": "1ea70f22a26ef02421ae3c95ab60640cfb85edb8aa08dc0d028123f0c458fe52"
           },
           {
             "bytes": 12457,

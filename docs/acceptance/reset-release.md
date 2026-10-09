@@ -1,7 +1,7 @@
 # Reset Release Audit
 
 Audited implementation:
-`daeb5a18e6ed449fa32dfbc99222acb90b837df7`.
+`884a78688b9d68e082870d44a6a768bf97242ebd`.
 Machine evidence:
 [release-manifest.json](evidence/task21/release-manifest.json).
 
@@ -10,9 +10,9 @@ Machine evidence:
 1. **Overall release is NO_GO.** Engineering and migration evidence cannot
    override the independent branch-cut and production-release gates.
 2. **Branch cut is NO_GO.** `feature/prd-reset` has no configured upstream,
-   its local fetch evidence is stale, and 28 tracked paths were dirty when the
-   audit captured Git state. The audited commit is 295 commits ahead and zero
-   behind the local `origin/main` base, but that local relation is not fresh
+   remote freshness is therefore absent, and 27 tracked paths were dirty when
+   the audit captured Git state. The audited commit is 297 commits ahead and
+   zero behind the local `origin/main` base, but that local relation is not
    remote proof.
 3. **Production release is NO_GO.** All five external gates and all five
    internal supply-chain checks are `BLOCKED`. This task provides no caller
@@ -32,7 +32,7 @@ Machine evidence:
 | --- | --- | --- |
 | `migration_readiness` | **GO** | Frozen graph/hash, wheel-only fresh and upgrade matrix, schema readiness, and restore drill passed |
 | `task00_20_engineering` | **GO** | Strict committed Task20 bundle and Task00-20 tracked evidence inventory validated |
-| `branch_cut` | **NO_GO** | No upstream, stale fetch evidence, and 28 tracked dirty paths |
+| `branch_cut` | **NO_GO** | No upstream or remote freshness proof, and 27 tracked dirty paths |
 | `production_release` | **NO_GO** | Five external attestations and five supply-chain checks are absent |
 | Overall | **NO_GO** | Overall is GO only when all four independent decisions are GO |
 
@@ -49,7 +49,7 @@ The frozen single-head chain contains 18 revisions:
 - Release-manifest SHA-256:
   `03a3e71c4b7460519290efb32bffe5fd533dedc846e976b7026827196059ee10`
 - Schema-contract SHA-256:
-  `7d2289a284089ad2dac5adb24f5fd70d8ab001bbf59d716fde3933fd5dc58e0c`
+  `907d2005518353538072807f05e0236d0fc890d4d5c012c6e1f504cc59e9037d`
 - Wheel SHA-256:
   `81d7b37fabe344277856cfe2d1f13edcd1e7d3155ffc8c588e5ecea3d5e4d5e1`
 
@@ -78,11 +78,11 @@ in the machine manifest.
 ## Restore Evidence
 
 - Custom-format backup SHA-256:
-  `118d454e18d22c0685d0a281a07b1e115260c17cbdaabadf67e79d2883c735e1`
+  `6108ec0a469f91ee4bf46f830365718b092bf2a4cdbc7ac774778f2134b852e8`
 - Source and restored fingerprint:
-  `0edd4127887ee63316932a7ced46e1bd6dff7f5caa3c929538544be5a161348a`
-- Elapsed time: `8.343000000109896` seconds
-- Write-freeze time: `4.077999999979511` seconds
+  `1e4e470a199b832edbd3debd019accc8b981669c0a6b76b1b8f7f87b7acc388f`
+- Elapsed time: `8.796999999787658` seconds
+- Write-freeze time: `4.6100000001024455` seconds
 - Quiescence enforced, source unchanged, sentinel and permissions preserved,
   app semantics verified, and all disposable resources cleaned up
 - Measured data-loss rows and data-loss window: zero
@@ -140,8 +140,8 @@ attestation by a separately trusted authority.
 
 | Blocker | Evidence owner | Evidence required |
 | --- | --- | --- |
-| Branch has no upstream and stale remote proof | Release engineer | Configure the approved upstream, fetch it, and preserve fresh base/merge-base/ahead-behind evidence |
-| 28 tracked dirty paths | Owners of those paths and release engineer | Resolve into reviewed commits or remove from the candidate without altering unrelated work |
+| Branch has no upstream or remote freshness proof | Release engineer | Configure the approved upstream and preserve fresh base/merge-base/ahead-behind evidence |
+| 27 tracked dirty paths | Owners of those paths and release engineer | Resolve into reviewed commits or remove from the candidate without altering unrelated work |
 | `licensed_real_input` | Data governance/provider owner | Separately trusted license and real-input execution evidence |
 | `approved_official_rules` | Product/compliance owner | Approved rule set and authority record |
 | `real_model_evaluation` | Model release owner | Real-provider evaluation with approved criteria |
