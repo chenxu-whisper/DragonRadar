@@ -16,9 +16,11 @@ from sqlalchemy.engine import Connection
 
 CONTRACT_SCHEMA = "dragon-radar.postgresql-schema-contract"
 CONTRACT_SCHEMA_VERSION = 1
+SUPPORTED_POSTGRESQL_MAJOR = 17
 CONTRACT_FIELDS = {
     "schema",
     "schema_version",
+    "postgresql_major",
     "tables",
     "constraints",
     "indexes",
@@ -34,6 +36,8 @@ CONSTRAINT_FIELDS = {
     "referenced_table",
     "referenced_columns",
     "expression",
+    "key_expressions",
+    "operators",
 }
 INDEX_FIELDS = {"table", "name", "unique", "valid", "key_expressions"}
 TRIGGER_FIELDS = {
@@ -44,12 +48,14 @@ TRIGGER_FIELDS = {
     "events",
     "function",
 }
-CONSTRAINT_KINDS = {"primary_key", "unique", "foreign_key", "check"}
+CONSTRAINT_KINDS = {"primary_key", "unique", "foreign_key", "check", "exclusion"}
 IDENTITY_VALUES = {"always", "by_default"}
 GENERATED_VALUES = {"stored"}
 TRIGGER_ENABLED_VALUES = {"origin", "disabled", "replica", "always"}
 TRIGGER_TIMINGS = {"BEFORE", "AFTER", "INSTEAD OF"}
 TRIGGER_EVENTS = ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
+
+POSTGRESQL_MAJOR_SQL = "SHOW server_version_num"
 
 TABLES_AND_COLUMNS_SQL = """
 SELECT
@@ -86,16 +92,20 @@ SELECT
         WHEN 'u' THEN 'unique'
         WHEN 'f' THEN 'foreign_key'
         WHEN 'c' THEN 'check'
+        WHEN 'x' THEN 'exclusion'
     END AS kind,
-    ARRAY(
-        SELECT attribute.attname::text
-        FROM unnest(constraint_record.conkey)
-            WITH ORDINALITY AS key_column(attnum, position)
-        JOIN pg_catalog.pg_attribute attribute
-          ON attribute.attrelid = relation.oid
-         AND attribute.attnum = key_column.attnum
-        ORDER BY key_column.position
-    ) AS columns,
+    CASE
+        WHEN constraint_record.contype = 'x' THEN ARRAY[]::text[]
+        ELSE ARRAY(
+            SELECT attribute.attname::text
+            FROM unnest(constraint_record.conkey)
+                WITH ORDINALITY AS key_column(attnum, position)
+            JOIN pg_catalog.pg_attribute attribute
+              ON attribute.attrelid = relation.oid
+             AND attribute.attnum = key_column.attnum
+            ORDER BY key_column.position
+        )
+    END AS columns,
     referenced_relation.relname AS referenced_table,
     CASE
         WHEN constraint_record.contype = 'f' THEN ARRAY(
@@ -114,10 +124,36 @@ SELECT
         THEN pg_catalog.pg_get_expr(
             constraint_record.conbin,
             constraint_record.conrelid,
-            true
+            false
         )
         ELSE NULL
-    END AS expression
+    END AS expression,
+    CASE
+        WHEN constraint_record.contype = 'x' THEN ARRAY(
+            SELECT pg_catalog.pg_get_indexdef(
+                constraint_record.conindid,
+                key_number,
+                false
+            )
+            FROM generate_series(
+                1,
+                cardinality(constraint_record.conexclop)
+            ) AS key_number
+            ORDER BY key_number
+        )
+        ELSE ARRAY[]::text[]
+    END AS key_expressions,
+    CASE
+        WHEN constraint_record.contype = 'x' THEN ARRAY(
+            SELECT operator_record.oprname::text
+            FROM unnest(constraint_record.conexclop)
+                WITH ORDINALITY AS exclusion_operator(operator_oid, position)
+            JOIN pg_catalog.pg_operator operator_record
+              ON operator_record.oid = exclusion_operator.operator_oid
+            ORDER BY exclusion_operator.position
+        )
+        ELSE ARRAY[]::text[]
+    END AS operators
 FROM pg_catalog.pg_constraint constraint_record
 JOIN pg_catalog.pg_class relation ON relation.oid = constraint_record.conrelid
 JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -125,7 +161,7 @@ LEFT JOIN pg_catalog.pg_class referenced_relation
   ON referenced_relation.oid = constraint_record.confrelid
 WHERE namespace.nspname = current_schema()
   AND relation.relname <> 'alembic_version'
-  AND constraint_record.contype IN ('p', 'u', 'f', 'c')
+  AND constraint_record.contype IN ('p', 'u', 'f', 'c', 'x')
 ORDER BY relation.relname, constraint_record.conname
 """
 
@@ -139,7 +175,7 @@ SELECT
         SELECT pg_catalog.pg_get_indexdef(
             index_record.indexrelid,
             key_number,
-            true
+            false
         )
         FROM generate_series(1, index_record.indnkeyatts) AS key_number
         ORDER BY key_number
@@ -212,6 +248,8 @@ def capture_constraints(connection: Connection) -> list[dict[str, object]]:
                 "referenced_table": row["referenced_table"],
                 "referenced_columns": list(row["referenced_columns"] or []),
                 "expression": row["expression"],
+                "key_expressions": list(row["key_expressions"] or []),
+                "operators": list(row["operators"] or []),
             }
         )
     return _sorted_records(records)
@@ -277,9 +315,11 @@ def capture_triggers(connection: Connection) -> list[dict[str, object]]:
 
 def capture_schema_contract(connection: Connection) -> dict[str, object]:
     """Capture the normalized current-schema application catalog."""
+    server_version_num = int(connection.scalar(text(POSTGRESQL_MAJOR_SQL)))
     return {
         "schema": CONTRACT_SCHEMA,
         "schema_version": CONTRACT_SCHEMA_VERSION,
+        "postgresql_major": server_version_num // 10000,
         "tables": capture_tables_and_columns(connection),
         "constraints": capture_constraints(connection),
         "indexes": capture_indexes(connection),
@@ -424,6 +464,15 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
         or version != CONTRACT_SCHEMA_VERSION
     ):
         raise ValueError(f"contract schema_version must be {CONTRACT_SCHEMA_VERSION}")
+    postgresql_major = contract["postgresql_major"]
+    if (
+        not isinstance(postgresql_major, int)
+        or isinstance(postgresql_major, bool)
+        or postgresql_major != SUPPORTED_POSTGRESQL_MAJOR
+    ):
+        raise ValueError(
+            f"contract postgresql_major must be {SUPPORTED_POSTGRESQL_MAJOR}"
+        )
 
     tables = _validate_collection(
         contract["tables"],
@@ -467,6 +516,14 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
             constraint["expression"],
             location=f"{location}.expression",
         )
+        key_expressions = _require_string_list(
+            constraint["key_expressions"],
+            location=f"{location}.key_expressions",
+        )
+        operators = _require_string_list(
+            constraint["operators"],
+            location=f"{location}.operators",
+        )
         if kind in {"primary_key", "unique"} and not columns:
             raise ValueError(f"{location}.columns must not be empty")
         if kind == "foreign_key":
@@ -480,6 +537,11 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
             raise ValueError(f"{location} has unexpected referenced columns")
         if (kind == "check") != (expression is not None):
             raise ValueError(f"{location} has an invalid check expression")
+        if kind == "exclusion":
+            if columns or not key_expressions or len(key_expressions) != len(operators):
+                raise ValueError(f"{location} has an invalid exclusion constraint")
+        elif key_expressions or operators:
+            raise ValueError(f"{location} has unexpected exclusion fields")
     constraint_names = [
         (constraint["table"], constraint["name"]) for constraint in constraints
     ]
@@ -591,7 +653,7 @@ def compare_schema_contract(
 ) -> list[str]:
     """Return stable mismatch descriptions for two normalized contracts."""
     errors = []
-    for field in ("schema", "schema_version"):
+    for field in ("schema", "schema_version", "postgresql_major"):
         if expected.get(field) != actual.get(field):
             errors.append(
                 f"{field} mismatch: expected {expected.get(field)!r}, "

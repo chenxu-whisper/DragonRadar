@@ -466,13 +466,14 @@ def _run_generation_lifecycle(database_url: str) -> dict[str, object]:
     admin_url = url.difference_update_query(["options"])
     admin_engine = _create_admin_engine(admin_url)
     schema = _new_schema_name()
-    if re.fullmatch(r"schema_contract_[0-9a-f]{32}", schema) is None:
-        admin_engine.dispose()
-        raise ValueError("unsafe generated schema name")
-
     database = None
     schema_created = False
+    contract = None
+    primary_error = None
+    cleanup_errors = []
     try:
+        if re.fullmatch(r"schema_contract_[0-9a-f]{32}", schema) is None:
+            raise ValueError("unsafe generated schema name")
         with admin_engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         schema_created = True
@@ -490,18 +491,43 @@ def _run_generation_lifecycle(database_url: str) -> dict[str, object]:
             )
             contract = capture_schema_contract(connection)
             validate_schema_contract(contract)
-            return contract
+    except BaseException as exc:
+        primary_error = exc
     finally:
         try:
             if database is not None:
                 database.close()
-        finally:
-            try:
-                if schema_created:
-                    with admin_engine.begin() as connection:
-                        connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-            finally:
-                admin_engine.dispose()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        try:
+            if schema_created:
+                with admin_engine.begin() as connection:
+                    connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        try:
+            admin_engine.dispose()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+
+    if primary_error is not None:
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "schema contract generation and cleanup failed",
+                [primary_error, *cleanup_errors],
+            )
+        raise primary_error.with_traceback(primary_error.__traceback__)
+    if cleanup_errors:
+        if len(cleanup_errors) == 1:
+            cleanup_error = cleanup_errors[0]
+            raise cleanup_error.with_traceback(cleanup_error.__traceback__)
+        raise BaseExceptionGroup(
+            "schema contract cleanup failed",
+            cleanup_errors,
+        )
+    if contract is None:
+        raise RuntimeError("schema contract generation produced no contract")
+    return contract
 
 
 def generate_schema_contract(

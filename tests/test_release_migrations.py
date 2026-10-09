@@ -517,12 +517,53 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
     assert expected == actual
     assert expected["schema"] == "dragon-radar.postgresql-schema-contract"
     assert expected["schema_version"] == 1
+    assert expected["postgresql_major"] == 17
     for collection in ("tables", "constraints", "indexes", "triggers"):
         assert expected[collection] == sorted(
             expected[collection],
             key=lambda item: json.dumps(item, sort_keys=True),
         )
+    exclusion = next(
+        constraint
+        for constraint in expected["constraints"]
+        if constraint["name"] == "security_state_history_no_overlap"
+    )
+    assert exclusion == {
+        "columns": [],
+        "expression": None,
+        "key_expressions": [
+            "security_id",
+            "state_type",
+            "daterange(valid_from, valid_to, '[)'::text)",
+        ],
+        "kind": "exclusion",
+        "name": "security_state_history_no_overlap",
+        "operators": ["=", "=", "&&"],
+        "referenced_columns": [],
+        "referenced_table": None,
+        "table": "security_state_history",
+    }
     assert database.ready()
+
+
+def test_readiness_rejects_exclusion_replaced_by_equivalent_named_index(database):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE security_state_history DROP CONSTRAINT "
+                "security_state_history_no_overlap"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX security_state_history_no_overlap "
+                "ON security_state_history USING gist "
+                "(security_id, state_type, "
+                "daterange(valid_from, valid_to, '[)'::text))"
+            )
+        )
+    assert not database.ready()
 
 
 @pytest.mark.parametrize(
@@ -630,6 +671,54 @@ def test_schema_contract_loader_rejects_unknown_fields_and_unsorted_data(tmp_pat
         load_schema_contract(path)
 
 
+@pytest.mark.parametrize("major", [16, 18, True, "17"])
+def test_schema_contract_requires_exact_supported_postgresql_major(tmp_path, major):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    contract["postgresql_major"] = major
+    path = tmp_path / "wrong-major.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="postgresql_major.*17"):
+        load_schema_contract(path)
+
+
+def test_capture_uses_stable_non_pretty_expressions_and_server_major():
+    from dragon_radar.storage.schema_contract import (
+        CONSTRAINTS_SQL,
+        INDEXES_SQL,
+        POSTGRESQL_MAJOR_SQL,
+    )
+
+    assert POSTGRESQL_MAJOR_SQL.strip() == "SHOW server_version_num"
+    assert "constraint_record.contype IN ('p', 'u', 'f', 'c', 'x')" in CONSTRAINTS_SQL
+    assert "constraint_record.conindid" in CONSTRAINTS_SQL
+    assert "constraint_record.conexclop" in CONSTRAINTS_SQL
+    assert "constraint_record.conrelid,\n            false" in CONSTRAINTS_SQL
+    assert "index_record.indexrelid,\n            key_number,\n            false" in (
+        INDEXES_SQL
+    )
+
+
+def test_readiness_rejects_postgresql_major_mismatch(database, monkeypatch):
+    import dragon_radar.storage.database as database_module
+    from dragon_radar.storage.schema_contract import load_packaged_schema_contract
+
+    actual = load_packaged_schema_contract()
+    actual["postgresql_major"] = 18
+    monkeypatch.setattr(
+        database_module,
+        "capture_schema_contract",
+        lambda _connection: actual,
+    )
+
+    assert not database.ready()
+
+
 def test_schema_contract_loader_rejects_duplicate_keys_and_wrong_version(tmp_path):
     from dragon_radar.storage.schema_contract import load_schema_contract
 
@@ -656,6 +745,7 @@ def test_schema_contract_loader_rejects_duplicate_keys_and_wrong_version(tmp_pat
             {
                 "schema": "dragon-radar.postgresql-schema-contract",
                 "schema_version": 2,
+                "postgresql_major": 17,
                 "tables": [],
                 "constraints": [],
                 "indexes": [],
@@ -681,6 +771,7 @@ def test_schema_contract_loader_rejects_malformed_json_and_wrong_schema(tmp_path
             {
                 "schema": "not-dragon-radar",
                 "schema_version": 1,
+                "postgresql_major": 17,
                 "tables": [],
                 "constraints": [],
                 "indexes": [],
@@ -989,9 +1080,8 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
     [
         ("0010_ai_tasks", False, "capture failed"),
         ("wrong_revision", False, "generated database revision"),
-        ("0010_ai_tasks", True, "close failed"),
     ],
-    ids=["capture", "revision", "close"],
+    ids=["capture", "revision"],
 )
 def test_generation_failure_leaves_no_output_or_schema(
     verifier,
@@ -1083,6 +1173,144 @@ def test_generation_failure_leaves_no_output_or_schema(
     assert events[-1] == "admin disposed"
     assert not output.exists()
     assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+def _configure_generation_failures(
+    verifier,
+    monkeypatch,
+    *,
+    primary=False,
+    close=False,
+    drop=False,
+    dispose=False,
+):
+    verifier_globals = verifier["_run_generation_lifecycle"].__globals__
+    schema = "schema_contract_" + ("c" * 32)
+    events = []
+    contract = {
+        "schema": "dragon-radar.postgresql-schema-contract",
+        "schema_version": 1,
+        "postgresql_major": 17,
+        "tables": [],
+        "constraints": [],
+        "indexes": [],
+        "triggers": [],
+    }
+
+    class FakeUrl:
+        def difference_update_query(self, _keys):
+            return self
+
+        def update_query_dict(self, _query):
+            return self
+
+        def render_as_string(self, *, hide_password):
+            assert not hide_password
+            return "postgresql+psycopg://user:never-print@localhost/dragon_test"
+
+    class FakeConnection:
+        def execute(self, statement):
+            sql = str(statement)
+            events.append(sql)
+            if sql.startswith("DROP SCHEMA") and drop:
+                raise RuntimeError("drop failed")
+
+        def scalar(self, _statement):
+            return "0010_ai_tasks"
+
+    class FakeEngine:
+        @contextmanager
+        def begin(self):
+            yield FakeConnection()
+
+        @contextmanager
+        def connect(self):
+            yield FakeConnection()
+
+        def dispose(self):
+            events.append("admin disposed")
+            if dispose:
+                raise RuntimeError("dispose failed")
+
+    class FakeDatabase:
+        def __init__(self, _url):
+            self.engine = FakeEngine()
+
+        def migrate(self):
+            events.append("migrated")
+
+        def close(self):
+            events.append("database closed")
+            if close:
+                raise RuntimeError("close failed")
+
+    def capture(_connection):
+        if primary:
+            raise RuntimeError("primary generation failed")
+        return contract
+
+    monkeypatch.setitem(
+        verifier_globals, "_validated_postgres_url", lambda _: FakeUrl()
+    )
+    monkeypatch.setitem(
+        verifier_globals,
+        "_create_admin_engine",
+        lambda _: FakeEngine(),
+    )
+    monkeypatch.setitem(verifier_globals, "_database_class", lambda: FakeDatabase)
+    monkeypatch.setitem(verifier_globals, "_new_schema_name", lambda: schema)
+    monkeypatch.setitem(
+        verifier_globals,
+        "_schema_contract_functions",
+        lambda: (capture, lambda value: value),
+    )
+    return events
+
+
+def test_generation_preserves_primary_and_all_cleanup_failures(
+    verifier,
+    monkeypatch,
+):
+    events = _configure_generation_failures(
+        verifier,
+        monkeypatch,
+        primary=True,
+        close=True,
+        drop=True,
+        dispose=True,
+    )
+
+    with pytest.raises(ExceptionGroup) as raised:
+        verifier["_run_generation_lifecycle"](
+            "postgresql://user:never-print@localhost/dragon_test"
+        )
+
+    errors = raised.value.exceptions
+    assert [str(error) for error in errors] == [
+        "primary generation failed",
+        "close failed",
+        "drop failed",
+        "dispose failed",
+    ]
+    assert events[-2:] == [
+        'DROP SCHEMA "schema_contract_cccccccccccccccccccccccccccccccc" CASCADE',
+        "admin disposed",
+    ]
+    assert "never-print" not in repr(raised.value)
+
+
+@pytest.mark.parametrize("failure", ["close", "drop", "dispose"])
+def test_generation_raises_cleanup_only_failure(verifier, monkeypatch, failure):
+    _configure_generation_failures(
+        verifier,
+        monkeypatch,
+        **{failure: True},
+    )
+
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+        verifier["_run_generation_lifecycle"](
+            "postgresql://user:never-print@localhost/dragon_test"
+        )
 
 
 def test_write_cli_never_reveals_database_password(

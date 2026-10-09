@@ -7,9 +7,11 @@
         "policy_reference",
         "cutoff_dependency_sequence"
       ],
-      "expression": "(action::text = ANY (ARRAY['deidentified'::character varying, 'deleted'::character varying]::text[])) AND scope::text = 'storage'::text AND policy_reference IS NOT NULL AND cutoff_dependency_sequence IS NOT NULL OR (action::text = ANY (ARRAY['blocked'::character varying, 'replayed'::character varying, 'restored'::character varying]::text[])) AND policy_reference IS NULL AND cutoff_dependency_sequence IS NULL",
+      "expression": "((((action)::text = ANY ((ARRAY['deidentified'::character varying, 'deleted'::character varying])::text[])) AND ((scope)::text = 'storage'::text) AND (policy_reference IS NOT NULL) AND (cutoff_dependency_sequence IS NOT NULL)) OR (((action)::text = ANY ((ARRAY['blocked'::character varying, 'replayed'::character varying, 'restored'::character varying])::text[])) AND (policy_reference IS NULL) AND (cutoff_dependency_sequence IS NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "withdrawal_records_scope_action_policy",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_records"
@@ -18,9 +20,11 @@
       "columns": [
         "action"
       ],
-      "expression": "action::text = ANY (ARRAY['blocked'::character varying, 'deidentified'::character varying, 'deleted'::character varying, 'replayed'::character varying, 'restored'::character varying]::text[])",
+      "expression": "((action)::text = ANY ((ARRAY['blocked'::character varying, 'deidentified'::character varying, 'deleted'::character varying, 'replayed'::character varying, 'restored'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "withdrawal_records_action_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_records"
@@ -29,9 +33,11 @@
       "columns": [
         "adj_factor"
       ],
-      "expression": "adj_factor > 0::numeric",
+      "expression": "(adj_factor > (0)::numeric)",
+      "key_expressions": [],
       "kind": "check",
       "name": "daily_kline_adj_factor_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -40,9 +46,11 @@
       "columns": [
         "adj_factor"
       ],
-      "expression": "adj_factor > 0::numeric",
+      "expression": "(adj_factor > (0)::numeric)",
+      "key_expressions": [],
       "kind": "check",
       "name": "index_daily_kline_adj_factor_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -51,9 +59,11 @@
       "columns": [
         "amount"
       ],
-      "expression": "amount IS NULL OR amount >= 0::numeric",
+      "expression": "((amount IS NULL) OR (amount >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "daily_kline_amount_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -62,9 +72,11 @@
       "columns": [
         "amount"
       ],
-      "expression": "amount IS NULL OR amount >= 0::numeric",
+      "expression": "((amount IS NULL) OR (amount >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "index_daily_kline_amount_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -75,8 +87,10 @@
         "revision"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_article_revisions_article_id_revision_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_article_revisions"
@@ -86,8 +100,10 @@
         "article_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_article_revisions_article_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -99,8 +115,10 @@
         "article_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_snapshot_items_article_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -115,8 +133,10 @@
         "method"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_associations_article_revision_id_target_type_target_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_associations"
@@ -126,8 +146,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_associations_article_revision_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -139,8 +161,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_event_articles_article_revision_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -152,8 +176,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_ingest_commands_article_revision_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -165,8 +191,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_snapshot_items_article_revision_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -178,8 +206,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_event_articles_article_revision_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_event_articles"
@@ -189,8 +219,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_ingest_commands_article_revision_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_ingest_commands"
@@ -201,8 +233,10 @@
         "revision"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_association_reviews_association_id_revision_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_association_reviews"
@@ -212,8 +246,10 @@
         "association_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_association_reviews_association_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -224,9 +260,11 @@
       "columns": [
         "attempt_count"
       ],
-      "expression": "attempt_count >= 0 AND attempt_count <= 10",
+      "expression": "((attempt_count >= 0) AND (attempt_count <= 10))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_attempt_count_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -235,9 +273,11 @@
       "columns": [
         "attempt_count"
       ],
-      "expression": "attempt_count >= 0",
+      "expression": "(attempt_count >= 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "analysis_jobs_attempt_count_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "analysis_jobs"
@@ -247,8 +287,10 @@
         "attempt_sequence"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "market_import_attempts_attempt_sequence_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "market_import_attempts"
@@ -258,9 +300,11 @@
         "available_at",
         "received_at"
       ],
-      "expression": "available_at >= received_at",
+      "expression": "(available_at >= received_at)",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_article_revisions_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_article_revisions"
@@ -270,8 +314,10 @@
         "batch_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "market_import_attempts_batch_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -283,8 +329,10 @@
         "batch_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "snapshots_batch_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -296,8 +344,10 @@
         "batch_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "topic_import_attempts_batch_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -309,8 +359,10 @@
         "batch_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "topic_snapshots_batch_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -322,8 +374,10 @@
         "batch_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "snapshots_batch_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "snapshots"
@@ -333,8 +387,10 @@
         "batch_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "topic_snapshots_batch_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_snapshots"
@@ -343,9 +399,11 @@
       "columns": [
         "break_count"
       ],
-      "expression": "break_count IS NULL OR break_count >= 0",
+      "expression": "((break_count IS NULL) OR (break_count >= 0))",
+      "key_expressions": [],
       "kind": "check",
       "name": "limit_up_record_break_count_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "limit_up_record"
@@ -355,8 +413,10 @@
         "cache_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "analysis_job_cache_cache_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "analysis_job_cache"
@@ -365,9 +425,11 @@
       "columns": [
         "close"
       ],
-      "expression": "close > 0::numeric",
+      "expression": "(close > (0)::numeric)",
+      "key_expressions": [],
       "kind": "check",
       "name": "daily_kline_close_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -376,9 +438,11 @@
       "columns": [
         "close"
       ],
-      "expression": "close > 0::numeric",
+      "expression": "(close > (0)::numeric)",
+      "key_expressions": [],
       "kind": "check",
       "name": "index_daily_kline_close_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -388,8 +452,10 @@
         "code_hash"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "owner_pairings_code_hash_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_pairings"
@@ -398,9 +464,11 @@
       "columns": [
         "content_scope"
       ],
-      "expression": "content_scope::text = ANY (ARRAY['none'::character varying, 'summary'::character varying, 'full'::character varying]::text[])",
+      "expression": "((content_scope)::text = ANY ((ARRAY['none'::character varying, 'summary'::character varying, 'full'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_article_revisions_content_scope_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_article_revisions"
@@ -409,9 +477,11 @@
       "columns": [
         "continuous_boards"
       ],
-      "expression": "continuous_boards >= 0",
+      "expression": "(continuous_boards >= 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "limit_up_record_continuous_boards_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "limit_up_record"
@@ -420,9 +490,11 @@
       "columns": [
         "cost"
       ],
-      "expression": "cost IS NULL OR cost >= 0::numeric AND cost <= 1000000::numeric",
+      "expression": "((cost IS NULL) OR ((cost >= (0)::numeric) AND (cost <= (1000000)::numeric)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_cost_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -434,9 +506,11 @@
         "resulting_revision",
         "expected_revision"
       ],
-      "expression": "decision::text = 'edit'::text AND draft_id IS NOT NULL AND resulting_revision > expected_revision OR decision::text <> 'edit'::text AND draft_id IS NULL AND resulting_revision = expected_revision",
+      "expression": "((((decision)::text = 'edit'::text) AND (draft_id IS NOT NULL) AND (resulting_revision > expected_revision)) OR (((decision)::text <> 'edit'::text) AND (draft_id IS NULL) AND (resulting_revision = expected_revision)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_reviews_revision",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_reviews"
@@ -445,9 +519,11 @@
       "columns": [
         "decision"
       ],
-      "expression": "decision::text = ANY (ARRAY['accept'::character varying, 'edit'::character varying, 'reject'::character varying]::text[])",
+      "expression": "((decision)::text = ANY ((ARRAY['accept'::character varying, 'edit'::character varying, 'reject'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_reviews_decision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_reviews"
@@ -456,9 +532,11 @@
       "columns": [
         "decision"
       ],
-      "expression": "decision::text = ANY (ARRAY['accept'::character varying, 'reject'::character varying]::text[])",
+      "expression": "((decision)::text = ANY ((ARRAY['accept'::character varying, 'reject'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_association_reviews_decision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_association_reviews"
@@ -468,8 +546,10 @@
         "dependency_sequence"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "source_dependencies_dependency_sequence_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "source_dependencies"
@@ -480,9 +560,11 @@
         "warning_threshold",
         "threshold"
       ],
-      "expression": "direction::text = 'upper'::text AND warning_threshold < threshold OR direction::text = 'lower'::text AND warning_threshold > threshold",
+      "expression": "((((direction)::text = 'upper'::text) AND (warning_threshold < threshold)) OR (((direction)::text = 'lower'::text) AND (warning_threshold > threshold)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_rules_warning_order",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rules"
@@ -491,9 +573,11 @@
       "columns": [
         "direction"
       ],
-      "expression": "direction::text = ANY (ARRAY['upper'::character varying, 'lower'::character varying]::text[])",
+      "expression": "((direction)::text = ANY ((ARRAY['upper'::character varying, 'lower'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_rules_direction_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rules"
@@ -502,9 +586,11 @@
       "columns": [
         "domain"
       ],
-      "expression": "domain::text = ANY (ARRAY['market'::character varying, 'topic'::character varying, 'news'::character varying, 'regulation'::character varying, 'role'::character varying]::text[])",
+      "expression": "((domain)::text = ANY ((ARRAY['market'::character varying, 'topic'::character varying, 'news'::character varying, 'regulation'::character varying, 'role'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "publication_results_domain_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publication_results"
@@ -514,8 +600,10 @@
         "draft_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_task_reviews_draft_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -528,8 +616,10 @@
         "announcement_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_events_event_id_announcement_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_events"
@@ -540,8 +630,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_event_articles_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_event_articles"
@@ -551,8 +643,10 @@
         "event_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_event_articles_event_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -564,8 +658,10 @@
         "event_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_snapshot_items_event_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -577,8 +673,10 @@
         "event_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_snapshot_events_event_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "event_id"
       ],
@@ -590,8 +688,10 @@
         "event_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_events_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_events"
@@ -602,9 +702,11 @@
         "event_source_id",
         "event_source_version"
       ],
-      "expression": "event_source_completeness::text = 'unknown'::text AND event_source_id IS NULL AND event_source_version IS NULL OR event_source_completeness::text = 'complete'::text AND event_source_id IS NOT NULL AND event_source_version IS NOT NULL AND event_source_id::text ~ '^[A-Za-z0-9_.:-]{1,200}$'::text AND event_source_version::text ~ '^[A-Za-z0-9_.:-]{1,200}$'::text",
+      "expression": "((((event_source_completeness)::text = 'unknown'::text) AND (event_source_id IS NULL) AND (event_source_version IS NULL)) OR (((event_source_completeness)::text = 'complete'::text) AND (event_source_id IS NOT NULL) AND (event_source_version IS NOT NULL) AND ((event_source_id)::text ~ '^[A-Za-z0-9_.:-]{1,200}$'::text) AND ((event_source_version)::text ~ '^[A-Za-z0-9_.:-]{1,200}$'::text)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_snapshots_event_source_evidence",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshots"
@@ -613,9 +715,11 @@
       "columns": [
         "event_type"
       ],
-      "expression": "event_type::text = ANY (ARRAY['abnormal'::character varying, 'serious_abnormal'::character varying, 'monitoring'::character varying, 'restriction'::character varying]::text[])",
+      "expression": "((event_type)::text = ANY ((ARRAY['abnormal'::character varying, 'serious_abnormal'::character varying, 'monitoring'::character varying, 'restriction'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_events_event_type_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_events"
@@ -626,8 +730,10 @@
         "evidence_value"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_events_evidence_kind_evidence_value_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_events"
@@ -636,9 +742,11 @@
       "columns": [
         "evidence_kind"
       ],
-      "expression": "evidence_kind::text = ANY (ARRAY['source_event_id'::character varying, 'canonical_url'::character varying, 'content_digest'::character varying, 'manual_confirmation'::character varying, 'isolated_article'::character varying]::text[])",
+      "expression": "((evidence_kind)::text = ANY ((ARRAY['source_event_id'::character varying, 'canonical_url'::character varying, 'content_digest'::character varying, 'manual_confirmation'::character varying, 'isolated_article'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_events_evidence_kind_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_events"
@@ -650,9 +758,11 @@
         "legal_excluded",
         "missing"
       ],
-      "expression": "expected = (valid + legal_excluded + missing)",
+      "expression": "(expected = ((valid + legal_excluded) + missing))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_topic_statuses_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_topic_statuses"
@@ -662,9 +772,11 @@
         "expected_revision",
         "resulting_revision"
       ],
-      "expression": "expected_revision > 0 AND resulting_revision > 0",
+      "expression": "((expected_revision > 0) AND (resulting_revision > 0))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_reviews_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_reviews"
@@ -673,9 +785,11 @@
       "columns": [
         "expected_revision"
       ],
-      "expression": "expected_revision >= 0",
+      "expression": "(expected_revision >= 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_association_reviews_expected_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_association_reviews"
@@ -684,9 +798,11 @@
       "columns": [
         "failures"
       ],
-      "expression": "failures >= 0 AND failures <= 5",
+      "expression": "((failures >= 0) AND (failures <= 5))",
+      "key_expressions": [],
       "kind": "check",
       "name": "owner_pairing_limits_failures_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_pairing_limits"
@@ -695,9 +811,11 @@
       "columns": [
         "float_mv"
       ],
-      "expression": "float_mv IS NULL OR float_mv >= 0::numeric",
+      "expression": "((float_mv IS NULL) OR (float_mv >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "daily_kline_float_mv_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -706,9 +824,11 @@
       "columns": [
         "float_mv"
       ],
-      "expression": "float_mv IS NULL OR float_mv >= 0::numeric",
+      "expression": "((float_mv IS NULL) OR (float_mv >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "index_daily_kline_float_mv_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -718,9 +838,11 @@
         "grant",
         "source_id"
       ],
-      "expression": "(\"grant\" ->> 'source_id'::text) = source_id",
+      "expression": "((\"grant\" ->> 'source_id'::text) = source_id)",
+      "key_expressions": [],
       "kind": "check",
       "name": "source_grants_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "source_grants"
@@ -730,8 +852,10 @@
         "history_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "security_state_history_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "security_state_history"
@@ -740,9 +864,11 @@
       "columns": [
         "human_review_status"
       ],
-      "expression": "human_review_status::text = ANY (ARRAY['accepted'::character varying, 'edited'::character varying, 'rejected'::character varying]::text[])",
+      "expression": "((human_review_status)::text = ANY ((ARRAY['accepted'::character varying, 'edited'::character varying, 'rejected'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_reviews_human_status",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_reviews"
@@ -751,9 +877,11 @@
       "columns": [
         "human_review_status"
       ],
-      "expression": "human_review_status::text = ANY (ARRAY['unreviewed'::character varying, 'accepted'::character varying, 'edited'::character varying, 'rejected'::character varying]::text[])",
+      "expression": "((human_review_status)::text = ANY ((ARRAY['unreviewed'::character varying, 'accepted'::character varying, 'edited'::character varying, 'rejected'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_human_review_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -766,8 +894,10 @@
         "role"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_results_pending_identity",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_results"
@@ -776,9 +906,11 @@
       "columns": [
         "id"
       ],
-      "expression": "id = 1",
+      "expression": "(id = 1)",
+      "key_expressions": [],
       "kind": "check",
       "name": "owner_pairing_limits_id_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_pairing_limits"
@@ -788,8 +920,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "ai_task_cancellations_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_cancellations"
@@ -799,8 +933,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "ai_task_drafts_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_drafts"
@@ -810,8 +946,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "ai_task_reviews_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_reviews"
@@ -821,8 +959,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "ai_tasks_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -832,8 +972,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "analysis_job_cache_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "analysis_job_cache"
@@ -843,8 +985,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "analysis_jobs_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "analysis_jobs"
@@ -854,8 +998,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "audit_events_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "audit_events"
@@ -865,8 +1011,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "import_batches_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "import_batches"
@@ -876,8 +1024,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "market_import_attempts_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "market_import_attempts"
@@ -887,8 +1037,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "market_import_tasks_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "market_import_tasks"
@@ -898,8 +1050,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_article_revisions_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_article_revisions"
@@ -909,8 +1063,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_articles_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_articles"
@@ -920,8 +1076,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_association_reviews_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_association_reviews"
@@ -931,8 +1089,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_associations_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_associations"
@@ -942,8 +1102,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_events_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_events"
@@ -953,8 +1115,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_ingest_commands_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_ingest_commands"
@@ -964,8 +1128,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_review_audit_events_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_review_audit_events"
@@ -975,8 +1141,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_review_commands_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_review_commands"
@@ -986,8 +1154,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_snapshots_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_snapshots"
@@ -997,8 +1167,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "owner_pairing_limits_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_pairing_limits"
@@ -1008,8 +1180,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "owner_pairings_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_pairings"
@@ -1019,8 +1193,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "owner_principals_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_principals"
@@ -1030,8 +1206,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "owner_sessions_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_sessions"
@@ -1041,8 +1219,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "private_audit_events_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "private_audit_events"
@@ -1052,8 +1232,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "publication_attempts_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publication_attempts"
@@ -1063,8 +1245,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "publications_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publications"
@@ -1074,8 +1258,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_calculations_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_calculations"
@@ -1085,8 +1271,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_commands_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_commands"
@@ -1096,8 +1284,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_rule_statuses_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rule_statuses"
@@ -1107,8 +1297,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_rules_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rules"
@@ -1118,8 +1310,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_snapshots_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshots"
@@ -1129,8 +1323,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "review_note_revisions_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_note_revisions"
@@ -1140,8 +1336,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "review_notes_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_notes"
@@ -1151,8 +1349,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "review_verifications_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_verifications"
@@ -1162,8 +1362,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_changes_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_changes"
@@ -1173,8 +1375,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_materialization_attempts_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_materialization_attempts"
@@ -1184,8 +1388,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_pending_validations_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_pending_validations"
@@ -1195,8 +1401,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_results_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_results"
@@ -1206,8 +1414,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_runs_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_runs"
@@ -1217,8 +1427,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_validation_commands_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validation_commands"
@@ -1228,8 +1440,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_validations_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validations"
@@ -1239,8 +1453,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "snapshots_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "snapshots"
@@ -1250,8 +1466,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "source_dependencies_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "source_dependencies"
@@ -1261,8 +1479,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "topic_import_attempts_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_import_attempts"
@@ -1272,8 +1492,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "topic_import_batches_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_import_batches"
@@ -1283,8 +1505,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "topic_snapshots_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_snapshots"
@@ -1294,8 +1518,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "watch_entries_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "watch_entries"
@@ -1305,8 +1531,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "withdrawal_dependencies_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_dependencies"
@@ -1316,8 +1544,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "withdrawal_records_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_records"
@@ -1327,8 +1557,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "import_batches_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "import_batches"
@@ -1338,8 +1570,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "market_import_attempts_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "market_import_attempts"
@@ -1349,8 +1583,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "market_import_tasks_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "market_import_tasks"
@@ -1360,8 +1596,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_ingest_commands_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_ingest_commands"
@@ -1371,8 +1609,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_snapshots_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_snapshots"
@@ -1382,8 +1622,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_commands_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_commands"
@@ -1393,8 +1635,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_snapshots_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshots"
@@ -1404,8 +1648,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_runs_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_runs"
@@ -1415,8 +1661,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_validation_commands_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validation_commands"
@@ -1426,8 +1674,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "topic_import_attempts_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_import_attempts"
@@ -1437,8 +1687,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "topic_import_batches_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_import_batches"
@@ -1448,8 +1700,10 @@
         "input_role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_validation_inputs_input_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1460,9 +1714,11 @@
       "columns": [
         "input_state"
       ],
-      "expression": "input_state::text = ANY (ARRAY['complete'::character varying, 'missing'::character varying, 'conflict'::character varying]::text[])",
+      "expression": "((input_state)::text = ANY ((ARRAY['complete'::character varying, 'missing'::character varying, 'conflict'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_calculations_input_state_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_calculations"
@@ -1471,9 +1727,11 @@
       "columns": [
         "input_state"
       ],
-      "expression": "input_state::text = ANY (ARRAY['complete'::character varying, 'missing'::character varying, 'conflict'::character varying]::text[])",
+      "expression": "((input_state)::text = ANY ((ARRAY['complete'::character varying, 'missing'::character varying, 'conflict'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_snapshot_inputs_input_state_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_inputs"
@@ -1482,9 +1740,11 @@
       "columns": [
         "kind"
       ],
-      "expression": "kind::text = ANY (ARRAY['note'::character varying, 'daily'::character varying]::text[])",
+      "expression": "((kind)::text = ANY ((ARRAY['note'::character varying, 'daily'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "notes_kind_valid",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_notes"
@@ -1493,9 +1753,11 @@
       "columns": [
         "latency_ms"
       ],
-      "expression": "latency_ms IS NULL OR latency_ms >= 0 AND latency_ms <= 2147483647",
+      "expression": "((latency_ms IS NULL) OR ((latency_ms >= 0) AND (latency_ms <= 2147483647)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_latency_ms_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -1504,9 +1766,11 @@
       "columns": [
         "local_key"
       ],
-      "expression": "local_key IS NULL OR local_key = 'local'::text",
+      "expression": "((local_key IS NULL) OR (local_key = 'local'::text))",
+      "key_expressions": [],
       "kind": "check",
       "name": "owner_principals_local_key_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_principals"
@@ -1516,8 +1780,10 @@
         "local_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "owner_principals_local_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_principals"
@@ -1527,8 +1793,10 @@
         "market_snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publications_market_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1540,8 +1808,10 @@
         "market_snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_snapshots_market_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1553,8 +1823,10 @@
         "market_snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_runs_market_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1566,9 +1838,11 @@
         "mature_count",
         "immature_count"
       ],
-      "expression": "mature_count >= 0 AND immature_count >= 0",
+      "expression": "((mature_count >= 0) AND (immature_count >= 0))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_validation_commands_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validation_commands"
@@ -1577,9 +1851,11 @@
       "columns": [
         "method"
       ],
-      "expression": "method::text = ANY (ARRAY['direct'::character varying, 'manual'::character varying, 'ai'::character varying]::text[])",
+      "expression": "((method)::text = ANY ((ARRAY['direct'::character varying, 'manual'::character varying, 'ai'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_associations_method_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_associations"
@@ -1589,8 +1865,10 @@
         "news_input_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publications_news_input_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1601,9 +1879,11 @@
       "columns": [
         "news_type"
       ],
-      "expression": "news_type::text = ANY (ARRAY['news'::character varying, 'announcement'::character varying, 'research'::character varying]::text[])",
+      "expression": "((news_type)::text = ANY ((ARRAY['news'::character varying, 'announcement'::character varying, 'research'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_article_revisions_news_type_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_article_revisions"
@@ -1614,8 +1894,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_pending_validations_observation_run_id_topic_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "role_run_id",
         "topic_id"
@@ -1628,8 +1910,10 @@
         "observation_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_pending_validations_observation_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1640,9 +1924,11 @@
       "columns": [
         "outcome"
       ],
-      "expression": "outcome::text = ANY (ARRAY['supported'::character varying, 'weakened'::character varying, 'refuted'::character varying, 'not_due'::character varying]::text[])",
+      "expression": "((outcome)::text = ANY ((ARRAY['supported'::character varying, 'weakened'::character varying, 'refuted'::character varying, 'not_due'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "verification_outcome_valid",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_verifications"
@@ -1651,9 +1937,11 @@
       "columns": [
         "outcome"
       ],
-      "expression": "outcome::text = ANY (ARRAY['supported'::character varying, 'weakened'::character varying, 'refuted'::character varying, 'unavailable'::character varying]::text[])",
+      "expression": "((outcome)::text = ANY ((ARRAY['supported'::character varying, 'weakened'::character varying, 'refuted'::character varying, 'unavailable'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_validations_outcome",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validations"
@@ -1664,8 +1952,10 @@
         "derived_from_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "notes_derived_owner_fk",
+      "operators": [],
       "referenced_columns": [
         "owner_id",
         "id"
@@ -1679,8 +1969,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "private_audit_events_owner_id_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "private_audit_events"
@@ -1691,8 +1983,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "review_note_revisions_owner_id_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_note_revisions"
@@ -1703,8 +1997,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "review_notes_owner_id_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_notes"
@@ -1715,8 +2011,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "review_verifications_owner_id_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_verifications"
@@ -1727,8 +2025,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "watch_entries_owner_id_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "watch_entries"
@@ -1739,8 +2039,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "ai_task_cancellations_owner_id_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_cancellations"
@@ -1751,8 +2053,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "ai_task_reviews_owner_id_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_reviews"
@@ -1763,8 +2067,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "ai_tasks_owner_id_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -1775,8 +2081,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "analysis_jobs_owner_id_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "analysis_jobs"
@@ -1787,8 +2095,10 @@
         "idempotency_key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_review_commands_owner_id_idempotency_key_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_review_commands"
@@ -1799,8 +2109,10 @@
         "key"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "owner_commands_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_commands"
@@ -1812,8 +2124,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "review_note_revisions_owner_id_note_id_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_note_revisions"
@@ -1826,8 +2140,10 @@
         "id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "review_verifications_owner_id_note_id_revision_id_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_verifications"
@@ -1840,8 +2156,10 @@
         "supersedes"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_verifications_owner_id_note_id_revision_id_supersed_fkey",
+      "operators": [],
       "referenced_columns": [
         "owner_id",
         "note_id",
@@ -1858,8 +2176,10 @@
         "revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_verifications_owner_id_note_id_revision_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "owner_id",
         "note_id",
@@ -1875,8 +2195,10 @@
         "version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "review_note_revisions_owner_id_note_id_version_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_note_revisions"
@@ -1887,8 +2209,10 @@
         "note_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_note_revisions_owner_id_note_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "owner_id",
         "id"
@@ -1902,8 +2226,10 @@
         "note_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_verifications_owner_id_note_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "owner_id",
         "id"
@@ -1917,8 +2243,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "watch_entries_owner_id_security_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "watch_entries"
@@ -1928,8 +2256,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_task_cancellations_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1941,8 +2271,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_task_reviews_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1954,8 +2286,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_tasks_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1967,8 +2301,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "analysis_jobs_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1980,8 +2316,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_association_reviews_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -1993,8 +2331,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_review_audit_events_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2006,8 +2346,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_review_commands_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2019,8 +2361,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "owner_commands_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2032,8 +2376,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "owner_pairings_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2045,8 +2391,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "owner_sessions_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2058,8 +2406,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "private_audit_events_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2071,8 +2421,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_note_revisions_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2084,8 +2436,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_notes_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2097,8 +2451,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_verifications_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2110,8 +2466,10 @@
         "owner_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "watch_entries_owner_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2126,8 +2484,10 @@
         "pending_result_role"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_pending_validations_pending_result_id_observation_run_fkey",
+      "operators": [],
       "referenced_columns": [
         "id",
         "role_run_id",
@@ -2142,8 +2502,10 @@
         "pending_result_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_pending_validations_pending_result_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2155,8 +2517,10 @@
         "pending_result_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_pending_validations_pending_result_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_pending_validations"
@@ -2165,9 +2529,11 @@
       "columns": [
         "pending_result_role"
       ],
-      "expression": "pending_result_role::text = 'relay'::text",
+      "expression": "((pending_result_role)::text = 'relay'::text)",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_pending_validations_relay",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_pending_validations"
@@ -2178,8 +2544,10 @@
         "revision"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_validations_pending_validation_id_revision_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validations"
@@ -2189,8 +2557,10 @@
         "pending_validation_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_validations_pending_validation_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2201,9 +2571,11 @@
       "columns": [
         "position"
       ],
-      "expression": "\"position\" >= 0 AND \"position\" < 5",
+      "expression": "((\"position\" >= 0) AND (\"position\" < 5))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_validation_inputs_position",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validation_inputs"
@@ -2212,9 +2584,11 @@
       "columns": [
         "position"
       ],
-      "expression": "\"position\" >= 0",
+      "expression": "(\"position\" >= 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_snapshot_items_position_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_snapshot_items"
@@ -2223,9 +2597,11 @@
       "columns": [
         "position"
       ],
-      "expression": "\"position\" >= 0",
+      "expression": "(\"position\" >= 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_snapshot_events_position_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_events"
@@ -2234,9 +2610,11 @@
       "columns": [
         "position"
       ],
-      "expression": "\"position\" >= 0",
+      "expression": "(\"position\" >= 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_snapshot_rules_position_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_rules"
@@ -2246,8 +2624,10 @@
         "previous_comparable_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_runs_previous_comparable_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2259,8 +2639,10 @@
         "previous_role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_change_summaries_previous_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2273,8 +2655,10 @@
         "domain"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "publication_results_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publication_results"
@@ -2284,8 +2668,10 @@
         "publication_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publication_attempts_publication_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2297,8 +2683,10 @@
         "publication_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publication_results_publication_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2310,8 +2698,10 @@
         "publication_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "source_dependencies_publication_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2323,8 +2713,10 @@
         "publication_sequence"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "publications_publication_sequence_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publications"
@@ -2334,8 +2726,10 @@
         "publication_sequence"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "topic_snapshots_publication_sequence_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_snapshots"
@@ -2345,8 +2739,10 @@
         "regulation_input_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publications_regulation_input_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2357,9 +2753,11 @@
       "columns": [
         "result_type"
       ],
-      "expression": "result_type::text = ANY (ARRAY['rule'::character varying, 'event'::character varying, 'status'::character varying, 'snapshot'::character varying]::text[])",
+      "expression": "((result_type)::text = ANY ((ARRAY['rule'::character varying, 'event'::character varying, 'status'::character varying, 'snapshot'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_commands_result_type",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_commands"
@@ -2369,8 +2767,10 @@
         "review_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_review_commands_review_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2381,9 +2781,11 @@
       "columns": [
         "review_switch"
       ],
-      "expression": "review_switch::text = ANY (ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying]::text[])",
+      "expression": "((review_switch)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_rules_review_switch_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rules"
@@ -2392,9 +2794,11 @@
       "columns": [
         "revision"
       ],
-      "expression": "revision > 0",
+      "expression": "(revision > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_drafts_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_drafts"
@@ -2403,9 +2807,11 @@
       "columns": [
         "revision"
       ],
-      "expression": "revision > 0",
+      "expression": "(revision > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_article_revisions_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_article_revisions"
@@ -2414,9 +2820,11 @@
       "columns": [
         "revision"
       ],
-      "expression": "revision > 0",
+      "expression": "(revision > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_association_reviews_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_association_reviews"
@@ -2425,9 +2833,11 @@
       "columns": [
         "revision"
       ],
-      "expression": "revision > 0",
+      "expression": "(revision > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_snapshot_items_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_snapshot_items"
@@ -2436,9 +2846,11 @@
       "columns": [
         "revision"
       ],
-      "expression": "revision > 0",
+      "expression": "(revision > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "snapshots_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "snapshots"
@@ -2447,9 +2859,11 @@
       "columns": [
         "revision"
       ],
-      "expression": "revision > 0",
+      "expression": "(revision > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "topic_snapshots_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_snapshots"
@@ -2458,9 +2872,11 @@
       "columns": [
         "role"
       ],
-      "expression": "role::text = ANY (ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying]::text[])",
+      "expression": "((role)::text = ANY ((ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_change_summaries_role",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_change_summaries"
@@ -2469,9 +2885,11 @@
       "columns": [
         "role"
       ],
-      "expression": "role::text = ANY (ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying]::text[])",
+      "expression": "((role)::text = ANY ((ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_changes_role",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_changes"
@@ -2480,9 +2898,11 @@
       "columns": [
         "role"
       ],
-      "expression": "role::text = ANY (ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying]::text[])",
+      "expression": "((role)::text = ANY ((ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_results_role",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_results"
@@ -2491,9 +2911,11 @@
       "columns": [
         "role"
       ],
-      "expression": "role::text = ANY (ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying]::text[])",
+      "expression": "((role)::text = ANY ((ARRAY['trend'::character varying, 'core'::character varying, 'emotion'::character varying, 'catchup'::character varying, 'follower'::character varying, 'relay'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_topic_statuses_role",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_topic_statuses"
@@ -2503,8 +2925,10 @@
         "role_input_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publications_role_input_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2518,8 +2942,10 @@
         "role"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_change_summaries_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_change_summaries"
@@ -2531,8 +2957,10 @@
         "role"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_topic_statuses_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_topic_statuses"
@@ -2547,8 +2975,10 @@
         "window"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_factor_observations_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_factor_observations"
@@ -2563,8 +2993,10 @@
         "rule_version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_results_complete_business_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_results"
@@ -2577,8 +3009,10 @@
         "role"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_changes_role_run_id_topic_id_security_id_role_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_changes"
@@ -2590,8 +3024,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_limit_rows_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_limit_rows"
@@ -2602,8 +3038,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_change_summaries_role_run_id_topic_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "role_run_id",
         "topic_id"
@@ -2617,8 +3055,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_changes_role_run_id_topic_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "role_run_id",
         "topic_id"
@@ -2632,8 +3072,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_factor_observations_role_run_id_topic_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "role_run_id",
         "topic_id"
@@ -2647,8 +3089,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_limit_rows_role_run_id_topic_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "role_run_id",
         "topic_id"
@@ -2662,8 +3106,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_results_role_run_id_topic_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "role_run_id",
         "topic_id"
@@ -2677,8 +3123,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_topic_statuses_role_run_id_topic_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "role_run_id",
         "topic_id"
@@ -2692,8 +3140,10 @@
         "topic_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_run_topics_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_run_topics"
@@ -2703,8 +3153,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_change_summaries_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2716,8 +3168,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_changes_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2729,8 +3183,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_factor_observations_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2742,8 +3198,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_limit_rows_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2755,8 +3213,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_materialization_attempts_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2768,8 +3228,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_results_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2781,8 +3243,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_run_topics_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2794,8 +3258,10 @@
         "role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_topic_statuses_role_run_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2808,8 +3274,10 @@
         "rule_version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_events_rule_id_rule_version_fkey",
+      "operators": [],
       "referenced_columns": [
         "rule_id",
         "rule_version"
@@ -2823,8 +3291,10 @@
         "rule_version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_rules_rule_id_rule_version_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rules"
@@ -2834,8 +3304,10 @@
         "rule_record_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_calculations_rule_record_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2847,8 +3319,10 @@
         "rule_record_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_rule_statuses_rule_record_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2860,8 +3334,10 @@
         "rule_record_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_snapshot_inputs_rule_record_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2873,8 +3349,10 @@
         "rule_record_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_snapshot_rules_rule_record_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -2885,9 +3363,11 @@
       "columns": [
         "scope"
       ],
-      "expression": "scope::text = ANY (ARRAY['display'::character varying, 'storage'::character varying]::text[])",
+      "expression": "((scope)::text = ANY ((ARRAY['display'::character varying, 'storage'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "withdrawal_records_scope_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_records"
@@ -2896,9 +3376,11 @@
       "columns": [
         "seal_amount"
       ],
-      "expression": "seal_amount IS NULL OR seal_amount >= 0::numeric",
+      "expression": "((seal_amount IS NULL) OR (seal_amount >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "limit_up_record_seal_amount_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "limit_up_record"
@@ -2910,8 +3392,10 @@
         "valid_from"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "security_state_history_security_id_state_type_valid_from_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "security_state_history"
@@ -2924,8 +3408,10 @@
         "source_version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "daily_kline_security_id_trade_date_source_source_version_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -2938,8 +3424,10 @@
         "source_version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "index_daily_kline_security_id_trade_date_source_source_vers_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -2952,8 +3440,10 @@
         "source_version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "limit_up_record_security_id_trade_date_source_source_versio_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "limit_up_record"
@@ -2963,8 +3453,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "daily_kline_security_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "security_id"
       ],
@@ -2976,8 +3468,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "index_daily_kline_security_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "security_id"
       ],
@@ -2989,8 +3483,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "limit_up_record_security_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "security_id"
       ],
@@ -3002,8 +3498,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "security_state_history_security_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "security_id"
       ],
@@ -3015,8 +3513,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "security_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "security"
@@ -3025,9 +3525,11 @@
       "columns": [
         "selected_revision"
       ],
-      "expression": "selected_revision IS NULL OR selected_revision > 0",
+      "expression": "((selected_revision IS NULL) OR (selected_revision > 0))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_selected_revision_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -3037,8 +3539,10 @@
         "sequence"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_rule_statuses_sequence_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rule_statuses"
@@ -3048,8 +3552,10 @@
         "sequence"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "withdrawal_records_sequence_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_records"
@@ -3060,8 +3566,10 @@
         "article_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_snapshot_items_snapshot_id_article_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_snapshot_items"
@@ -3072,8 +3580,10 @@
         "article_revision_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "news_snapshot_items_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_snapshot_items"
@@ -3084,8 +3594,10 @@
         "event_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_snapshot_events_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_events"
@@ -3096,8 +3608,10 @@
         "position"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_snapshot_items_snapshot_id_position_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_snapshot_items"
@@ -3108,8 +3622,10 @@
         "position"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_snapshot_events_snapshot_id_position_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_events"
@@ -3120,8 +3636,10 @@
         "position"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_snapshot_rules_snapshot_id_position_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_rules"
@@ -3133,8 +3651,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_calculations_snapshot_id_rule_record_id_securit_fkey",
+      "operators": [],
       "referenced_columns": [
         "snapshot_id",
         "rule_record_id",
@@ -3150,8 +3670,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_snapshot_inputs_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_inputs"
@@ -3163,8 +3685,10 @@
         "security_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "regulation_calculations_snapshot_id_rule_record_id_security_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_calculations"
@@ -3175,8 +3699,10 @@
         "rule_record_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "regulation_snapshot_rules_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_snapshot_rules"
@@ -3186,8 +3712,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_tasks_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3199,8 +3727,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "analysis_jobs_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3212,8 +3742,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_snapshot_items_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3225,8 +3757,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_calculations_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3238,8 +3772,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_snapshot_events_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3251,8 +3787,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_snapshot_inputs_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3264,8 +3802,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_snapshot_rules_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3277,8 +3817,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_notes_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3290,8 +3832,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "review_verifications_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3303,8 +3847,10 @@
         "snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "watch_entries_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3320,9 +3866,11 @@
         "token_usage",
         "cost"
       ],
-      "expression": "source::text = 'provider'::text AND model_version IS NOT NULL AND prompt_version IS NOT NULL AND provider IS NOT NULL AND token_usage IS NOT NULL AND cost IS NOT NULL OR source::text <> 'provider'::text AND model_version IS NULL AND prompt_version IS NULL AND provider IS NULL AND token_usage IS NULL AND cost IS NULL",
+      "expression": "((((source)::text = 'provider'::text) AND (model_version IS NOT NULL) AND (prompt_version IS NOT NULL) AND (provider IS NOT NULL) AND (token_usage IS NOT NULL) AND (cost IS NOT NULL)) OR (((source)::text <> 'provider'::text) AND (model_version IS NULL) AND (prompt_version IS NULL) AND (provider IS NULL) AND (token_usage IS NULL) AND (cost IS NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_drafts_source_metadata",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_drafts"
@@ -3331,9 +3879,11 @@
       "columns": [
         "source"
       ],
-      "expression": "source::text = ANY (ARRAY['deterministic_template'::character varying, 'provider'::character varying, 'human_edit'::character varying]::text[])",
+      "expression": "((source)::text = ANY ((ARRAY['deterministic_template'::character varying, 'provider'::character varying, 'human_edit'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_drafts_source_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_drafts"
@@ -3343,8 +3893,10 @@
         "source_archive_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "daily_kline_source_archive_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3356,8 +3908,10 @@
         "source_archive_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "index_daily_kline_source_archive_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3369,8 +3923,10 @@
         "source_archive_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "limit_up_record_source_archive_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3382,8 +3938,10 @@
         "source_archive_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "security_source_archive_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3395,8 +3953,10 @@
         "source_archive_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "security_state_history_source_archive_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3409,9 +3969,11 @@
         "archive_type",
         "archive_id"
       ],
-      "expression": "source_dependency_id IS NOT NULL AND archive_type IS NULL AND archive_id IS NULL OR source_dependency_id IS NULL AND archive_type IS NOT NULL AND archive_id IS NOT NULL",
+      "expression": "(((source_dependency_id IS NOT NULL) AND (archive_type IS NULL) AND (archive_id IS NULL)) OR ((source_dependency_id IS NULL) AND (archive_type IS NOT NULL) AND (archive_id IS NOT NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "withdrawal_dependencies_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_dependencies"
@@ -3421,8 +3983,10 @@
         "source_dependency_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "withdrawal_dependencies_source_dependency_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3438,8 +4002,10 @@
         "derived_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "source_dependencies_source_id_archive_type_archive_id_deriv_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "source_dependencies"
@@ -3450,8 +4016,10 @@
         "module"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "publication_module_controls_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publication_module_controls"
@@ -3463,8 +4031,10 @@
         "revision"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_article_revisions_source_id_source_article_id_revision_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_article_revisions"
@@ -3475,8 +4045,10 @@
         "source_article_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "news_articles_source_id_source_article_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_articles"
@@ -3486,9 +4058,11 @@
         "source_id",
         "source_version"
       ],
-      "expression": "source_id IS NOT NULL AND source_version IS NOT NULL",
+      "expression": "(((source_id IS NULL) AND (source_version IS NULL)) OR ((source_id IS NOT NULL) AND (source_version IS NOT NULL) AND (source_id ~ '^[A-Za-z0-9_.:-]{1,200}$'::text) AND ((source_version)::text ~ '^[A-Za-z0-9_.:-]{1,200}$'::text)))",
+      "key_expressions": [],
       "kind": "check",
-      "name": "regulation_events_source_provenance_required",
+      "name": "regulation_events_source_provenance",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_events"
@@ -3498,9 +4072,11 @@
         "source_id",
         "source_version"
       ],
-      "expression": "source_id IS NULL AND source_version IS NULL OR source_id IS NOT NULL AND source_version IS NOT NULL AND source_id ~ '^[A-Za-z0-9_.:-]{1,200}$'::text AND source_version::text ~ '^[A-Za-z0-9_.:-]{1,200}$'::text",
+      "expression": "((source_id IS NOT NULL) AND (source_version IS NOT NULL))",
+      "key_expressions": [],
       "kind": "check",
-      "name": "regulation_events_source_provenance",
+      "name": "regulation_events_source_provenance_required",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_events"
@@ -3512,8 +4088,10 @@
         "revision"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "snapshots_source_id_trade_date_revision_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "snapshots"
@@ -3525,8 +4103,10 @@
         "revision"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "topic_snapshots_source_id_trade_date_revision_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_snapshots"
@@ -3536,8 +4116,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "import_batches_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3549,8 +4131,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "market_import_attempts_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3562,8 +4146,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "market_import_tasks_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3575,8 +4161,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_article_revisions_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3588,8 +4176,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "news_articles_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3601,8 +4191,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "regulation_events_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3614,8 +4206,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "snapshots_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3627,8 +4221,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "source_dependencies_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3640,8 +4236,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "topic_import_attempts_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3653,8 +4251,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "topic_import_batches_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3666,8 +4266,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "topic_snapshots_source_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "source_id"
       ],
@@ -3679,8 +4281,10 @@
         "source_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "source_grants_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "source_grants"
@@ -3690,9 +4294,11 @@
         "state",
         "reasons"
       ],
-      "expression": "state::text = 'pending'::text AND jsonb_array_length(reasons) > 0 OR state::text <> 'pending'::text AND jsonb_array_length(reasons) = 0",
+      "expression": "((((state)::text = 'pending'::text) AND (jsonb_array_length(reasons) > 0)) OR (((state)::text <> 'pending'::text) AND (jsonb_array_length(reasons) = 0)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_calculations_pending_reason",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_calculations"
@@ -3701,9 +4307,11 @@
       "columns": [
         "state"
       ],
-      "expression": "state::text = ANY (ARRAY['draft'::character varying, 'confirmed'::character varying]::text[])",
+      "expression": "((state)::text = ANY ((ARRAY['draft'::character varying, 'confirmed'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "notes_state_valid",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_notes"
@@ -3712,9 +4320,11 @@
       "columns": [
         "state"
       ],
-      "expression": "state::text = ANY (ARRAY['draft'::character varying, 'confirmed'::character varying]::text[])",
+      "expression": "((state)::text = ANY ((ARRAY['draft'::character varying, 'confirmed'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "revisions_state_valid",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_note_revisions"
@@ -3723,9 +4333,11 @@
       "columns": [
         "state"
       ],
-      "expression": "state::text = ANY (ARRAY['pending'::character varying, 'idle'::character varying, 'approaching_alert'::character varying, 'triggered'::character varying]::text[])",
+      "expression": "((state)::text = ANY ((ARRAY['pending'::character varying, 'idle'::character varying, 'approaching_alert'::character varying, 'triggered'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_calculations_state_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_calculations"
@@ -3738,9 +4350,11 @@
         "lease_expires_at",
         "completed_at"
       ],
-      "expression": "status::text = 'pending'::text AND lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND completed_at IS NULL OR status::text = 'running'::text AND lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND completed_at IS NULL OR (status::text = ANY (ARRAY['succeeded'::character varying, 'failed'::character varying, 'cancelled'::character varying]::text[])) AND lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND completed_at IS NOT NULL",
+      "expression": "((((status)::text = 'pending'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (completed_at IS NULL)) OR (((status)::text = 'running'::text) AND (lease_token IS NOT NULL) AND (lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL) AND (completed_at IS NULL)) OR (((status)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (completed_at IS NOT NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_state",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -3755,9 +4369,11 @@
         "failure",
         "completed_at"
       ],
-      "expression": "status::text = 'queued'::text AND lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND result IS NULL AND failure IS NULL AND completed_at IS NULL OR status::text = 'running'::text AND lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND result IS NULL AND failure IS NULL AND completed_at IS NULL OR status::text = 'succeeded'::text AND lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND result IS NOT NULL AND failure IS NULL AND completed_at IS NOT NULL OR status::text = 'failed'::text AND lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND result IS NULL AND failure IS NOT NULL AND completed_at IS NOT NULL",
+      "expression": "((((status)::text = 'queued'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR (((status)::text = 'running'::text) AND (lease_token IS NOT NULL) AND (lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL) AND (result IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR (((status)::text = 'succeeded'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NOT NULL) AND (failure IS NULL) AND (completed_at IS NOT NULL)) OR (((status)::text = 'failed'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NULL) AND (failure IS NOT NULL) AND (completed_at IS NOT NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "analysis_jobs_state",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "analysis_jobs"
@@ -3767,9 +4383,11 @@
         "status",
         "materialized_at"
       ],
-      "expression": "status::text = 'draft'::text AND materialized_at IS NULL OR status::text = 'materialized'::text AND materialized_at IS NOT NULL",
+      "expression": "((((status)::text = 'draft'::text) AND (materialized_at IS NULL)) OR (((status)::text = 'materialized'::text) AND (materialized_at IS NOT NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_runs_status_materialized_at",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_runs"
@@ -3779,9 +4397,11 @@
         "status",
         "publication_id"
       ],
-      "expression": "status::text = 'published'::text AND publication_id IS NOT NULL OR status::text = 'failed'::text AND publication_id IS NULL",
+      "expression": "((((status)::text = 'published'::text) AND (publication_id IS NOT NULL)) OR (((status)::text = 'failed'::text) AND (publication_id IS NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "publication_attempts_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publication_attempts"
@@ -3791,9 +4411,11 @@
         "status",
         "published_at"
       ],
-      "expression": "status::text = 'draft'::text AND published_at IS NULL OR (status::text = ANY (ARRAY['published'::character varying, 'revoked'::character varying]::text[])) AND published_at IS NOT NULL",
+      "expression": "((((status)::text = 'draft'::text) AND (published_at IS NULL)) OR (((status)::text = ANY ((ARRAY['published'::character varying, 'revoked'::character varying])::text[])) AND (published_at IS NOT NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "publications_status_published_at",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publications"
@@ -3803,9 +4425,11 @@
         "status",
         "role_run_id"
       ],
-      "expression": "status::text = 'materialized'::text AND role_run_id IS NOT NULL OR status::text = 'failed'::text AND role_run_id IS NULL",
+      "expression": "((((status)::text = 'materialized'::text) AND (role_run_id IS NOT NULL)) OR (((status)::text = 'failed'::text) AND (role_run_id IS NULL)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_materialization_attempts_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_materialization_attempts"
@@ -3814,9 +4438,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['accepted'::character varying, 'unreviewed'::character varying, 'rejected'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['accepted'::character varying, 'unreviewed'::character varying, 'rejected'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_associations_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_associations"
@@ -3825,9 +4451,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['active'::character varying, 'withdrawn'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['active'::character varying, 'withdrawn'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_rule_statuses_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rule_statuses"
@@ -3836,9 +4464,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['draft'::character varying, 'materialized'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['draft'::character varying, 'materialized'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_runs_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_runs"
@@ -3847,9 +4477,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['draft'::character varying, 'published'::character varying, 'revoked'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['draft'::character varying, 'published'::character varying, 'revoked'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "publications_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publications"
@@ -3858,9 +4490,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['failed'::character varying, 'materialized'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['failed'::character varying, 'materialized'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_materialization_attempts_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_materialization_attempts"
@@ -3869,9 +4503,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['failed'::character varying, 'published'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['failed'::character varying, 'published'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "publication_attempts_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publication_attempts"
@@ -3880,9 +4516,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['failed'::character varying, 'succeeded'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['failed'::character varying, 'succeeded'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "topic_import_attempts_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "topic_import_attempts"
@@ -3891,9 +4529,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['pending'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'cancelled'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -3902,9 +4542,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['quarantined'::character varying, 'succeeded'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['quarantined'::character varying, 'succeeded'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "market_import_attempts_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "market_import_attempts"
@@ -3913,9 +4555,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['quarantined'::character varying, 'succeeded'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['quarantined'::character varying, 'succeeded'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "market_import_tasks_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "market_import_tasks"
@@ -3924,9 +4568,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['queued'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "analysis_jobs_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "analysis_jobs"
@@ -3935,9 +4581,11 @@
       "columns": [
         "status"
       ],
-      "expression": "status::text = ANY (ARRAY['ready'::character varying, 'missing'::character varying, 'disabled'::character varying]::text[])",
+      "expression": "((status)::text = ANY ((ARRAY['ready'::character varying, 'missing'::character varying, 'disabled'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "publication_results_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publication_results"
@@ -3947,8 +4595,10 @@
         "supersedes"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publications_supersedes_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3960,8 +4610,10 @@
         "supersedes"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_validations_supersedes_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3973,8 +4625,10 @@
         "supersedes"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "snapshots_supersedes_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3986,8 +4640,10 @@
         "supersedes"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "topic_snapshots_supersedes_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -3998,9 +4654,11 @@
       "columns": [
         "target_type"
       ],
-      "expression": "target_type::text = ANY (ARRAY['security'::character varying, 'topic'::character varying]::text[])",
+      "expression": "((target_type)::text = ANY ((ARRAY['security'::character varying, 'topic'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "news_associations_target_type_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "news_associations"
@@ -4011,8 +4669,10 @@
         "revision"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "ai_task_drafts_task_id_revision_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_drafts"
@@ -4022,8 +4682,10 @@
         "task_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_task_cancellations_task_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4035,8 +4697,10 @@
         "task_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_task_drafts_task_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4048,8 +4712,10 @@
         "task_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "ai_task_reviews_task_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4061,8 +4727,10 @@
         "task_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "market_import_attempts_task_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4073,9 +4741,11 @@
       "columns": [
         "task_type"
       ],
-      "expression": "task_type::text = ANY (ARRAY['summarize'::character varying, 'topic_suggest'::character varying, 'explain_stock'::character varying, 'daily_review'::character varying]::text[])",
+      "expression": "((task_type)::text = ANY ((ARRAY['summarize'::character varying, 'topic_suggest'::character varying, 'explain_stock'::character varying, 'daily_review'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_task_type_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -4085,8 +4755,10 @@
         "through_market_snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_validation_commands_through_market_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4098,8 +4770,10 @@
         "token_hash"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "owner_sessions_token_hash_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "owner_sessions"
@@ -4108,9 +4782,11 @@
       "columns": [
         "token_usage"
       ],
-      "expression": "token_usage IS NULL OR token_usage >= 0 AND token_usage <= 10000000",
+      "expression": "((token_usage IS NULL) OR ((token_usage >= 0) AND (token_usage <= 10000000)))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_token_usage_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -4120,8 +4796,10 @@
         "topic_snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "publications_topic_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4133,8 +4811,10 @@
         "topic_snapshot_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_runs_topic_snapshot_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4145,9 +4825,11 @@
       "columns": [
         "total_mv"
       ],
-      "expression": "total_mv IS NULL OR total_mv >= 0::numeric",
+      "expression": "((total_mv IS NULL) OR (total_mv >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "daily_kline_total_mv_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -4156,9 +4838,11 @@
       "columns": [
         "total_mv"
       ],
-      "expression": "total_mv IS NULL OR total_mv >= 0::numeric",
+      "expression": "((total_mv IS NULL) OR (total_mv >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "index_daily_kline_total_mv_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -4169,8 +4853,10 @@
         "version"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "publications_trade_date_version_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publications"
@@ -4179,9 +4865,11 @@
       "columns": [
         "turnover_rate"
       ],
-      "expression": "turnover_rate IS NULL OR turnover_rate >= 0::numeric",
+      "expression": "((turnover_rate IS NULL) OR (turnover_rate >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "daily_kline_turnover_rate_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -4190,9 +4878,11 @@
       "columns": [
         "turnover_rate"
       ],
-      "expression": "turnover_rate IS NULL OR turnover_rate >= 0::numeric",
+      "expression": "((turnover_rate IS NULL) OR (turnover_rate >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "index_daily_kline_turnover_rate_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -4202,9 +4892,11 @@
         "valid_to",
         "valid_from"
       ],
-      "expression": "valid_to IS NULL OR valid_to > valid_from",
+      "expression": "((valid_to IS NULL) OR (valid_to > valid_from))",
+      "key_expressions": [],
       "kind": "check",
       "name": "security_state_history_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "security_state_history"
@@ -4215,8 +4907,10 @@
         "input_role_run_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "role_validation_inputs_validation_id_input_role_run_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validation_inputs"
@@ -4227,8 +4921,10 @@
         "position"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "role_validation_inputs_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_validation_inputs"
@@ -4238,8 +4934,10 @@
         "validation_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "role_validation_inputs_validation_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4250,9 +4948,11 @@
       "columns": [
         "verification_status"
       ],
-      "expression": "verification_status::text = ANY (ARRAY['pending'::character varying, 'passed'::character varying, 'failed'::character varying, 'needs_human'::character varying]::text[])",
+      "expression": "((verification_status)::text = ANY ((ARRAY['pending'::character varying, 'passed'::character varying, 'failed'::character varying, 'needs_human'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_task_reviews_verification_status",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_task_reviews"
@@ -4261,9 +4961,11 @@
       "columns": [
         "verification_status"
       ],
-      "expression": "verification_status::text = ANY (ARRAY['pending'::character varying, 'passed'::character varying, 'failed'::character varying, 'needs_human'::character varying]::text[])",
+      "expression": "((verification_status)::text = ANY ((ARRAY['pending'::character varying, 'passed'::character varying, 'failed'::character varying, 'needs_human'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "ai_tasks_verification_status_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "ai_tasks"
@@ -4272,9 +4974,11 @@
       "columns": [
         "version"
       ],
-      "expression": "version > 0",
+      "expression": "(version > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "notes_version_positive",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_notes"
@@ -4283,9 +4987,11 @@
       "columns": [
         "version"
       ],
-      "expression": "version > 0",
+      "expression": "(version > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "publications_version_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "publications"
@@ -4294,9 +5000,11 @@
       "columns": [
         "version"
       ],
-      "expression": "version > 0",
+      "expression": "(version > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "revisions_version_positive",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "review_note_revisions"
@@ -4305,9 +5013,11 @@
       "columns": [
         "version"
       ],
-      "expression": "version > 0",
+      "expression": "(version > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "watch_version_positive",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "watch_entries"
@@ -4316,9 +5026,11 @@
       "columns": [
         "visibility_mode"
       ],
-      "expression": "visibility_mode::text = ANY (ARRAY['contemporaneous'::character varying, 'retrospective'::character varying]::text[])",
+      "expression": "((visibility_mode)::text = ANY ((ARRAY['contemporaneous'::character varying, 'retrospective'::character varying])::text[]))",
+      "key_expressions": [],
       "kind": "check",
       "name": "role_runs_visibility_mode_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "role_runs"
@@ -4327,9 +5039,11 @@
       "columns": [
         "volume"
       ],
-      "expression": "volume IS NULL OR volume >= 0::numeric",
+      "expression": "((volume IS NULL) OR (volume >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "daily_kline_volume_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "daily_kline"
@@ -4338,9 +5052,11 @@
       "columns": [
         "volume"
       ],
-      "expression": "volume IS NULL OR volume >= 0::numeric",
+      "expression": "((volume IS NULL) OR (volume >= (0)::numeric))",
+      "key_expressions": [],
       "kind": "check",
       "name": "index_daily_kline_volume_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "index_daily_kline"
@@ -4349,9 +5065,11 @@
       "columns": [
         "window_days"
       ],
-      "expression": "window_days > 0",
+      "expression": "(window_days > 0)",
+      "key_expressions": [],
       "kind": "check",
       "name": "regulation_rules_window_days_check",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "regulation_rules"
@@ -4363,8 +5081,10 @@
         "archive_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "withdrawal_dependencies_withdrawal_id_archive_type_archive__key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_dependencies"
@@ -4375,8 +5095,10 @@
         "source_dependency_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "unique",
       "name": "withdrawal_dependencies_withdrawal_id_source_dependency_id_key",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_dependencies"
@@ -4386,8 +5108,10 @@
         "withdrawal_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "withdrawal_binding_seals_withdrawal_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4399,8 +5123,10 @@
         "withdrawal_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "foreign_key",
       "name": "withdrawal_dependencies_withdrawal_id_fkey",
+      "operators": [],
       "referenced_columns": [
         "id"
       ],
@@ -4412,11 +5138,32 @@
         "withdrawal_id"
       ],
       "expression": null,
+      "key_expressions": [],
       "kind": "primary_key",
       "name": "withdrawal_binding_seals_pkey",
+      "operators": [],
       "referenced_columns": [],
       "referenced_table": null,
       "table": "withdrawal_binding_seals"
+    },
+    {
+      "columns": [],
+      "expression": null,
+      "key_expressions": [
+        "security_id",
+        "state_type",
+        "daterange(valid_from, valid_to, '[)'::text)"
+      ],
+      "kind": "exclusion",
+      "name": "security_state_history_no_overlap",
+      "operators": [
+        "=",
+        "=",
+        "&&"
+      ],
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "security_state_history"
     }
   ],
   "indexes": [
@@ -6109,6 +6856,7 @@
       "valid": true
     }
   ],
+  "postgresql_major": 17,
   "schema": "dragon-radar.postgresql-schema-contract",
   "schema_version": 1,
   "tables": [
