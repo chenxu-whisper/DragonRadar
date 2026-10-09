@@ -1,5 +1,6 @@
 """Release migration manifest tests freeze the Task 00-20 Alembic graph."""
 
+import hashlib
 import json
 import runpy
 import shutil
@@ -93,6 +94,55 @@ def test_release_manifest_matches_single_linear_graph(verifier):
 
 def test_release_manifest_accepts_repository_root(verifier):
     assert verifier["verify_manifest"](ROOT)["errors"] == []
+
+
+def test_release_manifest_hashes_match_committed_git_blobs():
+    manifest = read_manifest()
+
+    for entry in manifest["revisions"]:
+        relative_path = (MIGRATIONS / "versions" / entry["filename"]).relative_to(ROOT)
+        committed_bytes = subprocess.check_output(
+            ["git", "cat-file", "blob", f"HEAD:{relative_path.as_posix()}"],
+            cwd=ROOT,
+        )
+
+        assert b"\r\n" not in committed_bytes
+        assert entry["sha256"] == hashlib.sha256(committed_bytes).hexdigest()
+        assert entry["bytes"] == len(committed_bytes)
+
+
+def test_migration_fingerprint_normalizes_crlf_but_not_bare_cr(verifier, tmp_path):
+    lf_path = tmp_path / "lf.py"
+    crlf_path = tmp_path / "crlf.py"
+    bare_cr_path = tmp_path / "bare-cr.py"
+    lf_path.write_bytes(b"first\nsecond\n")
+    crlf_path.write_bytes(b"first\r\nsecond\r\n")
+    bare_cr_path.write_bytes(b"first\rsecond\r")
+
+    migration_fingerprint = verifier["migration_fingerprint"]
+
+    assert migration_fingerprint(lf_path) == migration_fingerprint(crlf_path)
+    assert migration_fingerprint(lf_path)[1] == len(b"first\nsecond\n")
+    assert migration_fingerprint(lf_path) != migration_fingerprint(bare_cr_path)
+
+
+def test_release_manifest_accepts_lf_and_crlf_checkouts(verifier, copied_migrations):
+    manifest = read_manifest(copied_migrations)
+    for entry in manifest["revisions"]:
+        path = copied_migrations / "versions" / entry["filename"]
+        canonical_bytes = path.read_bytes().replace(b"\r\n", b"\n")
+        path.write_bytes(canonical_bytes)
+        entry["sha256"] = hashlib.sha256(canonical_bytes).hexdigest()
+        entry["bytes"] = len(canonical_bytes)
+    write_manifest(copied_migrations, manifest)
+
+    assert verifier["verify_manifest"](copied_migrations)["errors"] == []
+
+    for entry in manifest["revisions"]:
+        path = copied_migrations / "versions" / entry["filename"]
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+
+    assert verifier["verify_manifest"](copied_migrations)["errors"] == []
 
 
 def test_release_manifest_rejects_raw_hash_tamper(verifier, copied_migrations):

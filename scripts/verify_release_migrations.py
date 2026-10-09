@@ -44,13 +44,20 @@ DEFAULT_MIGRATIONS = (
 )
 
 
+def canonical_migration_bytes(path: Path) -> bytes:
+    """Return source bytes with checkout-specific CRLF normalized to LF."""
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
+def migration_fingerprint(path: Path) -> tuple[str, int]:
+    """Return the canonical source SHA-256 and byte count."""
+    content = canonical_migration_bytes(path)
+    return hashlib.sha256(content).hexdigest(), len(content)
+
+
 def migration_sha256(path: Path) -> str:
-    """Return the SHA-256 of the file's unmodified bytes."""
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Return the SHA-256 of the file's canonical source bytes."""
+    return migration_fingerprint(path)[0]
 
 
 def _require_exact_fields(
@@ -283,9 +290,10 @@ def verify_manifest(root: Path) -> dict[str, object]:
         if not path.is_file():
             errors.append(f"migration file missing: {filename}")
             continue
-        if migration_sha256(path) != expected["sha256"]:
+        sha256, byte_count = migration_fingerprint(path)
+        if sha256 != expected["sha256"]:
             errors.append(f"SHA-256 mismatch: {filename}")
-        if path.stat().st_size != expected["bytes"]:
+        if byte_count != expected["bytes"]:
             errors.append(f"byte count mismatch: {filename}")
 
     return {

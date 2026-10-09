@@ -20,36 +20,36 @@
       "filename": "0001_foundation.py",
       "revision": "0001_foundation",
       "parent": null,
-      "sha256": "93831d3536887f1345692f10aa1b25373061d3f2eabd42497b9dbdfb3e398dae",
-      "bytes": 4964
+      "sha256": "a6fe892f8091ad394b06e9b4a0b31da1764c98fba39375e0491f62c645cadc08",
+      "bytes": 4839
     },
     {
       "filename": "0002_owner.py",
       "revision": "0002_owner",
       "parent": "0001_foundation",
-      "sha256": "eb2a51124095b7c8df6486b3f1887577aa314dd91f8a1125f2bb58d7b86e0e2a",
-      "bytes": 2714
+      "sha256": "9f53fc0acdacf3958a01a17841378134953f1107c3b4c8fbed03cc64067666a5",
+      "bytes": 2647
     },
     {
       "filename": "0003_private_review.py",
       "revision": "0003_private_review",
       "parent": "0002_owner",
-      "sha256": "72bc7996a43e5831584ce69a33d0e6e6ffb810594974c95fa2f707a80a284212",
-      "bytes": 5003
+      "sha256": "a75c1932ebe47f94dc279be8ace6ea6544d6c02caccf338505576e0d7a8a5d47",
+      "bytes": 4901
     },
     {
       "filename": "0004_topic_snapshots.py",
       "revision": "0004_topic_snapshots",
       "parent": "0003_private_review",
-      "sha256": "c6c4fc85bb222c691415e687088d2afdd46f95773a34f0b317a2cc11fa062a79",
-      "bytes": 4529
+      "sha256": "cf2eb9488aa29914620cb25a308cb7237091280066e0a162526e710f6da0e6b6",
+      "bytes": 4406
     },
     {
       "filename": "0004a_topic_attempt_ranges.py",
       "revision": "0004a_topic_attempt_ranges",
       "parent": "0004_topic_snapshots",
-      "sha256": "c7be7ed12181eda2319f2a6810ea161d040f9a726cea4784865257273325a56f",
-      "bytes": 521
+      "sha256": "d7cb6ae3c61607309a6a0f47031619075c78b9ecdf2dc712321a225566592cd6",
+      "bytes": 503
     },
     {
       "filename": "0005_publications.py",
@@ -111,22 +111,22 @@
       "filename": "0009a_reg_event_source.py",
       "revision": "0009a_reg_event_source",
       "parent": "0009_regulation",
-      "sha256": "49d6db964706fce58af343ab49710601bbf3df0bbc53cb0b094a88a77395bd3a",
-      "bytes": 2100
+      "sha256": "61777d3cdde14eb135eabb8d96eba9d66fc8689b57235c216ce91309af5c3592",
+      "bytes": 2039
     },
     {
       "filename": "0009b_reg_event_provenance.py",
       "revision": "0009b_reg_event_provenance",
       "parent": "0009a_reg_event_source",
-      "sha256": "950057229ef6938016b2ae558c832faae68e869ef8a5dbebd2ca9e8c78329046",
-      "bytes": 16687
+      "sha256": "080c5c4bbcfea2c048db518fb6a2e559b32953f8678ab4d5bc3c5375a1d2ddfa",
+      "bytes": 16318
     },
     {
       "filename": "0009c_reg_event_provenance_required.py",
       "revision": "0009c_reg_event_provenance_required",
       "parent": "0009b_reg_event_provenance",
-      "sha256": "457242d2d64224d5b140db9aa7b90da5a9fb9f66f5d861bc94449a9c9e86b5a4",
-      "bytes": 1009
+      "sha256": "d217c4c69a653901936483e5432cb5d463f6792c9225f94df29728a56e9d76b5",
+      "bytes": 978
     },
     {
       "filename": "0009d_reg_event_complete_set.py",
