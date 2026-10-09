@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from collections import Counter
@@ -84,6 +85,17 @@ def _require_string(value: object, *, location: str) -> str:
     return value
 
 
+def _reject_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
 def _validate_revision_entry(
     raw_entry: object,
     *,
@@ -122,7 +134,10 @@ def _validate_revision_entry(
 def load_release_manifest(path: Path) -> dict[str, object]:
     """Load and strictly validate a migration release manifest."""
     try:
-        raw_manifest = json.loads(path.read_text(encoding="utf-8"))
+        raw_manifest = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read release manifest {path}: {exc}") from exc
 
@@ -236,12 +251,75 @@ def _resolve_migration_root(root: Path) -> Path:
     return root
 
 
+def _is_junction(path: Path) -> bool:
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
+
+
+def _validate_migration_files(
+    root: Path,
+    manifest: dict[str, object],
+) -> list[str]:
+    errors: list[str] = []
+    versions_root = root / "versions"
+    if versions_root.is_symlink() or _is_junction(versions_root):
+        return ["unsafe migration path: versions"]
+    if not versions_root.is_dir():
+        return [f"migration root has no versions directory: {root}"]
+
+    manifest_entries = {
+        str(entry["filename"]): entry for entry in manifest["revisions"]
+    }
+    expected_names = set(manifest_entries)
+    actual_names = {
+        entry.name for entry in versions_root.iterdir() if entry.name.endswith(".py")
+    }
+    if expected_names != actual_names:
+        missing = sorted(expected_names - actual_names)
+        unlisted = sorted(actual_names - expected_names)
+        return [f"revision set mismatch: missing={missing}, unlisted={unlisted}"]
+
+    canonical_versions_root = versions_root.resolve(strict=True)
+    migration_paths: dict[str, Path] = {}
+    for filename in sorted(expected_names):
+        path = versions_root / filename
+        if (
+            path.is_symlink()
+            or _is_junction(path)
+            or path.resolve(strict=False).parent != canonical_versions_root
+        ):
+            errors.append(f"unsafe migration path: {filename}")
+            continue
+        if not path.is_file():
+            errors.append(f"migration file missing: {filename}")
+            continue
+        migration_paths[filename] = path
+    if errors:
+        return errors
+
+    for filename, path in migration_paths.items():
+        expected = manifest_entries[filename]
+        sha256, byte_count = migration_fingerprint(path)
+        if sha256 != expected["sha256"]:
+            errors.append(f"SHA-256 mismatch: {filename}")
+        if byte_count != expected["bytes"]:
+            errors.append(f"byte count mismatch: {filename}")
+    return errors
+
+
 def verify_manifest(root: Path) -> dict[str, object]:
     """Compare the graph and raw migration files with the release manifest."""
     root = _resolve_migration_root(root)
     manifest = load_release_manifest(root / "release_manifest.json")
+    errors = _validate_migration_files(root, manifest)
+    if errors:
+        return {
+            "head": None,
+            "revision_count": 0,
+            "errors": errors,
+        }
+
     graph = inspect_alembic_graph(root)
-    errors: list[str] = []
 
     bases = graph["bases"]
     heads = graph["heads"]
@@ -267,7 +345,6 @@ def verify_manifest(root: Path) -> dict[str, object]:
         unlisted = sorted(graph_ids - manifest_ids)
         errors.append(f"revision set mismatch: missing={missing}, unlisted={unlisted}")
 
-    versions_root = (root / "versions").resolve()
     for revision in sorted(manifest_ids & graph_ids):
         expected = manifest_entries[revision]
         actual = graph_entries[revision]
@@ -281,20 +358,6 @@ def verify_manifest(root: Path) -> dict[str, object]:
                 f"parent mismatch for {revision}: "
                 f"expected {expected['parent']}, found {actual['parent']}"
             )
-
-        filename = str(expected["filename"])
-        path = versions_root / filename
-        if path.is_symlink() or path.resolve().parent != versions_root:
-            errors.append(f"unsafe migration path: {filename}")
-            continue
-        if not path.is_file():
-            errors.append(f"migration file missing: {filename}")
-            continue
-        sha256, byte_count = migration_fingerprint(path)
-        if sha256 != expected["sha256"]:
-            errors.append(f"SHA-256 mismatch: {filename}")
-        if byte_count != expected["bytes"]:
-            errors.append(f"byte count mismatch: {filename}")
 
     return {
         "head": heads[0] if len(heads) == 1 else None,

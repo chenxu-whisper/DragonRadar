@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import runpy
 import shutil
 import subprocess
@@ -69,6 +70,15 @@ def add_revision(root, *, revision, down_revision):
                 "",
             ]
         ),
+        encoding="utf-8",
+    )
+
+
+def append_import_marker(path, marker):
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\nfrom pathlib import Path\n"
+        + f"Path({marker.as_posix()!r}).write_text('imported')\n",
         encoding="utf-8",
     )
 
@@ -155,27 +165,108 @@ def test_release_manifest_rejects_raw_hash_tamper(verifier, copied_migrations):
     assert "byte count mismatch: 0001_foundation.py" in errors
 
 
+def test_release_manifest_rejects_hash_tamper_before_import(
+    verifier, copied_migrations, tmp_path
+):
+    marker = tmp_path / "tampered-imported"
+    path = copied_migrations / "versions" / "0001_foundation.py"
+    append_import_marker(path, marker)
+
+    errors = verifier["verify_manifest"](copied_migrations)["errors"]
+
+    assert "SHA-256 mismatch: 0001_foundation.py" in errors
+    assert not marker.exists()
+
+
 def test_release_manifest_rejects_unlisted_revision(verifier, copied_migrations):
+    marker = copied_migrations.parent / "unlisted-imported"
     add_revision(
         copied_migrations,
         revision="0011_unlisted",
         down_revision="0010_ai_tasks",
+    )
+    append_import_marker(
+        copied_migrations / "versions" / "0011_unlisted.py",
+        marker,
     )
 
     errors = verifier["verify_manifest"](copied_migrations)["errors"]
 
     assert any("revision set mismatch" in error for error in errors)
     assert any("0011_unlisted" in error for error in errors)
+    assert not marker.exists()
+
+
+def test_release_manifest_rejects_symlink_escape_before_import(
+    verifier, copied_migrations, tmp_path
+):
+    marker = tmp_path / "symlink-imported"
+    path = copied_migrations / "versions" / "0001_foundation.py"
+    target = tmp_path / "outside.py"
+    shutil.copy2(path, target)
+    append_import_marker(target, marker)
+    path.unlink()
+    try:
+        path.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+
+    errors = verifier["verify_manifest"](copied_migrations)["errors"]
+
+    assert "unsafe migration path: 0001_foundation.py" in errors
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or not hasattr(os.path, "isjunction"),
+    reason="Windows junctions require os.path.isjunction",
+)
+def test_release_manifest_rejects_junction_before_import(
+    verifier, copied_migrations, tmp_path
+):
+    marker = tmp_path / "junction-imported"
+    versions = copied_migrations / "versions"
+    target = tmp_path / "outside-versions"
+    versions.rename(target)
+    append_import_marker(target / "0001_foundation.py", marker)
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(versions), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"directory junctions are unavailable: {result.stderr}")
+    assert os.path.isjunction(versions)
+
+    errors = verifier["verify_manifest"](copied_migrations)["errors"]
+
+    assert any("unsafe migration path" in error for error in errors)
+    assert not marker.exists()
 
 
 def test_release_manifest_rejects_branch_and_multiple_heads(
     verifier, copied_migrations
 ):
+    revision = "fork"
     add_revision(
         copied_migrations,
-        revision="fork",
+        revision=revision,
         down_revision="0009d_reg_event_complete_set",
     )
+    path = copied_migrations / "versions" / f"{revision}.py"
+    sha256, byte_count = verifier["migration_fingerprint"](path)
+    manifest = read_manifest(copied_migrations)
+    manifest["revisions"].append(
+        {
+            "filename": path.name,
+            "revision": revision,
+            "parent": "0009d_reg_event_complete_set",
+            "sha256": sha256,
+            "bytes": byte_count,
+        }
+    )
+    write_manifest(copied_migrations, manifest)
 
     errors = verifier["verify_manifest"](copied_migrations)["errors"]
 
@@ -274,13 +365,51 @@ def test_release_manifest_rejects_duplicate_revision(verifier, copied_migrations
         verifier["load_release_manifest"](copied_migrations / "release_manifest.json")
 
 
-def test_release_manifest_rejects_boolean_schema_version(verifier, copied_migrations):
+@pytest.mark.parametrize(
+    ("location", "field"),
+    [
+        ("manifest", "schema_version"),
+        ("revision", "bytes"),
+    ],
+)
+def test_release_manifest_rejects_boolean_integer_fields(
+    verifier, copied_migrations, location, field
+):
     manifest = read_manifest(copied_migrations)
-    manifest["schema_version"] = True
+    target = manifest if location == "manifest" else manifest["revisions"][0]
+    target[field] = True
     write_manifest(copied_migrations, manifest)
 
-    with pytest.raises(ValueError, match="schema_version"):
+    with pytest.raises(ValueError, match=field):
         verifier["load_release_manifest"](copied_migrations / "release_manifest.json")
+
+
+@pytest.mark.parametrize(
+    ("needle", "duplicate"),
+    [
+        (
+            '"schema": "dragon-radar.migration-release-manifest",',
+            '"schema": "dragon-radar.migration-release-manifest",\n'
+            '  "schema": "dragon-radar.migration-release-manifest",',
+        ),
+        (
+            '"revision": "0001_foundation",',
+            '"revision": "0001_foundation",\n      "revision": "0001_foundation",',
+        ),
+    ],
+)
+def test_release_manifest_rejects_duplicate_json_keys(
+    verifier, copied_migrations, needle, duplicate
+):
+    path = copied_migrations / "release_manifest.json"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(needle, duplicate, 1),
+        encoding="utf-8",
+    )
+
+    field = "schema" if '"schema"' in needle else "revision"
+    with pytest.raises(ValueError, match=rf"duplicate JSON key.*{field}"):
+        verifier["load_release_manifest"](path)
 
 
 def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
