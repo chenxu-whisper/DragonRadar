@@ -15,8 +15,8 @@
   },
   "git": {
     "candidate": {
-      "ahead": 299,
-      "audited_commit": "2b72ff8c823494143818d2697cb17e0323b599e7",
+      "ahead": 301,
+      "audited_commit": "e775d466be082d4231c915121b366565d3af3af3",
       "base_commit": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
       "base_ref": "origin/main",
       "behind": 0,
@@ -25,7 +25,7 @@
       "detached": false,
       "merge_base": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
       "remote_freshness": {
-        "checked_at": "2026-10-09T14:47:36.478961+00:00",
+        "checked_at": "2026-10-09T15:19:15.448806+00:00",
         "error": null,
         "local_oid": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
         "method": "git_ls_remote",
@@ -66,8 +66,8 @@
       "untracked_count": 0
     },
     "execution_source": {
-      "ahead": 299,
-      "audited_commit": "2b72ff8c823494143818d2697cb17e0323b599e7",
+      "ahead": 301,
+      "audited_commit": "e775d466be082d4231c915121b366565d3af3af3",
       "base_commit": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
       "base_ref": "origin/main",
       "behind": 0,
@@ -76,7 +76,7 @@
       "detached": true,
       "merge_base": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
       "remote_freshness": {
-        "checked_at": "2026-10-09T14:47:35.777121+00:00",
+        "checked_at": "2026-10-09T15:19:14.652107+00:00",
         "error": null,
         "local_oid": "974db40b8920e8ba745e22e7f5ef560919ee0bed",
         "method": "git_ls_remote",
@@ -90,7 +90,7 @@
       "untracked_count": 0
     }
   },
-  "implementation_commit": "2b72ff8c823494143818d2697cb17e0323b599e7",
+  "implementation_commit": "e775d466be082d4231c915121b366565d3af3af3",
   "implementation_commit_relation": "same_head_or_docs_evidence_only_child",
   "migration": {
     "graph": {
@@ -99,12 +99,12 @@
       "revision_count": 18,
       "schema_contract_sha256": "907d2005518353538072807f05e0236d0fc890d4d5c012c6e1f504cc59e9037d"
     },
-    "implementation_commit": "2b72ff8c823494143818d2697cb17e0323b599e7",
+    "implementation_commit": "e775d466be082d4231c915121b366565d3af3af3",
     "restore": {
       "app_semantics_verified": true,
-      "audited_commit": "2b72ff8c823494143818d2697cb17e0323b599e7",
+      "audited_commit": "e775d466be082d4231c915121b366565d3af3af3",
       "backup_format": "custom",
-      "backup_sha256": "4cae4ef49cb8bae826a4f2aa9239ab75eafa3e7a638ecf27b97cb28efbda98f7",
+      "backup_sha256": "b6e7b18edf807d84749fe929d501317774e45e0549151b43a728c40ee9bb8d04",
       "canonicalized_schema_objects": 50,
       "cleanup": {
         "app_role_removed": true,
@@ -113,13 +113,13 @@
         "source_database_removed": true
       },
       "data_loss_window_seconds": 0.0,
-      "elapsed_seconds": 8.264999999897555,
-      "generated_at": "2026-10-09T14:47:27.639654+00:00",
+      "elapsed_seconds": 7.358999999938533,
+      "generated_at": "2026-10-09T15:19:06.028902+00:00",
       "measured_data_loss_rows": 0,
       "permissions_preserved": true,
       "quiescence_enforced": true,
       "ready_before_canonicalization": false,
-      "restore_fingerprint": "d3ed827d0959356d52c4f08a259577950c4a6bc0f757371271530751b1b2773a",
+      "restore_fingerprint": "4a860526b96150fa57da6bff95d93123a4b1b54381434c4aae5a0b0c214c54f7",
       "restored_counts": {
         "audit_events": 1,
         "import_batches": 1,
@@ -138,39 +138,39 @@
         "snapshots": 1,
         "source_grants": 1
       },
-      "source_fingerprint": "d3ed827d0959356d52c4f08a259577950c4a6bc0f757371271530751b1b2773a",
+      "source_fingerprint": "4a860526b96150fa57da6bff95d93123a4b1b54381434c4aae5a0b0c214c54f7",
       "source_unchanged": true,
       "targets": {
         "approval_status": "suggested_unapproved",
         "rpo_seconds": 3600,
         "rto_seconds": 14400
       },
-      "write_freeze_seconds": 4.141000000061467
+      "write_freeze_seconds": 3.906999999890104
     },
     "source_artifacts": {
       "restore": {
-        "age_seconds_at_audit": 8.839307,
+        "age_seconds_at_audit": 9.419904,
         "bytes": 1852,
-        "generated_at": "2026-10-09T14:47:27.639654+00:00",
-        "sha256": "fba9225f3f2bc7efcd7181c7574303fc605b6c754a6f03bd0a1ac85e0d01ad76",
-        "validated_at": "2026-10-09T14:47:36.478961+00:00"
+        "generated_at": "2026-10-09T15:19:06.028902+00:00",
+        "sha256": "aad13f346f5c37ed4fbf9843c748aa4d6fdcb813e9bfcf976b06e1305a20c920",
+        "validated_at": "2026-10-09T15:19:15.448806+00:00"
       },
       "wheel": {
-        "age_seconds_at_audit": 18.215952,
+        "age_seconds_at_audit": 17.892441,
         "bytes": 3656,
-        "generated_at": "2026-10-09T14:47:18.263009+00:00",
-        "sha256": "fcc48b7358e4538fd33ea4031241746fed341a2bebf31041ecf810fa0b43503f",
-        "validated_at": "2026-10-09T14:47:36.478961+00:00"
+        "generated_at": "2026-10-09T15:18:57.556365+00:00",
+        "sha256": "8624c64276a003125d5170d809a2f99286a4d3a9282c4ff86365aba1379961e7",
+        "validated_at": "2026-10-09T15:19:15.448806+00:00"
       }
     },
     "valid": true,
     "wheel": {
-      "audited_commit": "2b72ff8c823494143818d2697cb17e0323b599e7",
+      "audited_commit": "e775d466be082d4231c915121b366565d3af3af3",
       "fresh": {
         "ready": true,
         "to_revision": "0010_ai_tasks"
       },
-      "generated_at": "2026-10-09T14:47:18.263009+00:00",
+      "generated_at": "2026-10-09T15:18:57.556365+00:00",
       "schema": "dragon-radar.installed-wheel-migrations",
       "schema_version": 1,
       "supported_upgrades": [
@@ -228,26 +228,26 @@
           "ready": true,
           "sentinel": "legacy_regulation_graph",
           "sentinel_after": {
-            "binding_event_id": "Ea90999d26b0a",
-            "binding_snapshot_id": "2fe34742-dcb4-444a-91a2-db43f71a55ba",
-            "event_id": "Ea90999d26b0a",
+            "binding_event_id": "E576b72432af3",
+            "binding_snapshot_id": "7473e0c7-8161-4fde-be9c-4d1ae8157f18",
+            "event_id": "E576b72432af3",
             "event_source_completeness": "unknown",
             "event_source_id": null,
             "event_source_version": null,
-            "regulation_snapshot_id": "2fe34742-dcb4-444a-91a2-db43f71a55ba",
-            "rule_record_id": "d8cfc272-f4e1-4dd4-9fd2-825ab8ee67e5",
+            "regulation_snapshot_id": "7473e0c7-8161-4fde-be9c-4d1ae8157f18",
+            "rule_record_id": "180db330-f41a-4475-acfb-0881fde5b311",
             "source_id": null,
             "source_version": null
           },
           "sentinel_before": {
-            "binding_event_id": "Ea90999d26b0a",
-            "binding_snapshot_id": "2fe34742-dcb4-444a-91a2-db43f71a55ba",
-            "event_id": "Ea90999d26b0a",
+            "binding_event_id": "E576b72432af3",
+            "binding_snapshot_id": "7473e0c7-8161-4fde-be9c-4d1ae8157f18",
+            "event_id": "E576b72432af3",
             "event_source_completeness": "unknown",
             "event_source_id": null,
             "event_source_version": null,
-            "regulation_snapshot_id": "2fe34742-dcb4-444a-91a2-db43f71a55ba",
-            "rule_record_id": "d8cfc272-f4e1-4dd4-9fd2-825ab8ee67e5",
+            "regulation_snapshot_id": "7473e0c7-8161-4fde-be9c-4d1ae8157f18",
+            "rule_record_id": "180db330-f41a-4475-acfb-0881fde5b311",
             "source_id": null,
             "source_version": null
           },
