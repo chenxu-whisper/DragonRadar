@@ -16,6 +16,7 @@ import tempfile
 import time
 from collections import Counter
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -2297,9 +2298,25 @@ def exercise_backup_restore(
     restore_container: str,
     database_url: str,
     output: Path,
+    *,
+    audited_commit: str | None = None,
 ) -> dict[str, object]:
     """Run an isolated custom-format backup and restore verification drill."""
     _clear_output_target(output)
+    if audited_commit is None:
+        head = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            shell=False,
+            check=False,
+        )
+        if head.returncode != 0:
+            raise ValueError("cannot derive audited commit from repository HEAD")
+        audited_commit = head.stdout.strip()
+    audited_commit = validate_audited_commit(audited_commit, REPOSITORY_ROOT)
     container = validate_restore_container_name(restore_container)
     admin_url, admin_username = _validate_restore_drill_target(
         container,
@@ -2457,6 +2474,8 @@ def exercise_backup_restore(
     evidence = {
         "schema": "dragon-radar.backup-restore-drill",
         "schema_version": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "audited_commit": audited_commit,
         "rollback_mode": ROLLBACK_MODE,
         "backup_format": "custom",
         "backup_sha256": backup_sha256,
@@ -2653,6 +2672,7 @@ def verify_installed_wheel(
     evidence = {
         "schema": child_evidence["schema"],
         "schema_version": child_evidence["schema_version"],
+        "generated_at": datetime.now(UTC).isoformat(),
         "wheel_filename": wheel.name,
         "wheel_sha256": wheel_digest,
         "audited_commit": audited_commit,
@@ -2818,6 +2838,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.restore_container,
                 database_url,
                 args.output,
+                audited_commit=args.audited_commit,
             )
         except Exception:
             print("backup restore drill failed", file=sys.stderr)

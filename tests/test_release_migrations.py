@@ -897,6 +897,7 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
     assert set(evidence) == {
         "schema",
         "schema_version",
+        "generated_at",
         "wheel_filename",
         "wheel_sha256",
         "audited_commit",
@@ -906,6 +907,7 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
     }
     assert evidence["schema"] == "dragon-radar.installed-wheel-migrations"
     assert evidence["schema_version"] == 1
+    assert evidence["generated_at"].endswith("+00:00")
     assert evidence["wheel_filename"] == built_wheel.name
     assert (
         evidence["wheel_sha256"] == hashlib.sha256(built_wheel.read_bytes()).hexdigest()
@@ -2137,9 +2139,12 @@ def test_backup_restore_drill_uses_argv_and_writes_atomic_evidence(
         "task21-postgres",
         database_url,
         output,
+        audited_commit=audited_head(),
     )
 
     assert json.loads(output.read_text(encoding="utf-8")) == result
+    assert result["audited_commit"] == audited_head()
+    assert result["generated_at"].endswith("+00:00")
     assert result["backup_sha256"] == backup_sha256
     assert result["source_fingerprint"] == source_fingerprint
     assert result["source_unchanged"] is True

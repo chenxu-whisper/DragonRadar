@@ -7,6 +7,8 @@ import json
 import os
 import runpy
 import subprocess
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,37 +39,100 @@ def auditor():
 
 
 def valid_inputs():
-    return {
-        "git": {
-            "audited_commit": "a" * 40,
-            "branch": None,
-            "detached": True,
-            "configured_upstream": "origin/main",
-            "base_ref": "origin/main",
-            "base_commit": "b" * 40,
-            "merge_base": "b" * 40,
-            "ahead": 12,
-            "behind": 0,
-            "tracked_dirty_paths": [],
-            "untracked_count": 0,
-            "remote_freshness": {
-                "status": "CURRENT",
-                "fetch_head_present": True,
-                "fetch_age_seconds": 1,
-            },
+    generated_at = datetime.now(UTC).isoformat()
+    validated_at = generated_at
+    remote_freshness = {
+        "method": "git_ls_remote",
+        "status": "CURRENT",
+        "remote": "origin",
+        "remote_ref": "refs/heads/main",
+        "local_oid": "b" * 40,
+        "remote_oid": "b" * 40,
+        "checked_at": validated_at,
+        "error": None,
+    }
+    execution = {
+        "audited_commit": "a" * 40,
+        "branch": None,
+        "detached": True,
+        "configured_upstream": None,
+        "base_ref": "origin/main",
+        "base_commit": "b" * 40,
+        "merge_base": "b" * 40,
+        "ahead": 12,
+        "behind": 0,
+        "tracked_dirty_paths": [],
+        "untracked_count": 0,
+        "remote_freshness": {
+            **remote_freshness,
+            "status": "ABSENT",
+            "remote": None,
+            "remote_ref": None,
+            "local_oid": None,
+            "remote_oid": None,
         },
+        "tracked_clean_before_and_after": True,
+    }
+    candidate = {
+        **execution,
+        "branch": "feature/prd-reset",
+        "detached": False,
+        "configured_upstream": "origin/main",
+        "tracked_dirty_paths": [],
+        "remote_freshness": remote_freshness,
+    }
+    candidate.pop("tracked_clean_before_and_after")
+    wheel = _wheel_evidence()
+    wheel["generated_at"] = generated_at
+    wheel.pop("imported_from")
+    restore = _restore_evidence()
+    restore["generated_at"] = generated_at
+    restore["audited_commit"] = "a" * 40
+    restore.pop("disposable")
+    artifact = {
+        "sha256": "1" * 64,
+        "bytes": 1,
+        "generated_at": generated_at,
+        "age_seconds_at_audit": 0.0,
+        "validated_at": validated_at,
+    }
+    return {
+        "git": {"execution_source": execution, "candidate": candidate},
         "migration": {
             "valid": True,
             "implementation_commit": "a" * 40,
             "source_artifacts": {
-                "wheel": {"sha256": "1" * 64},
-                "restore": {"sha256": "2" * 64},
+                "wheel": artifact,
+                "restore": {**artifact, "sha256": "2" * 64},
             },
+            "graph": {
+                "head": "0010_ai_tasks",
+                "revision_count": 18,
+                "release_manifest_sha256": "3" * 64,
+                "schema_contract_sha256": "4" * 64,
+            },
+            "wheel": wheel,
+            "restore": restore,
         },
         "task00_20": {
             "valid": True,
             "implementation_commit": "c" * 40,
-            "inventory": [],
+            "attestation": "committed_execution_provenance_only",
+            "bundle_manifest_sha256": "5" * 64,
+            "executed_gates": {"required": 21, "failed": 0, "skipped": 0},
+            "inventory": [
+                {
+                    "task": task,
+                    "files": [
+                        {
+                            "path": f"docs/task-{task:02d}.md",
+                            "sha256": f"{task + 10:064x}",
+                            "bytes": task + 1,
+                        }
+                    ],
+                }
+                for task in range(21)
+            ],
         },
         "external_gates": {gate: "BLOCKED" for gate in EXTERNAL_GATES},
         "supply_chain": {gate: "BLOCKED" for gate in SUPPLY_CHAIN_GATES},
@@ -131,10 +196,7 @@ def test_dirty_or_unbased_or_stale_branch_blocks_branch_cut(auditor):
         lambda git: git["remote_freshness"].update(status="STALE"),
     ):
         payload = valid_inputs()
-        mutation(payload["git"])
-        if payload["git"]["configured_upstream"] is None:
-            payload["git"]["branch"] = "feature/prd-reset"
-            payload["git"]["detached"] = False
+        mutation(payload["git"]["candidate"])
 
         assert auditor["derive_decisions"](payload)["branch_cut"] == "NO_GO"
 
@@ -165,6 +227,8 @@ def test_collect_git_state_uses_argv_and_captures_before_output_creation(
                 "",
                 128,
             ),
+            ("git", "config", "--get", "branch.feature/test.remote"): ("", 1),
+            ("git", "config", "--get", "branch.feature/test.merge"): ("", 1),
             ("git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"): (
                 "origin/main\n",
                 0,
@@ -188,10 +252,15 @@ def test_collect_git_state_uses_argv_and_captures_before_output_creation(
     monkeypatch.setitem(
         auditor["collect_git_state"].__globals__,
         "_remote_freshness",
-        lambda _root: {
-            "status": "STALE",
-            "fetch_head_present": True,
-            "fetch_age_seconds": 100000,
+        lambda _root, **_kwargs: {
+            "method": "git_ls_remote",
+            "status": "ABSENT",
+            "remote": None,
+            "remote_ref": None,
+            "local_oid": None,
+            "remote_oid": None,
+            "checked_at": datetime.now(UTC).isoformat(),
+            "error": None,
         },
     )
 
@@ -229,8 +298,8 @@ def _write_task20_bundle(root: Path):
                 "skipped_tests": 0,
             },
         },
-        "native_counts": {},
-        "quality_gates": {},
+        "native_counts": {"backend": 1},
+        "quality_gates": {"ruff_lint": "pass"},
         "external_blockers": [],
         "migration_added": False,
     }
@@ -278,6 +347,11 @@ def test_task20_collection_invokes_strict_verifier_and_rejects_tamper(
     )
     monkeypatch.setitem(globals_, "_is_ancestor", lambda *_: True)
     monkeypatch.setitem(globals_, "collect_task_inventory", lambda *_: [])
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob",
+        lambda root, _commit, path: (root / path).read_bytes(),
+    )
 
     result = auditor["collect_task20_evidence"](tmp_path, "a" * 40)
 
@@ -299,6 +373,7 @@ def _wheel_evidence(commit="a" * 40):
     return {
         "schema": "dragon-radar.installed-wheel-migrations",
         "schema_version": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
         "wheel_filename": "dragon_radar-0.1.0-py3-none-any.whl",
         "wheel_sha256": "1" * 64,
         "audited_commit": commit,
@@ -365,10 +440,17 @@ def _wheel_evidence(commit="a" * 40):
 
 
 def _restore_evidence():
-    counts = {"snapshots": 1}
+    counts = {
+        "source_grants": 1,
+        "import_batches": 1,
+        "snapshots": 1,
+        "audit_events": 1,
+    }
     return {
         "schema": "dragon-radar.backup-restore-drill",
         "schema_version": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "audited_commit": "a" * 40,
         "rollback_mode": "backup_restore_only",
         "backup_format": "custom",
         "backup_sha256": "2" * 64,
@@ -409,11 +491,20 @@ def _restore_evidence():
     }
 
 
-def test_migration_collection_validates_actual_decisive_data(auditor, tmp_path):
+def test_migration_collection_validates_actual_decisive_data(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
     wheel_path = tmp_path / "wheel.json"
     restore_path = tmp_path / "restore.json"
     wheel_path.write_text(json.dumps(_wheel_evidence()), encoding="utf-8")
     restore_path.write_text(json.dumps(_restore_evidence()), encoding="utf-8")
+    monkeypatch.setitem(
+        auditor["collect_migration_evidence"].__globals__,
+        "_git_blob_fingerprint",
+        lambda *_: {"sha256": "f" * 64, "bytes": 1},
+    )
 
     result = auditor["collect_migration_evidence"](
         wheel_path,
@@ -470,6 +561,7 @@ def test_migration_tamper_and_caller_status_are_rejected(
     artifact,
     mutation,
     message,
+    monkeypatch,
 ):
     wheel = _wheel_evidence()
     restore = _restore_evidence()
@@ -478,6 +570,11 @@ def test_migration_tamper_and_caller_status_are_rejected(
     restore_path = tmp_path / "restore.json"
     wheel_path.write_text(json.dumps(wheel), encoding="utf-8")
     restore_path.write_text(json.dumps(restore), encoding="utf-8")
+    monkeypatch.setitem(
+        auditor["collect_migration_evidence"].__globals__,
+        "_git_blob_fingerprint",
+        lambda *_: {"sha256": "f" * 64, "bytes": 1},
+    )
 
     with pytest.raises(ValueError, match=message):
         auditor["collect_migration_evidence"](
@@ -513,6 +610,15 @@ def test_task_inventory_requires_exact_tracked_hashes(auditor, tmp_path, monkeyp
         "_tracked_paths",
         lambda *_: {"docs/acceptance/reset-baseline.md"},
     )
+    committed = evidence.read_bytes()
+    monkeypatch.setitem(
+        auditor["collect_task_inventory"].__globals__,
+        "_git_blob_fingerprint",
+        lambda *_: {
+            "sha256": hashlib.sha256(committed).hexdigest(),
+            "bytes": len(committed),
+        },
+    )
 
     inventory = auditor["collect_task_inventory"](tmp_path, "a" * 40)
 
@@ -523,8 +629,7 @@ def test_task_inventory_requires_exact_tracked_hashes(auditor, tmp_path, monkeyp
     )
 
     evidence.unlink()
-    with pytest.raises(ValueError, match="missing"):
-        auditor["collect_task_inventory"](tmp_path, "a" * 40)
+    assert auditor["collect_task_inventory"](tmp_path, "a" * 40) == inventory
 
 
 def test_tracked_paths_disables_git_path_quoting(auditor, tmp_path, monkeypatch):
@@ -586,7 +691,7 @@ def test_check_accepts_truthful_no_go_and_docs_only_head_relation(
 ):
     payload = {
         "schema": "dragon-radar.reset-release-audit",
-        "schema_version": 1,
+        "schema_version": 2,
         "implementation_commit": "a" * 40,
         "implementation_commit_relation": ("same_head_or_docs_evidence_only_child"),
         "git": valid_inputs()["git"],
@@ -609,6 +714,12 @@ def test_check_accepts_truthful_no_go_and_docs_only_head_relation(
     monkeypatch.setitem(globals_, "_git_output", lambda *_args, **_kwargs: "b" * 40)
     monkeypatch.setitem(globals_, "_validate_commit_relation", lambda *_: None)
     monkeypatch.setitem(globals_, "_validate_inventory_at_head", lambda *_: None)
+    monkeypatch.setitem(globals_, "_validate_migration_at_commit", lambda *_: None)
+    monkeypatch.setitem(
+        globals_,
+        "collect_task20_evidence",
+        lambda *_args, **_kwargs: payload["task00_20"],
+    )
 
     assert auditor["check_release_manifest"](tmp_path, path) == payload
 
@@ -636,7 +747,7 @@ def test_commit_relation_rejects_non_docs_child(auditor, tmp_path, monkeypatch):
         )
 
 
-def test_malformed_bool_integer_and_stale_artifact_are_rejected(
+def test_malformed_bool_integer_is_rejected(
     auditor,
     tmp_path,
 ):
@@ -654,14 +765,6 @@ def test_malformed_bool_integer_and_stale_artifact_are_rejected(
             "a" * 40,
         )
 
-    wheel = _wheel_evidence()
-    wheel_path.write_text(json.dumps(wheel), encoding="utf-8")
-    restore_path.write_text(json.dumps(restore), encoding="utf-8")
-    wheel_path.touch()
-    os.utime(wheel_path, (1, 1))
-    with pytest.raises(ValueError, match="stale"):
-        auditor["require_fresh_artifact"](wheel_path, generated_after=2)
-
 
 def test_decision_derivation_rejects_false_internal_evidence(auditor):
     payload = valid_inputs()
@@ -673,3 +776,308 @@ def test_decision_derivation_rejects_false_internal_evidence(auditor):
     assert decisions["migration_readiness"] == "NO_GO"
     assert decisions["task00_20_engineering"] == "NO_GO"
     assert decisions["overall_status"] == "NO_GO"
+
+
+def _init_committed_evidence_repository(tmp_path: Path) -> tuple[Path, str]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "task21@example.test"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Task 21"],
+        cwd=repository,
+        check=True,
+    )
+    evidence = repository / "evidence.md"
+    evidence.write_bytes(b"committed\nbytes\n")
+    subprocess.run(["git", "add", "evidence.md"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "evidence"], cwd=repository, check=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return repository, commit
+
+
+def test_task_inventory_hashes_committed_git_blob_not_crlf_checkout(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    repository, commit = _init_committed_evidence_repository(tmp_path)
+    (repository / "evidence.md").write_bytes(b"committed\r\nbytes\r\n")
+    monkeypatch.setitem(
+        auditor["collect_task_inventory"].__globals__,
+        "TASK_EVIDENCE_MAP",
+        {task: ("evidence.md",) for task in range(21)},
+    )
+
+    inventory = auditor["collect_task_inventory"](repository, commit)
+
+    expected = hashlib.sha256(b"committed\nbytes\n").hexdigest()
+    assert inventory[0]["files"] == [
+        {"path": "evidence.md", "sha256": expected, "bytes": 16}
+    ]
+
+
+def test_task_inventory_rejects_empty_mapping_duplicate_path_and_traversal(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    repository, commit = _init_committed_evidence_repository(tmp_path)
+    globals_ = auditor["collect_task_inventory"].__globals__
+    invalid_mappings = (
+        {**{task: ("evidence.md",) for task in range(21)}, 4: ()},
+        {**{task: ("evidence.md",) for task in range(21)}, 4: ("evidence.md",) * 2},
+        {**{task: ("evidence.md",) for task in range(21)}, 4: ("../evidence.md",)},
+    )
+    for mapping in invalid_mappings:
+        monkeypatch.setitem(globals_, "TASK_EVIDENCE_MAP", mapping)
+        with pytest.raises(ValueError):
+            auditor["collect_task_inventory"](repository, commit)
+
+
+def test_remote_freshness_uses_configured_upstream_ls_remote_argv(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=("b" * 40) + "\trefs/heads/main\n",
+            stderr="",
+        )
+
+    monkeypatch.setitem(auditor["_remote_freshness"].__globals__, "_run", run)
+    result = auditor["_remote_freshness"](
+        tmp_path,
+        remote="origin",
+        remote_ref="refs/heads/main",
+        local_oid="b" * 40,
+        verify_remote=True,
+        checked_at="2026-10-09T12:00:00+00:00",
+    )
+
+    assert result == {
+        "method": "git_ls_remote",
+        "status": "CURRENT",
+        "remote": "origin",
+        "remote_ref": "refs/heads/main",
+        "local_oid": "b" * 40,
+        "remote_oid": "b" * 40,
+        "checked_at": "2026-10-09T12:00:00+00:00",
+        "error": None,
+    }
+    assert calls == [
+        (
+            [
+                "git",
+                "ls-remote",
+                "--exit-code",
+                "origin",
+                "refs/heads/main",
+            ],
+            {
+                "cwd": tmp_path,
+                "timeout": 30,
+            },
+        )
+    ]
+    assert all("FETCH_HEAD" not in " ".join(call[0]) for call in calls)
+
+
+def test_remote_freshness_absent_or_unverified_upstream_is_not_current(
+    auditor,
+    tmp_path,
+):
+    absent = auditor["_remote_freshness"](
+        tmp_path,
+        remote=None,
+        remote_ref=None,
+        local_oid=None,
+        verify_remote=True,
+        checked_at="2026-10-09T12:00:00+00:00",
+    )
+    unverified = auditor["_remote_freshness"](
+        tmp_path,
+        remote="origin",
+        remote_ref="refs/heads/main",
+        local_oid="b" * 40,
+        verify_remote=False,
+        checked_at="2026-10-09T12:00:00+00:00",
+    )
+
+    assert absent["status"] == "ABSENT"
+    assert unverified["status"] == "NOT_VERIFIED"
+
+
+def test_execution_source_must_be_clean_detached_and_stable(auditor):
+    state = {
+        "audited_commit": "a" * 40,
+        "branch": None,
+        "detached": True,
+        "tracked_dirty_paths": [],
+        "untracked_count": 0,
+    }
+    auditor["validate_execution_source"](state, state)
+
+    for mutation in (
+        lambda value: value.update(branch="feature/prd-reset", detached=False),
+        lambda value: value["tracked_dirty_paths"].append("tracked.txt"),
+        lambda value: value.update(audited_commit="b" * 40),
+    ):
+        after = json.loads(json.dumps(state))
+        mutation(after)
+        with pytest.raises(ValueError, match="execution source"):
+            auditor["validate_execution_source"](state, after)
+
+
+def test_artifact_validation_binds_commit_and_historical_age(auditor):
+    audited_commit = "a" * 40
+    validated_at = datetime(2026, 10, 9, 12, tzinfo=UTC)
+    wheel = _wheel_evidence(audited_commit)
+    restore = _restore_evidence()
+    generated_at = validated_at - timedelta(hours=23)
+    wheel["generated_at"] = generated_at.isoformat()
+    restore["generated_at"] = generated_at.isoformat()
+    restore["audited_commit"] = audited_commit
+
+    auditor["_validate_wheel_evidence"](
+        wheel,
+        audited_commit,
+        validated_at=validated_at,
+    )
+    auditor["_validate_restore_evidence"](
+        restore,
+        audited_commit,
+        validated_at=validated_at,
+    )
+
+    for mutation in (
+        lambda value: value.update(audited_commit="b" * 40),
+        lambda value: value.update(
+            generated_at=(validated_at - timedelta(hours=25)).isoformat()
+        ),
+        lambda value: value.update(
+            generated_at=(validated_at + timedelta(seconds=1)).isoformat()
+        ),
+    ):
+        candidate = dict(restore)
+        mutation(candidate)
+        with pytest.raises(ValueError):
+            auditor["_validate_restore_evidence"](
+                candidate,
+                audited_commit,
+                validated_at=validated_at,
+            )
+
+
+def _release_manifest_payload():
+    inputs = valid_inputs()
+    return {
+        "schema": "dragon-radar.reset-release-audit",
+        "schema_version": 2,
+        "implementation_commit": "a" * 40,
+        "implementation_commit_relation": "same_head_or_docs_evidence_only_child",
+        **inputs,
+        "decisions": {
+            "migration_readiness": "GO",
+            "task00_20_engineering": "GO",
+            "branch_cut": "GO",
+            "production_release": "NO_GO",
+            "overall_status": "NO_GO",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value["migration"]["wheel"]["fresh"].update(ready=False),
+        lambda value: value["migration"]["restore"]["cleanup"].update(
+            backup_file_removed=False
+        ),
+        lambda value: value["migration"]["graph"].update(revision_count=17),
+        lambda value: value["migration"]["source_artifacts"]["wheel"].update(
+            sha256="invalid"
+        ),
+        lambda value: value["git"]["execution_source"].update(
+            branch="feature/prd-reset",
+            detached=False,
+        ),
+        lambda value: value["git"]["execution_source"]["tracked_dirty_paths"].append(
+            "tracked.txt"
+        ),
+        lambda value: value["git"]["candidate"]["remote_freshness"].update(
+            local_oid="c" * 40,
+            remote_oid="c" * 40,
+        ),
+        lambda value: value["task00_20"]["executed_gates"].update(required=20),
+        lambda value: value["task00_20"].update(bundle_manifest_sha256="6" * 64),
+        lambda value: value["task00_20"].update(implementation_commit="d" * 40),
+        lambda value: value["task00_20"]["inventory"].pop(),
+        lambda value: value["task00_20"]["inventory"].append(
+            deepcopy(value["task00_20"]["inventory"][0])
+        ),
+        lambda value: value["task00_20"]["inventory"][0]["files"][0].update(
+            path="../escape.md"
+        ),
+        lambda value: value["task00_20"]["inventory"][0]["files"][0].update(
+            sha256="9" * 64
+        ),
+        lambda value: value["external_gates"].pop("licensed_real_input"),
+        lambda value: value["supply_chain"].update(secret_scan="VERIFIED"),
+        lambda value: value["decisions"].update(
+            production_release="GO",
+            overall_status="GO",
+        ),
+    ],
+)
+def test_check_recomputes_all_decisive_evidence_and_rejects_tamper(
+    auditor,
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    payload = _release_manifest_payload()
+    committed_task = deepcopy(payload["task00_20"])
+    path = tmp_path / "manifest.json"
+    globals_ = auditor["check_release_manifest"].__globals__
+    monkeypatch.setitem(globals_, "_tracked_paths", lambda *_: {"manifest.json"})
+    monkeypatch.setitem(globals_, "_git_output", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setitem(globals_, "_validate_commit_relation", lambda *_: None)
+    monkeypatch.setitem(globals_, "_validate_inventory_at_head", lambda *_: None)
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob_fingerprint",
+        lambda _root, _commit, blob_path: {
+            "sha256": (
+                "3" * 64 if blob_path.endswith("release_manifest.json") else "4" * 64
+            ),
+            "bytes": 1,
+        },
+    )
+    monkeypatch.setitem(
+        globals_,
+        "collect_task20_evidence",
+        lambda *_args, **_kwargs: deepcopy(committed_task),
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert auditor["check_release_manifest"](tmp_path, path) == payload
+
+    mutation(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError):
+        auditor["check_release_manifest"](tmp_path, path)
