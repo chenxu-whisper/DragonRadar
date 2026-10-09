@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import runpy
+import signal
 import subprocess
 import sys
 import time
@@ -1812,11 +1813,20 @@ def test_audit_process_timeout_terminates_and_waits(
     with pytest.raises(subprocess.TimeoutExpired):
         auditor["_run"](["helper"], cwd=tmp_path, timeout=0.01)
 
-    assert events == [
-        ("communicate", 0.01),
-        ("terminate", None),
-        ("wait", 0.5),
-    ]
+    if os.name == "nt":
+        assert events == [
+            ("communicate", 0.01),
+            ("terminate", None),
+            ("wait", 0.5),
+        ]
+    else:
+        assert events == [
+            ("communicate", 0.01),
+            ("terminate", None),
+            ("wait", 0.5),
+            ("kill", None),
+            ("communicate", 0.5),
+        ]
 
 
 def _process_exists(pid):
@@ -1834,6 +1844,72 @@ def _process_exists(pid):
     except ProcessLookupError:
         return False
     return True
+
+
+def _process_group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX process groups")
+def test_audit_timeout_kills_sigterm_ignoring_grandchild_after_parent_exits(
+    auditor,
+    tmp_path,
+):
+    process_file = tmp_path / "sigterm-ignoring-grandchild.txt"
+    grandchild = """
+import os
+import pathlib
+import signal
+import sys
+import time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path(sys.argv[1]).write_text(f"{os.getpid()} {os.getpgrp()}")
+time.sleep(60)
+"""
+    parent = """
+import subprocess
+import sys
+import time
+
+subprocess.Popen([sys.executable, "-c", sys.argv[2], sys.argv[1]])
+time.sleep(60)
+"""
+    started = time.perf_counter()
+    pid = None
+    pgid = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            auditor["_run"](
+                [
+                    sys.executable,
+                    "-c",
+                    parent,
+                    str(process_file),
+                    grandchild,
+                ],
+                cwd=tmp_path,
+                timeout=0.5,
+            )
+
+        elapsed = time.perf_counter() - started
+        assert elapsed < 2
+        assert process_file.exists()
+        pid, pgid = map(int, process_file.read_text().split())
+        deadline = time.monotonic() + 1
+        while (
+            _process_exists(pid) or _process_group_exists(pgid)
+        ) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _process_exists(pid)
+        assert not _process_group_exists(pgid)
+    finally:
+        if pgid is not None and _process_group_exists(pgid):
+            os.killpg(pgid, signal.SIGKILL)
 
 
 def test_audit_process_timeout_kills_pipe_inheriting_process_tree(

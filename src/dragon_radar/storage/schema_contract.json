@@ -9394,7 +9394,7 @@
   ],
   "postgresql_major": 17,
   "schema": "dragon-radar.postgresql-schema-contract",
-  "schema_version": 3,
+  "schema_version": 4,
   "tables": [
     {
       "columns": [
@@ -14431,2250 +14431,3042 @@
   "triggers": [
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "INSERT",
         "UPDATE",
         "DELETE"
       ],
-      "function_name": "audit_source_grant",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "grant_audit",
-      "table": "source_grants",
-      "timing": "AFTER",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT",
-        "UPDATE",
-        "DELETE"
-      ],
-      "function_name": "guard_publication_transition",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "publications_transition",
-      "table": "publications",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT",
-        "UPDATE",
-        "DELETE"
-      ],
+      "function_definition_sha256": "1ad8193f888c8ae0a91a4bc9deb58be422d9f4af064092edb3ef6fa76366f0ee",
       "function_name": "guard_role_run_transition",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "role_runs_transition",
       "table": "role_runs",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "657f7d7ba7b93e320ca08ea6e9fcf3ca92931a9a926fc57b1b97f3738e31c462",
+      "function_name": "guard_publication_transition",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "publications_transition",
+      "table": "publications",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "877e20bd7b13af61a3e8d0f08b40f2af43e5cd726f0dda0cc57b37f2bdb4ea34",
+      "function_name": "audit_source_grant",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "grant_audit",
+      "table": "source_grants",
+      "timing": "AFTER",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "INSERT",
         "UPDATE"
       ],
+      "function_definition_sha256": "b85823ebbd8482548fe82328d9d691dfa660679c8c6fbc0e721a8f785c94c438",
       "function_name": "guard_publication_attempt_authority",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "publication_attempts_authority",
       "table": "publication_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
-      "function_name": "guard_news_review_revision",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "news_association_reviews_revision",
-      "table": "news_association_reviews",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_news_snapshot_item",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "news_snapshot_items_guard",
-      "table": "news_snapshot_items",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_news_withdrawal_seal",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "withdrawal_binding_seals_news_guard",
-      "table": "withdrawal_binding_seals",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_calculation",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_calculations_guard",
-      "table": "regulation_calculations",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_event_structure",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_events_structure_guard",
-      "table": "regulation_events",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_rule_initial_activation",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_rules_activation_guard",
-      "table": "regulation_rules",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_rule_status_activation",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_rule_statuses_activation_guard",
-      "table": "regulation_rule_statuses",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_rule_structure",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_rules_structure_guard",
-      "table": "regulation_rules",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_child_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_calculations_publication_seal",
-      "table": "regulation_calculations",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_child_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_snapshot_events_publication_seal",
-      "table": "regulation_snapshot_events",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_child_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_snapshot_inputs_publication_seal",
-      "table": "regulation_snapshot_inputs",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_child_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_snapshot_rules_publication_seal",
-      "table": "regulation_snapshot_rules",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_event",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_snapshot_events_guard",
-      "table": "regulation_snapshot_events",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_input",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_snapshot_inputs_guard",
-      "table": "regulation_snapshot_inputs",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_root",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_snapshots_root_guard",
-      "table": "regulation_snapshots",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_regulation_snapshot_rule",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "regulation_snapshot_rules_guard",
-      "table": "regulation_snapshot_rules",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_evidence_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_change_summaries_draft_insert",
-      "table": "role_change_summaries",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_evidence_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_changes_draft_insert",
-      "table": "role_changes",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_evidence_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_factor_observations_draft_insert",
-      "table": "role_factor_observations",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_evidence_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_limit_rows_draft_insert",
-      "table": "role_limit_rows",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_evidence_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_results_draft_insert",
-      "table": "role_results",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_evidence_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_run_topics_draft_insert",
-      "table": "role_run_topics",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_evidence_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_topic_statuses_draft_insert",
-      "table": "role_topic_statuses",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
+      "function_definition_sha256": "47dd8d2ab5948f70c6323743d4580d7393442b7d6a129d7665a32e540c25c136",
       "function_name": "guard_role_pending_insert",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "role_pending_validations_draft_insert",
       "table": "role_pending_validations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
-      "function_name": "guard_role_validation_chain",
+      "function_definition_sha256": "4f624569b7e2045e04851fdf6d20bd952a635b0c789181cb8b5cea79953940d9",
+      "function_name": "guard_regulation_calculation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
-      "name": "role_validations_chain",
-      "table": "role_validations",
+      "name": "regulation_calculations_guard",
+      "table": "regulation_calculations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
-      "function_name": "guard_role_validation_input_completeness",
+      "function_definition_sha256": "50574b5628cb53e3bdac4746818f4a084b932b5abe0193385bc2643ec79dea7c",
+      "function_name": "guard_regulation_snapshot_event",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
-      "name": "role_validation_inputs_completeness",
-      "table": "role_validation_inputs",
-      "timing": "AFTER",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_role_validation_input_completeness",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "role_validations_input_completeness",
-      "table": "role_validations",
-      "timing": "AFTER",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "INSERT"
-      ],
-      "function_name": "guard_withdrawal_binding_seal_insert",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "withdrawal_binding_seals_insert_guard",
-      "table": "withdrawal_binding_seals",
+      "name": "regulation_snapshot_events_guard",
+      "table": "regulation_snapshot_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
+      "function_definition_sha256": "5f8165637351cce20d4df4e19338df37e72abd0ac23de10ae2ea696310feef03",
+      "function_name": "guard_regulation_rule_structure",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_rules_structure_guard",
+      "table": "regulation_rules",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "6cf00904af040f4d8d3ef7aa748d0461fcff456bad96d099dfc1a2200fa99519",
+      "function_name": "guard_regulation_event_structure",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_events_structure_guard",
+      "table": "regulation_events",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "7ba93e742181b9e85b5b46420f803c5c2cbc82f6cd6dfd5d0109a8ee9f6eff17",
       "function_name": "guard_withdrawal_dependency_insert",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "withdrawal_dependencies_insert_guard",
       "table": "withdrawal_dependencies",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "INSERT"
       ],
-      "function_name": "require_withdrawal_binding_seal",
+      "function_definition_sha256": "7d2f2f2b3a9f801007f44ac0c204d6e810efb364dfa7eac175efa49d30b1afcb",
+      "function_name": "guard_news_snapshot_item",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
-      "name": "withdrawal_records_binding_sealed",
-      "table": "withdrawal_records",
-      "timing": "AFTER",
+      "name": "news_snapshot_items_guard",
+      "table": "news_snapshot_items",
+      "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "8a27a8ba514b84b424e994d6ccb4a1779c59f3d1a1742eab3e3ce285cc2c154a",
+      "function_name": "guard_regulation_rule_initial_activation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_rules_activation_guard",
+      "table": "regulation_rules",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "950eb68f91e731e247eb8547496874201eb09a9fbc63b414eb6420a539498f08",
+      "function_name": "guard_news_review_revision",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "news_association_reviews_revision",
+      "table": "news_association_reviews",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9b9da5b8ca625a810c8c6ecfb31596097f889b117aec0cdf89ec602e4cf774a4",
+      "function_name": "guard_role_evidence_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_change_summaries_draft_insert",
+      "table": "role_change_summaries",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9b9da5b8ca625a810c8c6ecfb31596097f889b117aec0cdf89ec602e4cf774a4",
+      "function_name": "guard_role_evidence_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_changes_draft_insert",
+      "table": "role_changes",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9b9da5b8ca625a810c8c6ecfb31596097f889b117aec0cdf89ec602e4cf774a4",
+      "function_name": "guard_role_evidence_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_factor_observations_draft_insert",
+      "table": "role_factor_observations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9b9da5b8ca625a810c8c6ecfb31596097f889b117aec0cdf89ec602e4cf774a4",
+      "function_name": "guard_role_evidence_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_limit_rows_draft_insert",
+      "table": "role_limit_rows",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9b9da5b8ca625a810c8c6ecfb31596097f889b117aec0cdf89ec602e4cf774a4",
+      "function_name": "guard_role_evidence_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_results_draft_insert",
+      "table": "role_results",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9b9da5b8ca625a810c8c6ecfb31596097f889b117aec0cdf89ec602e4cf774a4",
+      "function_name": "guard_role_evidence_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_run_topics_draft_insert",
+      "table": "role_run_topics",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9b9da5b8ca625a810c8c6ecfb31596097f889b117aec0cdf89ec602e4cf774a4",
+      "function_name": "guard_role_evidence_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_topic_statuses_draft_insert",
+      "table": "role_topic_statuses",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9c24ee384ca299f5b4670992a433316912b5c6ba58946dbca7b53c2e184b09f3",
+      "function_name": "guard_regulation_snapshot_input",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_snapshot_inputs_guard",
+      "table": "regulation_snapshot_inputs",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9c55492ad756cab03ca87bdb8981cc6e097257792c6cd98398ce938e04d2064c",
+      "function_name": "guard_regulation_snapshot_child_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_calculations_publication_seal",
+      "table": "regulation_calculations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9c55492ad756cab03ca87bdb8981cc6e097257792c6cd98398ce938e04d2064c",
+      "function_name": "guard_regulation_snapshot_child_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_snapshot_events_publication_seal",
+      "table": "regulation_snapshot_events",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9c55492ad756cab03ca87bdb8981cc6e097257792c6cd98398ce938e04d2064c",
+      "function_name": "guard_regulation_snapshot_child_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_snapshot_inputs_publication_seal",
+      "table": "regulation_snapshot_inputs",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "9c55492ad756cab03ca87bdb8981cc6e097257792c6cd98398ce938e04d2064c",
+      "function_name": "guard_regulation_snapshot_child_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_snapshot_rules_publication_seal",
+      "table": "regulation_snapshot_rules",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "a6cccd1f64f367aa0b7476c13d00b1f6c8b38f460dff96639c492dfee1c94d89",
+      "function_name": "guard_regulation_snapshot_root",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_snapshots_root_guard",
+      "table": "regulation_snapshots",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "c473d6d40b2e53329814ff2da8924fc6f61be0e6426731e7af8e80f2e58d00b3",
+      "function_name": "guard_regulation_snapshot_rule",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_snapshot_rules_guard",
+      "table": "regulation_snapshot_rules",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "d21654a4aea8453207b4fa414beb93ad15d3bffe93833d288d12cd9348ace191",
+      "function_name": "guard_news_withdrawal_seal",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "withdrawal_binding_seals_news_guard",
+      "table": "withdrawal_binding_seals",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "d86aef12aacb59b4b70b3634c2942f2497db4b84d66fccce0ba7d36d2bd8c34a",
+      "function_name": "guard_regulation_rule_status_activation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "regulation_rule_statuses_activation_guard",
+      "table": "regulation_rule_statuses",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "ef165d1b938905fa425cc9cf02fa1f3ae0f2566f080c02444f06606a421f3f99",
+      "function_name": "guard_withdrawal_binding_seal_insert",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "withdrawal_binding_seals_insert_guard",
+      "table": "withdrawal_binding_seals",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "fc2b1895a0e32143b97351700af7ad30f40cf2f7f98172763a07828aaf918d71",
+      "function_name": "guard_role_validation_chain",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "role_validations_chain",
+      "table": "role_validations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "ai_task_cancellations_no_truncate",
       "table": "ai_task_cancellations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "ai_task_drafts_no_truncate",
       "table": "ai_task_drafts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "ai_task_reviews_no_truncate",
       "table": "ai_task_reviews",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "analysis_job_cache_no_truncate",
       "table": "analysis_job_cache",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "daily_kline_no_truncate",
       "table": "daily_kline",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "audit_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "import_batches",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "immutable_truncate",
       "table": "source_grants",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "index_daily_kline_no_truncate",
       "table": "index_daily_kline",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "limit_up_record_no_truncate",
       "table": "limit_up_record",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "market_import_attempts_no_truncate",
       "table": "market_import_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_article_revisions_no_truncate",
       "table": "news_article_revisions",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_articles_no_truncate",
       "table": "news_articles",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_association_reviews_no_truncate",
       "table": "news_association_reviews",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_associations_no_truncate",
       "table": "news_associations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_event_articles_no_truncate",
       "table": "news_event_articles",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_events_no_truncate",
       "table": "news_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_ingest_commands_no_truncate",
       "table": "news_ingest_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_review_audit_events_no_truncate",
       "table": "news_review_audit_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_review_commands_no_truncate",
       "table": "news_review_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_snapshot_items_no_truncate",
       "table": "news_snapshot_items",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_snapshots_no_truncate",
       "table": "news_snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "owner_commands_no_truncate",
       "table": "owner_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "private_audit_events_no_truncate",
       "table": "private_audit_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "publication_attempts_no_truncate",
       "table": "publication_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "publication_results_no_truncate",
       "table": "publication_results",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "publications_no_truncate",
       "table": "publications",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_calculations_no_truncate",
       "table": "regulation_calculations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_commands_no_truncate",
       "table": "regulation_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_events_no_truncate",
       "table": "regulation_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_rule_statuses_no_truncate",
       "table": "regulation_rule_statuses",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_rules_no_truncate",
       "table": "regulation_rules",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshot_events_no_truncate",
       "table": "regulation_snapshot_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshot_inputs_no_truncate",
       "table": "regulation_snapshot_inputs",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshot_rules_no_truncate",
       "table": "regulation_snapshot_rules",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshots_no_truncate",
       "table": "regulation_snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "review_note_revisions_no_truncate",
       "table": "review_note_revisions",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "review_verifications_no_truncate",
       "table": "review_verifications",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_change_summaries_no_truncate",
       "table": "role_change_summaries",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_changes_no_truncate",
       "table": "role_changes",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_factor_observations_no_truncate",
       "table": "role_factor_observations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_limit_rows_no_truncate",
       "table": "role_limit_rows",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_materialization_attempts_no_truncate",
       "table": "role_materialization_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_pending_validations_no_truncate",
       "table": "role_pending_validations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_results_no_truncate",
       "table": "role_results",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_run_topics_no_truncate",
       "table": "role_run_topics",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_runs_no_truncate",
       "table": "role_runs",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_topic_statuses_no_truncate",
       "table": "role_topic_statuses",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_validation_commands_no_truncate",
       "table": "role_validation_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_validation_inputs_no_truncate",
       "table": "role_validation_inputs",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_validations_no_truncate",
       "table": "role_validations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "security_state_history_no_truncate",
       "table": "security_state_history",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "source_dependencies_no_truncate",
       "table": "source_dependencies",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "topic_import_attempts_no_truncate",
       "table": "topic_import_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "topic_import_batches_no_truncate",
       "table": "topic_import_batches",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "topic_snapshots_no_truncate",
       "table": "topic_snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "withdrawal_binding_seals_no_truncate",
       "table": "withdrawal_binding_seals",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "withdrawal_dependencies_no_truncate",
       "table": "withdrawal_dependencies",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "TRUNCATE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "withdrawal_records_no_truncate",
       "table": "withdrawal_records",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
-      "function_name": "guard_publication_result_retention",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "publication_results_retention",
-      "table": "publication_results",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "UPDATE",
-        "DELETE"
-      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "immutable_rows",
       "table": "audit_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "immutable_rows",
       "table": "import_batches",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "immutable_rows",
       "table": "snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "ai_task_cancellations_append_only",
       "table": "ai_task_cancellations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "ai_task_drafts_append_only",
       "table": "ai_task_drafts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "ai_task_reviews_append_only",
       "table": "ai_task_reviews",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "analysis_job_cache_immutable",
       "table": "analysis_job_cache",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "daily_kline_immutable",
       "table": "daily_kline",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "index_daily_kline_immutable",
       "table": "index_daily_kline",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "limit_up_record_immutable",
       "table": "limit_up_record",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "market_import_attempts_immutable",
       "table": "market_import_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_article_revisions_immutable",
       "table": "news_article_revisions",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_articles_immutable",
       "table": "news_articles",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_association_reviews_immutable",
       "table": "news_association_reviews",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_associations_immutable",
       "table": "news_associations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_event_articles_immutable",
       "table": "news_event_articles",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_events_immutable",
       "table": "news_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_ingest_commands_immutable",
       "table": "news_ingest_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_review_audit_events_immutable",
       "table": "news_review_audit_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_review_commands_immutable",
       "table": "news_review_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_snapshot_items_immutable",
       "table": "news_snapshot_items",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "news_snapshots_immutable",
       "table": "news_snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "owner_commands_immutable",
       "table": "owner_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "private_audit_events_immutable",
       "table": "private_audit_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "publication_attempts_immutable",
       "table": "publication_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_calculations_immutable",
       "table": "regulation_calculations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_commands_immutable",
       "table": "regulation_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_events_immutable",
       "table": "regulation_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_rule_statuses_immutable",
       "table": "regulation_rule_statuses",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_rules_immutable",
       "table": "regulation_rules",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshot_events_immutable",
       "table": "regulation_snapshot_events",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshot_inputs_immutable",
       "table": "regulation_snapshot_inputs",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshot_rules_immutable",
       "table": "regulation_snapshot_rules",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "regulation_snapshots_immutable",
       "table": "regulation_snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "review_note_revisions_immutable",
       "table": "review_note_revisions",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "review_verifications_immutable",
       "table": "review_verifications",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_change_summaries_immutable",
       "table": "role_change_summaries",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_changes_immutable",
       "table": "role_changes",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_factor_observations_immutable",
       "table": "role_factor_observations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_limit_rows_immutable",
       "table": "role_limit_rows",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_materialization_attempts_immutable",
       "table": "role_materialization_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_pending_validations_immutable",
       "table": "role_pending_validations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_results_immutable",
       "table": "role_results",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_run_topics_immutable",
       "table": "role_run_topics",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_topic_statuses_immutable",
       "table": "role_topic_statuses",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_validation_commands_immutable",
       "table": "role_validation_commands",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_validation_inputs_immutable",
       "table": "role_validation_inputs",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "role_validations_immutable",
       "table": "role_validations",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "security_state_history_immutable",
       "table": "security_state_history",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "source_dependencies_immutable",
       "table": "source_dependencies",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "topic_import_attempts_immutable",
       "table": "topic_import_attempts",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "topic_import_batches_immutable",
       "table": "topic_import_batches",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "topic_snapshots_immutable",
       "table": "topic_snapshots",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "withdrawal_binding_seals_immutable",
       "table": "withdrawal_binding_seals",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "withdrawal_dependencies_immutable",
       "table": "withdrawal_dependencies",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE",
         "DELETE"
       ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
       "function_name": "reject_immutable_mutation",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "STATEMENT",
       "name": "withdrawal_records_immutable",
       "table": "withdrawal_records",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
-        "UPDATE"
+        "UPDATE",
+        "DELETE"
       ],
-      "function_name": "guard_ai_task_inputs",
+      "function_definition_sha256": "bb9b75858943130f5d3a7314ca103175eab95d8273ea778a35eebaaf54815152",
+      "function_name": "guard_publication_result_retention",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
-      "name": "ai_tasks_guard",
-      "table": "ai_tasks",
+      "name": "publication_results_retention",
+      "table": "publication_results",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE"
       ],
-      "function_name": "guard_analysis_job_inputs",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "analysis_jobs_immutable_inputs",
-      "table": "analysis_jobs",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "UPDATE"
-      ],
-      "function_name": "guard_publication_news_binding",
-      "function_schema": "current_schema",
-      "level": "ROW",
-      "name": "publications_news_binding",
-      "table": "publications",
-      "timing": "BEFORE",
-      "when": null
-    },
-    {
-      "arguments": "",
-      "enabled": "origin",
-      "events": [
-        "UPDATE"
-      ],
+      "function_definition_sha256": "1c1880e9764131f0a7af0d9034c05de53a4c9c7f07c4c706adcc2b127f9fecd2",
       "function_name": "guard_publication_regulation_binding",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "publications_regulation_binding",
       "table": "publications",
       "timing": "BEFORE",
+      "update_of_columns": [],
       "when": null
     },
     {
       "arguments": "",
+      "constraint": null,
+      "deferrable": false,
       "enabled": "origin",
       "events": [
         "UPDATE"
       ],
+      "function_definition_sha256": "39436ebd27493d8c68f8757dab5fa1d243c2e793c80b23dc9c4748e31ae04bfb",
+      "function_name": "guard_publication_news_binding",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "publications_news_binding",
+      "table": "publications",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "49b8473afb08b77157ce0b6f7ad80f24a760295bcc350accf506111bb364125c",
       "function_name": "guard_publication_role_binding",
       "function_schema": "current_schema",
+      "initially_deferred": false,
       "level": "ROW",
       "name": "publications_role_binding",
       "table": "publications",
       "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "73a3454386433f2e1c90e56a82e68b2d40bb5d76f27fcb06fc95373f7e162476",
+      "function_name": "guard_analysis_job_inputs",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "analysis_jobs_immutable_inputs",
+      "table": "analysis_jobs",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "db89f6d5ff0a6dc2787c2932c0ea4f5bf1f2c74eee89d91c5ff683ca09f8b8ad",
+      "function_name": "guard_ai_task_inputs",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "ai_tasks_guard",
+      "table": "ai_tasks",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": {
+        "name": "role_validation_inputs_completeness",
+        "schema": "current_schema",
+        "table": "role_validation_inputs"
+      },
+      "deferrable": true,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "0b8476e7c470bf6f7222a197f05a64092498c73602fb9999f66ba33f0152f0d0",
+      "function_name": "guard_role_validation_input_completeness",
+      "function_schema": "current_schema",
+      "initially_deferred": true,
+      "level": "ROW",
+      "name": "role_validation_inputs_completeness",
+      "table": "role_validation_inputs",
+      "timing": "AFTER",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": {
+        "name": "role_validations_input_completeness",
+        "schema": "current_schema",
+        "table": "role_validations"
+      },
+      "deferrable": true,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "0b8476e7c470bf6f7222a197f05a64092498c73602fb9999f66ba33f0152f0d0",
+      "function_name": "guard_role_validation_input_completeness",
+      "function_schema": "current_schema",
+      "initially_deferred": true,
+      "level": "ROW",
+      "name": "role_validations_input_completeness",
+      "table": "role_validations",
+      "timing": "AFTER",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": {
+        "name": "withdrawal_records_binding_sealed",
+        "schema": "current_schema",
+        "table": "withdrawal_records"
+      },
+      "deferrable": true,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "53621934a53165e6d47a00c6d16d4fc42cfdebdf608beb8db4eca16952752ebb",
+      "function_name": "require_withdrawal_binding_seal",
+      "function_schema": "current_schema",
+      "initially_deferred": true,
+      "level": "ROW",
+      "name": "withdrawal_records_binding_sealed",
+      "table": "withdrawal_records",
+      "timing": "AFTER",
+      "update_of_columns": [],
       "when": null
     }
   ]

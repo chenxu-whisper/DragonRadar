@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -313,18 +314,42 @@ def _run(
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         _terminate_process_tree(process, force=False)
-        for stream_name in ("stdout", "stderr"):
-            stream = getattr(process, stream_name, None)
-            if stream is not None:
-                stream.close()
         wait = getattr(process, "wait", None)
+        if os.name == "nt":
+            for stream_name in ("stdout", "stderr"):
+                stream = getattr(process, stream_name, None)
+                if stream is not None:
+                    stream.close()
+            try:
+                if wait is not None:
+                    wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                _terminate_process_tree(process, force=True)
+                try:
+                    wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+            raise exc
+        grace_deadline = time.monotonic() + 0.5
         try:
             if wait is not None:
                 wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            _terminate_process_tree(process, force=True)
+            pass
+        remaining_grace = grace_deadline - time.monotonic()
+        if remaining_grace > 0:
+            time.sleep(remaining_grace)
+        _terminate_process_tree(process, force=True)
+        try:
+            process.communicate(timeout=0.5)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            for stream_name in ("stdout", "stderr"):
+                stream = getattr(process, stream_name, None)
+                if stream is not None:
+                    stream.close()
             try:
-                wait(timeout=0.5)
+                if wait is not None:
+                    wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 pass
         raise exc

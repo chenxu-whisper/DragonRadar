@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 CONTRACT_SCHEMA = "dragon-radar.postgresql-schema-contract"
-CONTRACT_SCHEMA_VERSION = 3
+CONTRACT_SCHEMA_VERSION = 4
 SUPPORTED_POSTGRESQL_MAJOR = 17
 CONTRACT_FIELDS = {
     "schema",
@@ -66,7 +67,13 @@ TRIGGER_FIELDS = {
     "arguments",
     "function_schema",
     "function_name",
+    "function_definition_sha256",
+    "deferrable",
+    "initially_deferred",
+    "constraint",
+    "update_of_columns",
 }
+TRIGGER_CONSTRAINT_FIELDS = {"schema", "table", "name"}
 CONSTRAINT_KINDS = {"primary_key", "unique", "foreign_key", "check", "exclusion"}
 FOREIGN_KEY_ACTIONS = {
     "no_action",
@@ -273,7 +280,36 @@ SELECT
         WHEN function_namespace.oid = namespace.oid THEN 'current_schema'
         ELSE 'schema:' || function_namespace.nspname
     END AS function_schema,
-    function_record.proname AS function_name
+    function_record.proname AS function_name,
+    CASE
+        WHEN function_namespace.oid = namespace.oid THEN
+            pg_catalog.replace(
+                pg_catalog.pg_get_functiondef(trigger_record.tgfoid),
+                'CREATE OR REPLACE FUNCTION '
+                    || pg_catalog.quote_ident(function_namespace.nspname) || '.',
+                'CREATE OR REPLACE FUNCTION current_schema.'
+            )
+        ELSE pg_catalog.pg_get_functiondef(trigger_record.tgfoid)
+    END AS function_definition,
+    trigger_record.tgdeferrable AS deferrable,
+    trigger_record.tginitdeferred AS initially_deferred,
+    CASE
+        WHEN trigger_record.tgconstraint = 0 THEN NULL
+        WHEN constraint_namespace.oid = namespace.oid THEN 'current_schema'
+        ELSE 'schema:' || constraint_namespace.nspname
+    END AS constraint_schema,
+    constraint_relation.relname AS constraint_table,
+    constraint_record.conname AS constraint_name,
+    ARRAY(
+        SELECT attribute.attname
+        FROM pg_catalog.unnest(
+            trigger_record.tgattr::pg_catalog.int2[]
+        ) WITH ORDINALITY AS trigger_attribute(attnum, position)
+        JOIN pg_catalog.pg_attribute attribute
+          ON attribute.attrelid = trigger_record.tgrelid
+         AND attribute.attnum = trigger_attribute.attnum
+        ORDER BY trigger_attribute.position
+    ) AS update_of_columns
 FROM pg_catalog.pg_trigger trigger_record
 JOIN pg_catalog.pg_class relation ON relation.oid = trigger_record.tgrelid
 JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -281,6 +317,12 @@ JOIN pg_catalog.pg_proc function_record
   ON function_record.oid = trigger_record.tgfoid
 JOIN pg_catalog.pg_namespace function_namespace
   ON function_namespace.oid = function_record.pronamespace
+LEFT JOIN pg_catalog.pg_constraint constraint_record
+  ON constraint_record.oid = trigger_record.tgconstraint
+LEFT JOIN pg_catalog.pg_class constraint_relation
+  ON constraint_relation.oid = constraint_record.conrelid
+LEFT JOIN pg_catalog.pg_namespace constraint_namespace
+  ON constraint_namespace.oid = constraint_relation.relnamespace
 WHERE namespace.nspname = current_schema()
   AND relation.relname <> 'alembic_version'
   AND NOT trigger_record.tgisinternal
@@ -377,7 +419,7 @@ def _trigger_events(trigger_type: int) -> list[str]:
 
 
 def capture_triggers(connection: Connection) -> list[dict[str, object]]:
-    """Capture noninternal trigger behavior and function names."""
+    """Capture noninternal trigger behavior and function definitions."""
     enabled_values = {
         "O": "origin",
         "D": "disabled",
@@ -387,6 +429,13 @@ def capture_triggers(connection: Connection) -> list[dict[str, object]]:
     records = []
     for row in connection.execute(text(TRIGGERS_SQL)).mappings():
         trigger_type = int(row["trigger_type"])
+        constraint = None
+        if row["constraint_name"] is not None:
+            constraint = {
+                "schema": str(row["constraint_schema"]),
+                "table": str(row["constraint_table"]),
+                "name": str(row["constraint_name"]),
+            }
         records.append(
             {
                 "table": str(row["table_name"]),
@@ -399,6 +448,13 @@ def capture_triggers(connection: Connection) -> list[dict[str, object]]:
                 "arguments": str(row["arguments"]),
                 "function_schema": str(row["function_schema"]),
                 "function_name": str(row["function_name"]),
+                "function_definition_sha256": hashlib.sha256(
+                    str(row["function_definition"]).encode("utf-8")
+                ).hexdigest(),
+                "deferrable": bool(row["deferrable"]),
+                "initially_deferred": bool(row["initially_deferred"]),
+                "constraint": constraint,
+                "update_of_columns": list(row["update_of_columns"] or []),
             }
         )
     return _sorted_records(records)
@@ -717,8 +773,21 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
     )
     for index, trigger in enumerate(triggers):
         location = f"triggers[{index}]"
-        for field in ("table", "name", "function_schema", "function_name"):
+        for field in (
+            "table",
+            "name",
+            "function_schema",
+            "function_name",
+        ):
             _require_string(trigger[field], location=f"{location}.{field}")
+        function_definition_sha256 = trigger["function_definition_sha256"]
+        if (
+            not isinstance(function_definition_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", function_definition_sha256) is None
+        ):
+            raise ValueError(
+                f"{location}.function_definition_sha256 must be lowercase SHA-256"
+            )
         _require_choice(
             trigger["enabled"],
             TRIGGER_ENABLED_VALUES,
@@ -748,9 +817,48 @@ def validate_schema_contract(raw_contract: object) -> dict[str, object]:
             or re.fullmatch(r"[0-9a-f]*", arguments) is None
         ):
             raise ValueError(f"{location}.arguments must be lowercase hexadecimal")
+        deferrable = _require_bool(
+            trigger["deferrable"],
+            location=f"{location}.deferrable",
+        )
+        initially_deferred = _require_bool(
+            trigger["initially_deferred"],
+            location=f"{location}.initially_deferred",
+        )
+        if initially_deferred and not deferrable:
+            raise ValueError(
+                f"{location}.initially_deferred requires a deferrable trigger"
+            )
+        constraint = trigger["constraint"]
+        if constraint is None:
+            if deferrable or initially_deferred:
+                raise ValueError(
+                    f"{location} cannot be deferred without a trigger constraint"
+                )
+        else:
+            constraint = _require_exact_fields(
+                constraint,
+                TRIGGER_CONSTRAINT_FIELDS,
+                location=f"{location}.constraint",
+            )
+            for field in ("schema", "table", "name"):
+                _require_string(
+                    constraint[field],
+                    location=f"{location}.constraint.{field}",
+                )
+        update_of_columns = _require_string_list(
+            trigger["update_of_columns"],
+            location=f"{location}.update_of_columns",
+        )
+        if len(update_of_columns) != len(set(update_of_columns)):
+            raise ValueError(f"{location}.update_of_columns contains duplicates")
         canonical_events = [event for event in TRIGGER_EVENTS if event in events]
         if not events or events != canonical_events:
             raise ValueError(f"{location}.events must be unique and ordered")
+        if update_of_columns and events != ["UPDATE"]:
+            raise ValueError(
+                f"{location}.update_of_columns requires an UPDATE-only trigger"
+            )
     trigger_names = [(trigger["table"], trigger["name"]) for trigger in triggers]
     if len(trigger_names) != len(set(trigger_names)):
         raise ValueError("triggers contains duplicate table/name pairs")

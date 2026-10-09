@@ -6,6 +6,7 @@ import os
 import re
 import runpy
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -900,11 +901,20 @@ def test_run_process_timeout_terminates_and_waits(verifier, monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         verifier["_run_process"](["helper"], timeout=0.01)
 
-    assert events == [
-        ("communicate", 0.01),
-        ("terminate", None),
-        ("wait", 0.5),
-    ]
+    if os.name == "nt":
+        assert events == [
+            ("communicate", 0.01),
+            ("terminate", None),
+            ("wait", 0.5),
+        ]
+    else:
+        assert events == [
+            ("communicate", 0.01),
+            ("terminate", None),
+            ("wait", 0.5),
+            ("kill", None),
+            ("communicate", 0.5),
+        ]
 
 
 def _process_exists(pid):
@@ -922,6 +932,71 @@ def _process_exists(pid):
     except ProcessLookupError:
         return False
     return True
+
+
+def _process_group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX process groups")
+def test_run_process_timeout_kills_sigterm_ignoring_grandchild_after_parent_exits(
+    verifier,
+    tmp_path,
+):
+    process_file = tmp_path / "sigterm-ignoring-grandchild.txt"
+    grandchild = """
+import os
+import pathlib
+import signal
+import sys
+import time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path(sys.argv[1]).write_text(f"{os.getpid()} {os.getpgrp()}")
+time.sleep(60)
+"""
+    parent = """
+import subprocess
+import sys
+import time
+
+subprocess.Popen([sys.executable, "-c", sys.argv[2], sys.argv[1]])
+time.sleep(60)
+"""
+    started = time.perf_counter()
+    pid = None
+    pgid = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            verifier["_run_process"](
+                [
+                    sys.executable,
+                    "-c",
+                    parent,
+                    str(process_file),
+                    grandchild,
+                ],
+                timeout=0.5,
+            )
+
+        elapsed = time.perf_counter() - started
+        assert elapsed < 2
+        assert process_file.exists()
+        pid, pgid = map(int, process_file.read_text().split())
+        deadline = time.monotonic() + 1
+        while (
+            _process_exists(pid) or _process_group_exists(pgid)
+        ) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _process_exists(pid)
+        assert not _process_group_exists(pgid)
+    finally:
+        if pgid is not None and _process_group_exists(pgid):
+            os.killpg(pgid, signal.SIGKILL)
 
 
 def test_run_process_timeout_kills_pipe_inheriting_process_tree(
@@ -1220,7 +1295,7 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
 
     assert expected == actual
     assert expected["schema"] == "dragon-radar.postgresql-schema-contract"
-    assert expected["schema_version"] == 3
+    assert expected["schema_version"] == 4
     assert expected["postgresql_major"] == 17
     for collection in ("tables", "constraints", "indexes", "triggers"):
         assert expected[collection] == sorted(
@@ -1286,10 +1361,110 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
     )
     assert trigger["function_schema"] == "current_schema"
     assert trigger["function_name"] == "reject_immutable_mutation"
+    assert re.fullmatch(r"[0-9a-f]{64}", trigger["function_definition_sha256"])
+    assert trigger["deferrable"] is False
+    assert trigger["initially_deferred"] is False
+    assert trigger["constraint"] is None
+    assert trigger["update_of_columns"] == []
     assert trigger["when"] is None
     assert trigger["level"] == "ROW"
     assert trigger["arguments"] == ""
     assert database.ready()
+
+
+def test_readiness_rejects_trigger_function_definition_drift(database):
+    from dragon_radar.storage.schema_contract import capture_schema_contract
+
+    assert database.ready()
+    with database.engine.connect() as connection:
+        before = capture_schema_contract(connection)
+    expected_trigger = next(
+        trigger
+        for trigger in before["triggers"]
+        if trigger["name"] == "immutable_rows" and trigger["table"] == "snapshots"
+    )
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE OR REPLACE FUNCTION reject_immutable_mutation() "
+                "RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "BEGIN RETURN NEW; END $$"
+            )
+        )
+
+    with database.engine.connect() as connection:
+        after = capture_schema_contract(connection)
+    actual_trigger = next(
+        trigger
+        for trigger in after["triggers"]
+        if trigger["name"] == "immutable_rows" and trigger["table"] == "snapshots"
+    )
+    assert (
+        actual_trigger["function_definition_sha256"]
+        != expected_trigger["function_definition_sha256"]
+    )
+    assert not database.ready()
+
+
+def test_readiness_rejects_constraint_trigger_deferral_drift(database):
+    from dragon_radar.storage.schema_contract import capture_schema_contract
+
+    assert database.ready()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DROP TRIGGER withdrawal_records_binding_sealed ON withdrawal_records")
+        )
+        connection.execute(
+            text(
+                "CREATE CONSTRAINT TRIGGER withdrawal_records_binding_sealed "
+                "AFTER INSERT ON withdrawal_records "
+                "DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW "
+                "EXECUTE FUNCTION require_withdrawal_binding_seal()"
+            )
+        )
+
+    with database.engine.connect() as connection:
+        actual = capture_schema_contract(connection)
+    trigger = next(
+        trigger
+        for trigger in actual["triggers"]
+        if trigger["name"] == "withdrawal_records_binding_sealed"
+        and trigger["table"] == "withdrawal_records"
+    )
+    assert trigger["deferrable"] is True
+    assert trigger["initially_deferred"] is False
+    assert trigger["constraint"] == {
+        "schema": "current_schema",
+        "table": "withdrawal_records",
+        "name": "withdrawal_records_binding_sealed",
+    }
+    assert not database.ready()
+
+
+def test_readiness_rejects_trigger_update_of_columns_drift(database):
+    from dragon_radar.storage.schema_contract import capture_schema_contract
+
+    assert database.ready()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE OR REPLACE TRIGGER analysis_jobs_immutable_inputs "
+                "BEFORE UPDATE OF status ON analysis_jobs FOR EACH ROW "
+                "EXECUTE FUNCTION guard_analysis_job_inputs()"
+            )
+        )
+
+    with database.engine.connect() as connection:
+        actual = capture_schema_contract(connection)
+    trigger = next(
+        trigger
+        for trigger in actual["triggers"]
+        if trigger["name"] == "analysis_jobs_immutable_inputs"
+        and trigger["table"] == "analysis_jobs"
+    )
+    assert trigger["update_of_columns"] == ["status"]
+    assert not database.ready()
 
 
 def test_readiness_rejects_foreign_key_action_drift(database):
@@ -1723,7 +1898,19 @@ def test_schema_contract_requires_trigger_function_schema(tmp_path):
         load_schema_contract(path)
 
 
-@pytest.mark.parametrize("field", ["when", "level", "arguments"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "when",
+        "level",
+        "arguments",
+        "function_definition_sha256",
+        "deferrable",
+        "initially_deferred",
+        "constraint",
+        "update_of_columns",
+    ],
+)
 def test_schema_contract_requires_trigger_behavior_fields(tmp_path, field):
     from dragon_radar.storage.schema_contract import (
         load_packaged_schema_contract,
@@ -1731,13 +1918,32 @@ def test_schema_contract_requires_trigger_behavior_fields(tmp_path, field):
     )
 
     contract = load_packaged_schema_contract()
+    defaults = {
+        "function_definition_sha256": "0" * 64,
+        "deferrable": False,
+        "initially_deferred": False,
+        "constraint": None,
+        "update_of_columns": [],
+    }
+    for trigger in contract["triggers"]:
+        for key, value in defaults.items():
+            trigger.setdefault(key, deepcopy(value))
     del contract["triggers"][0][field]
+    contract["triggers"] = sorted(
+        contract["triggers"],
+        key=lambda item: json.dumps(
+            item,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ),
+    )
     path = tmp_path / f"missing-trigger-{field}.json"
     path.write_text(json.dumps(contract), encoding="utf-8")
 
     with pytest.raises(
         ValueError,
-        match=rf"triggers\[0\] missing field: {field}",
+        match=rf"triggers\[\d+\] missing field: {field}",
     ):
         load_schema_contract(path)
 
