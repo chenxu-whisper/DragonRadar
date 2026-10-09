@@ -46,6 +46,7 @@ jobs:
           --database-url "$DRAGON_TEST_DATABASE_URL"
           --wheel .temp/dist
           --output .temp/acceptance/task21-migrations.json
+          --audited-commit '${{ github.sha }}'
 
   reset_performance:
     runs-on: ubuntu-latest

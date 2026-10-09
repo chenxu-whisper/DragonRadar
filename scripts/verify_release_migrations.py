@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -446,8 +447,30 @@ def _new_schema_name() -> str:
     return f"schema_contract_{uuid4().hex}"
 
 
-def _new_upgrade_schema_name() -> str:
-    return f"release_upgrade_{uuid4().hex}"
+def _new_upgrade_schema_name(schema_prefix: str | None = None) -> str:
+    if schema_prefix is None:
+        return f"release_upgrade_{uuid4().hex}"
+    _validate_wheel_schema_prefix(schema_prefix)
+    return f"{schema_prefix}{uuid4().hex[:16]}"
+
+
+def _new_wheel_schema_prefix() -> str:
+    return f"release_wheel_{secrets.token_hex(16)}_"
+
+
+def _validate_wheel_schema_prefix(schema_prefix: str) -> None:
+    if re.fullmatch(r"release_wheel_[0-9a-f]{32}_", schema_prefix) is None:
+        raise ValueError("unsafe wheel schema prefix")
+
+
+def _validate_upgrade_schema_name(schema: str, schema_prefix: str | None) -> None:
+    pattern = (
+        r"release_upgrade_[0-9a-f]{32}"
+        if schema_prefix is None
+        else re.escape(schema_prefix) + r"[0-9a-f]{16}"
+    )
+    if re.fullmatch(pattern, schema) is None:
+        raise ValueError("unsafe generated schema name")
 
 
 def _upgrade(connection, revision: str) -> None:
@@ -479,6 +502,7 @@ def _sentinel_values() -> dict[str, object]:
         "rule_record_id": uuid4(),
         "rule_id": f"R{token[:12]}",
         "event_id": f"E{token[:12]}",
+        "regulation_snapshot_id": uuid4(),
         "ai_task_id": uuid4(),
         "hash": hashlib.sha256(token.encode("ascii")).hexdigest(),
     }
@@ -859,10 +883,55 @@ def _insert_sentinel(
             {"id": values["article_revision_id"], "hash": values["hash"]},
         )
     if revision == "0009_regulation":
+        _insert_market_archive(connection, values, with_idempotency_hash=True)
         _insert_rule(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO regulation_events (
+                    event_id, rule_id, rule_version, security_id, event_type,
+                    effective_from, created_at
+                ) VALUES (
+                    :event_id, :rule_id, 'v1', :security_id, 'monitoring',
+                    DATE '2026-01-01', :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO regulation_snapshots (
+                    id, idempotency_key, command_hash, market_snapshot_id,
+                    trade_date, as_of, status_sequence_watermark, created_at
+                ) VALUES (
+                    :regulation_snapshot_id, :token || '.regulation', :hash,
+                    :snapshot_id, DATE '2026-01-02', :now, 0, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO regulation_snapshot_events (
+                    snapshot_id, event_id, position
+                ) VALUES (
+                    :regulation_snapshot_id, :event_id, 0
+                )
+                """
+            ),
+            values,
+        )
         return (
-            "regulation_rule",
-            {"id": values["rule_record_id"], "rule_id": values["rule_id"]},
+            "legacy_regulation_graph",
+            {
+                "rule_record_id": values["rule_record_id"],
+                "event_id": values["event_id"],
+                "regulation_snapshot_id": values["regulation_snapshot_id"],
+            },
         )
     if revision == "0009d_reg_event_complete_set":
         _insert_source(connection, values)
@@ -979,6 +1048,24 @@ def _sentinel_preserved(
             "SELECT id, rule_id FROM regulation_rules WHERE id = :id",
             expected,
         ),
+        "legacy_regulation_graph": (
+            """
+            SELECT rule.id AS rule_record_id, event.event_id,
+                   snapshot.id AS regulation_snapshot_id
+            FROM regulation_rules rule
+            JOIN regulation_events event
+              ON event.rule_id = rule.rule_id
+             AND event.rule_version = rule.rule_version
+            JOIN regulation_snapshot_events binding
+              ON binding.event_id = event.event_id
+            JOIN regulation_snapshots snapshot
+              ON snapshot.id = binding.snapshot_id
+            WHERE rule.id = :rule_record_id
+              AND event.event_id = :event_id
+              AND snapshot.id = :regulation_snapshot_id
+            """,
+            expected,
+        ),
         "regulation_event_provenance": (
             """
             SELECT event_id, source_id
@@ -998,7 +1085,65 @@ def _sentinel_preserved(
     return all(row[key] == value for key, value in expected.items())
 
 
-def exercise_upgrade(database_url: str, revision: str) -> dict[str, object]:
+def _legacy_regulation_state(
+    connection,
+    expected: dict[str, object],
+    *,
+    upgraded: bool,
+) -> dict[str, object]:
+    from sqlalchemy import text
+
+    provenance = (
+        """
+        event.source_id, event.source_version,
+        snapshot.event_source_completeness,
+        snapshot.event_source_id, snapshot.event_source_version
+        """
+        if upgraded
+        else """
+        NULL::text AS source_id, NULL::text AS source_version,
+        'unknown'::text AS event_source_completeness,
+        NULL::text AS event_source_id, NULL::text AS event_source_version
+        """
+    )
+    row = (
+        connection.execute(
+            text(
+                f"""
+            SELECT rule.id AS rule_record_id, event.event_id,
+                   snapshot.id AS regulation_snapshot_id,
+                   binding.snapshot_id AS binding_snapshot_id,
+                   binding.event_id AS binding_event_id,
+                   {provenance}
+            FROM regulation_rules rule
+            JOIN regulation_events event
+              ON event.rule_id = rule.rule_id
+             AND event.rule_version = rule.rule_version
+            JOIN regulation_snapshot_events binding
+              ON binding.event_id = event.event_id
+            JOIN regulation_snapshots snapshot
+              ON snapshot.id = binding.snapshot_id
+            WHERE rule.id = :rule_record_id
+              AND event.event_id = :event_id
+              AND snapshot.id = :regulation_snapshot_id
+            """
+            ),
+            expected,
+        )
+        .mappings()
+        .one()
+    )
+    return {
+        key: str(value) if key.endswith("_id") and value is not None else value
+        for key, value in row.items()
+    }
+
+
+def exercise_upgrade(
+    database_url: str,
+    revision: str,
+    schema_prefix: str | None = None,
+) -> dict[str, object]:
     """Upgrade one declared baseline with representative data in a fresh schema."""
     from sqlalchemy import text
 
@@ -1007,16 +1152,17 @@ def exercise_upgrade(database_url: str, revision: str) -> dict[str, object]:
     url = _validated_postgres_url(database_url)
     admin_url = url.difference_update_query(["options"])
     admin_engine = _create_admin_engine(admin_url)
-    schema = _new_upgrade_schema_name()
+    schema = _new_upgrade_schema_name(schema_prefix)
     database = None
     scoped_engine = None
     schema_created = False
     primary_error = None
     cleanup_errors: list[BaseException] = []
     result = None
+    sentinel_before = None
+    sentinel_after = None
     try:
-        if re.fullmatch(r"release_upgrade_[0-9a-f]{32}", schema) is None:
-            raise ValueError("unsafe generated schema name")
+        _validate_upgrade_schema_name(schema, schema_prefix)
         with admin_engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         schema_created = True
@@ -1026,6 +1172,12 @@ def exercise_upgrade(database_url: str, revision: str) -> dict[str, object]:
         with scoped_engine.begin() as connection:
             _upgrade(connection, revision)
             kind, expected = _insert_sentinel(connection, revision, values)
+            if kind == "legacy_regulation_graph":
+                sentinel_before = _legacy_regulation_state(
+                    connection,
+                    expected,
+                    upgraded=False,
+                )
             baseline_revision = connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
@@ -1039,6 +1191,13 @@ def exercise_upgrade(database_url: str, revision: str) -> dict[str, object]:
             if final_revision != RELEASE_HEAD:
                 raise ValueError("supported upgrade did not reach 0010_ai_tasks")
             preserved = _sentinel_preserved(connection, kind, expected)
+            if kind == "legacy_regulation_graph":
+                sentinel_after = _legacy_regulation_state(
+                    connection,
+                    expected,
+                    upgraded=True,
+                )
+                preserved = preserved and sentinel_before == sentinel_after
         database = _database_class()(scoped_url.render_as_string(hide_password=False))
         ready = database.ready()
         if not preserved:
@@ -1052,6 +1211,9 @@ def exercise_upgrade(database_url: str, revision: str) -> dict[str, object]:
             "sentinel_preserved": preserved,
             "ready": ready,
         }
+        if sentinel_before is not None and sentinel_after is not None:
+            result["sentinel_before"] = sentinel_before
+            result["sentinel_after"] = sentinel_after
     except BaseException as exc:
         primary_error = exc
     finally:
@@ -1090,27 +1252,35 @@ def exercise_upgrade(database_url: str, revision: str) -> dict[str, object]:
     return result
 
 
-def exercise_supported_upgrades(database_url: str) -> list[dict[str, object]]:
+def exercise_supported_upgrades(
+    database_url: str,
+    schema_prefix: str | None = None,
+) -> list[dict[str, object]]:
     """Exercise every baseline declared by the frozen release policy."""
-    return [exercise_upgrade(database_url, revision) for revision in SUPPORTED_FROM]
+    return [
+        exercise_upgrade(database_url, revision, schema_prefix)
+        for revision in SUPPORTED_FROM
+    ]
 
 
-def exercise_fresh_upgrade(database_url: str) -> dict[str, object]:
+def exercise_fresh_upgrade(
+    database_url: str,
+    schema_prefix: str | None = None,
+) -> dict[str, object]:
     """Create a fresh head schema and require packaged readiness."""
     from sqlalchemy import text
 
     url = _validated_postgres_url(database_url)
     admin_url = url.difference_update_query(["options"])
     admin_engine = _create_admin_engine(admin_url)
-    schema = _new_upgrade_schema_name()
+    schema = _new_upgrade_schema_name(schema_prefix)
     database = None
     schema_created = False
     primary_error = None
     cleanup_errors: list[BaseException] = []
     result = None
     try:
-        if re.fullmatch(r"release_upgrade_[0-9a-f]{32}", schema) is None:
-            raise ValueError("unsafe generated schema name")
+        _validate_upgrade_schema_name(schema, schema_prefix)
         with admin_engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         schema_created = True
@@ -1184,6 +1354,46 @@ def resolve_wheel_path(value: Path) -> Path:
     return matches[0]
 
 
+def wheel_sha256(wheel: Path) -> str:
+    """Return the SHA-256 of the exact wheel archive bytes."""
+    return hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
+
+
+def validate_audited_commit(
+    value: str,
+    repository_root: Path | None = None,
+) -> str:
+    """Validate a full Git object name and match the checkout when available."""
+    if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise ValueError("audited commit must be 40 lowercase hex characters")
+    if repository_root is None:
+        return value
+    root = Path(repository_root)
+    if not (root / ".git").exists():
+        return value
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        shell=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError("cannot verify repository HEAD")
+    if result.stdout.strip() != value:
+        raise ValueError("audited commit does not match repository HEAD")
+    return value
+
+
+def _clear_output_target(output: Path) -> None:
+    output = Path(output)
+    if output.exists() and output.is_dir() and not output.is_symlink():
+        raise ValueError("evidence output must not be a directory")
+    output.unlink(missing_ok=True)
+
+
 def _venv_python(venv: Path) -> Path:
     if os.name == "nt":
         return venv / "Scripts" / "python.exe"
@@ -1204,6 +1414,7 @@ import dragon_radar
 package_file = Path(dragon_radar.__file__).resolve()
 source_root = Path(sys.argv[1]).resolve()
 output = Path(sys.argv[2]).resolve()
+schema_prefix = sys.argv[3]
 if package_file.is_relative_to(source_root):
     raise RuntimeError("wheel verification imported dragon_radar from source")
 
@@ -1213,8 +1424,8 @@ if manifest["errors"]:
     raise RuntimeError("installed migration manifest verification failed")
 
 database_url = os.environ["DRAGON_TEST_DATABASE_URL"]
-fresh = verifier["exercise_fresh_upgrade"](database_url)
-upgrades = verifier["exercise_supported_upgrades"](database_url)
+fresh = verifier["exercise_fresh_upgrade"](database_url, schema_prefix)
+upgrades = verifier["exercise_supported_upgrades"](database_url, schema_prefix)
 evidence = {
     "schema": "dragon-radar.installed-wheel-migrations",
     "schema_version": 1,
@@ -1235,28 +1446,226 @@ for item in upgrades:
 """
 
 
+def _load_wheel_child_evidence(path: Path) -> dict[str, object]:
+    try:
+        raw_evidence = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot read installed wheel evidence") from exc
+    evidence = _require_exact_fields(
+        raw_evidence,
+        {
+            "schema",
+            "schema_version",
+            "imported_from",
+            "fresh",
+            "supported_upgrades",
+        },
+        location="installed wheel evidence",
+    )
+    if evidence["schema"] != "dragon-radar.installed-wheel-migrations":
+        raise ValueError("installed wheel evidence schema is invalid")
+    if evidence["schema_version"] != 1:
+        raise ValueError("installed wheel evidence schema_version is invalid")
+    _require_string(
+        evidence["imported_from"],
+        location="installed wheel evidence.imported_from",
+    )
+    fresh = _require_exact_fields(
+        evidence["fresh"],
+        {"to_revision", "ready"},
+        location="installed wheel evidence.fresh",
+    )
+    if fresh != {"to_revision": RELEASE_HEAD, "ready": True}:
+        raise ValueError("installed wheel fresh migration evidence is invalid")
+
+    upgrades = evidence["supported_upgrades"]
+    if not isinstance(upgrades, list) or len(upgrades) != len(SUPPORTED_FROM):
+        raise ValueError("installed wheel supported_upgrades is invalid")
+    legacy_state_fields = {
+        "rule_record_id",
+        "event_id",
+        "regulation_snapshot_id",
+        "binding_snapshot_id",
+        "binding_event_id",
+        "source_id",
+        "source_version",
+        "event_source_completeness",
+        "event_source_id",
+        "event_source_version",
+    }
+    for index, (raw_upgrade, revision) in enumerate(
+        zip(upgrades, SUPPORTED_FROM, strict=True)
+    ):
+        fields = {
+            "from_revision",
+            "to_revision",
+            "sentinel",
+            "sentinel_preserved",
+            "ready",
+        }
+        if revision == "0009_regulation":
+            fields.update({"sentinel_before", "sentinel_after"})
+        upgrade = _require_exact_fields(
+            raw_upgrade,
+            fields,
+            location=f"installed wheel evidence.supported_upgrades[{index}]",
+        )
+        if (
+            upgrade["from_revision"] != revision
+            or upgrade["to_revision"] != RELEASE_HEAD
+            or upgrade["sentinel_preserved"] is not True
+            or upgrade["ready"] is not True
+        ):
+            raise ValueError("installed wheel supported upgrade evidence is invalid")
+        _require_string(
+            upgrade["sentinel"],
+            location=f"installed wheel evidence.supported_upgrades[{index}].sentinel",
+        )
+        if revision == "0009_regulation":
+            before = _require_exact_fields(
+                upgrade["sentinel_before"],
+                legacy_state_fields,
+                location="installed wheel evidence legacy sentinel_before",
+            )
+            after = _require_exact_fields(
+                upgrade["sentinel_after"],
+                legacy_state_fields,
+                location="installed wheel evidence legacy sentinel_after",
+            )
+            if before != after:
+                raise ValueError("installed wheel legacy sentinel changed")
+    return evidence
+
+
+def _run_process(
+    argv: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        list(argv),
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process.terminate()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+        raise exc
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _require_process_success(
+    result: subprocess.CompletedProcess[str],
+    *,
+    stage: str,
+) -> None:
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"{stage} failed with exit code {result.returncode}{suffix}")
+
+
+def _drop_wheel_schemas(database_url: str, schema_prefix: str) -> None:
+    from sqlalchemy import text
+
+    _validate_wheel_schema_prefix(schema_prefix)
+    url = _validated_postgres_url(database_url)
+    admin_url = url.difference_update_query(["options"])
+    admin_engine = _create_admin_engine(admin_url)
+    primary_error = None
+    cleanup_errors: list[BaseException] = []
+    try:
+        with admin_engine.begin() as connection:
+            schemas = list(
+                connection.execute(
+                    text(
+                        """
+                        SELECT nspname
+                        FROM pg_namespace
+                        WHERE left(nspname, length(:prefix)) = :prefix
+                        ORDER BY nspname
+                        """
+                    ),
+                    {"prefix": schema_prefix},
+                ).scalars()
+            )
+            for schema in schemas:
+                if (
+                    re.fullmatch(
+                        re.escape(schema_prefix) + r"[0-9a-f]{16}",
+                        schema,
+                    )
+                    is None
+                ):
+                    raise ValueError("unsafe prefixed schema name")
+                connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+    except BaseException as exc:
+        primary_error = exc
+    finally:
+        try:
+            admin_engine.dispose()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+    if primary_error is not None:
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "wheel schema cleanup failed",
+                [primary_error, *cleanup_errors],
+            )
+        raise primary_error.with_traceback(primary_error.__traceback__)
+    if cleanup_errors:
+        raise cleanup_errors[0]
+
+
 def verify_installed_wheel(
     database_url: str,
     wheel: Path,
     output: Path,
+    audited_commit: str,
 ) -> None:
     """Install one wheel and execute migration checks outside the source tree."""
+    _clear_output_target(output)
+    audited_commit = validate_audited_commit(audited_commit, REPOSITORY_ROOT)
     wheel = resolve_wheel_path(wheel)
+    wheel_digest = wheel_sha256(wheel)
+    schema_prefix = _new_wheel_schema_prefix()
+    _validate_wheel_schema_prefix(schema_prefix)
     temp_root = Path(tempfile.gettempdir()) / "dragon-radar-task21" / ".temp"
-    venv = temp_root / "task21-wheel-venv"
-    run_root = temp_root / "task21-wheel-run"
+    run_token = schema_prefix.removeprefix("release_wheel_").removesuffix("_")
+    venv = temp_root / f"task21-wheel-venv-{run_token}"
+    run_root = temp_root / f"task21-wheel-run-{run_token}"
     shutil.rmtree(venv, ignore_errors=True)
     shutil.rmtree(run_root, ignore_errors=True)
     run_root.mkdir(parents=True, exist_ok=True)
     helper = run_root / "wheel_helper.py"
     copied_verifier = run_root / "verifier.py"
+    child_output = run_root / "child-evidence.json"
     helper.write_text(_wheel_helper_source(), encoding="utf-8")
     shutil.copy2(Path(__file__).resolve(), copied_verifier)
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment["DRAGON_TEST_DATABASE_URL"] = database_url
+    primary_error = None
+    cleanup_errors: list[BaseException] = []
+    child_evidence = None
+    helper_stdout = ""
     try:
-        subprocess.run(
+        result = _run_process(
             [
                 "uv",
                 "venv",
@@ -1267,47 +1676,67 @@ def verify_installed_wheel(
             ],
             cwd=run_root,
             env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
             timeout=120,
-            check=True,
         )
+        _require_process_success(result, stage="wheel virtual environment creation")
         python = _venv_python(venv)
-        subprocess.run(
+        result = _run_process(
             ["uv", "pip", "install", "--python", str(python), str(wheel)],
             cwd=run_root,
             env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
             timeout=180,
-            check=True,
         )
-        result = subprocess.run(
+        _require_process_success(result, stage="wheel installation")
+        result = _run_process(
             [
                 str(python),
                 str(helper),
                 str(REPOSITORY_ROOT),
-                str(Path(output).resolve()),
+                str(child_output),
+                schema_prefix,
             ],
             cwd=run_root,
             env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
             timeout=300,
-            check=False,
         )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "installed wheel migration verification failed: "
-                f"{result.stderr.strip()}"
-            )
-        print(result.stdout, end="")
+        _require_process_success(
+            result,
+            stage="installed wheel migration verification",
+        )
+        child_evidence = _load_wheel_child_evidence(child_output)
+        helper_stdout = result.stdout
+    except BaseException as exc:
+        primary_error = exc
     finally:
         shutil.rmtree(venv, ignore_errors=True)
         shutil.rmtree(run_root, ignore_errors=True)
+        try:
+            _drop_wheel_schemas(database_url, schema_prefix)
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+    if primary_error is not None:
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "installed wheel verification and cleanup failed",
+                [primary_error, *cleanup_errors],
+            )
+        raise primary_error.with_traceback(primary_error.__traceback__)
+    if cleanup_errors:
+        raise cleanup_errors[0]
+    if child_evidence is None:
+        raise RuntimeError("installed wheel verification produced no evidence")
+    evidence = {
+        "schema": child_evidence["schema"],
+        "schema_version": child_evidence["schema_version"],
+        "wheel_filename": wheel.name,
+        "wheel_sha256": wheel_digest,
+        "audited_commit": audited_commit,
+        "imported_from": child_evidence["imported_from"],
+        "fresh": child_evidence["fresh"],
+        "supported_upgrades": child_evidence["supported_upgrades"],
+    }
+    write_contract_atomically(evidence, output)
+    print(helper_stdout, end="")
 
 
 def write_contract_atomically(
@@ -1437,17 +1866,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="write installed-wheel migration evidence to PATH",
     )
+    parser.add_argument(
+        "--audited-commit",
+        help="full lowercase Git commit audited by installed-wheel verification",
+    )
     args = parser.parse_args(argv)
     if args.wheel is not None:
-        database_url = args.database_url or os.environ.get("DRAGON_TEST_DATABASE_URL")
-        if not database_url:
-            print("database URL is required", file=sys.stderr)
-            return 1
         if args.output is None:
             print("--output is required with --wheel", file=sys.stderr)
             return 1
         try:
-            verify_installed_wheel(database_url, args.wheel, args.output)
+            _clear_output_target(args.output)
+        except (OSError, ValueError):
+            print("installed wheel migration verification failed", file=sys.stderr)
+            return 1
+        if args.audited_commit is None:
+            print("--audited-commit is required with --wheel", file=sys.stderr)
+            return 1
+        database_url = args.database_url or os.environ.get("DRAGON_TEST_DATABASE_URL")
+        if not database_url:
+            print("database URL is required", file=sys.stderr)
+            return 1
+        try:
+            verify_installed_wheel(
+                database_url,
+                args.wheel,
+                args.output,
+                args.audited_commit,
+            )
         except Exception:
             print("installed wheel migration verification failed", file=sys.stderr)
             return 1

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import runpy
 import shutil
 import subprocess
@@ -92,6 +93,14 @@ def add_revision(root, *, revision, down_revision):
         ),
         encoding="utf-8",
     )
+
+
+def audited_head():
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
 
 
 def append_import_marker(path, marker):
@@ -538,6 +547,40 @@ def test_supported_revision_upgrades_with_sentinel(
     assert result["ready"] is True
 
 
+def test_legacy_0009_upgrade_preserves_event_snapshot_and_binding(
+    verifier,
+    database_url,
+):
+    result = verifier["exercise_upgrade"](database_url, "0009_regulation")
+
+    assert result["sentinel"] == "legacy_regulation_graph"
+    before = result["sentinel_before"]
+    after = result["sentinel_after"]
+    assert before == after
+    assert set(before) == {
+        "rule_record_id",
+        "event_id",
+        "regulation_snapshot_id",
+        "binding_snapshot_id",
+        "binding_event_id",
+        "source_id",
+        "source_version",
+        "event_source_completeness",
+        "event_source_id",
+        "event_source_version",
+    }
+    assert before["rule_record_id"]
+    assert before["event_id"]
+    assert before["regulation_snapshot_id"]
+    assert before["binding_snapshot_id"] == before["regulation_snapshot_id"]
+    assert before["binding_event_id"] == before["event_id"]
+    assert before["source_id"] is None
+    assert before["source_version"] is None
+    assert before["event_source_completeness"] == "unknown"
+    assert before["event_source_id"] is None
+    assert before["event_source_version"] is None
+
+
 def test_built_wheel_contains_all_release_migration_resources(built_wheel):
     with zipfile.ZipFile(built_wheel) as archive:
         names = set(archive.namelist())
@@ -574,6 +617,248 @@ def test_wheel_resolution_requires_exactly_one_wheel(verifier, tmp_path):
         verifier["resolve_wheel_path"](tmp_path / "*.whl")
 
 
+@pytest.mark.parametrize("failure", ["timeout", "abnormal-exit"])
+def test_wheel_parent_cleans_exact_run_prefix_after_helper_failure(
+    verifier,
+    database_url,
+    tmp_path,
+    monkeypatch,
+    failure,
+):
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    wheel = tmp_path / "dragon_radar.whl"
+    wheel.write_bytes(b"wheel")
+    output = tmp_path / "migration-evidence.json"
+    calls = []
+    created_prefix = None
+    admin_url = make_url(database_url).difference_update_query(["options"])
+    admin = create_engine(admin_url)
+    verifier_globals = verifier["verify_installed_wheel"].__globals__
+
+    def run_process(argv, **kwargs):
+        nonlocal created_prefix
+        calls.append((argv, kwargs))
+        if Path(argv[0]).name.startswith("python") and "wheel_helper.py" in argv[1]:
+            created_prefix = argv[-1]
+            schema = f"{created_prefix}{'f' * 16}"
+            with admin.begin() as connection:
+                connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            return subprocess.CompletedProcess(argv, 17, "", "forced helper exit")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setitem(verifier_globals, "_run_process", run_process)
+    try:
+        with pytest.raises((subprocess.TimeoutExpired, RuntimeError)):
+            verifier["verify_installed_wheel"](
+                database_url,
+                wheel,
+                output,
+                "183587ec2b2494779db3a9221ea40cd596bb897d",
+            )
+
+        assert created_prefix is not None
+        assert re.fullmatch(r"release_wheel_[0-9a-f]{32}_", created_prefix)
+        with admin.connect() as connection:
+            remaining = connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM pg_namespace
+                    WHERE left(nspname, length(:prefix)) = :prefix
+                    """
+                ),
+                {"prefix": created_prefix},
+            )
+        assert remaining == 0
+        assert len(calls) == 3
+    finally:
+        if created_prefix is not None:
+            with admin.begin() as connection:
+                schemas = connection.execute(
+                    text(
+                        """
+                        SELECT nspname
+                        FROM pg_namespace
+                        WHERE left(nspname, length(:prefix)) = :prefix
+                        """
+                    ),
+                    {"prefix": created_prefix},
+                ).scalars()
+                for schema in schemas:
+                    connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin.dispose()
+
+
+def test_run_process_timeout_terminates_and_waits(verifier, monkeypatch):
+    events = []
+
+    class FakeProcess:
+        returncode = None
+
+        def communicate(self, timeout=None):
+            events.append(("communicate", timeout))
+            if len(events) == 1:
+                raise subprocess.TimeoutExpired(["helper"], timeout)
+            self.returncode = -15
+            return "", ""
+
+        def terminate(self):
+            events.append(("terminate", None))
+
+        def kill(self):
+            events.append(("kill", None))
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        verifier["_run_process"](["helper"], timeout=0.01)
+
+    assert events == [
+        ("communicate", 0.01),
+        ("terminate", None),
+        ("communicate", 5),
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["validation", "install", "helper"],
+)
+def test_wheel_failure_removes_stale_evidence_before_work(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    failure,
+):
+    output = tmp_path / "migration-evidence.json"
+    output.write_text('{"stale":"success"}\n', encoding="utf-8")
+    wheel = tmp_path / "dragon_radar.whl"
+    if failure != "validation":
+        wheel.write_bytes(b"wheel")
+    calls = 0
+    verifier_globals = verifier["verify_installed_wheel"].__globals__
+
+    def run_process(argv, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if failure == "install" and calls == 2:
+            return subprocess.CompletedProcess(argv, 9, "", "install failed")
+        if failure == "helper" and calls == 3:
+            child_output = Path(argv[3])
+            assert child_output != output.resolve()
+            child_output.write_text('{"stale":"child"}\n', encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 13, "", "helper failed")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setitem(verifier_globals, "_run_process", run_process)
+    monkeypatch.setitem(verifier_globals, "_drop_wheel_schemas", lambda *_: None)
+
+    with pytest.raises((ValueError, RuntimeError)):
+        verifier["verify_installed_wheel"](
+            "postgresql://user:never-print@localhost/dragon_test",
+            wheel,
+            output,
+            audited_head(),
+        )
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "183587e",
+        "A" * 40,
+        "g" * 40,
+        "0" * 39,
+        "0" * 41,
+    ],
+)
+def test_audited_commit_requires_exact_lowercase_git_identity(verifier, value):
+    with pytest.raises(ValueError, match="40 lowercase hex"):
+        verifier["validate_audited_commit"](value, ROOT)
+
+
+def test_audited_commit_must_match_checkout_when_checkable(verifier):
+    head = audited_head()
+
+    assert verifier["validate_audited_commit"](head, ROOT) == head
+    mismatch = "0" * 40 if head != "0" * 40 else "1" * 40
+    with pytest.raises(ValueError, match="does not match"):
+        verifier["validate_audited_commit"](mismatch, ROOT)
+
+
+def test_audited_commit_fails_closed_when_checkout_identity_cannot_be_read(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=128,
+            stdout="",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="cannot verify repository HEAD"):
+        verifier["validate_audited_commit"]("0" * 40, repository)
+
+
+def test_wheel_sha256_binds_raw_wheel_bytes(verifier, tmp_path):
+    wheel = tmp_path / "dragon_radar.whl"
+    wheel.write_bytes(b"first wheel bytes")
+    first = verifier["wheel_sha256"](wheel)
+
+    wheel.write_bytes(b"first wheel bytes plus mutation")
+    second = verifier["wheel_sha256"](wheel)
+
+    assert re.fullmatch(r"[0-9a-f]{64}", first)
+    assert re.fullmatch(r"[0-9a-f]{64}", second)
+    assert first != second
+
+
+def test_wheel_cli_requires_audited_commit_and_removes_stale_output(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    wheel = tmp_path / "dragon_radar.whl"
+    wheel.write_bytes(b"wheel")
+    output = tmp_path / "migration-evidence.json"
+    output.write_text('{"stale":"success"}\n', encoding="utf-8")
+    monkeypatch.setitem(
+        verifier["main"].__globals__,
+        "verify_installed_wheel",
+        lambda *_: pytest.fail("verification ran without an audited commit"),
+    )
+
+    result = verifier["main"](
+        [
+            "--database-url",
+            "postgresql://user:never-print@localhost/dragon_test",
+            "--wheel",
+            str(wheel),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 1
+    assert "--audited-commit is required with --wheel" in capsys.readouterr().err
+    assert not output.exists()
+
+
 def test_installed_wheel_runs_fresh_and_supported_upgrades(
     built_wheel,
     database_url,
@@ -593,6 +878,8 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
             str(built_wheel.parent / "*.whl"),
             "--output",
             str(output),
+            "--audited-commit",
+            audited_head(),
         ],
         cwd=tmp_path,
         env=environment,
@@ -605,6 +892,23 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
 
     assert result.returncode == 0, result.stderr
     evidence = json.loads(output.read_text(encoding="utf-8"))
+    assert set(evidence) == {
+        "schema",
+        "schema_version",
+        "wheel_filename",
+        "wheel_sha256",
+        "audited_commit",
+        "imported_from",
+        "fresh",
+        "supported_upgrades",
+    }
+    assert evidence["schema"] == "dragon-radar.installed-wheel-migrations"
+    assert evidence["schema_version"] == 1
+    assert evidence["wheel_filename"] == built_wheel.name
+    assert (
+        evidence["wheel_sha256"] == hashlib.sha256(built_wheel.read_bytes()).hexdigest()
+    )
+    assert evidence["audited_commit"] == audited_head()
     imported_from = Path(evidence["imported_from"]).resolve()
     assert f"dragon_radar imported from {imported_from}" in result.stdout
     assert not imported_from.is_relative_to(ROOT)
@@ -634,6 +938,7 @@ def test_ci_runs_installed_wheel_migration_gate_after_build():
     assert '--database-url "$DRAGON_TEST_DATABASE_URL"' in verify_job
     assert "--wheel .temp/dist" in verify_job
     assert "--output .temp/acceptance/task21-migrations.json" in verify_job
+    assert "--audited-commit '${{ github.sha }}'" in verify_job
     assert "dragon_radar-0.1.0-py3-none-any.whl" not in verify_job
 
 
@@ -660,6 +965,8 @@ def test_wheel_cli_never_reveals_database_password(
             str(wheel),
             "--output",
             str(tmp_path / "evidence.json"),
+            "--audited-commit",
+            audited_head(),
         ]
     )
 
