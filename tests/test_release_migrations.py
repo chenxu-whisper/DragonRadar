@@ -11,6 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify_release_migrations.py"
@@ -499,3 +500,246 @@ def test_cli_returns_nonzero_with_actionable_errors(
 
     assert verifier["main"](["--root", str(copied_migrations)]) == 1
     assert "SHA-256 mismatch: 0010_ai_tasks.py" in capsys.readouterr().err
+
+
+def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
+    from dragon_radar.storage.schema_contract import (
+        capture_schema_contract,
+        load_packaged_schema_contract,
+    )
+
+    expected = load_packaged_schema_contract()
+    with database.engine.connect() as connection:
+        actual = capture_schema_contract(connection)
+
+    assert expected == actual
+    assert expected["schema"] == "dragon-radar.postgresql-schema-contract"
+    assert expected["schema_version"] == 1
+    for collection in ("tables", "constraints", "indexes", "triggers"):
+        assert expected[collection] == sorted(
+            expected[collection],
+            key=lambda item: json.dumps(item, sort_keys=True),
+        )
+    assert database.ready()
+
+
+@pytest.mark.parametrize(
+    ("catalog_query", "catalog_parameters", "ddl"),
+    [
+        (
+            """
+            SELECT count(*)
+            FROM pg_trigger trigger
+            JOIN pg_class relation ON relation.oid = trigger.tgrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'snapshots'
+              AND trigger.tgname = 'immutable_rows'
+              AND NOT trigger.tgisinternal
+            """,
+            {},
+            "DROP TRIGGER immutable_rows ON snapshots",
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_constraint constraint_record
+            JOIN pg_class relation ON relation.oid = constraint_record.conrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'snapshots'
+              AND constraint_record.contype = 'u'
+              AND (
+                  SELECT array_agg(attribute.attname ORDER BY key.ordinality)
+                  FROM unnest(constraint_record.conkey)
+                      WITH ORDINALITY AS key(attnum, ordinality)
+                  JOIN pg_attribute attribute
+                    ON attribute.attrelid = relation.oid
+                   AND attribute.attnum = key.attnum
+              ) = ARRAY['source_id', 'trade_date', 'revision']::name[]
+            """,
+            {},
+            (
+                "ALTER TABLE snapshots DROP CONSTRAINT "
+                "snapshots_source_id_trade_date_revision_key"
+            ),
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_class index_record
+            JOIN pg_namespace namespace ON namespace.oid = index_record.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND index_record.relname = 'snapshots_listing'
+              AND index_record.relkind = 'i'
+            """,
+            {},
+            "DROP INDEX snapshots_listing",
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'import_batches'
+              AND column_name = 'payload_hash'
+            """,
+            {},
+            "ALTER TABLE import_batches DROP COLUMN payload_hash",
+        ),
+    ],
+    ids=(
+        "immutable-trigger",
+        "snapshot-unique-constraint",
+        "listing-index",
+        "payload-hash-column",
+    ),
+)
+def test_readiness_rejects_required_schema_drift(
+    database,
+    catalog_query,
+    catalog_parameters,
+    ddl,
+):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        assert connection.scalar(text(catalog_query), catalog_parameters) == 1
+        connection.execute(text(ddl))
+    assert not database.ready()
+
+
+def test_schema_contract_loader_rejects_unknown_fields_and_unsorted_data(tmp_path):
+    from dragon_radar.storage.schema_contract import (
+        load_packaged_schema_contract,
+        load_schema_contract,
+    )
+
+    contract = load_packaged_schema_contract()
+    contract["status"] = "GO"
+    path = tmp_path / "unknown.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+    with pytest.raises(ValueError, match="unexpected field.*status"):
+        load_schema_contract(path)
+
+    del contract["status"]
+    contract["tables"] = list(reversed(contract["tables"]))
+    path.write_text(json.dumps(contract), encoding="utf-8")
+    with pytest.raises(ValueError, match="tables.*sorted"):
+        load_schema_contract(path)
+
+
+def test_schema_contract_loader_rejects_duplicate_keys_and_wrong_version(tmp_path):
+    from dragon_radar.storage.schema_contract import load_schema_contract
+
+    path = tmp_path / "tampered.json"
+    path.write_text(
+        """
+        {
+          "schema": "dragon-radar.postgresql-schema-contract",
+          "schema": "dragon-radar.postgresql-schema-contract",
+          "schema_version": 2,
+          "tables": [],
+          "constraints": [],
+          "indexes": [],
+          "triggers": []
+        }
+        """,
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate JSON key.*schema"):
+        load_schema_contract(path)
+
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "dragon-radar.postgresql-schema-contract",
+                "schema_version": 2,
+                "tables": [],
+                "constraints": [],
+                "indexes": [],
+                "triggers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="schema_version"):
+        load_schema_contract(path)
+
+
+def test_schema_contract_loader_rejects_malformed_json_and_wrong_schema(tmp_path):
+    from dragon_radar.storage.schema_contract import load_schema_contract
+
+    path = tmp_path / "tampered.json"
+    path.write_text('{"schema":', encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot read schema contract"):
+        load_schema_contract(path)
+
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "not-dragon-radar",
+                "schema_version": 1,
+                "tables": [],
+                "constraints": [],
+                "indexes": [],
+                "triggers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="contract schema"):
+        load_schema_contract(path)
+
+
+def test_readiness_fails_closed_when_contract_processing_raises(
+    database,
+    monkeypatch,
+):
+    import dragon_radar.storage.database as database_module
+
+    monkeypatch.setattr(
+        database_module,
+        "load_packaged_schema_contract",
+        lambda: (_ for _ in ()).throw(RuntimeError("contract failure")),
+    )
+
+    assert not database.ready()
+
+
+def test_schema_contract_comparison_rejects_tampered_expected_contract(database):
+    from dragon_radar.storage.schema_contract import (
+        capture_schema_contract,
+        compare_schema_contract,
+        load_packaged_schema_contract,
+    )
+
+    expected = load_packaged_schema_contract()
+    expected["triggers"] = expected["triggers"][1:]
+    with database.engine.connect() as connection:
+        actual = capture_schema_contract(connection)
+
+    errors = compare_schema_contract(expected, actual)
+
+    assert errors
+    assert any("triggers" in error for error in errors)
+
+
+def test_schema_contract_writer_is_atomic_and_contains_no_credentials(
+    database,
+    tmp_path,
+):
+    from dragon_radar.storage.schema_contract import (
+        load_schema_contract,
+        write_schema_contract,
+    )
+
+    output = tmp_path / "schema-contract.json"
+    with database.engine.connect() as connection:
+        contract = write_schema_contract(connection, output)
+
+    assert load_schema_contract(output) == contract
+    serialized = output.read_text(encoding="utf-8")
+    assert contract["tables"]
+    assert "postgresql+psycopg://" not in serialized
+    assert "dragon-test-local-only" not in serialized
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
