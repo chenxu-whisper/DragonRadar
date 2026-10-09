@@ -1991,21 +1991,29 @@ def test_restore_container_name_must_be_safe(verifier, name):
         verifier["validate_restore_container_name"](name)
 
 
-def _configure_fake_restore_drill(verifier, monkeypatch, *, failure=None):
+def _configure_fake_restore_drill(
+    verifier,
+    monkeypatch,
+    *,
+    failure=None,
+    hash_stdout=None,
+    source_fingerprints=None,
+):
     globals_ = verifier["exercise_backup_restore"].__globals__
     events = []
     fingerprint_calls = 0
     source_fingerprint = "a" * 64
     backup_sha256 = "b" * 64
+    fingerprints = iter(source_fingerprints or [source_fingerprint] * 3)
 
     def prepare(database_url):
         events.append(("prepare", database_url))
         if failure == "prepare":
             raise RuntimeError("prepare failed")
         return {
-            "fingerprint": source_fingerprint,
             "sentinel_kind": "foundation_archive",
             "sentinel_expected": {"snapshot_id": "sentinel"},
+            "sentinel_values": {"source_id": "task21.sentinel"},
             "source_counts": {
                 "source_grants": 1,
                 "import_batches": 1,
@@ -2024,7 +2032,17 @@ def _configure_fake_restore_drill(verifier, monkeypatch, *, failure=None):
         nonlocal fingerprint_calls
         fingerprint_calls += 1
         events.append(("fingerprint", database_url))
-        return source_fingerprint
+        return next(fingerprints)
+
+    def enforce_quiescence(container, username, source_database):
+        events.append(("freeze", container, username, source_database))
+        if failure == "freeze":
+            raise RuntimeError("freeze failed")
+
+    def restore_writable(container, username, source_database):
+        events.append(("thaw", container, username, source_database))
+        if failure == "thaw":
+            raise RuntimeError("thaw failed")
 
     def verify(restore_url, source_state):
         events.append(("verify", restore_url, source_state))
@@ -2053,13 +2071,23 @@ def _configure_fake_restore_drill(verifier, monkeypatch, *, failure=None):
             return subprocess.CompletedProcess(argv, 23, "", f"{command} failed")
         if failure == "cleanup" and ("dropdb" in argv or "rm" in argv):
             return subprocess.CompletedProcess(argv, 24, "", "cleanup failed")
-        stdout = (
-            f"{backup_sha256}  /tmp/task21.dump\n" if command == "sha256sum" else ""
-        )
+        stdout = ""
+        if command == "sha256sum":
+            stdout = (
+                hash_stdout
+                if hash_stdout is not None
+                else f"{backup_sha256}  {argv[-1]}\n"
+            )
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setitem(globals_, "_prepare_restore_source", prepare)
     monkeypatch.setitem(globals_, "_database_fingerprint", fingerprint)
+    monkeypatch.setitem(
+        globals_,
+        "_enforce_source_quiescence",
+        enforce_quiescence,
+    )
+    monkeypatch.setitem(globals_, "_restore_source_writable", restore_writable)
     monkeypatch.setitem(globals_, "_verify_restored_database", verify)
     monkeypatch.setitem(globals_, "_run_process", run_process)
     monkeypatch.setitem(globals_, "_new_restore_token", lambda: "c" * 32)
@@ -2090,11 +2118,25 @@ def test_backup_restore_drill_uses_argv_and_writes_atomic_evidence(
     assert result["restored_ready"] is True
     assert result["sentinel_preserved"] is True
     assert result["permissions_preserved"] is True
-    assert result["quiesced"] is True
-    assert result["measured_data_loss_window_seconds"] == 0.0
+    assert result["quiescence_enforced"] is True
+    assert result["measured_data_loss_rows"] == 0
+    assert result["data_loss_window_seconds"] == 0.0
+    assert result["write_freeze_seconds"] > 0
+    assert "quiesced" not in result
+    assert "measured_data_loss_window_seconds" not in result
     assert result["elapsed_seconds"] > 0
     assert "secret" not in output.read_text(encoding="utf-8")
-    assert fingerprint_calls() == 1
+    assert fingerprint_calls() == 3
+    assert [event[0] for event in events].index("freeze") < [
+        event[0] for event in events
+    ].index("fingerprint")
+    thaw_index = [event[0] for event in events].index("thaw")
+    cleanup_index = next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "process" and ("dropdb" in event[1] or "rm" in event[1])
+    )
+    assert thaw_index < cleanup_index
 
     process_events = [event for event in events if event[0] == "process"]
     argv = [event[1] for event in process_events]
@@ -2160,6 +2202,146 @@ def test_backup_restore_drill_uses_argv_and_writes_atomic_evidence(
             "/tmp/task21_restore_" + ("c" * 32) + ".dump",
         ],
     ]
+
+
+def test_source_write_freeze_and_thaw_use_quoted_database_and_prove_state(
+    verifier,
+    monkeypatch,
+):
+    globals_ = verifier["exercise_backup_restore"].__globals__
+    calls = []
+
+    def run_process(argv, **kwargs):
+        calls.append((argv, kwargs))
+        sql = argv[-1]
+        if sql == "SHOW transaction_read_only":
+            stdout = "on\n" if len(calls) == 4 else "off\n"
+        elif "SELECT count(*)" in sql:
+            stdout = "0\n"
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setitem(globals_, "_run_process", run_process)
+
+    verifier["_enforce_source_quiescence"](
+        "task21-postgres",
+        "dragon",
+        "source-db",
+    )
+    verifier["_restore_source_writable"](
+        "task21-postgres",
+        "dragon",
+        "source-db",
+    )
+
+    argv = [call[0] for call in calls]
+    assert all(call[1]["timeout"] > 0 for call in calls)
+    assert (
+        'ALTER DATABASE "source-db" SET default_transaction_read_only = on'
+        in (argv[0][-1])
+    )
+    assert "pg_terminate_backend" in argv[1][-1]
+    assert "SELECT count(*)" in argv[2][-1]
+    assert argv[3][-1] == "SHOW transaction_read_only"
+    assert (
+        'ALTER DATABASE "source-db" SET default_transaction_read_only = off'
+        in (argv[4][-1])
+    )
+    assert argv[5][-1] == "SHOW transaction_read_only"
+    assert all("--set=ON_ERROR_STOP=1" in command for command in argv)
+
+
+@pytest.mark.parametrize(
+    "hash_stdout",
+    [
+        "",
+        "not-a-sha256  /tmp/task21.dump\n",
+        ("b" * 64) + "\n",
+        ("B" * 64) + "  /tmp/task21.dump\n",
+        ("b" * 64) + "  /tmp/wrong.dump\n",
+        ("b" * 64) + " */tmp/task21.dump\n",
+    ],
+)
+def test_backup_sha256_malformed_output_fails_closed(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    hash_stdout,
+):
+    events, _, _, _ = _configure_fake_restore_drill(
+        verifier,
+        monkeypatch,
+        hash_stdout=hash_stdout,
+    )
+    output = tmp_path / "restore.json"
+    output.write_text('{"stale":"success"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="SHA-256 output is invalid"):
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://dragon:secret@localhost/source",
+            output,
+        )
+
+    assert not output.exists()
+    assert "thaw" in [event[0] for event in events]
+    cleanup = [
+        event[1]
+        for event in events
+        if event[0] == "process" and ("dropdb" in event[1] or "rm" in event[1])
+    ]
+    assert len(cleanup) == 2
+
+
+def test_source_mutation_after_dump_fails_closed(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    source = "a" * 64
+    mutated = "c" * 64
+    events, _, _, fingerprint_calls = _configure_fake_restore_drill(
+        verifier,
+        monkeypatch,
+        source_fingerprints=[source, mutated, mutated],
+    )
+    output = tmp_path / "restore.json"
+
+    with pytest.raises(ValueError, match="source database fingerprint changed"):
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://dragon:secret@localhost/source",
+            output,
+        )
+
+    assert not output.exists()
+    assert fingerprint_calls() >= 2
+    assert "thaw" in [event[0] for event in events]
+
+
+def test_quiescence_failure_emits_no_pass_evidence_and_restores_writable(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    events, _, _, fingerprint_calls = _configure_fake_restore_drill(
+        verifier,
+        monkeypatch,
+        failure="freeze",
+    )
+    output = tmp_path / "restore.json"
+
+    with pytest.raises(RuntimeError, match="freeze failed"):
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://dragon:secret@localhost/source",
+            output,
+        )
+
+    assert not output.exists()
+    assert fingerprint_calls() == 0
+    assert "thaw" in [event[0] for event in events]
 
 
 def test_restore_schema_canonicalization_recreates_only_round_trip_mismatches(
@@ -2264,14 +2446,21 @@ def test_restore_constraint_resolution_uses_literals_for_unnamed_checks(verifier
 
 
 @pytest.mark.parametrize(
-    "failure",
-    ["pg_dump", "createdb", "pg_restore", "verify"],
+    ("failure", "message"),
+    [
+        ("pg_dump", "pg_dump failed"),
+        ("sha256sum", "backup SHA-256 failed"),
+        ("createdb", "createdb failed"),
+        ("pg_restore", "pg_restore failed"),
+        ("verify", "verify failed"),
+    ],
 )
 def test_backup_restore_failure_invalidates_output_and_cleans_exactly(
     verifier,
     tmp_path,
     monkeypatch,
     failure,
+    message,
 ):
     events, _, _, fingerprint_calls = _configure_fake_restore_drill(
         verifier,
@@ -2281,7 +2470,7 @@ def test_backup_restore_failure_invalidates_output_and_cleans_exactly(
     output = tmp_path / "restore.json"
     output.write_text('{"stale":"success"}\n', encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+    with pytest.raises(RuntimeError, match=message):
         verifier["exercise_backup_restore"](
             "task21-postgres",
             "postgresql://dragon:secret@localhost/source",
@@ -2294,7 +2483,8 @@ def test_backup_restore_failure_invalidates_output_and_cleans_exactly(
     assert len(cleanup) == 2
     assert "dropdb" in cleanup[0]
     assert "rm" in cleanup[1]
-    assert fingerprint_calls() == 1
+    assert fingerprint_calls() >= 1
+    assert "thaw" in [event[0] for event in events]
 
 
 def test_backup_restore_preserves_primary_and_all_cleanup_failures(
@@ -2325,6 +2515,32 @@ def test_backup_restore_preserves_primary_and_all_cleanup_failures(
     assert "secret" not in repr(raised.value)
 
 
+def test_writable_restore_failure_preserves_primary_failure(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    _configure_fake_restore_drill(verifier, monkeypatch, failure="verify")
+    globals_ = verifier["exercise_backup_restore"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_restore_source_writable",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("writable restore failed")),
+    )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        verifier["exercise_backup_restore"](
+            "task21-postgres",
+            "postgresql://dragon:secret@localhost/source",
+            tmp_path / "restore.json",
+        )
+
+    assert [str(error) for error in raised.value.exceptions] == [
+        "verify failed",
+        "writable restore failed",
+    ]
+
+
 def test_actual_named_container_backup_restore_drill(verifier, tmp_path):
     container = os.environ.get("DRAGON_TEST_POSTGRES_CONTAINER")
     database_url = os.environ.get("DRAGON_TEST_DATABASE_URL")
@@ -2342,6 +2558,10 @@ def test_actual_named_container_backup_restore_drill(verifier, tmp_path):
     )
 
     assert result["source_unchanged"] is True
+    assert result["quiescence_enforced"] is True
+    assert result["measured_data_loss_rows"] == 0
+    assert result["data_loss_window_seconds"] == 0.0
+    assert result["write_freeze_seconds"] > 0
     assert result["restored_ready"] is True
     assert result["sentinel_preserved"] is True
     assert result["permissions_preserved"] is True
@@ -2379,6 +2599,20 @@ def test_backup_restore_runbook_is_restore_only_and_operational():
     ):
         assert required.lower() in runbook.lower()
     assert "down -v" not in runbook
+
+
+def test_backup_restore_runbook_never_drops_the_active_restore_after_switch():
+    runbook = (ROOT / "docs" / "operations" / "database-backup-restore.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(runbook.lower().split())
+
+    assert "retain the newly active restored database" in normalized
+    assert "never drop the active restored database" in normalized
+    assert "retain the old source database for the rollback window" in normalized
+    assert "remove the dump according to the retention policy" in normalized
+    assert "abort before switch" in normalized
+    assert "may drop the failed restore database" in normalized
 
 
 def test_ci_has_isolated_task21_migration_release_contract():

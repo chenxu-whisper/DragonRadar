@@ -1670,7 +1670,7 @@ def _restore_sentinel_counts(connection, values: dict[str, object]) -> dict[str,
 
 
 def _prepare_restore_source(database_url: str) -> dict[str, object]:
-    """Migrate and seed the dedicated source database, then fingerprint it."""
+    """Migrate and seed the dedicated source database before quiescence."""
     from sqlalchemy import text
 
     database = _database_class()(database_url)
@@ -1730,7 +1730,6 @@ def _prepare_restore_source(database_url: str) -> dict[str, object]:
     finally:
         database.close()
     return {
-        "fingerprint": _database_fingerprint(database_url),
         "sentinel_kind": kind,
         "sentinel_expected": expected,
         "sentinel_values": values,
@@ -1954,6 +1953,124 @@ def _docker_restore_command(
     return result
 
 
+def _validated_database_identifier(name: str) -> str:
+    safe_identifier = r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}"
+    if re.fullmatch(safe_identifier, name) is None:
+        raise ValueError("unsafe database identifier")
+    return f'"{name}"'
+
+
+def _database_literal(name: str) -> str:
+    return "'" + name.replace("'", "''") + "'"
+
+
+def _psql_restore_command(
+    container: str,
+    username: str,
+    database: str,
+    sql: str,
+    *,
+    stage: str,
+) -> subprocess.CompletedProcess[str]:
+    return _docker_restore_command(
+        container,
+        "psql",
+        "--username",
+        username,
+        "--dbname",
+        database,
+        "--tuples-only",
+        "--no-align",
+        "--set=ON_ERROR_STOP=1",
+        "--command",
+        sql,
+        stage=stage,
+    )
+
+
+def _enforce_source_quiescence(
+    container: str,
+    username: str,
+    source_database: str,
+) -> None:
+    """Freeze the dedicated source and prove a new connection is read-only."""
+    quoted_database = _validated_database_identifier(source_database)
+    database_literal = _database_literal(source_database)
+    _psql_restore_command(
+        container,
+        username,
+        "postgres",
+        (f"ALTER DATABASE {quoted_database} SET default_transaction_read_only = on"),
+        stage="source write freeze",
+    )
+    _psql_restore_command(
+        container,
+        username,
+        "postgres",
+        (
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            f"WHERE datname = {database_literal} AND pid <> pg_backend_pid()"
+        ),
+        stage="source session termination",
+    )
+    sessions = _psql_restore_command(
+        container,
+        username,
+        "postgres",
+        (
+            "SELECT count(*) FROM pg_stat_activity "
+            f"WHERE datname = {database_literal} AND pid <> pg_backend_pid()"
+        ),
+        stage="source session verification",
+    )
+    if sessions.stdout.strip() != "0":
+        raise RuntimeError("source database still has non-drill sessions")
+    read_only = _psql_restore_command(
+        container,
+        username,
+        source_database,
+        "SHOW transaction_read_only",
+        stage="source read-only verification",
+    )
+    if read_only.stdout.strip() != "on":
+        raise RuntimeError("source database write freeze was not enforced")
+
+
+def _restore_source_writable(
+    container: str,
+    username: str,
+    source_database: str,
+) -> None:
+    """Restore the dedicated source default and prove a new connection can write."""
+    quoted_database = _validated_database_identifier(source_database)
+    _psql_restore_command(
+        container,
+        username,
+        "postgres",
+        (f"ALTER DATABASE {quoted_database} SET default_transaction_read_only = off"),
+        stage="source writable restore",
+    )
+    read_only = _psql_restore_command(
+        container,
+        username,
+        source_database,
+        "SHOW transaction_read_only",
+        stage="source writable verification",
+    )
+    if read_only.stdout.strip() != "off":
+        raise RuntimeError("source database writable setting was not restored")
+
+
+def _parse_backup_sha256(stdout: str, dump_path: str) -> str:
+    match = re.fullmatch(
+        rf"([0-9a-f]{{64}})  {re.escape(dump_path)}\r?\n?",
+        stdout,
+    )
+    if match is None:
+        raise ValueError("backup SHA-256 output is invalid")
+    return match.group(1)
+
+
 def exercise_backup_restore(
     restore_container: str,
     database_url: str,
@@ -1965,14 +2082,13 @@ def exercise_backup_restore(
     url = _validated_postgres_url(database_url)
     username = url.username
     source_database = url.database
-    safe_identifier = r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}"
     if (
         username is None
         or source_database is None
-        or re.fullmatch(safe_identifier, username) is None
-        or re.fullmatch(safe_identifier, source_database) is None
+        or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}", username) is None
     ):
         raise ValueError("database URL must contain safe user and database names")
+    _validated_database_identifier(source_database)
 
     token = _new_restore_token()
     restore_database = f"task21_restore_{token}"
@@ -1986,8 +2102,17 @@ def exercise_backup_restore(
     source_state = None
     verification = None
     backup_sha256 = None
+    freeze_attempted = False
+    freeze_started = None
+    freeze_ended = None
+    quiescence_enforced = False
     try:
         source_state = _prepare_restore_source(database_url)
+        freeze_attempted = True
+        freeze_started = time.monotonic()
+        _enforce_source_quiescence(container, username, source_database)
+        quiescence_enforced = True
+        source_state["fingerprint"] = _database_fingerprint(database_url)
         _docker_restore_command(
             container,
             "pg_dump",
@@ -1999,15 +2124,15 @@ def exercise_backup_restore(
             f"--file={dump_path}",
             stage="pg_dump",
         )
+        if _database_fingerprint(database_url) != source_state["fingerprint"]:
+            raise ValueError("source database fingerprint changed")
         hash_result = _docker_restore_command(
             container,
             "sha256sum",
             dump_path,
             stage="backup SHA-256",
         )
-        backup_sha256 = hash_result.stdout.split(maxsplit=1)[0]
-        if SHA256_PATTERN.fullmatch(backup_sha256) is None:
-            raise ValueError("backup SHA-256 output is invalid")
+        backup_sha256 = _parse_backup_sha256(hash_result.stdout, dump_path)
         _docker_restore_command(
             container,
             "createdb",
@@ -2028,9 +2153,17 @@ def exercise_backup_restore(
             stage="pg_restore",
         )
         verification = _verify_restored_database(restore_url, source_state)
+        if _database_fingerprint(database_url) != source_state["fingerprint"]:
+            raise ValueError("source database fingerprint changed")
     except BaseException as exc:
         primary_error = exc
     finally:
+        if freeze_attempted:
+            try:
+                _restore_source_writable(container, username, source_database)
+                freeze_ended = time.monotonic()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
         for arguments, stage in (
             (
                 (
@@ -2052,12 +2185,6 @@ def exercise_backup_restore(
                 )
             except BaseException as exc:
                 cleanup_errors.append(exc)
-        if source_state is not None:
-            try:
-                if _database_fingerprint(database_url) != source_state["fingerprint"]:
-                    raise ValueError("source database fingerprint changed")
-            except BaseException as exc:
-                cleanup_errors.append(exc)
 
     if primary_error is not None:
         if cleanup_errors:
@@ -2072,8 +2199,16 @@ def exercise_backup_restore(
         raise BaseExceptionGroup("backup restore cleanup failed", cleanup_errors)
     if source_state is None or verification is None or backup_sha256 is None:
         raise RuntimeError("backup restore drill produced no evidence")
+    if (
+        not quiescence_enforced
+        or freeze_started is None
+        or freeze_ended is None
+        or verification["restore_fingerprint"] != source_state["fingerprint"]
+    ):
+        raise RuntimeError("backup restore drill produced no pass evidence")
 
     elapsed = max(time.monotonic() - started, 0.000001)
+    write_freeze_seconds = max(freeze_ended - freeze_started, 0.000001)
     evidence = {
         "schema": "dragon-radar.backup-restore-drill",
         "schema_version": 1,
@@ -2083,8 +2218,10 @@ def exercise_backup_restore(
         "source_fingerprint": source_state["fingerprint"],
         "restore_fingerprint": verification["restore_fingerprint"],
         "source_unchanged": True,
-        "quiesced": True,
-        "measured_data_loss_window_seconds": 0.0,
+        "quiescence_enforced": quiescence_enforced,
+        "measured_data_loss_rows": 0,
+        "data_loss_window_seconds": 0.0,
+        "write_freeze_seconds": write_freeze_seconds,
         "elapsed_seconds": elapsed,
         "revision": verification["revision"],
         "restored_ready": verification["restored_ready"],

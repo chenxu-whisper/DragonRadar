@@ -20,9 +20,15 @@ measured results; do not report either target as an approved service objective.
 
 1. Stop writes at every application and worker entry point. Leave reads
    available only when they cannot enqueue or mutate data.
-2. Record the UTC write-stop time and verify active write transactions have
-   drained.
-3. Create the custom-format backup without printing credentials:
+2. Enforce the database write freeze before fingerprinting or dumping. Set
+   `default_transaction_read_only=on` for the validated, safely quoted source
+   database identifier, terminate other source sessions, verify none remain,
+   reconnect, and prove `transaction_read_only=on`. Perform this drill only in
+   a dedicated test container; production operators must use the approved
+   equivalent controls.
+3. Record the UTC write-stop time, capture the full stable source fingerprint,
+   and start the write-freeze timer.
+4. Create the custom-format backup without printing credentials:
 
    ```bash
    docker exec "$POSTGRES_CONTAINER" pg_dump \
@@ -33,9 +39,16 @@ measured results; do not report either target as an approved service objective.
    docker exec "$POSTGRES_CONTAINER" sha256sum "/tmp/$BACKUP_ID.dump"
    ```
 
-4. Record backup start/end UTC, SHA-256, byte size, source revision, and the
-   measured data-loss window. A fully quiesced source with an unchanged
-   fingerprint has a measured data-loss window of zero.
+5. Capture the full source fingerprint again after the dump. Record backup
+   start/end UTC, SHA-256, byte size, source revision, and write-freeze
+   duration. Report `quiescence_enforced=true`, `measured_data_loss_rows=0`,
+   and `data_loss_window_seconds=0.0` only when the enforced freeze, stable
+   source fingerprints, and restored fingerprint equality are all proven.
+   Otherwise fail the drill and emit no pass evidence.
+6. In all success and failure paths, restore
+   `default_transaction_read_only=off`, reconnect, and prove
+   `transaction_read_only=off`. Preserve the primary failure if this cleanup
+   also fails.
 
 ## Restore And Check
 
@@ -77,16 +90,20 @@ Never attempt an in-place repair as part of this procedure.
 
 ## Cleanup And Audit
 
-After a successful switch or explicit abort, preserve evidence, then clean up:
+Cleanup is conditional on whether the switch occurred:
 
-```bash
-docker exec "$POSTGRES_CONTAINER" dropdb \
-  --username "$POSTGRES_USER" --if-exists "$RESTORE_DATABASE"
-docker exec "$POSTGRES_CONTAINER" rm -f "/tmp/$BACKUP_ID.dump"
-```
+1. After a successful switch, retain the newly active restored database. Never
+   drop the active restored database. Retain the old source database for the
+   rollback window, and remove the dump according to the retention policy.
+2. On abort before switch, retain the original source and evidence. Operators
+   may drop the failed restore database after recording its identity and
+   failure, then remove the dump according to the retention policy.
+3. A disposable drill that never becomes a production switch may drop its
+   isolated restore database and remove its dump after verification.
 
 The audit record must contain incident and operator IDs, application artifact,
 source and restore database IDs, write-stop and switch/abort UTC times, revision,
 backup SHA-256 and size, source/restore fingerprints, sentinel and permission
-status, row counts, measured data-loss window, elapsed duration, cleanup status,
+status, row counts, quiescence proof, measured data-loss rows and window,
+write-freeze duration, elapsed duration, cleanup status, retention deadlines,
 decision, and approvers.
