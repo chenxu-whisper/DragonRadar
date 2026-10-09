@@ -496,10 +496,35 @@ def test_migration_collection_validates_actual_decisive_data(
     tmp_path,
     monkeypatch,
 ):
+    verification = {
+        "schema": "dragon-radar.release-migration-verification",
+        "schema_version": 1,
+        "audited_commit": "a" * 40,
+        "head": "0010_ai_tasks",
+        "revision_count": 18,
+        "release_manifest_sha256": "f" * 64,
+        "schema_contract_sha256": "f" * 64,
+        "errors": [],
+    }
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(verification),
+            stderr="",
+        )
+
     wheel_path = tmp_path / "wheel.json"
     restore_path = tmp_path / "restore.json"
     wheel_path.write_text(json.dumps(_wheel_evidence()), encoding="utf-8")
     restore_path.write_text(json.dumps(_restore_evidence()), encoding="utf-8")
+    monkeypatch.setitem(
+        auditor["collect_migration_evidence"].__globals__,
+        "_run",
+        run,
+    )
     monkeypatch.setitem(
         auditor["collect_migration_evidence"].__globals__,
         "_git_blob_fingerprint",
@@ -519,6 +544,67 @@ def test_migration_collection_validates_actual_decisive_data(
     assert result["restore"]["source_fingerprint"] == "3" * 64
     assert set(result["source_artifacts"]) == {"wheel", "restore"}
     assert "disposable" not in result["restore"]
+    assert calls == [
+        (
+            [
+                os.fspath(Path(os.sys.executable)),
+                os.fspath(ROOT / "scripts/verify_release_migrations.py"),
+                "--repository-root",
+                os.fspath(ROOT),
+                "--audited-commit",
+                "a" * 40,
+                "--json",
+            ],
+            {"cwd": ROOT},
+        )
+    ]
+
+
+def test_manifest_check_reexecutes_migration_verifier(
+    auditor,
+    monkeypatch,
+):
+    migration = valid_inputs()["migration"]
+    calls = []
+    verification = {
+        "schema": "dragon-radar.release-migration-verification",
+        "schema_version": 1,
+        "audited_commit": "a" * 40,
+        "head": "0010_ai_tasks",
+        "revision_count": 18,
+        "release_manifest_sha256": "3" * 64,
+        "schema_contract_sha256": "4" * 64,
+        "errors": [],
+    }
+    globals_ = auditor["_validate_migration_at_commit"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_run",
+        lambda argv, **kwargs: (
+            calls.append((argv, kwargs))
+            or SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(verification),
+                stderr="",
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob_fingerprint",
+        lambda _root, _commit, blob_path: {
+            "sha256": (
+                "3" * 64 if blob_path.endswith("release_manifest.json") else "4" * 64
+            ),
+            "bytes": 1,
+        },
+    )
+
+    auditor["_validate_migration_at_commit"](ROOT, migration, "a" * 40)
+
+    assert len(calls) == 1
+    assert calls[0][0][1].endswith("verify_release_migrations.py")
+    assert "--audited-commit" in calls[0][0]
 
 
 @pytest.mark.parametrize(
@@ -707,6 +793,15 @@ def test_check_accepts_truthful_no_go_and_docs_only_head_relation(
             "overall_status": "NO_GO",
         },
     }
+    payload["git"]["candidate"]["configured_upstream"] = None
+    payload["git"]["candidate"]["remote_freshness"].update(
+        status="ABSENT",
+        remote=None,
+        remote_ref=None,
+        local_oid=None,
+        remote_oid=None,
+    )
+    payload["decisions"]["branch_cut"] = "NO_GO"
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     globals_ = auditor["check_release_manifest"].__globals__
@@ -719,6 +814,26 @@ def test_check_accepts_truthful_no_go_and_docs_only_head_relation(
         globals_,
         "collect_task20_evidence",
         lambda *_args, **_kwargs: payload["task00_20"],
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob",
+        lambda _root, _commit, blob_path: (
+            json.dumps(payload).encode()
+            if blob_path == "manifest.json"
+            else pytest.fail(f"unexpected blob: {blob_path}")
+        ),
+    )
+    live = {
+        key: value
+        for key, value in deepcopy(payload["git"]["execution_source"]).items()
+        if key != "tracked_clean_before_and_after"
+    }
+    live["audited_commit"] = "b" * 40
+    monkeypatch.setitem(
+        globals_,
+        "collect_git_state",
+        lambda *_args, **_kwargs: deepcopy(live),
     )
 
     assert auditor["check_release_manifest"](tmp_path, path) == payload
@@ -936,6 +1051,7 @@ def test_execution_source_must_be_clean_detached_and_stable(auditor):
     for mutation in (
         lambda value: value.update(branch="feature/prd-reset", detached=False),
         lambda value: value["tracked_dirty_paths"].append("tracked.txt"),
+        lambda value: value.update(untracked_count=1),
         lambda value: value.update(audited_commit="b" * 40),
     ):
         after = json.loads(json.dumps(state))
@@ -1074,6 +1190,30 @@ def test_check_recomputes_all_decisive_evidence_and_rejects_tamper(
         "collect_task20_evidence",
         lambda *_args, **_kwargs: deepcopy(committed_task),
     )
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob",
+        lambda _root, _commit, blob_path: (
+            json.dumps(payload).encode()
+            if blob_path == "manifest.json"
+            else pytest.fail(f"unexpected blob: {blob_path}")
+        ),
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_verify_migration_commit",
+        lambda _root, commit: {
+            "schema": "dragon-radar.release-migration-verification",
+            "schema_version": 1,
+            "audited_commit": commit,
+            "head": "0010_ai_tasks",
+            "revision_count": 18,
+            "release_manifest_sha256": "3" * 64,
+            "schema_contract_sha256": "4" * 64,
+            "errors": [],
+        },
+    )
+    monkeypatch.setitem(globals_, "_validate_live_git_decisions", lambda *_: None)
     path.write_text(json.dumps(payload), encoding="utf-8")
     assert auditor["check_release_manifest"](tmp_path, path) == payload
 
@@ -1081,3 +1221,166 @@ def test_check_recomputes_all_decisive_evidence_and_rejects_tamper(
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError):
         auditor["check_release_manifest"](tmp_path, path)
+
+
+def test_check_loads_manifest_from_head_blob_not_checkout(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    committed = _release_manifest_payload()
+    committed["git"]["candidate"]["configured_upstream"] = None
+    committed["git"]["candidate"]["remote_freshness"].update(
+        status="ABSENT",
+        remote=None,
+        remote_ref=None,
+        local_oid=None,
+        remote_oid=None,
+    )
+    committed["decisions"]["branch_cut"] = "NO_GO"
+    checkout = deepcopy(committed)
+    checkout["decisions"].update(production_release="GO", overall_status="GO")
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(checkout), encoding="utf-8")
+    globals_ = auditor["check_release_manifest"].__globals__
+    monkeypatch.setitem(globals_, "_tracked_paths", lambda *_: {"manifest.json"})
+    monkeypatch.setitem(globals_, "_git_output", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setitem(globals_, "_validate_commit_relation", lambda *_: None)
+    monkeypatch.setitem(globals_, "_validate_inventory_at_head", lambda *_: None)
+    monkeypatch.setitem(globals_, "_validate_migration_at_commit", lambda *_: None)
+    monkeypatch.setitem(
+        globals_,
+        "collect_task20_evidence",
+        lambda *_args, **_kwargs: deepcopy(committed["task00_20"]),
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob",
+        lambda _root, _commit, blob_path: (
+            json.dumps(committed).encode()
+            if blob_path == "manifest.json"
+            else pytest.fail(f"unexpected blob: {blob_path}")
+        ),
+    )
+    monkeypatch.setitem(
+        globals_,
+        "collect_git_state",
+        lambda *_args, **_kwargs: {
+            key: value
+            for key, value in (
+                deepcopy(valid_inputs()["git"]["execution_source"])
+                | {"audited_commit": "b" * 40}
+            ).items()
+            if key != "tracked_clean_before_and_after"
+        },
+    )
+
+    assert auditor["check_release_manifest"](tmp_path, path) == committed
+
+
+def test_check_recollects_git_and_rejects_self_consistent_branch_cut_forgery(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    forged = _release_manifest_payload()
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(forged), encoding="utf-8")
+    globals_ = auditor["check_release_manifest"].__globals__
+    monkeypatch.setitem(globals_, "_tracked_paths", lambda *_: {"manifest.json"})
+    monkeypatch.setitem(globals_, "_git_output", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setitem(globals_, "_validate_commit_relation", lambda *_: None)
+    monkeypatch.setitem(globals_, "_validate_inventory_at_head", lambda *_: None)
+    monkeypatch.setitem(globals_, "_validate_migration_at_commit", lambda *_: None)
+    monkeypatch.setitem(
+        globals_,
+        "collect_task20_evidence",
+        lambda *_args, **_kwargs: deepcopy(forged["task00_20"]),
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_git_blob",
+        lambda _root, _commit, blob_path: (
+            json.dumps(forged).encode()
+            if blob_path == "manifest.json"
+            else pytest.fail(f"unexpected blob: {blob_path}")
+        ),
+    )
+    live = deepcopy(valid_inputs()["git"]["execution_source"])
+    live["audited_commit"] = "b" * 40
+    monkeypatch.setitem(
+        globals_,
+        "collect_git_state",
+        lambda *_args, **_kwargs: deepcopy(live),
+    )
+
+    with pytest.raises(ValueError, match="live Git evidence"):
+        auditor["check_release_manifest"](tmp_path, path)
+
+
+def test_task20_missing_declared_blob_fails_collection_and_check(
+    auditor,
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, summary_path = _write_task20_bundle(tmp_path)
+    globals_ = auditor["collect_task20_evidence"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="verified",
+            stderr="",
+        ),
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_tracked_paths",
+        lambda *_: {
+            manifest_path.relative_to(tmp_path).as_posix(),
+            summary_path.relative_to(tmp_path).as_posix(),
+        },
+    )
+
+    def missing_blob(root, _commit, blob_path):
+        if blob_path.endswith("acceptance-summary.json"):
+            raise ValueError("cannot read committed Git blob")
+        return (root / blob_path).read_bytes()
+
+    monkeypatch.setitem(globals_, "_git_blob", missing_blob)
+    with pytest.raises(ValueError, match="cannot read committed Git blob"):
+        auditor["collect_task20_evidence"](tmp_path, "a" * 40)
+
+    payload = _release_manifest_payload()
+    release_path = tmp_path / "release-manifest.json"
+    release_path.write_text(json.dumps(payload), encoding="utf-8")
+    check_globals = auditor["check_release_manifest"].__globals__
+    monkeypatch.setitem(
+        check_globals,
+        "_git_blob",
+        lambda _root, _commit, blob_path: (
+            json.dumps(payload).encode()
+            if blob_path == "release-manifest.json"
+            else missing_blob(tmp_path, _commit, blob_path)
+        ),
+    )
+    monkeypatch.setitem(
+        check_globals,
+        "_tracked_paths",
+        lambda *_: {
+            "release-manifest.json",
+            manifest_path.relative_to(tmp_path).as_posix(),
+            summary_path.relative_to(tmp_path).as_posix(),
+        },
+    )
+    monkeypatch.setitem(
+        check_globals,
+        "_git_output",
+        lambda *_args, **_kwargs: "b" * 40,
+    )
+    monkeypatch.setitem(check_globals, "_validate_commit_relation", lambda *_: None)
+    monkeypatch.setitem(check_globals, "_validate_migration_at_commit", lambda *_: None)
+
+    with pytest.raises(ValueError, match="cannot read committed Git blob"):
+        auditor["check_release_manifest"](tmp_path, release_path)

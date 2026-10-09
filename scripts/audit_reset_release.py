@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import runpy
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -122,6 +121,16 @@ MIGRATION_FULL_FIELDS = MIGRATION_DECISION_FIELDS | {
     "graph",
     "wheel",
     "restore",
+}
+MIGRATION_VERIFICATION_FIELDS = {
+    "schema",
+    "schema_version",
+    "audited_commit",
+    "head",
+    "revision_count",
+    "release_manifest_sha256",
+    "schema_contract_sha256",
+    "errors",
 }
 TASK_DECISION_FIELDS = {
     "valid",
@@ -997,17 +1006,7 @@ def collect_migration_evidence(
         audited_commit,
         validated_at=validated_at,
     )
-    migrations = REPOSITORY_ROOT / "src/dragon_radar/migrations"
-    verifier_namespace = runpy.run_path(
-        str(REPOSITORY_ROOT / "scripts/verify_release_migrations.py")
-    )
-    graph = verifier_namespace["verify_manifest"](migrations)
-    if graph != {
-        "head": "0010_ai_tasks",
-        "revision_count": 18,
-        "errors": [],
-    }:
-        raise ValueError("migration graph or frozen hashes are invalid")
+    verification = _verify_migration_commit(REPOSITORY_ROOT, audited_commit)
     return {
         "valid": True,
         "implementation_commit": audited_commit,
@@ -1024,22 +1023,63 @@ def collect_migration_evidence(
             ),
         },
         "graph": {
-            "head": graph["head"],
-            "revision_count": graph["revision_count"],
-            "release_manifest_sha256": _git_blob_fingerprint(
-                REPOSITORY_ROOT,
-                audited_commit,
-                "src/dragon_radar/migrations/release_manifest.json",
-            )["sha256"],
-            "schema_contract_sha256": _git_blob_fingerprint(
-                REPOSITORY_ROOT,
-                audited_commit,
-                "src/dragon_radar/storage/schema_contract.json",
-            )["sha256"],
+            "head": verification["head"],
+            "revision_count": verification["revision_count"],
+            "release_manifest_sha256": verification["release_manifest_sha256"],
+            "schema_contract_sha256": verification["schema_contract_sha256"],
         },
         "wheel": wheel,
         "restore": restore,
     }
+
+
+def _verify_migration_commit(root: Path, audited_commit: str) -> dict[str, object]:
+    verifier = root / "scripts/verify_release_migrations.py"
+    result = _run(
+        [
+            sys.executable,
+            str(verifier),
+            "--repository-root",
+            str(root),
+            "--audited-commit",
+            audited_commit,
+            "--json",
+        ],
+        cwd=root,
+    )
+    if result.returncode != 0:
+        raise ValueError("release migration commit verification failed")
+    verification = _exact_object(
+        load_strict_json_bytes(result.stdout.encode("utf-8")),
+        MIGRATION_VERIFICATION_FIELDS,
+        "migration verification",
+    )
+    if (
+        verification["schema"] != "dragon-radar.release-migration-verification"
+        or _exact_int(
+            verification["schema_version"],
+            "migration verification schema_version",
+        )
+        != 1
+        or verification["audited_commit"] != audited_commit
+        or verification["head"] != "0010_ai_tasks"
+        or _exact_int(
+            verification["revision_count"],
+            "migration verification revision_count",
+        )
+        != 18
+        or verification["errors"] != []
+    ):
+        raise ValueError("migration graph or frozen hashes are invalid")
+    _exact_sha(
+        verification["release_manifest_sha256"],
+        "migration release manifest SHA-256",
+    )
+    _exact_sha(
+        verification["schema_contract_sha256"],
+        "migration schema contract SHA-256",
+    )
+    return verification
 
 
 def _artifact_metadata(
@@ -1167,10 +1207,9 @@ def _validate_git_state(
         or state["detached"] is not True
         or state["branch"] is not None
         or state["tracked_dirty_paths"] != []
+        or state["untracked_count"] != 0
     ):
-        raise ValueError(
-            "execution source must be detached and tracked-clean before and after"
-        )
+        raise ValueError("execution source must be detached and clean before and after")
     return state
 
 
@@ -1183,8 +1222,9 @@ def validate_execution_source(
             state.get("detached") is not True
             or state.get("branch") is not None
             or state.get("tracked_dirty_paths") != []
+            or state.get("untracked_count") != 0
         ):
-            raise ValueError("execution source must be detached and tracked-clean")
+            raise ValueError("execution source must be detached and clean")
     if before.get("audited_commit") != after.get("audited_commit"):
         raise ValueError("execution source commit changed during audit")
 
@@ -1454,6 +1494,15 @@ def _validate_migration_at_commit(
         raise ValueError("migration release manifest hash differs")
     if graph["schema_contract_sha256"] != expected_schema:
         raise ValueError("migration schema contract hash differs")
+    verification = _verify_migration_commit(root, implementation_commit)
+    expected_graph = {
+        "head": verification["head"],
+        "revision_count": verification["revision_count"],
+        "release_manifest_sha256": verification["release_manifest_sha256"],
+        "schema_contract_sha256": verification["schema_contract_sha256"],
+    }
+    if graph != expected_graph:
+        raise ValueError("migration evidence differs from verifier result")
 
 
 def _validate_manifest_shape(
@@ -1483,7 +1532,6 @@ def _validate_manifest_shape(
         expected_task = collect_task20_evidence(
             root,
             implementation_commit,
-            run_verifier=False,
         )
         if value["task00_20"] != expected_task:
             raise ValueError("Task00-20 evidence differs from committed evidence")
@@ -1542,7 +1590,6 @@ def _validate_inventory_at_head(
 def check_release_manifest(root: Path, path: Path) -> dict[str, object]:
     root = Path(root).resolve()
     manifest_path = Path(path).resolve()
-    manifest = load_strict_json(manifest_path)
     try:
         relative = manifest_path.relative_to(root).as_posix()
     except ValueError as exc:
@@ -1554,6 +1601,7 @@ def check_release_manifest(root: Path, path: Path) -> dict[str, object]:
     tracked = _tracked_paths(root, current_head)
     if relative not in tracked:
         raise ValueError("release manifest is not tracked at current HEAD")
+    manifest = load_strict_json_bytes(_git_blob(root, current_head, relative))
     implementation_commit = str(manifest["implementation_commit"])
     _validate_commit_relation(
         root,
@@ -1569,7 +1617,56 @@ def check_release_manifest(root: Path, path: Path) -> dict[str, object]:
         task["inventory"],
         implementation_commit,
     )
+    _validate_live_git_decisions(
+        root,
+        manifest,
+        implementation_commit,
+        current_head,
+    )
     return manifest
+
+
+def _validate_live_git_decisions(
+    root: Path,
+    manifest: dict[str, object],
+    implementation_commit: str,
+    current_head: str,
+) -> None:
+    stored_git = _exact_object(manifest["git"], GIT_FIELDS, "release manifest.git")
+    stored_candidate = _validate_git_state(
+        stored_git["candidate"],
+        "release manifest.git.candidate",
+        execution=False,
+    )
+    declared_freshness = stored_candidate["remote_freshness"]
+    assert isinstance(declared_freshness, dict)
+    refreshed = _remote_freshness(
+        root,
+        remote=declared_freshness["remote"],
+        remote_ref=declared_freshness["remote_ref"],
+        local_oid=declared_freshness["local_oid"],
+        verify_remote=True,
+        checked_at=datetime.now(UTC).isoformat(),
+    )
+    freshness_fields = REMOTE_FRESHNESS_FIELDS - {"checked_at"}
+    if any(refreshed[field] != declared_freshness[field] for field in freshness_fields):
+        raise ValueError("release decisions differ from live Git evidence")
+
+    live = collect_git_state(root, verify_remote=True)
+    if live["audited_commit"] != current_head:
+        raise ValueError("live Git evidence changed during manifest check")
+    execution = {
+        **live,
+        "audited_commit": implementation_commit,
+        "tracked_clean_before_and_after": True,
+    }
+    inputs = {field: manifest[field] for field in ROOT_INPUT_FIELDS}
+    inputs["git"] = {
+        "execution_source": execution,
+        "candidate": live,
+    }
+    if manifest["decisions"] != derive_decisions(inputs):
+        raise ValueError("release decisions differ from live Git evidence")
 
 
 def build_release_manifest(

@@ -522,6 +522,59 @@ def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
     assert "18 revisions" in result.stdout
 
 
+def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
+    commit = audited_head()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repository-root",
+            str(ROOT),
+            "--audited-commit",
+            commit,
+            "--json",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "schema": "dragon-radar.release-migration-verification",
+        "schema_version": 1,
+        "audited_commit": commit,
+        "head": "0010_ai_tasks",
+        "revision_count": 18,
+        "release_manifest_sha256": hashlib.sha256(
+            subprocess.check_output(
+                [
+                    "git",
+                    "cat-file",
+                    "blob",
+                    f"{commit}:src/dragon_radar/migrations/release_manifest.json",
+                ],
+                cwd=ROOT,
+            )
+        ).hexdigest(),
+        "schema_contract_sha256": hashlib.sha256(
+            subprocess.check_output(
+                [
+                    "git",
+                    "cat-file",
+                    "blob",
+                    f"{commit}:src/dragon_radar/storage/schema_contract.json",
+                ],
+                cwd=ROOT,
+            )
+        ).hexdigest(),
+        "errors": [],
+    }
+
+
 def test_cli_returns_nonzero_with_actionable_errors(
     verifier, copied_migrations, capsys
 ):

@@ -26,6 +26,8 @@ from alembic.script import ScriptDirectory
 
 MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
+AUDIT_SCHEMA = "dragon-radar.release-migration-verification"
+AUDIT_SCHEMA_VERSION = 1
 RELEASE_HEAD = "0010_ai_tasks"
 ROLLBACK_MODE = "backup_restore_only"
 SUPPORTED_FROM = [
@@ -385,6 +387,103 @@ def verify_manifest(root: Path) -> dict[str, object]:
         "head": heads[0] if len(heads) == 1 else None,
         "revision_count": graph["revision_count"],
         "errors": errors,
+    }
+
+
+def _committed_blob(repository_root: Path, commit: str, path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "cat-file", "blob", f"{commit}:{path}"],
+        cwd=repository_root,
+        shell=False,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"cannot read committed Git blob: {path}")
+    return result.stdout
+
+
+def verify_repository_commit(
+    repository_root: Path,
+    audited_commit: str,
+) -> dict[str, object]:
+    """Verify the complete frozen migration contract from one Git commit."""
+    repository_root = Path(repository_root).resolve()
+    audited_commit = validate_audited_commit(audited_commit)
+    verify_commit = subprocess.run(
+        ["git", "cat-file", "-e", f"{audited_commit}^{{commit}}"],
+        cwd=repository_root,
+        shell=False,
+        check=False,
+        capture_output=True,
+    )
+    if verify_commit.returncode != 0:
+        raise ValueError("audited commit is not available")
+    prefix = "src/dragon_radar/migrations"
+    listed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.quotepath=false",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            audited_commit,
+            "--",
+            prefix,
+        ],
+        cwd=repository_root,
+        shell=False,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+    )
+    if listed.returncode != 0:
+        raise ValueError("cannot enumerate committed migrations")
+    paths = [line for line in listed.stdout.splitlines() if line]
+    if not paths or any(
+        not path.startswith(f"{prefix}/") or "\\" in path or ".." in Path(path).parts
+        for path in paths
+    ):
+        raise ValueError("committed migration paths are invalid")
+
+    release_path = f"{prefix}/release_manifest.json"
+    schema_path = "src/dragon_radar/storage/schema_contract.json"
+    release_bytes = _committed_blob(repository_root, audited_commit, release_path)
+    schema_bytes = _committed_blob(repository_root, audited_commit, schema_path)
+    try:
+        schema_contract = json.loads(
+            schema_bytes.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        from dragon_radar.storage.schema_contract import validate_schema_contract
+
+        validate_schema_contract(schema_contract)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("committed schema contract is invalid") from exc
+
+    with tempfile.TemporaryDirectory(
+        prefix="dragon-radar-migration-audit-"
+    ) as temporary:
+        migration_root = Path(temporary) / "migrations"
+        for path in paths:
+            relative = Path(path).relative_to(prefix)
+            target = migration_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(_committed_blob(repository_root, audited_commit, path))
+        graph = verify_manifest(migration_root)
+
+    return {
+        "schema": AUDIT_SCHEMA,
+        "schema_version": AUDIT_SCHEMA_VERSION,
+        "audited_commit": audited_commit,
+        "head": graph["head"],
+        "revision_count": graph["revision_count"],
+        "release_manifest_sha256": hashlib.sha256(release_bytes).hexdigest(),
+        "schema_contract_sha256": hashlib.sha256(schema_bytes).hexdigest(),
+        "errors": graph["errors"],
     }
 
 
@@ -2816,11 +2915,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="full lowercase Git commit audited by installed-wheel verification",
     )
     parser.add_argument(
+        "--repository-root",
+        type=Path,
+        help="repository containing the audited commit",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit stable machine-readable commit verification",
+    )
+    parser.add_argument(
         "--restore-container",
         metavar="NAME",
         help="run the backup/restore drill in a named PostgreSQL container",
     )
     args = parser.parse_args(argv)
+    if args.json or args.repository_root is not None:
+        if not args.json or args.repository_root is None or args.audited_commit is None:
+            print(
+                "--json, --repository-root, and --audited-commit are required together",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            result = verify_repository_commit(
+                args.repository_root,
+                args.audited_commit,
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            print("release migration commit verification failed", file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0 if not result["errors"] else 1
     if args.restore_container is not None:
         if args.output is None:
             print("--output is required with --restore-container", file=sys.stderr)
