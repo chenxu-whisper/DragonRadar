@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
 
+from alembic import command
+from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
@@ -441,6 +446,870 @@ def _new_schema_name() -> str:
     return f"schema_contract_{uuid4().hex}"
 
 
+def _new_upgrade_schema_name() -> str:
+    return f"release_upgrade_{uuid4().hex}"
+
+
+def _upgrade(connection, revision: str) -> None:
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    config.attributes["connection"] = connection
+    command.upgrade(config, revision)
+
+
+def _sentinel_values() -> dict[str, object]:
+    token = uuid4().hex
+    return {
+        "token": token,
+        "source_id": f"task21.{token}",
+        "owner_id": uuid4(),
+        "batch_id": uuid4(),
+        "snapshot_id": uuid4(),
+        "topic_batch_id": uuid4(),
+        "topic_attempt_id": uuid4(),
+        "topic_snapshot_id": uuid4(),
+        "market_task_id": uuid4(),
+        "market_attempt_id": uuid4(),
+        "security_id": f"S{token[:12]}",
+        "role_run_id": uuid4(),
+        "publication_id": uuid4(),
+        "analysis_job_id": uuid4(),
+        "article_id": uuid4(),
+        "article_revision_id": uuid4(),
+        "rule_record_id": uuid4(),
+        "rule_id": f"R{token[:12]}",
+        "event_id": f"E{token[:12]}",
+        "ai_task_id": uuid4(),
+        "hash": hashlib.sha256(token.encode("ascii")).hexdigest(),
+    }
+
+
+def _insert_source(connection, values: dict[str, object]) -> None:
+    from sqlalchemy import text
+
+    connection.execute(
+        text(
+            """
+            INSERT INTO source_grants (source_id, "grant", updated_at)
+            VALUES (:source_id, CAST(:grant AS jsonb), :now)
+            """
+        ),
+        {
+            **values,
+            "grant": json.dumps({"source_id": values["source_id"], "approved": True}),
+            "now": "2026-01-02T03:04:05+00:00",
+        },
+    )
+
+
+def _insert_market_archive(
+    connection,
+    values: dict[str, object],
+    *,
+    with_idempotency_hash: bool = False,
+) -> None:
+    from sqlalchemy import text
+
+    _insert_source(connection, values)
+    batch_sql = (
+        """
+        INSERT INTO import_batches (
+            id, idempotency_key, source_id, trade_date, canonical_json,
+            payload_hash, quality_report, imported_at, idempotency_hash
+        ) VALUES (
+            :batch_id, :token, :source_id, DATE '2026-01-02',
+            '{"as_of":"2026-01-02T03:04:05+00:00"}', :hash, '{}',
+            TIMESTAMPTZ '2026-01-02T03:04:05+00:00', :hash
+        )
+        """
+        if with_idempotency_hash
+        else """
+        INSERT INTO import_batches (
+            id, idempotency_key, source_id, trade_date, canonical_json,
+            payload_hash, quality_report, imported_at
+        ) VALUES (
+            :batch_id, :token, :source_id, DATE '2026-01-02',
+            '{"as_of":"2026-01-02T03:04:05+00:00"}', :hash, '{}',
+            TIMESTAMPTZ '2026-01-02T03:04:05+00:00'
+        )
+        """
+    )
+    connection.execute(
+        text(batch_sql),
+        values,
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO snapshots (
+                id, batch_id, source_id, trade_date, revision, manifest,
+                published_at
+            ) VALUES (
+                :snapshot_id, :batch_id, :source_id, DATE '2026-01-02', 1,
+                '{}', TIMESTAMPTZ '2026-01-02T03:04:05+00:00'
+            )
+            """
+        ),
+        values,
+    )
+
+
+def _insert_publication(connection, values: dict[str, object]) -> None:
+    from sqlalchemy import text
+
+    connection.execute(
+        text(
+            """
+            INSERT INTO publications (
+                id, trade_date, version, status, market_snapshot_id, domains,
+                coverage, quality_flags, command_json, command_hash, created_at
+            ) VALUES (
+                :publication_id, DATE '2026-01-02', 1, 'draft', :snapshot_id,
+                '{}', '{}', '[]', '{}', :hash,
+                TIMESTAMPTZ '2026-01-02T03:04:05+00:00'
+            )
+            """
+        ),
+        values,
+    )
+
+
+def _insert_rule(connection, values: dict[str, object]) -> None:
+    from sqlalchemy import text
+
+    connection.execute(
+        text(
+            """
+            INSERT INTO regulation_rules (
+                id, rule_id, rule_version, effective_from, window_days,
+                direction, threshold, warning_threshold, calculation_method,
+                review_switch, test_cases, regression_passed, active, created_at
+            ) VALUES (
+                :rule_record_id, :rule_id, 'v1', DATE '2026-01-01', 5,
+                'upper', 10, 8, 'relative_return', 'pending', '[]', false,
+                false, TIMESTAMPTZ '2026-01-02T03:04:05+00:00'
+            )
+            """
+        ),
+        values,
+    )
+
+
+def _insert_sentinel(
+    connection,
+    revision: str,
+    values: dict[str, object],
+) -> tuple[str, dict[str, object]]:
+    from sqlalchemy import text
+
+    now = "2026-01-02T03:04:05+00:00"
+    if revision == "0001_foundation":
+        _insert_market_archive(connection, values)
+        audit_id = uuid4()
+        connection.execute(
+            text(
+                """
+                INSERT INTO audit_events (
+                    id, action, source_id, object_id, details, occurred_at
+                ) VALUES (
+                    :audit_id, 'task21_upgrade', :source_id, :token, '{}', :now
+                )
+                """
+            ),
+            {**values, "audit_id": audit_id, "now": now},
+        )
+        return (
+            "foundation_archive",
+            {
+                "snapshot_id": values["snapshot_id"],
+                "payload_hash": values["hash"],
+                "audit_id": audit_id,
+            },
+        )
+    if revision == "0003_private_review":
+        audit_id = uuid4()
+        connection.execute(
+            text(
+                """
+                INSERT INTO owner_principals (id, local_key, created_at)
+                VALUES (:owner_id, NULL, :now)
+                """
+            ),
+            {**values, "audit_id": audit_id, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO private_audit_events (
+                    id, owner_id, action, object_id, version, occurred_at
+                ) VALUES (
+                    :audit_id, :owner_id, 'task21_upgrade', :owner_id, 1, :now
+                )
+                """
+            ),
+            {**values, "audit_id": audit_id, "now": now},
+        )
+        return "private_audit", {"id": audit_id, "owner_id": values["owner_id"]}
+    if revision == "0004a_topic_attempt_ranges":
+        _insert_source(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO topic_import_batches (
+                    id, idempotency_key, source_id, trade_date, canonical_json,
+                    payload_hash, quality_report, imported_at
+                ) VALUES (
+                    :topic_batch_id, :token, :source_id, DATE '2026-01-02',
+                    '{}', :hash, '{}', :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO topic_import_attempts (
+                    id, batch_id, idempotency_key, payload_hash, source_id,
+                    embedded_grant, status, stage, missing_items, details,
+                    created_at, request_from, request_to
+                ) VALUES (
+                    :topic_attempt_id, :topic_batch_id, :token || '.attempt',
+                    :hash, :source_id, '{}', 'succeeded', 'complete', '[]',
+                    '{}', :now, DATE '2026-01-02', DATE '2026-01-02'
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "topic_attempt_batch",
+            {"id": values["topic_attempt_id"], "payload_hash": values["hash"]},
+        )
+    if revision == "0006_market_readmodels":
+        _insert_market_archive(connection, values, with_idempotency_hash=True)
+        connection.execute(
+            text(
+                """
+                INSERT INTO market_import_tasks (
+                    id, idempotency_key, source_id, embedded_grant, status,
+                    request_from, request_to, created_at, updated_at
+                ) VALUES (
+                    :market_task_id, :token || '.task', :source_id, '{}',
+                    'succeeded', DATE '2026-01-02', DATE '2026-01-02', :now, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO market_import_attempts (
+                    id, task_id, batch_id, idempotency_key, envelope_hash,
+                    source_id, embedded_grant, status, stage, page_manifest,
+                    missing_items, request_from, request_to, details, created_at
+                ) VALUES (
+                    :market_attempt_id, :market_task_id, :batch_id,
+                    :token || '.attempt', :hash, :source_id, '{}', 'succeeded',
+                    'complete', '{}', '[]', DATE '2026-01-02',
+                    DATE '2026-01-02', '{}', :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO security (
+                    security_id, code, name, security_type, exchange, board,
+                    list_date, is_st, is_suspended, source, source_version,
+                    available_at, source_archive_id
+                ) VALUES (
+                    :security_id, 'T21', 'Task21 Sentinel', 'stock', 'SSE',
+                    'main', DATE '2020-01-01', false, false, :source_id, 'v1',
+                    :now, :batch_id
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "security_market_attempt",
+            {"id": values["market_attempt_id"], "hash": values["hash"]},
+        )
+    if revision == "0007_role_readmodels":
+        _insert_market_archive(connection, values, with_idempotency_hash=True)
+        connection.execute(
+            text(
+                """
+                INSERT INTO topic_import_batches (
+                    id, idempotency_key, source_id, trade_date, canonical_json,
+                    payload_hash, quality_report, imported_at
+                ) VALUES (
+                    :topic_batch_id, :token || '.topic', :source_id,
+                    DATE '2026-01-02', '{"topics":[]}', :hash, '{}', :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO topic_snapshots (
+                    id, batch_id, source_id, trade_date, revision, manifest,
+                    published_at
+                ) VALUES (
+                    :topic_snapshot_id, :topic_batch_id, :source_id,
+                    DATE '2026-01-02', 1, '{}', :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO role_runs (
+                    id, idempotency_key, payload_hash, market_snapshot_id,
+                    topic_snapshot_id, trade_date, knowledge_cutoff,
+                    rule_version, rule_json, rule_hash, benchmark_id,
+                    visibility_mode, market_source_id, market_source_version,
+                    market_pool_version, adjustment_version, calendar_version,
+                    topic_source_id, topic_source_version, taxonomy_version,
+                    membership_version, status, created_at
+                ) VALUES (
+                    :role_run_id, :token, :hash, :snapshot_id,
+                    :topic_snapshot_id, DATE '2026-01-02', :now, 'v1', '{}',
+                    :hash, 'B000300', 'contemporaneous', :source_id, 'v1',
+                    'v1', 'v1', 'v1', :source_id, 'v1', 'v1', 'v1', 'draft',
+                    :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return "role_run_root", {"id": values["role_run_id"], "hash": values["hash"]}
+    if revision == "0007c_analysis_jobs":
+        _insert_market_archive(connection, values, with_idempotency_hash=True)
+        connection.execute(
+            text(
+                "INSERT INTO owner_principals (id, local_key, created_at) "
+                "VALUES (:owner_id, NULL, :now)"
+            ),
+            {**values, "now": now},
+        )
+        _insert_publication(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO analysis_jobs (
+                    id, owner_id, idempotency_key, request_hash, cache_key,
+                    snapshot_id, input_manifest, status, attempt_count,
+                    available_at, created_at
+                ) VALUES (
+                    :analysis_job_id, :owner_id, :token, :hash, :hash,
+                    :publication_id, '{}', 'queued', 0, :now, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "analysis_job",
+            {"id": values["analysis_job_id"], "hash": values["hash"]},
+        )
+    if revision == "0008_news":
+        _insert_source(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO news_articles (
+                    id, source_id, source_article_id, created_at
+                ) VALUES (
+                    :article_id, :source_id, :token, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO news_article_revisions (
+                    id, article_id, revision, source_id, source_version,
+                    source_article_id, news_type, title, url, published_at,
+                    received_at, available_at, content_scope, is_novel_event,
+                    supporting_evidence, opposing_evidence, content_digest,
+                    embedded_grant, ingested_at
+                ) VALUES (
+                    :article_revision_id, :article_id, 1, :source_id, 'v1',
+                    :token, 'news', 'Task21 sentinel', 'https://example.test/',
+                    :now, :now, :now, 'none', true, '[]', '[]', :hash, '{}',
+                    :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "news_article_revision",
+            {"id": values["article_revision_id"], "hash": values["hash"]},
+        )
+    if revision == "0009_regulation":
+        _insert_rule(connection, values)
+        return (
+            "regulation_rule",
+            {"id": values["rule_record_id"], "rule_id": values["rule_id"]},
+        )
+    if revision == "0009d_reg_event_complete_set":
+        _insert_source(connection, values)
+        _insert_rule(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO regulation_events (
+                    event_id, rule_id, rule_version, security_id, event_type,
+                    effective_from, source_id, source_version, created_at
+                ) VALUES (
+                    :event_id, :rule_id, 'v1', :security_id, 'monitoring',
+                    DATE '2026-01-01', :source_id, 'v1', :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "regulation_event_provenance",
+            {
+                "event_id": values["event_id"],
+                "source_id": values["source_id"],
+            },
+        )
+    if revision == "0010_ai_tasks":
+        _insert_market_archive(connection, values, with_idempotency_hash=True)
+        connection.execute(
+            text(
+                "INSERT INTO owner_principals (id, local_key, created_at) "
+                "VALUES (:owner_id, NULL, :now)"
+            ),
+            {**values, "now": now},
+        )
+        _insert_publication(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO ai_tasks (
+                    id, owner_id, idempotency_key, request_hash, task_type,
+                    snapshot_id, as_of, version, input_manifest, status,
+                    verification_status, human_review_status, attempt_count,
+                    available_at, created_at
+                ) VALUES (
+                    :ai_task_id, :owner_id, :token, :hash, 'summarize',
+                    :publication_id, :now, 'v1', '{}', 'pending', 'pending',
+                    'unreviewed', 0, :now, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return "ai_task", {"id": values["ai_task_id"], "hash": values["hash"]}
+    raise ValueError(f"unsupported upgrade baseline: {revision}")
+
+
+def _sentinel_preserved(
+    connection,
+    kind: str,
+    expected: dict[str, object],
+) -> bool:
+    from sqlalchemy import text
+
+    queries = {
+        "foundation_archive": (
+            """
+            SELECT snapshot.id AS snapshot_id, batch.payload_hash,
+                   audit.id AS audit_id
+            FROM snapshots snapshot
+            JOIN import_batches batch ON batch.id = snapshot.batch_id
+            JOIN audit_events audit ON audit.id = :audit_id
+            WHERE snapshot.id = :snapshot_id
+            """,
+            expected,
+        ),
+        "private_audit": (
+            "SELECT id, owner_id FROM private_audit_events WHERE id = :id",
+            expected,
+        ),
+        "topic_attempt_batch": (
+            """
+            SELECT attempt.id, batch.payload_hash
+            FROM topic_import_attempts attempt
+            JOIN topic_import_batches batch ON batch.id = attempt.batch_id
+            WHERE attempt.id = :id
+            """,
+            expected,
+        ),
+        "security_market_attempt": (
+            """
+            SELECT attempt.id, attempt.envelope_hash AS hash
+            FROM market_import_attempts attempt
+            JOIN security ON security.source_archive_id = attempt.batch_id
+            WHERE attempt.id = :id
+            """,
+            expected,
+        ),
+        "role_run_root": (
+            "SELECT id, payload_hash AS hash FROM role_runs WHERE id = :id",
+            expected,
+        ),
+        "analysis_job": (
+            "SELECT id, request_hash AS hash FROM analysis_jobs WHERE id = :id",
+            expected,
+        ),
+        "news_article_revision": (
+            """
+            SELECT id, content_digest AS hash
+            FROM news_article_revisions WHERE id = :id
+            """,
+            expected,
+        ),
+        "regulation_rule": (
+            "SELECT id, rule_id FROM regulation_rules WHERE id = :id",
+            expected,
+        ),
+        "regulation_event_provenance": (
+            """
+            SELECT event_id, source_id
+            FROM regulation_events WHERE event_id = :event_id
+            """,
+            expected,
+        ),
+        "ai_task": (
+            "SELECT id, request_hash AS hash FROM ai_tasks WHERE id = :id",
+            expected,
+        ),
+    }
+    statement, parameters = queries[kind]
+    row = connection.execute(text(statement), parameters).mappings().one_or_none()
+    if row is None:
+        return False
+    return all(row[key] == value for key, value in expected.items())
+
+
+def exercise_upgrade(database_url: str, revision: str) -> dict[str, object]:
+    """Upgrade one declared baseline with representative data in a fresh schema."""
+    from sqlalchemy import text
+
+    if revision not in SUPPORTED_FROM:
+        raise ValueError(f"unsupported upgrade baseline: {revision}")
+    url = _validated_postgres_url(database_url)
+    admin_url = url.difference_update_query(["options"])
+    admin_engine = _create_admin_engine(admin_url)
+    schema = _new_upgrade_schema_name()
+    database = None
+    scoped_engine = None
+    schema_created = False
+    primary_error = None
+    cleanup_errors: list[BaseException] = []
+    result = None
+    try:
+        if re.fullmatch(r"release_upgrade_[0-9a-f]{32}", schema) is None:
+            raise ValueError("unsafe generated schema name")
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        schema_created = True
+        scoped_url = admin_url.update_query_dict({"options": f"-csearch_path={schema}"})
+        scoped_engine = _create_admin_engine(scoped_url)
+        values = _sentinel_values()
+        with scoped_engine.begin() as connection:
+            _upgrade(connection, revision)
+            kind, expected = _insert_sentinel(connection, revision, values)
+            baseline_revision = connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+            if baseline_revision != revision:
+                raise ValueError(f"baseline upgrade did not reach {revision}")
+        with scoped_engine.begin() as connection:
+            _upgrade(connection, RELEASE_HEAD)
+            final_revision = connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+            if final_revision != RELEASE_HEAD:
+                raise ValueError("supported upgrade did not reach 0010_ai_tasks")
+            preserved = _sentinel_preserved(connection, kind, expected)
+        database = _database_class()(scoped_url.render_as_string(hide_password=False))
+        ready = database.ready()
+        if not preserved:
+            raise ValueError(f"{revision} sentinel was not preserved")
+        if not ready:
+            raise ValueError(f"{revision} upgraded schema is not ready")
+        result = {
+            "from_revision": revision,
+            "to_revision": final_revision,
+            "sentinel": kind,
+            "sentinel_preserved": preserved,
+            "ready": ready,
+        }
+    except BaseException as exc:
+        primary_error = exc
+    finally:
+        for close in (
+            None if database is None else database.close,
+            None if scoped_engine is None else scoped_engine.dispose,
+        ):
+            if close is not None:
+                try:
+                    close()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+        try:
+            if schema_created:
+                with admin_engine.begin() as connection:
+                    connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        try:
+            admin_engine.dispose()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+    if primary_error is not None:
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "supported upgrade and cleanup failed",
+                [primary_error, *cleanup_errors],
+            )
+        raise primary_error.with_traceback(primary_error.__traceback__)
+    if cleanup_errors:
+        if len(cleanup_errors) == 1:
+            raise cleanup_errors[0]
+        raise BaseExceptionGroup("supported upgrade cleanup failed", cleanup_errors)
+    if result is None:
+        raise RuntimeError("supported upgrade produced no result")
+    return result
+
+
+def exercise_supported_upgrades(database_url: str) -> list[dict[str, object]]:
+    """Exercise every baseline declared by the frozen release policy."""
+    return [exercise_upgrade(database_url, revision) for revision in SUPPORTED_FROM]
+
+
+def exercise_fresh_upgrade(database_url: str) -> dict[str, object]:
+    """Create a fresh head schema and require packaged readiness."""
+    from sqlalchemy import text
+
+    url = _validated_postgres_url(database_url)
+    admin_url = url.difference_update_query(["options"])
+    admin_engine = _create_admin_engine(admin_url)
+    schema = _new_upgrade_schema_name()
+    database = None
+    schema_created = False
+    primary_error = None
+    cleanup_errors: list[BaseException] = []
+    result = None
+    try:
+        if re.fullmatch(r"release_upgrade_[0-9a-f]{32}", schema) is None:
+            raise ValueError("unsafe generated schema name")
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        schema_created = True
+        scoped_url = admin_url.update_query_dict({"options": f"-csearch_path={schema}"})
+        database = _database_class()(scoped_url.render_as_string(hide_password=False))
+        database.migrate()
+        with database.engine.connect() as connection:
+            revision = connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+        ready = database.ready()
+        if revision != RELEASE_HEAD:
+            raise ValueError("fresh upgrade did not reach 0010_ai_tasks")
+        if not ready:
+            raise ValueError("fresh upgraded schema is not ready")
+        result = {"to_revision": revision, "ready": ready}
+    except BaseException as exc:
+        primary_error = exc
+    finally:
+        try:
+            if database is not None:
+                database.close()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        try:
+            if schema_created:
+                with admin_engine.begin() as connection:
+                    connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        try:
+            admin_engine.dispose()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+    if primary_error is not None:
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "fresh upgrade and cleanup failed",
+                [primary_error, *cleanup_errors],
+            )
+        raise primary_error.with_traceback(primary_error.__traceback__)
+    if cleanup_errors:
+        if len(cleanup_errors) == 1:
+            raise cleanup_errors[0]
+        raise BaseExceptionGroup("fresh upgrade cleanup failed", cleanup_errors)
+    if result is None:
+        raise RuntimeError("fresh upgrade produced no result")
+    return result
+
+
+def resolve_wheel_path(value: Path) -> Path:
+    """Resolve a wheel file, directory, or glob to exactly one wheel."""
+    raw_value = os.fspath(value)
+    if glob.has_magic(raw_value):
+        matches = [
+            Path(match).resolve()
+            for match in glob.glob(raw_value)
+            if Path(match).is_file() and Path(match).suffix == ".whl"
+        ]
+    elif value.is_dir():
+        matches = [path.resolve() for path in value.glob("*.whl") if path.is_file()]
+    elif value.is_file() and value.suffix == ".whl":
+        matches = [value.resolve()]
+    else:
+        matches = []
+    matches = sorted(set(matches))
+    if len(matches) != 1:
+        raise ValueError(
+            f"exactly one wheel is required; found {len(matches)} at {value}"
+        )
+    return matches[0]
+
+
+def _venv_python(venv: Path) -> Path:
+    if os.name == "nt":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
+def _wheel_helper_source() -> str:
+    return """\
+import json
+import os
+import runpy
+import sys
+from pathlib import Path
+
+verifier = runpy.run_path(str(Path(__file__).with_name("verifier.py")))
+import dragon_radar
+
+package_file = Path(dragon_radar.__file__).resolve()
+source_root = Path(sys.argv[1]).resolve()
+output = Path(sys.argv[2]).resolve()
+if package_file.is_relative_to(source_root):
+    raise RuntimeError("wheel verification imported dragon_radar from source")
+
+migrations = package_file.parent / "migrations"
+manifest = verifier["verify_manifest"](migrations)
+if manifest["errors"]:
+    raise RuntimeError("installed migration manifest verification failed")
+
+database_url = os.environ["DRAGON_TEST_DATABASE_URL"]
+fresh = verifier["exercise_fresh_upgrade"](database_url)
+upgrades = verifier["exercise_supported_upgrades"](database_url)
+evidence = {
+    "schema": "dragon-radar.installed-wheel-migrations",
+    "schema_version": 1,
+    "imported_from": str(package_file),
+    "fresh": fresh,
+    "supported_upgrades": upgrades,
+}
+verifier["write_contract_atomically"](evidence, output)
+print(f"dragon_radar imported from {package_file}")
+print(f"fresh -> {fresh['to_revision']}: ready={str(fresh['ready']).lower()}")
+for item in upgrades:
+    print(
+        f"{item['from_revision']} -> {item['to_revision']}: "
+        f"sentinel={item['sentinel']} "
+        f"preserved={str(item['sentinel_preserved']).lower()} "
+        f"ready={str(item['ready']).lower()}"
+    )
+"""
+
+
+def verify_installed_wheel(
+    database_url: str,
+    wheel: Path,
+    output: Path,
+) -> None:
+    """Install one wheel and execute migration checks outside the source tree."""
+    wheel = resolve_wheel_path(wheel)
+    temp_root = Path(tempfile.gettempdir()) / "dragon-radar-task21" / ".temp"
+    venv = temp_root / "task21-wheel-venv"
+    run_root = temp_root / "task21-wheel-run"
+    shutil.rmtree(venv, ignore_errors=True)
+    shutil.rmtree(run_root, ignore_errors=True)
+    run_root.mkdir(parents=True, exist_ok=True)
+    helper = run_root / "wheel_helper.py"
+    copied_verifier = run_root / "verifier.py"
+    helper.write_text(_wheel_helper_source(), encoding="utf-8")
+    shutil.copy2(Path(__file__).resolve(), copied_verifier)
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment["DRAGON_TEST_DATABASE_URL"] = database_url
+    try:
+        subprocess.run(
+            [
+                "uv",
+                "venv",
+                "--python",
+                sys.executable,
+                "--clear",
+                str(venv),
+            ],
+            cwd=run_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=True,
+        )
+        python = _venv_python(venv)
+        subprocess.run(
+            ["uv", "pip", "install", "--python", str(python), str(wheel)],
+            cwd=run_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            check=True,
+        )
+        result = subprocess.run(
+            [
+                str(python),
+                str(helper),
+                str(REPOSITORY_ROOT),
+                str(Path(output).resolve()),
+            ],
+            cwd=run_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=300,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "installed wheel migration verification failed: "
+                f"{result.stderr.strip()}"
+            )
+        print(result.stdout, end="")
+    finally:
+        shutil.rmtree(venv, ignore_errors=True)
+        shutil.rmtree(run_root, ignore_errors=True)
+
+
 def write_contract_atomically(
     contract: dict[str, object],
     output_path: Path,
@@ -558,7 +1427,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--database-url",
         help="PostgreSQL URL for disposable schema generation",
     )
+    parser.add_argument(
+        "--wheel",
+        type=Path,
+        help="wheel file, directory, or glob to install and verify",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="write installed-wheel migration evidence to PATH",
+    )
     args = parser.parse_args(argv)
+    if args.wheel is not None:
+        database_url = args.database_url or os.environ.get("DRAGON_TEST_DATABASE_URL")
+        if not database_url:
+            print("database URL is required", file=sys.stderr)
+            return 1
+        if args.output is None:
+            print("--output is required with --wheel", file=sys.stderr)
+            return 1
+        try:
+            verify_installed_wheel(database_url, args.wheel, args.output)
+        except Exception:
+            print("installed wheel migration verification failed", file=sys.stderr)
+            return 1
+        return 0
     if args.write_schema_contract is not None:
         database_url = args.database_url or os.environ.get("DRAGON_TEST_DATABASE_URL")
         if not database_url:

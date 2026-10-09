@@ -7,6 +7,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import zipfile
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -43,6 +44,22 @@ def copied_migrations(tmp_path):
     target = tmp_path / "migrations"
     shutil.copytree(MIGRATIONS, target)
     return target
+
+
+@pytest.fixture(scope="session")
+def built_wheel(tmp_path_factory):
+    output = tmp_path_factory.mktemp("task21-wheel-dist")
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(output)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    wheels = list(output.glob("*.whl"))
+    assert len(wheels) == 1
+    return wheels[0]
 
 
 def read_manifest(root=MIGRATIONS):
@@ -502,6 +519,153 @@ def test_cli_returns_nonzero_with_actionable_errors(
 
     assert verifier["main"](["--root", str(copied_migrations)]) == 1
     assert "SHA-256 mismatch: 0010_ai_tasks.py" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("revision", SUPPORTED_FROM)
+def test_supported_revision_upgrades_with_sentinel(
+    verifier,
+    database_url,
+    revision,
+):
+    manifest = verifier["load_release_manifest"](MIGRATIONS / "release_manifest.json")
+
+    assert manifest["supported_from"] == SUPPORTED_FROM
+    result = verifier["exercise_upgrade"](database_url, revision)
+
+    assert result["from_revision"] == revision
+    assert result["to_revision"] == "0010_ai_tasks"
+    assert result["sentinel_preserved"] is True
+    assert result["ready"] is True
+
+
+def test_built_wheel_contains_all_release_migration_resources(built_wheel):
+    with zipfile.ZipFile(built_wheel) as archive:
+        names = set(archive.namelist())
+
+    migration_files = {
+        name
+        for name in names
+        if name.startswith("dragon_radar/migrations/versions/") and name.endswith(".py")
+    }
+    assert migration_files == {
+        f"dragon_radar/migrations/versions/{path.name}"
+        for path in (MIGRATIONS / "versions").glob("*.py")
+    }
+    assert len(migration_files) == 18
+    assert "dragon_radar/migrations/release_manifest.json" in names
+    assert "dragon_radar/storage/schema_contract.json" in names
+
+
+def test_wheel_resolution_requires_exactly_one_wheel(verifier, tmp_path):
+    first = tmp_path / "first.whl"
+    second = tmp_path / "second.whl"
+
+    with pytest.raises(ValueError, match="exactly one wheel.*found 0"):
+        verifier["resolve_wheel_path"](tmp_path)
+
+    first.touch()
+    assert verifier["resolve_wheel_path"](tmp_path) == first.resolve()
+    assert verifier["resolve_wheel_path"](tmp_path / "*.whl") == first.resolve()
+
+    second.touch()
+    with pytest.raises(ValueError, match="exactly one wheel.*found 2"):
+        verifier["resolve_wheel_path"](tmp_path)
+    with pytest.raises(ValueError, match="exactly one wheel.*found 2"):
+        verifier["resolve_wheel_path"](tmp_path / "*.whl")
+
+
+def test_installed_wheel_runs_fresh_and_supported_upgrades(
+    built_wheel,
+    database_url,
+    tmp_path,
+):
+    output = tmp_path / "migration-evidence.json"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = ""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--database-url",
+            database_url,
+            "--wheel",
+            str(built_wheel.parent / "*.whl"),
+            "--output",
+            str(output),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    evidence = json.loads(output.read_text(encoding="utf-8"))
+    imported_from = Path(evidence["imported_from"]).resolve()
+    assert f"dragon_radar imported from {imported_from}" in result.stdout
+    assert not imported_from.is_relative_to(ROOT)
+    assert evidence["fresh"] == {
+        "to_revision": "0010_ai_tasks",
+        "ready": True,
+    }
+    assert [item["from_revision"] for item in evidence["supported_upgrades"]] == (
+        SUPPORTED_FROM
+    )
+    assert all(item["sentinel_preserved"] for item in evidence["supported_upgrades"])
+    assert all(item["ready"] for item in evidence["supported_upgrades"])
+
+
+def test_ci_runs_installed_wheel_migration_gate_after_build():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    verify_job = workflow[
+        workflow.index("  verify:") : workflow.index(
+            "\n  reset_performance:",
+            workflow.index("  verify:"),
+        )
+    ]
+
+    build = "uv build --out-dir .temp/dist"
+    gate = "name: Verify installed wheel migrations"
+    assert verify_job.index(build) < verify_job.index(gate)
+    assert '--database-url "$DRAGON_TEST_DATABASE_URL"' in verify_job
+    assert "--wheel .temp/dist" in verify_job
+    assert "--output .temp/acceptance/task21-migrations.json" in verify_job
+    assert "dragon_radar-0.1.0-py3-none-any.whl" not in verify_job
+
+
+def test_wheel_cli_never_reveals_database_password(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "never-print-wheel-password"
+    wheel = tmp_path / "dragon_radar.whl"
+    wheel.touch()
+    monkeypatch.setitem(
+        verifier["main"].__globals__,
+        "verify_installed_wheel",
+        lambda *_: (_ for _ in ()).throw(RuntimeError(f"failed at {secret}")),
+    )
+
+    result = verifier["main"](
+        [
+            "--database-url",
+            f"postgresql://user:{secret}@localhost/dragon_test",
+            "--wheel",
+            str(wheel),
+            "--output",
+            str(tmp_path / "evidence.json"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert secret not in captured.out + captured.err
 
 
 def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
