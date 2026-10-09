@@ -1,0 +1,146 @@
+{
+  "schema": "dragon-radar.migration-release-manifest",
+  "schema_version": 1,
+  "head": "0010_ai_tasks",
+  "rollback_mode": "backup_restore_only",
+  "supported_from": [
+    "0001_foundation",
+    "0003_private_review",
+    "0004a_topic_attempt_ranges",
+    "0006_market_readmodels",
+    "0007_role_readmodels",
+    "0007c_analysis_jobs",
+    "0008_news",
+    "0009_regulation",
+    "0009d_reg_event_complete_set",
+    "0010_ai_tasks"
+  ],
+  "revisions": [
+    {
+      "filename": "0001_foundation.py",
+      "revision": "0001_foundation",
+      "parent": null,
+      "sha256": "93831d3536887f1345692f10aa1b25373061d3f2eabd42497b9dbdfb3e398dae",
+      "bytes": 4964
+    },
+    {
+      "filename": "0002_owner.py",
+      "revision": "0002_owner",
+      "parent": "0001_foundation",
+      "sha256": "eb2a51124095b7c8df6486b3f1887577aa314dd91f8a1125f2bb58d7b86e0e2a",
+      "bytes": 2714
+    },
+    {
+      "filename": "0003_private_review.py",
+      "revision": "0003_private_review",
+      "parent": "0002_owner",
+      "sha256": "72bc7996a43e5831584ce69a33d0e6e6ffb810594974c95fa2f707a80a284212",
+      "bytes": 5003
+    },
+    {
+      "filename": "0004_topic_snapshots.py",
+      "revision": "0004_topic_snapshots",
+      "parent": "0003_private_review",
+      "sha256": "c6c4fc85bb222c691415e687088d2afdd46f95773a34f0b317a2cc11fa062a79",
+      "bytes": 4529
+    },
+    {
+      "filename": "0004a_topic_attempt_ranges.py",
+      "revision": "0004a_topic_attempt_ranges",
+      "parent": "0004_topic_snapshots",
+      "sha256": "c7be7ed12181eda2319f2a6810ea161d040f9a726cea4784865257273325a56f",
+      "bytes": 521
+    },
+    {
+      "filename": "0005_publications.py",
+      "revision": "0005_publications",
+      "parent": "0004a_topic_attempt_ranges",
+      "sha256": "0f47c73e2c222d2f40579a46508d43a6f658bb77c1f352b19e21b4ed8ddb463c",
+      "bytes": 30570
+    },
+    {
+      "filename": "0006_market_readmodels.py",
+      "revision": "0006_market_readmodels",
+      "parent": "0005_publications",
+      "sha256": "004ad37a6915561dead7491f25e3932910a985e9de6b4ef5a761869869b87874",
+      "bytes": 9572
+    },
+    {
+      "filename": "0007_role_readmodels.py",
+      "revision": "0007_role_readmodels",
+      "parent": "0006_market_readmodels",
+      "sha256": "1d08b2822bfbfc323c7703174f889d9fe43da84ab3472c1a752049dd414e9db7",
+      "bytes": 8728
+    },
+    {
+      "filename": "0007a_role_integrity.py",
+      "revision": "0007a_role_integrity",
+      "parent": "0007_role_readmodels",
+      "sha256": "4520b2b51acd4dffe5525a7a46416de1b6f8c473c7e3172d1654628d4c9b7ee3",
+      "bytes": 27395
+    },
+    {
+      "filename": "0007b_role_validation_inputs.py",
+      "revision": "0007b_role_validation_inputs",
+      "parent": "0007a_role_integrity",
+      "sha256": "cf2bb4759e0429674597ebac4e2d36bd85358af3ae237e64ed61973274a52691",
+      "bytes": 4163
+    },
+    {
+      "filename": "0007c_analysis_jobs.py",
+      "revision": "0007c_analysis_jobs",
+      "parent": "0007b_role_validation_inputs",
+      "sha256": "f8b19c6e561ff95c3418053d1accc6dde03cede6a659e4db3438be99bfcebf41",
+      "bytes": 2129
+    },
+    {
+      "filename": "0008_news.py",
+      "revision": "0008_news",
+      "parent": "0007c_analysis_jobs",
+      "sha256": "9dd2f14182a0282ef39257dbd6e1f8632df981251a35cef656b2bbe35a209288",
+      "bytes": 14661
+    },
+    {
+      "filename": "0009_regulation.py",
+      "revision": "0009_regulation",
+      "parent": "0008_news",
+      "sha256": "0c1da535f5fa32f228b32aa6c1a4e3731eb035ba9356d9db840ae16f58bb4b8c",
+      "bytes": 40267
+    },
+    {
+      "filename": "0009a_reg_event_source.py",
+      "revision": "0009a_reg_event_source",
+      "parent": "0009_regulation",
+      "sha256": "49d6db964706fce58af343ab49710601bbf3df0bbc53cb0b094a88a77395bd3a",
+      "bytes": 2100
+    },
+    {
+      "filename": "0009b_reg_event_provenance.py",
+      "revision": "0009b_reg_event_provenance",
+      "parent": "0009a_reg_event_source",
+      "sha256": "950057229ef6938016b2ae558c832faae68e869ef8a5dbebd2ca9e8c78329046",
+      "bytes": 16687
+    },
+    {
+      "filename": "0009c_reg_event_provenance_required.py",
+      "revision": "0009c_reg_event_provenance_required",
+      "parent": "0009b_reg_event_provenance",
+      "sha256": "457242d2d64224d5b140db9aa7b90da5a9fb9f66f5d861bc94449a9c9e86b5a4",
+      "bytes": 1009
+    },
+    {
+      "filename": "0009d_reg_event_complete_set.py",
+      "revision": "0009d_reg_event_complete_set",
+      "parent": "0009c_reg_event_provenance_required",
+      "sha256": "2ba6e74f4834a8875d7581cd6c2e243e3080de72045fb99cdcd496d82b955d4d",
+      "bytes": 6390
+    },
+    {
+      "filename": "0010_ai_tasks.py",
+      "revision": "0010_ai_tasks",
+      "parent": "0009d_reg_event_complete_set",
+      "sha256": "6bc6e3ff370d10387ccea45d4868070eed8455cc32db851896ff13160682a5b9",
+      "bytes": 3272
+    }
+  ]
+}
