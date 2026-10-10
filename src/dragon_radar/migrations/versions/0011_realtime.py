@@ -1,4 +1,4 @@
-"""Add immutable realtime market evidence storage."""
+"""Add immutable, version-bound realtime market evidence storage."""
 
 from alembic import op
 

@@ -43,6 +43,12 @@ realtime_quote_batches = Table(
         "quote_batch_id",
         name="realtime_quote_batches_source_batch_key",
     ),
+    UniqueConstraint(
+        "source_id",
+        "quote_batch_id",
+        "source_version",
+        name="realtime_quote_batches_source_batch_version_key",
+    ),
     ForeignKeyConstraint(
         ["source_id"],
         ["source_grants.source_id"],
@@ -134,7 +140,8 @@ realtime_quotes = Table(
         "order_book_status IN ('disabled', 'unavailable') "
         "AND bid IS NULL AND ask IS NULL "
         "AND bid_size IS NULL AND ask_size IS NULL "
-        "AND order_book_unavailable_reason IS NOT NULL"
+        "AND order_book_unavailable_reason IS NOT NULL "
+        "AND btrim(order_book_unavailable_reason) <> ''"
         ")",
         name="realtime_quotes_order_book_availability",
     ),
@@ -163,10 +170,11 @@ realtime_minute_bars = Table(
     Column("available_at", DateTime(timezone=True), nullable=False),
     PrimaryKeyConstraint("id", name="realtime_minute_bars_pkey"),
     ForeignKeyConstraint(
-        ["source_id", "batch_id"],
+        ["source_id", "batch_id", "source_version"],
         [
             "realtime_quote_batches.source_id",
             "realtime_quote_batches.quote_batch_id",
+            "realtime_quote_batches.source_version",
         ],
         name="realtime_minute_bars_batch_fkey",
         ondelete="RESTRICT",
@@ -322,7 +330,8 @@ realtime_sector_flow_points = Table(
         "AND net_inflow < 'Infinity'::numeric "
         "AND unavailable_reason IS NULL"
         ") OR ("
-        "net_inflow IS NULL AND unavailable_reason IS NOT NULL"
+        "net_inflow IS NULL AND unavailable_reason IS NOT NULL "
+        "AND btrim(unavailable_reason) <> ''"
         ")",
         name="realtime_sector_flow_points_availability",
     ),
@@ -363,7 +372,8 @@ realtime_import_attempts = Table(
     CheckConstraint(
         "status IN ('accepted', 'duplicate', 'rejected', 'incomplete') "
         "AND ((status IN ('accepted', 'duplicate') AND reason IS NULL) "
-        "OR (status IN ('rejected', 'incomplete') AND reason IS NOT NULL))",
+        "OR (status IN ('rejected', 'incomplete') "
+        "AND reason IS NOT NULL AND btrim(reason) <> ''))",
         name="realtime_import_attempts_status",
     ),
     CheckConstraint(

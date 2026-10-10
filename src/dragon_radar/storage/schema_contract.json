@@ -2897,7 +2897,7 @@
         "unavailable_reason"
       ],
       "deferrable": false,
-      "expression": "(((net_inflow IS NOT NULL) AND (net_inflow > '-Infinity'::numeric) AND (net_inflow < 'Infinity'::numeric) AND (unavailable_reason IS NULL)) OR ((net_inflow IS NULL) AND (unavailable_reason IS NOT NULL)))",
+      "expression": "(((net_inflow IS NOT NULL) AND (net_inflow > '-Infinity'::numeric) AND (net_inflow < 'Infinity'::numeric) AND (unavailable_reason IS NULL)) OR ((net_inflow IS NULL) AND (unavailable_reason IS NOT NULL) AND (btrim(unavailable_reason) <> ''::text)))",
       "initially_deferred": false,
       "key_expressions": [],
       "kind": "check",
@@ -3027,7 +3027,7 @@
         "order_book_unavailable_reason"
       ],
       "deferrable": false,
-      "expression": "((((order_book_status)::text = 'available'::text) AND (bid IS NOT NULL) AND (ask IS NOT NULL) AND (bid_size IS NOT NULL) AND (ask_size IS NOT NULL) AND (order_book_unavailable_reason IS NULL)) OR (((order_book_status)::text = ANY ((ARRAY['disabled'::character varying, 'unavailable'::character varying])::text[])) AND (bid IS NULL) AND (ask IS NULL) AND (bid_size IS NULL) AND (ask_size IS NULL) AND (order_book_unavailable_reason IS NOT NULL)))",
+      "expression": "((((order_book_status)::text = 'available'::text) AND (bid IS NOT NULL) AND (ask IS NOT NULL) AND (bid_size IS NOT NULL) AND (ask_size IS NOT NULL) AND (order_book_unavailable_reason IS NULL)) OR (((order_book_status)::text = ANY ((ARRAY['disabled'::character varying, 'unavailable'::character varying])::text[])) AND (bid IS NULL) AND (ask IS NULL) AND (bid_size IS NULL) AND (ask_size IS NULL) AND (order_book_unavailable_reason IS NOT NULL) AND (btrim(order_book_unavailable_reason) <> ''::text)))",
       "initially_deferred": false,
       "key_expressions": [],
       "kind": "check",
@@ -6186,6 +6186,31 @@
     {
       "columns": [
         "source_id",
+        "batch_id",
+        "source_version"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "realtime_minute_bars_batch_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "quote_batch_id",
+        "source_version"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "realtime_quote_batches",
+      "table": "realtime_minute_bars"
+    },
+    {
+      "columns": [
+        "source_id",
         "batch_id"
       ],
       "deferrable": false,
@@ -6205,29 +6230,6 @@
       "referenced_schema": "current_schema",
       "referenced_table": "realtime_quote_batches",
       "table": "realtime_anomaly_events"
-    },
-    {
-      "columns": [
-        "source_id",
-        "batch_id"
-      ],
-      "deferrable": false,
-      "expression": null,
-      "initially_deferred": false,
-      "key_expressions": [],
-      "kind": "foreign_key",
-      "match_type": "simple",
-      "name": "realtime_minute_bars_batch_fkey",
-      "on_delete": "restrict",
-      "on_update": "no_action",
-      "operators": [],
-      "referenced_columns": [
-        "source_id",
-        "quote_batch_id"
-      ],
-      "referenced_schema": "current_schema",
-      "referenced_table": "realtime_quote_batches",
-      "table": "realtime_minute_bars"
     },
     {
       "columns": [
@@ -6314,6 +6316,27 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_module_controls"
+    },
+    {
+      "columns": [
+        "source_id",
+        "quote_batch_id",
+        "source_version"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_quote_batches_source_batch_version_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quote_batches"
     },
     {
       "columns": [
@@ -6982,7 +7005,7 @@
         "reason"
       ],
       "deferrable": false,
-      "expression": "(((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'incomplete'::character varying])::text[])) AND ((((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying])::text[])) AND (reason IS NULL)) OR (((status)::text = ANY ((ARRAY['rejected'::character varying, 'incomplete'::character varying])::text[])) AND (reason IS NOT NULL))))",
+      "expression": "(((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'incomplete'::character varying])::text[])) AND ((((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying])::text[])) AND (reason IS NULL)) OR (((status)::text = ANY ((ARRAY['rejected'::character varying, 'incomplete'::character varying])::text[])) AND (reason IS NOT NULL) AND (btrim(reason) <> ''::text))))",
       "initially_deferred": false,
       "key_expressions": [],
       "kind": "check",
@@ -10070,6 +10093,19 @@
       "predicate": null,
       "table": "source_dependencies",
       "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "quote_batch_id",
+        "source_version"
+      ],
+      "name": "realtime_quote_batches_source_batch_version_key",
+      "predicate": null,
+      "table": "realtime_quote_batches",
+      "unique": true,
       "valid": true
     },
     {

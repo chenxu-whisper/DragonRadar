@@ -848,6 +848,7 @@ EXPECTED_REALTIME_CONSTRAINTS = {
     "realtime_quote_batches": {
         "realtime_quote_batches_pkey",
         "realtime_quote_batches_source_batch_key",
+        "realtime_quote_batches_source_batch_version_key",
         "realtime_quote_batches_source_id_fkey",
         "realtime_quote_batches_timestamp_order",
         "realtime_quote_batches_source_sequence",
@@ -1206,6 +1207,206 @@ def test_realtime_immutable_tables_reject_update_delete_and_truncate(database_ur
         for statement in statements:
             with pytest.raises(DBAPIError), database.engine.begin() as connection:
                 connection.execute(text(statement), {"batch_id": batch_id})
+    finally:
+        database.close()
+
+
+def test_realtime_source_version_catalog_binds_only_versioned_children(database_url):
+    from sqlalchemy import inspect
+
+    database = _upgrade_realtime(database_url)
+    try:
+        inspector = inspect(database.engine)
+        unique_constraints = {
+            (constraint["name"], tuple(constraint["column_names"]))
+            for constraint in inspector.get_unique_constraints("realtime_quote_batches")
+        }
+        assert unique_constraints == {
+            (
+                "realtime_quote_batches_source_batch_key",
+                ("source_id", "quote_batch_id"),
+            ),
+            (
+                "realtime_quote_batches_source_batch_version_key",
+                ("source_id", "quote_batch_id", "source_version"),
+            ),
+        }
+
+        minute_batch_fk = next(
+            constraint
+            for constraint in inspector.get_foreign_keys("realtime_minute_bars")
+            if constraint["name"] == "realtime_minute_bars_batch_fkey"
+        )
+        assert minute_batch_fk["constrained_columns"] == [
+            "source_id",
+            "batch_id",
+            "source_version",
+        ]
+        assert minute_batch_fk["referred_columns"] == [
+            "source_id",
+            "quote_batch_id",
+            "source_version",
+        ]
+
+        for table in (
+            "realtime_quotes",
+            "realtime_anomaly_events",
+            "realtime_sector_flow_points",
+        ):
+            assert "source_version" not in {
+                column["name"] for column in inspector.get_columns(table)
+            }
+    finally:
+        database.close()
+
+
+def test_minute_bar_rejects_parent_source_version_mismatch(database_url):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_realtime(database_url)
+    source_id = "versioned-feed"
+    batch_id = "versioned-batch"
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO source_grants (source_id, "grant", updated_at)
+                    VALUES (:source_id, '{}', :now)
+                    """
+                ),
+                {"source_id": source_id, "now": T0},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_quote_batches (
+                        id, quote_batch_id, source_id, source_version,
+                        source_event_at, received_at, available_at,
+                        permission_snapshot, payload_hash, imported_at
+                    ) VALUES (
+                        :id, :batch_id, :source_id, 'v1', :now, :now, :now,
+                        '{}', :payload_hash, :now
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "batch_id": batch_id,
+                    "source_id": source_id,
+                    "payload_hash": "c" * 64,
+                    "now": T0,
+                },
+            )
+
+        with pytest.raises(DBAPIError), database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_minute_bars (
+                        id, source_id, batch_id, source_version, security_id,
+                        event_at, revision, open, high, low, close, final,
+                        source_event_at, received_at, available_at
+                    ) VALUES (
+                        :id, :source_id, :batch_id, 'v2', '600000.SH',
+                        :now, 1, 10, 10, 10, 10, true, :now, :now, :now
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "source_id": source_id,
+                    "batch_id": batch_id,
+                    "now": T0,
+                },
+            )
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        """
+        INSERT INTO realtime_quotes (
+            id, source_id, batch_id, security_id, order_book_status,
+            order_book_unavailable_reason
+        ) VALUES (
+            :id, :source_id, :batch_id, '600000.SH', 'disabled', ''
+        )
+        """,
+        """
+        INSERT INTO realtime_sector_flow_points (
+            id, source_id, batch_id, sector_id, event_at, net_inflow, unit,
+            unavailable_reason
+        ) VALUES (
+            :id, :source_id, :batch_id, 'sector-1', :now, NULL, 'CNY', ''
+        )
+        """,
+        """
+        INSERT INTO realtime_import_attempts (
+            id, source_id, batch_id, idempotency_key, payload_hash, status,
+            reason, details, created_at
+        ) VALUES (
+            :id, :source_id, :batch_id, 'empty-reason', :payload_hash,
+            'rejected', '', '{}', :now
+        )
+        """,
+    ],
+    ids=("order-book", "sector-flow", "import-attempt"),
+)
+def test_realtime_required_reasons_reject_empty_strings(database_url, statement):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_realtime(database_url)
+    source_id = "reason-feed"
+    batch_id = "reason-batch"
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO source_grants (source_id, "grant", updated_at)
+                    VALUES (:source_id, '{}', :now)
+                    """
+                ),
+                {"source_id": source_id, "now": T0},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_quote_batches (
+                        id, quote_batch_id, source_id, source_version,
+                        source_event_at, received_at, available_at,
+                        permission_snapshot, payload_hash, imported_at
+                    ) VALUES (
+                        :id, :batch_id, :source_id, 'v1', :now, :now, :now,
+                        '{}', :payload_hash, :now
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "batch_id": batch_id,
+                    "source_id": source_id,
+                    "payload_hash": "d" * 64,
+                    "now": T0,
+                },
+            )
+
+        with pytest.raises(DBAPIError), database.engine.begin() as connection:
+            connection.execute(
+                text(statement),
+                {
+                    "id": uuid4(),
+                    "source_id": source_id,
+                    "batch_id": batch_id,
+                    "payload_hash": "e" * 64,
+                    "now": T0,
+                },
+            )
     finally:
         database.close()
 

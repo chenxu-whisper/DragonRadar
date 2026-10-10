@@ -1764,7 +1764,7 @@ def test_readiness_rejects_required_schema_drift(
               AND table_name = 'realtime_quote_batches'
               AND column_name = 'source_version'
             """,
-            "ALTER TABLE realtime_quote_batches DROP COLUMN source_version",
+            "ALTER TABLE realtime_quote_batches DROP COLUMN source_version CASCADE",
         ),
         (
             """
