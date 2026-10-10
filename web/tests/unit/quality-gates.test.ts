@@ -13,6 +13,14 @@ function workflowJob(workflow: string, name: string) {
 }
 
 describe('前端发布门禁', () => {
+  it('实时 Decimal 解码不引入运行时 JSON 解析依赖', () => {
+    const packageJson = JSON.parse(read('package.json')) as {
+      dependencies: Record<string, string>;
+    };
+
+    expect(packageJson.dependencies).not.toHaveProperty('lossless-json');
+  });
+
   it('为每种 E2E 环境提供独立且明确的脚本', () => {
     const packageJson = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
 

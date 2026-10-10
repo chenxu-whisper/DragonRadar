@@ -12,6 +12,10 @@ import {
   validateQuoteResponse,
   validateSectorFlowResponse,
 } from '../../src/features/realtime/client';
+import {
+  parseRealtimeJson,
+  supportsJsonParseSource,
+} from '../../src/features/realtime/json';
 
 const date = '2026-10-09';
 const source = 'licensed-feed';
@@ -66,6 +70,7 @@ function quoteResponse(changes: Record<string, unknown> = {}) {
     ...changes,
   }, {
     trade_date: null,
+    coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
     quality_flags: ['delayed'],
   });
 }
@@ -239,6 +244,29 @@ describe('realtime public GET path builders', () => {
 });
 
 describe('realtime strict response validation', () => {
+  it('uses native JSON.parse lexical source in the current Node runtime', () => {
+    expect(supportsJsonParseSource()).toBe(true);
+  });
+
+  it.each([
+    ['/api/realtime/quotes', [
+      'last', 'bid', 'ask', 'bid_size', 'ask_size', 'volume', 'amount',
+    ]],
+    ['/api/realtime/minutes', [
+      'open', 'high', 'low', 'close', 'volume', 'amount',
+    ]],
+    ['/api/realtime/anomalies', ['value', 'threshold']],
+    ['/api/market/sector-flow/intraday', ['net_inflow']],
+  ] as const)('preserves every declared Decimal token for %s', (path, fields) => {
+    const pairs = fields.map(field => `"${field}":1.2300`);
+    const parsed = parseRealtimeJson(
+      `{${[...pairs, '"revision":1'].join(',')}}`,
+      path,
+    ) as Record<string, unknown>;
+    fields.forEach(field => expect(parsed[field]).toBe('1.2300'));
+    expect(parsed.revision).toBe(1);
+  });
+
   it('bounds lossy chart conversion without changing exact Decimal storage', () => {
     expect(decimalForChart('10.125')).toBe(10.125);
     expect(decimalForChart('0')).toBe(0);
@@ -259,6 +287,28 @@ describe('realtime strict response validation', () => {
     const result = validateQuoteResponse(raw, { securityIds: [security] });
 
     expect(result.data?.quotes[0].amount).toBe('9007199254740993.01');
+  });
+
+  it('fails with DATA_FORMAT when JSON.parse lexical source is unsupported', async () => {
+    vi.stubEnv('VITE_RESET_WORKBENCH', '1');
+    const nativeJson = JSON;
+    vi.stubGlobal('JSON', {
+      stringify: nativeJson.stringify.bind(nativeJson),
+      parse(
+        text: string,
+        reviver?: (this: unknown, key: string, value: unknown) => unknown,
+      ) {
+        return nativeJson.parse(text, function (key, value) {
+          return reviver ? reviver.call(this, key, value) : value;
+        });
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(nativeJson.stringify(quoteResponse())),
+    ));
+
+    await expect(request<unknown>(quotePath({ securityIds: [security] })))
+      .rejects.toMatchObject({ status: 502, code: 'DATA_FORMAT' });
   });
 
   it('preserves every quote Decimal field as exact wire text and keeps zero values', () => {
@@ -402,6 +452,37 @@ describe('realtime strict response validation', () => {
     expect(() => validateQuoteResponse(response, {
       securityIds: [security],
     })).toThrow(/reason/i);
+  });
+
+  it('binds quote coverage to the request and actual returned quotes', () => {
+    const partial = quoteResponse({
+      status: 'incomplete',
+    });
+    Object.assign(partial, {
+      coverage: { expected: 2, valid: 1, excluded: 0, missing: 1 },
+      quality_flags: ['partial_quotes'],
+    });
+    expect(validateQuoteResponse(partial, {
+      securityIds: [security, '000001.SZ'],
+    }).data?.quotes).toHaveLength(1);
+
+    const wrongExpected = quoteResponse();
+    Object.assign(wrongExpected, {
+      coverage: { expected: 2, valid: 1, excluded: 0, missing: 1 },
+      quality_flags: ['partial_quotes'],
+    });
+    expect(() => validateQuoteResponse(wrongExpected, {
+      securityIds: [security],
+    })).toThrow(/coverage expected/i);
+
+    const wrongValid = quoteResponse();
+    Object.assign(wrongValid, {
+      coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
+      quality_flags: ['partial_quotes'],
+    });
+    expect(() => validateQuoteResponse(wrongValid, {
+      securityIds: [security],
+    })).toThrow(/coverage valid/i);
   });
 
   it('preserves missing minutes as an absent timestamp instead of interpolating', () => {
@@ -605,14 +686,14 @@ describe('realtime strict response validation', () => {
       coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
     });
 
-    const completeZero = envelope(null, {
+    const contradictory = envelope(null, {
       trade_date: null,
-      coverage: { expected: 0, valid: 0, excluded: 0, missing: 0 },
+      coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
       quality_flags: [],
     });
-    expect(validateQuoteResponse(completeZero, {
+    expect(() => validateQuoteResponse(contradictory, {
       securityIds: [security],
-    }).data).toBeNull();
+    })).toThrow(/coverage valid/i);
   });
 
   it.each([

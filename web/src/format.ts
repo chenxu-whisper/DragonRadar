@@ -1,13 +1,46 @@
 import Decimal from 'decimal.js';
 
 const Exact = Decimal.clone({ precision: 80, rounding: Decimal.ROUND_HALF_EVEN, toExpNeg: -80, toExpPos: 80 });
+const MAX_LEXICAL_LENGTH = 4096;
+const MAX_ABSOLUTE_EXPONENT = 1_000_000;
+const MAX_PLAIN_EXPONENT = 40;
+const MAX_PLAIN_SIGNIFICANT_DIGITS = 48;
+const MAX_DISPLAY_LENGTH = 80;
+const DECIMAL_TEXT = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e([+-]?\d+))?$/i;
 export function decimal(value: string | null | undefined): Decimal | null {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  try { const result = new Exact(value); return result.isFinite() ? result : null; } catch { return null; }
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text || text.length > MAX_LEXICAL_LENGTH) return null;
+  const match = DECIMAL_TEXT.exec(text);
+  if (!match) return null;
+  const exponent = match[1];
+  if (exponent) {
+    const digits = exponent.replace(/^[+-]/, '');
+    if (digits.length > 7 || Math.abs(Number(exponent)) > MAX_ABSOLUTE_EXPONENT) {
+      return null;
+    }
+  }
+  try {
+    const result = new Exact(text);
+    return result.isFinite() && Math.abs(result.e) <= MAX_ABSOLUTE_EXPONENT
+      ? result
+      : null;
+  } catch {
+    return null;
+  }
 }
 function grouped(value: Decimal): string {
+  if (value.isZero()) return '0';
+  if (Math.abs(value.e) > MAX_PLAIN_EXPONENT
+    || value.sd() > MAX_PLAIN_SIGNIFICANT_DIGITS) {
+    return value.toSignificantDigits(12).toExponential();
+  }
   const [whole, fraction] = value.toFixed().split('.');
-  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : '');
+  const result = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    + (fraction ? `.${fraction}` : '');
+  return result.length <= MAX_DISPLAY_LENGTH
+    ? result
+    : value.toSignificantDigits(12).toExponential();
 }
 export function formatDecimal(value: string | null | undefined): string {
   const number = decimal(value);

@@ -1,5 +1,4 @@
 import Decimal from 'decimal.js';
-import { isLosslessNumber } from 'lossless-json';
 import type {
   AnomalyData,
   AnomalyEvent,
@@ -94,13 +93,11 @@ function nullableIdentifier(value: unknown, field: string): string | null {
 
 function finite(value: unknown, field: string, nullable = false): string | null {
   if (nullable && value === null) return null;
-  const text = isLosslessNumber(value)
-    ? value.toString()
-    : typeof value === 'number'
-      ? String(value)
-      : typeof value === 'string'
-        ? value
-        : null;
+  const text = typeof value === 'number'
+    ? String(value)
+    : typeof value === 'string'
+      ? value
+      : null;
   if (text === null || text.trim() === '') fail(field);
   try {
     if (!new Decimal(text).isFinite()) fail(field);
@@ -125,8 +122,7 @@ export function decimalForChart(value: string): number | null {
 }
 
 function integer(value: unknown, field: string, minimum = 0): number {
-  const candidate = isLosslessNumber(value) ? value.toString() : value;
-  const parsed = typeof candidate === 'string' ? Number(candidate) : candidate;
+  const parsed = typeof value === 'string' ? Number(value) : value;
   if (!Number.isSafeInteger(parsed) || (parsed as number) < minimum) fail(field);
   return parsed as number;
 }
@@ -351,12 +347,24 @@ function validateQuote(value: unknown): RealtimeQuote {
   return result;
 }
 
+function validateQuoteCoverage(
+  value: RealtimeCoverage | null,
+  requested: number,
+  returned: number,
+): void {
+  if (value === null || value.expected !== requested) fail('quote coverage expected');
+  if (value.valid !== returned) fail('quote coverage valid');
+}
+
 export function validateQuoteResponse(value: unknown, selection: QuoteSelection): QuoteResponse {
   const base = baseEnvelope(value);
   validateAsOfSelection(base.as_of, selection.asOf);
   if (base.trade_date !== null) fail('quote trade date');
   if (selection.sourceId && base.source !== selection.sourceId) fail('quote source selection');
-  if (base.data === null) return base as QuoteResponse;
+  if (base.data === null) {
+    validateQuoteCoverage(base.coverage, selection.securityIds.length, 0);
+    return base as QuoteResponse;
+  }
   const data = record(base.data, 'quote data');
   exact(data, QUOTE_DATA_KEYS, 'quote data');
   const sourceEvent = timestamp(data.source_event_at, 'quote source timestamp');
@@ -369,6 +377,7 @@ export function validateQuoteResponse(value: unknown, selection: QuoteSelection)
     || parsed.some(item => !selection.securityIds.includes(item.security_id))) {
     fail('quote security selection');
   }
+  validateQuoteCoverage(base.coverage, selection.securityIds.length, parsed.length);
   const batchId = identifier(data.quote_batch_id, 'quote batch');
   if (selection.batchId && batchId !== selection.batchId) fail('quote batch selection');
   const completeness = validateCompleteness(status(data.status), base);

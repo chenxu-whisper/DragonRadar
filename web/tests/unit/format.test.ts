@@ -17,6 +17,25 @@ describe('exact decimal display', () => {
   it('does not round small nonzero values to zero', () => {
     expect(formatDecimal('0.00000000001')).toBe('0.00000000001');
   });
+  it('bounds exponent expansion and total display length', () => {
+    expect(formatDecimal('1e100000')).toBe('1e+100000');
+    expect(formatDecimal('-1e100000')).toBe('-1e+100000');
+    expect(formatDecimal('1e-100000')).toBe('1e-100000');
+    expect(formatDecimal('-1e-100000')).toBe('-1e-100000');
+    expect(formatDecimal('1e1000001')).toBe('未知');
+    expect(formatDecimal('1e-1000001')).toBe('未知');
+    expect(formatDecimal(`${'9'.repeat(100)}e1000000`)).toBe('未知');
+    expect(formatDecimal(`0.${'0'.repeat(100)}1e-1000000`)).toBe('未知');
+    for (const value of ['1e60', '1e-60', '1234567890'.repeat(40)]) {
+      expect(formatDecimal(value).length).toBeLessThanOrEqual(80);
+      expect(formatDecimal(value)).toMatch(/e[+-]\d+$/);
+    }
+  });
+  it('keeps null distinct from lexical zero under bounded formatting', () => {
+    expect(formatDecimal(null)).toBe('未知');
+    expect(formatDecimal('0')).toBe('0');
+    expect(formatDecimal('-0')).toBe('0');
+  });
   it('sorts close exact numbers distinctly and nulls last in either order', () => {
     expect(compareDecimal('9007199254740993', '9007199254740992', 'asc')).toBe(1);
     expect(compareDecimal(null, '1', 'desc')).toBe(1);

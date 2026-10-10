@@ -12,6 +12,7 @@ const BATCH = 'batch-1';
 type MockOptions = {
   failFirstQuote?: boolean;
   revokeFirstQuote?: boolean;
+  flowGap?: boolean;
 };
 
 function envelope(
@@ -57,7 +58,7 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
         return route.fulfill({ status: 503, json: { code: 'STORAGE_UNAVAILABLE' } });
       }
       if (options.revokeFirstQuote && quoteAttempts === 1) {
-        return route.fulfill({ status: 403, json: { code: 'source_forbidden' } });
+        return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
       }
       return route.fulfill({ json: envelope({
         quote_batch_id: BATCH,
@@ -116,19 +117,20 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
       }) });
     }
     if (url.pathname === '/api/market/sector-flow/intraday') {
+      const points = options.flowGap
+        ? [
+          flowPoint('2026-09-10T01:30:00Z', 1, null),
+          flowPoint('2026-09-10T01:31:00Z', null, 'field_not_authorized'),
+          flowPoint('2026-09-10T01:32:00Z', 2, null),
+        ]
+        : [flowPoint(
+          '2026-09-10T01:30:00Z',
+          null,
+          'field_not_authorized',
+        )];
       return route.fulfill({ json: envelope({
         status: 'complete',
-        points: [{
-          batch_id: BATCH,
-          source_id: SOURCE,
-          source_version: 'v1',
-          sector: SECTOR,
-          event_at: '2026-09-10T01:30:00Z',
-          available_at: '2026-09-10T01:30:02Z',
-          net_inflow: null,
-          unit: 'CNY',
-          unavailable_reason: 'field_not_authorized',
-        }],
+        points,
       }, {
         basis: {
           unit: 'CNY',
@@ -142,6 +144,24 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
   }
 
   return requests;
+}
+
+function flowPoint(
+  eventAt: string,
+  netInflow: number | null,
+  unavailableReason: string | null,
+) {
+  return {
+    batch_id: BATCH,
+    source_id: SOURCE,
+    source_version: 'v1',
+    sector: SECTOR,
+    event_at: eventAt,
+    available_at: eventAt,
+    net_inflow: netInflow,
+    unit: 'CNY',
+    unavailable_reason: unavailableReason,
+  };
 }
 
 function minute(eventAt: string, close: number) {
@@ -175,6 +195,27 @@ test.beforeEach(async ({ page }) => {
   await mockMarket(page);
 });
 
+test('browser JSON.parse exposes lexical source for Decimal decoding', async ({ page }) => {
+  expect(await page.evaluate(() => {
+    let source: string | undefined;
+    type Context = { source?: string };
+    type Reviver = (
+      this: unknown,
+      key: string,
+      value: unknown,
+      context: Context,
+    ) => unknown;
+    (JSON.parse as (text: string, reviver: Reviver) => unknown)(
+      '{"value":1.2300}',
+      (key, value, context) => {
+        if (key === 'value') source = context?.source;
+        return value;
+      },
+    );
+    return source;
+  })).toBe('1.2300');
+});
+
 test('shows delayed source time, stream gap, unavailable flow, and auditable anomaly', async ({ page }) => {
   const requests = await mockRealtime(page);
   await openSelected(page);
@@ -194,6 +235,32 @@ test('shows delayed source time, stream gap, unavailable flow, and auditable ano
     name: /return-v1.*0\.025.*0\.02.*batch-1.*incomplete/,
   })).toBeVisible();
   expect(requests.every(item => item.method === 'GET')).toBe(true);
+});
+
+test('keeps an unavailable funding point as a disconnected chart gap', async ({ page }) => {
+  await mockRealtime(page, { flowGap: true });
+  await openSelected(page);
+
+  const chart = page.getByRole('img', { name: /题材分时净流入/ });
+  await expect(chart.locator('canvas')).toBeVisible();
+  const series = await chart.evaluate(async element => {
+    const url = performance.getEntriesByType('resource')
+      .map(entry => entry.name)
+      .find(name => name.includes('/echarts_core.js'));
+    if (!url) throw new Error('ECharts module was not loaded');
+    const echarts = await import(url);
+    const option = echarts.getInstanceByDom(element).getOption();
+    return {
+      connectNulls: option.series[0].connectNulls,
+      data: option.series[0].data,
+      labels: option.xAxis[0].data,
+    };
+  });
+  expect(series).toEqual({
+    connectNulls: false,
+    data: [1, null, 2],
+    labels: ['09:30', '09:31', '09:32'],
+  });
 });
 
 test('retry is keyboard reachable and restores the quote ledger without layout shift', async ({ page }) => {
@@ -217,6 +284,8 @@ test('shows revoked state and keyboard-reachable recovery without retaining evid
   const panel = page.getByRole('region', { name: '实时证据账本' });
   await expect(panel.getByText('实时来源授权已撤销')).toBeVisible();
   await expect(panel.getByText(BATCH, { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '市场总览' })).toBeVisible();
+  await expect(page.getByText('合成测试来源', { exact: false }).first()).toBeVisible();
   const retry = panel.getByRole('button', { name: '重新检查实时来源' });
   await retry.focus();
   await expect(retry).toBeFocused();

@@ -91,7 +91,7 @@ export async function mockMarket(page: Page, state: MockState = {}) {
   await page.route('**/api/market/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const respond = (data: unknown) => route.fulfill({ json: resetEnvelope(data) });
-    if (state.denied) return route.fulfill({ status: 403, json: { error: 'Source access denied' } });
+    if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
     if (state.offline) return route.abort('failed');
     if (url.pathname === '/api/market/overview') {
       const members = {
@@ -134,7 +134,7 @@ export async function mockMarket(page: Page, state: MockState = {}) {
   await page.route('**/api/snapshots/**', async (route: Route) => {
     const url = new URL(route.request().url());
     const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-    if (state.denied) return respond({ error: 'Source access denied' }, 403);
+    if (state.denied) return respond({ code: 'FORBIDDEN' }, 403);
     if (state.offline) return route.abort('failed');
     if (url.pathname === '/api/snapshots/list') {
       const date = url.searchParams.get('date');

@@ -39,6 +39,7 @@ const statusNames: Record<RealtimeStatus, string> = {
   incomplete: '部分',
   unavailable: '不可用',
 };
+const LOCAL_REALTIME_ERRORS = ['FORBIDDEN'] as const;
 
 function useValidated<T>(
   resource: Resource<unknown>,
@@ -158,7 +159,7 @@ function FlowLedger({ response }: { response: SectorFlowResponse }) {
     grid: { left: 68, right: 16, top: 20, bottom: 36 },
     xAxis: {
       type: 'category',
-      data: available.map(point => timestamp(point.event_at).slice(-8, -3)),
+      data: response.data.points.map(point => timestamp(point.event_at).slice(-8, -3)),
       boundaryGap: false,
     },
     yAxis: { type: 'value', name: response.basis.unit ?? '' },
@@ -166,7 +167,8 @@ function FlowLedger({ response }: { response: SectorFlowResponse }) {
     series: [{
       name: '净流入',
       type: 'line',
-      data: available.map(point => decimalForChart(point.net_inflow!)),
+      data: response.data.points.map(point =>
+        point.net_inflow === null ? null : decimalForChart(point.net_inflow)),
       connectNulls: false,
       showSymbol: true,
       lineStyle: { width: 1.5, color: '#1759ad' },
@@ -220,25 +222,29 @@ export default function RealtimePanel({
     paths.quote,
     undefined,
     refreshToken,
+    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
   const minuteRaw = useResource<unknown>(
     paths.minute,
     undefined,
     refreshToken,
+    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
   const anomalyRaw = useResource<unknown>(
     paths.anomaly,
     undefined,
     refreshToken,
+    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
   const flowRaw = useResource<unknown>(
     paths.flow,
     undefined,
     refreshToken,
+    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
   const rawResources = [quoteRaw, minuteRaw, anomalyRaw, flowRaw];
   const revoked = rawResources.some(
-    resource => resource.error?.status === 403 && resource.error.code === 'source_forbidden',
+    resource => resource.error?.status === 403 && resource.error.code === 'FORBIDDEN',
   );
 
   const quotes = useValidated(

@@ -23,7 +23,6 @@
   "dependencies": {
     "decimal.js": "10.6.0",
     "echarts": "6.1.0",
-    "lossless-json": "4.3.1",
     "lucide-react": "1.43.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"

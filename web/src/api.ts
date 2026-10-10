@@ -89,11 +89,22 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
     let data: unknown;
     try {
       if (realtimePath) {
-        const [{ parse }, text] = await Promise.all([
-          import('lossless-json'),
+        const [{ parseRealtimeJson, RealtimeDataFormatError }, text] = await Promise.all([
+          import('./features/realtime/json'),
           Promise.race([response.text(), interrupted]),
         ]);
-        data = parse(text);
+        try {
+          data = parseRealtimeJson(text, path);
+        } catch (error) {
+          if (error instanceof RealtimeDataFormatError) {
+            throw new ApiError(
+              502,
+              '当前运行环境不支持无损实时数值解析，已拒绝该响应。',
+              'DATA_FORMAT',
+            );
+          }
+          throw error;
+        }
       } else {
         data = await Promise.race([response.json(), interrupted]);
       }

@@ -18,7 +18,13 @@ export function AccessProvider({ children }: { children: ReactNode }) {
 }
 export const useAccess = () => useContext(AccessContext);
 export interface Resource<T> { data?: T; error?: ApiError; loading: boolean; refresh: () => void }
-export function useResource<T>(path: string | null, snapshot?: string, refreshToken = 0): Resource<T> {
+interface ResourceOptions { localErrorCodes?: readonly string[] }
+export function useResource<T>(
+  path: string | null,
+  snapshot?: string,
+  refreshToken = 0,
+  options: ResourceOptions = {},
+): Resource<T> {
   const { denied, revoke, epoch } = useAccess();
   const { enabled, store } = useSession();
   const sessionEpoch = enabled ? store.epoch : 0;
@@ -45,10 +51,11 @@ export function useResource<T>(path: string | null, snapshot?: string, refreshTo
         window.dispatchEvent(new Event('private-session-lock'));
         setResult({ key: null, loading: false }); return;
       }
+      if (failure.status === 403 && failure.code
+        && options.localErrorCodes?.includes(failure.code)) {
+        setResult({ key, error: failure, loading: false }); return;
+      }
       if (failure.status === 403 && (!enabled || failure.code === 'source_forbidden' || !failure.code)) {
-        if (!enabled && failure.code === 'source_forbidden') {
-          setResult({ key, error: failure, loading: false }); return;
-        }
         revoke();
         if (enabled) window.dispatchEvent(new Event('private-source-revoked'));
         setResult({ key: null, loading: false }); return;
@@ -58,7 +65,7 @@ export function useResource<T>(path: string | null, snapshot?: string, refreshTo
       setResult(previous => ({ key, data: retain && previous.key === key ? previous.data : undefined, error: failure, loading: false }));
     });
     return () => { gate.current.next(); controller.abort(); };
-  }, [path, key, snapshot, count, refreshToken, revoke, enabled]);
+  }, [path, key, snapshot, count, refreshToken, revoke, enabled, options.localErrorCodes]);
   const current = result.key === key && key !== null && !denied && !locked;
   return {
     data: current ? result.data : undefined, error: current ? result.error : undefined,
