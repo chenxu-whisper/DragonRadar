@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, insert, or_, select
+from sqlalchemy import and_, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from dragon_radar.domain.models import SourceGrant
@@ -173,8 +173,8 @@ def _result(
         import_id=str(attempt["id"]),
         batch_id=batch["quote_batch_id"],
         status=attempt["status"],
-        payload_hash=batch["payload_hash"],
-        imported_at=batch["imported_at"],
+        payload_hash=attempt["payload_hash"],
+        imported_at=attempt["created_at"],
         reason=attempt["reason"],
     )
 
@@ -211,6 +211,19 @@ def _completeness(
         expected_count=expected,
         received_count=received,
     )
+
+
+def _validate_batch_selection(
+    batch_id: str | None,
+    source_id: str | None,
+) -> tuple[str | None, str | None]:
+    if batch_id is not None:
+        batch_id = _identifier(batch_id)
+        if source_id is None:
+            raise ValueError("source_id is required with batch_id")
+    if source_id is not None:
+        source_id = _identifier(source_id)
+    return batch_id, source_id
 
 
 class RealtimeRepository(Repository):
@@ -302,8 +315,10 @@ class RealtimeRepository(Repository):
                 .where(
                     realtime_import_attempts.c.source_id == batch_row["source_id"],
                     realtime_import_attempts.c.batch_id == batch_row["quote_batch_id"],
+                    realtime_import_attempts.c.status.in_(("accepted", "incomplete")),
                 )
                 .order_by(
+                    (realtime_import_attempts.c.status == "accepted").desc(),
                     realtime_import_attempts.c.created_at,
                     realtime_import_attempts.c.id,
                 )
@@ -319,7 +334,12 @@ class RealtimeRepository(Repository):
         *,
         key: str,
         digest: str,
-    ) -> tuple[datetime, Mapping[str, Any] | None, RealtimeImportResult | None]:
+    ) -> tuple[
+        datetime,
+        Mapping[str, Any] | None,
+        RealtimeImportResult | None,
+        str | None,
+    ]:
         _identifier(key)
         _identifier(batch.source_id)
         _identifier(batch.batch_id)
@@ -348,24 +368,67 @@ class RealtimeRepository(Repository):
         )
         if existing is not None:
             if existing["payload_hash"] != digest:
-                raise Conflict("Realtime batch identity belongs to another payload")
+                self._finish_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                    imported_at=now,
+                    status="rejected",
+                    reason="batch_identity_conflict",
+                    details={
+                        "original_payload_hash": existing["payload_hash"],
+                    },
+                )
+                return (
+                    now,
+                    existing,
+                    None,
+                    "Realtime batch identity belongs to another payload",
+                )
             attempt = self._existing_attempt(connection, existing)
             if attempt is None:
                 raise Conflict("Realtime batch exists without an import attempt")
-            return now, existing, _result(attempt, existing)
+            duplicate = self._finish_ingest(
+                connection,
+                batch,
+                key=key,
+                digest=digest,
+                imported_at=now,
+                status="duplicate",
+                reason=None,
+                details={"original_import_id": str(attempt["id"])},
+            )
+            return now, existing, duplicate, None
         used_key = (
             connection.execute(
                 select(realtime_import_attempts).where(
                     realtime_import_attempts.c.source_id == batch.source_id,
                     realtime_import_attempts.c.idempotency_key == key,
+                    realtime_import_attempts.c.status == "accepted",
                 )
             )
             .mappings()
             .first()
         )
         if used_key is not None:
-            raise Conflict("Realtime idempotency key belongs to another payload")
-        return now, None, None
+            self._finish_ingest(
+                connection,
+                batch,
+                key=key,
+                digest=digest,
+                imported_at=now,
+                status="rejected",
+                reason="idempotency_key_conflict",
+                details={"original_import_id": str(used_key["id"])},
+            )
+            return (
+                now,
+                None,
+                None,
+                "Realtime idempotency key belongs to another payload",
+            )
+        return now, None, None, None
 
     @staticmethod
     def _finish_ingest(
@@ -415,7 +478,7 @@ class RealtimeRepository(Repository):
         digest = _canonical_hash({"kind": "quote", "batch": _model_payload(batch)})
         try:
             with self.database.engine.begin() as connection:
-                now, _existing, replay = self._begin_ingest(
+                now, _existing, replay, conflict_message = self._begin_ingest(
                     connection,
                     batch,
                     key=key,
@@ -423,34 +486,38 @@ class RealtimeRepository(Repository):
                 )
                 if replay is not None:
                     return replay
-                connection.execute(
-                    insert(realtime_quote_batches).values(
-                        **self._batch_values(batch, digest, now)
-                    )
-                )
-                if batch.quotes:
+                if conflict_message is None:
                     connection.execute(
-                        insert(realtime_quotes),
-                        [
-                            {
-                                "id": uuid4(),
-                                "source_id": batch.source_id,
-                                "batch_id": batch.batch_id,
-                                **quote.model_dump(),
-                            }
-                            for quote in batch.quotes
-                        ],
+                        insert(realtime_quote_batches).values(
+                            **self._batch_values(batch, digest, now)
+                        )
                     )
-                return self._finish_ingest(
-                    connection,
-                    batch,
-                    key=key,
-                    digest=digest,
-                    imported_at=now,
-                    status="accepted",
-                    reason=None,
-                    details={"kind": "quote", "row_count": len(batch.quotes)},
-                )
+                    if batch.quotes:
+                        connection.execute(
+                            insert(realtime_quotes),
+                            [
+                                {
+                                    "id": uuid4(),
+                                    "source_id": batch.source_id,
+                                    "batch_id": batch.batch_id,
+                                    **quote.model_dump(),
+                                }
+                                for quote in batch.quotes
+                            ],
+                        )
+                    return self._finish_ingest(
+                        connection,
+                        batch,
+                        key=key,
+                        digest=digest,
+                        imported_at=now,
+                        status="accepted",
+                        reason=None,
+                        details={"kind": "quote", "row_count": len(batch.quotes)},
+                    )
+            if conflict_message is None:
+                raise RuntimeError("realtime quote ingestion produced no result")
+            raise Conflict(conflict_message)
         except IntegrityError:
             raise Conflict("Conflicting realtime quote batch") from None
 
@@ -546,6 +613,11 @@ class RealtimeRepository(Repository):
         validated_rules = tuple(
             self._validate_type(rule, AnomalyRule, "rule") for rule in rules
         )
+        rule_identities = [
+            (rule.rule_version, rule.metric, rule.window) for rule in validated_rules
+        ]
+        if len(rule_identities) != len(set(rule_identities)):
+            raise ValueError("duplicate anomaly rule identity")
         expected_per_security = _expected_minutes(
             batch.session_start,
             batch.session_end,
@@ -568,7 +640,7 @@ class RealtimeRepository(Repository):
         )
         try:
             with self.database.engine.begin() as connection:
-                now, _existing, replay = self._begin_ingest(
+                now, _existing, replay, conflict_message = self._begin_ingest(
                     connection,
                     batch,
                     key=key,
@@ -576,43 +648,49 @@ class RealtimeRepository(Repository):
                 )
                 if replay is not None:
                     return replay
-                connection.execute(
-                    insert(realtime_quote_batches).values(
-                        **self._batch_values(batch, digest, now)
-                    )
-                )
-                if batch.bars:
+                if conflict_message is None:
                     connection.execute(
-                        insert(realtime_minute_bars),
-                        [
-                            {
-                                "id": uuid4(),
-                                "source_id": batch.source_id,
-                                "batch_id": batch.batch_id,
-                                "source_version": batch.source_version,
-                                **bar.model_dump(),
-                                "source_event_at": batch.source_event_at,
-                            }
-                            for bar in batch.bars
-                        ],
+                        insert(realtime_quote_batches).values(
+                            **self._batch_values(batch, digest, now)
+                        )
                     )
-                if anomaly_rows:
-                    connection.execute(insert(realtime_anomaly_events), anomaly_rows)
-                return self._finish_ingest(
-                    connection,
-                    batch,
-                    key=key,
-                    digest=digest,
-                    imported_at=now,
-                    status="incomplete" if incomplete else "accepted",
-                    reason="stream_gap" if incomplete else None,
-                    details={
-                        "kind": "minute",
-                        "expected_count": expected,
-                        "received_count": received,
-                        "event_count": len(anomaly_rows),
-                    },
-                )
+                    if batch.bars:
+                        connection.execute(
+                            insert(realtime_minute_bars),
+                            [
+                                {
+                                    "id": uuid4(),
+                                    "source_id": batch.source_id,
+                                    "batch_id": batch.batch_id,
+                                    "source_version": batch.source_version,
+                                    **bar.model_dump(),
+                                    "source_event_at": batch.source_event_at,
+                                }
+                                for bar in batch.bars
+                            ],
+                        )
+                    if anomaly_rows:
+                        connection.execute(
+                            insert(realtime_anomaly_events), anomaly_rows
+                        )
+                    return self._finish_ingest(
+                        connection,
+                        batch,
+                        key=key,
+                        digest=digest,
+                        imported_at=now,
+                        status="incomplete" if incomplete else "accepted",
+                        reason="stream_gap" if incomplete else None,
+                        details={
+                            "kind": "minute",
+                            "expected_count": expected,
+                            "received_count": received,
+                            "event_count": len(anomaly_rows),
+                        },
+                    )
+            if conflict_message is None:
+                raise RuntimeError("realtime minute ingestion produced no result")
+            raise Conflict(conflict_message)
         except IntegrityError:
             raise Conflict("Conflicting realtime minute batch or revision") from None
 
@@ -628,7 +706,7 @@ class RealtimeRepository(Repository):
         )
         try:
             with self.database.engine.begin() as connection:
-                now, _existing, replay = self._begin_ingest(
+                now, _existing, replay, conflict_message = self._begin_ingest(
                     connection,
                     batch,
                     key=key,
@@ -636,37 +714,41 @@ class RealtimeRepository(Repository):
                 )
                 if replay is not None:
                     return replay
-                connection.execute(
-                    insert(realtime_quote_batches).values(
-                        **self._batch_values(batch, digest, now)
-                    )
-                )
-                if batch.points:
+                if conflict_message is None:
                     connection.execute(
-                        insert(realtime_sector_flow_points),
-                        [
-                            {
-                                "id": uuid4(),
-                                "source_id": batch.source_id,
-                                "batch_id": batch.batch_id,
-                                **point.model_dump(),
-                            }
-                            for point in batch.points
-                        ],
+                        insert(realtime_quote_batches).values(
+                            **self._batch_values(batch, digest, now)
+                        )
                     )
-                return self._finish_ingest(
-                    connection,
-                    batch,
-                    key=key,
-                    digest=digest,
-                    imported_at=now,
-                    status="accepted",
-                    reason=None,
-                    details={
-                        "kind": "sector_flow",
-                        "row_count": len(batch.points),
-                    },
-                )
+                    if batch.points:
+                        connection.execute(
+                            insert(realtime_sector_flow_points),
+                            [
+                                {
+                                    "id": uuid4(),
+                                    "source_id": batch.source_id,
+                                    "batch_id": batch.batch_id,
+                                    **point.model_dump(),
+                                }
+                                for point in batch.points
+                            ],
+                        )
+                    return self._finish_ingest(
+                        connection,
+                        batch,
+                        key=key,
+                        digest=digest,
+                        imported_at=now,
+                        status="accepted",
+                        reason=None,
+                        details={
+                            "kind": "sector_flow",
+                            "row_count": len(batch.points),
+                        },
+                    )
+            if conflict_message is None:
+                raise RuntimeError("realtime sector flow ingestion produced no result")
+            raise Conflict(conflict_message)
         except IntegrityError:
             raise Conflict("Conflicting realtime sector flow batch") from None
 
@@ -751,10 +833,7 @@ class RealtimeRepository(Repository):
             raise ValueError("security_ids must contain 1-100 unique identifiers")
         security_ids = tuple(_identifier(value) for value in security_ids)
         as_of = _utc(as_of, "as_of")
-        if batch_id is not None:
-            _identifier(batch_id)
-        if source_id is not None:
-            _identifier(source_id)
+        batch_id, source_id = _validate_batch_selection(batch_id, source_id)
         with self.database.engine.begin() as connection:
             batch = self._select_authorized_batch(
                 connection,
@@ -823,10 +902,7 @@ class RealtimeRepository(Repository):
         session_end = _utc(session_end, "session_end")
         expected_per_source = _expected_minutes(session_start, session_end)
         as_of = _utc(as_of, "as_of")
-        if batch_id is not None:
-            _identifier(batch_id)
-        if source_id is not None:
-            _identifier(source_id)
+        batch_id, source_id = _validate_batch_selection(batch_id, source_id)
         with self.database.engine.begin() as connection:
             parent_query = (
                 select(
@@ -953,10 +1029,7 @@ class RealtimeRepository(Repository):
         if session_end <= session_start:
             raise ValueError("session_end must be after session_start")
         as_of = _utc(as_of, "as_of")
-        if batch_id is not None:
-            _identifier(batch_id)
-        if source_id is not None:
-            _identifier(source_id)
+        batch_id, source_id = _validate_batch_selection(batch_id, source_id)
         with self.database.engine.begin() as connection:
             batch = self._select_authorized_batch(
                 connection,
@@ -1030,7 +1103,7 @@ class RealtimeRepository(Repository):
         *,
         filters: Mapping[str, Any],
         operation_now: datetime,
-    ) -> tuple[datetime, datetime, tuple[datetime, str]]:
+    ) -> tuple[datetime, int, tuple[datetime, str]]:
         try:
             payload = _decode_cursor(cursor, self._cursor_signing_key)
             if (
@@ -1047,12 +1120,13 @@ class RealtimeRepository(Repository):
                 raise ValueError
             issued_at = _canonical_datetime(payload["issued_at"])
             expires_at = _canonical_datetime(payload["expires_at"])
-            watermark = _canonical_datetime(payload["watermark"])
+            watermark = payload["watermark"]
             if (
                 expires_at != issued_at + ANOMALY_CURSOR_TTL
                 or issued_at > operation_now
                 or operation_now >= expires_at
-                or watermark != issued_at
+                or type(watermark) is not int
+                or watermark < 0
             ):
                 raise ValueError
             last = payload["last"]
@@ -1096,7 +1170,8 @@ class RealtimeRepository(Repository):
         }
         last = None
         if cursor is None:
-            issued_at = watermark = operation_now
+            issued_at = operation_now
+            watermark = None
         else:
             issued_at, watermark, last = self._decode_anomaly_cursor(
                 cursor,
@@ -1106,6 +1181,15 @@ class RealtimeRepository(Repository):
         day_start = datetime.combine(date, datetime.min.time(), tzinfo=UTC)
         day_end = day_start + timedelta(days=1)
         with self.database.engine.begin() as connection:
+            if watermark is None:
+                watermark = connection.scalar(
+                    select(
+                        func.coalesce(
+                            func.max(realtime_quote_batches.c.ingest_order),
+                            0,
+                        )
+                    )
+                )
             source_query = (
                 select(
                     realtime_quote_batches.c.source_id,
@@ -1124,7 +1208,8 @@ class RealtimeRepository(Repository):
                     realtime_anomaly_events.c.event_at >= day_start,
                     realtime_anomaly_events.c.event_at < day_end,
                     realtime_anomaly_events.c.available_at <= as_of,
-                    realtime_quote_batches.c.imported_at <= watermark,
+                    realtime_quote_batches.c.available_at <= as_of,
+                    realtime_quote_batches.c.ingest_order <= watermark,
                 )
             )
             if source_id is not None:
@@ -1167,7 +1252,8 @@ class RealtimeRepository(Repository):
                     realtime_anomaly_events.c.event_at >= day_start,
                     realtime_anomaly_events.c.event_at < day_end,
                     realtime_anomaly_events.c.available_at <= as_of,
-                    realtime_quote_batches.c.imported_at <= watermark,
+                    realtime_quote_batches.c.available_at <= as_of,
+                    realtime_quote_batches.c.ingest_order <= watermark,
                 )
             )
             if security_id is not None:
@@ -1225,7 +1311,7 @@ class RealtimeRepository(Repository):
                     "sort_version": 1,
                     "issued_at": issued_at.isoformat(),
                     "expires_at": (issued_at + ANOMALY_CURSOR_TTL).isoformat(),
-                    "watermark": watermark.isoformat(),
+                    "watermark": watermark,
                     "filters": filters,
                     "last": [
                         final["available_at"].isoformat(),

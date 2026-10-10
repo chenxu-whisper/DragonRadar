@@ -1366,6 +1366,31 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
         index for index in expected["indexes"] if index["name"] == "snapshots_listing"
     )
     assert listing_index["access_method"] == "btree"
+    realtime_batch = next(
+        table
+        for table in expected["tables"]
+        if table["name"] == "realtime_quote_batches"
+    )
+    ingest_order = next(
+        column
+        for column in realtime_batch["columns"]
+        if column["name"] == "ingest_order"
+    )
+    assert ingest_order == {
+        "generated": None,
+        "identity": "always",
+        "name": "ingest_order",
+        "nullable": False,
+        "type": "bigint",
+    }
+    accepted_attempt = next(
+        index
+        for index in expected["indexes"]
+        if index["name"] == "realtime_import_attempts_accepted_idempotency_key"
+    )
+    assert accepted_attempt["unique"] is True
+    assert accepted_attempt["key_expressions"] == ["source_id", "idempotency_key"]
+    assert accepted_attempt["predicate"] == "((status)::text = 'accepted'::text)"
     trigger = next(
         trigger
         for trigger in expected["triggers"]
@@ -1669,6 +1694,41 @@ def test_readiness_rejects_partial_index_without_required_predicate(database):
     assert not database.ready()
 
 
+def test_readiness_rejects_realtime_attempt_index_without_accepted_predicate(
+    database,
+):
+    assert database.ready()
+    index_name = "realtime_import_attempts_accepted_idempotency_key"
+    with database.engine.begin() as connection:
+        index_definition = connection.scalar(
+            text(
+                """
+                SELECT pg_get_indexdef(index_record.indexrelid)
+                FROM pg_index index_record
+                JOIN pg_class relation ON relation.oid = index_record.indrelid
+                JOIN pg_namespace namespace
+                  ON namespace.oid = relation.relnamespace
+                JOIN pg_class index_relation
+                  ON index_relation.oid = index_record.indexrelid
+                WHERE namespace.nspname = current_schema()
+                  AND relation.relname = 'realtime_import_attempts'
+                  AND index_relation.relname = :index_name
+                """
+            ),
+            {"index_name": index_name},
+        )
+        assert index_definition is not None
+        create_without_predicate, separator, predicate = index_definition.partition(
+            " WHERE "
+        )
+        assert separator
+        assert "status" in predicate and "accepted" in predicate
+        connection.execute(text(f"DROP INDEX {index_name}"))
+        connection.execute(text(create_without_predicate))
+
+    assert not database.ready()
+
+
 @pytest.mark.parametrize(
     ("catalog_query", "catalog_parameters", "ddl"),
     [
@@ -1762,6 +1822,20 @@ def test_readiness_rejects_required_schema_drift(
             SELECT count(*) FROM information_schema.columns
             WHERE table_schema = current_schema()
               AND table_name = 'realtime_quote_batches'
+              AND column_name = 'ingest_order'
+              AND is_identity = 'YES'
+              AND identity_generation = 'ALWAYS'
+            """,
+            (
+                "ALTER TABLE realtime_quote_batches "
+                "ALTER COLUMN ingest_order DROP IDENTITY"
+            ),
+        ),
+        (
+            """
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'realtime_quote_batches'
               AND column_name = 'source_version'
             """,
             "ALTER TABLE realtime_quote_batches DROP COLUMN source_version CASCADE",
@@ -1822,7 +1896,7 @@ def test_readiness_rejects_required_schema_drift(
             "DROP TRIGGER immutable_rows ON realtime_anomaly_events",
         ),
     ],
-    ids=("column", "check", "foreign-key", "index", "trigger"),
+    ids=("identity", "column", "check", "foreign-key", "index", "trigger"),
 )
 def test_readiness_rejects_realtime_schema_drift(database, catalog_query, ddl):
     assert database.ready()

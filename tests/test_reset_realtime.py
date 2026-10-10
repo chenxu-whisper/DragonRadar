@@ -762,6 +762,7 @@ EXPECTED_REALTIME_TABLES = {
 EXPECTED_REALTIME_COLUMNS = {
     "realtime_quote_batches": [
         "id",
+        "ingest_order",
         "quote_batch_id",
         "source_id",
         "source_version",
@@ -848,6 +849,7 @@ EXPECTED_REALTIME_COLUMNS = {
 EXPECTED_REALTIME_CONSTRAINTS = {
     "realtime_quote_batches": {
         "realtime_quote_batches_pkey",
+        "realtime_quote_batches_ingest_order_key",
         "realtime_quote_batches_source_batch_key",
         "realtime_quote_batches_source_batch_version_key",
         "realtime_quote_batches_source_id_fkey",
@@ -891,7 +893,6 @@ EXPECTED_REALTIME_CONSTRAINTS = {
     "realtime_import_attempts": {
         "realtime_import_attempts_pkey",
         "realtime_import_attempts_source_id_fkey",
-        "realtime_import_attempts_idempotency_key",
         "realtime_import_attempts_status",
         "realtime_import_attempts_payload_hash",
     },
@@ -942,9 +943,15 @@ def test_0011_realtime_extends_0010_with_six_exact_tables(database_url):
         inspector = inspect(database.engine)
         assert EXPECTED_REALTIME_TABLES <= set(inspector.get_table_names())
         for table, expected_columns in EXPECTED_REALTIME_COLUMNS.items():
-            assert [
-                column["name"] for column in inspector.get_columns(table)
-            ] == expected_columns
+            columns = inspector.get_columns(table)
+            assert [column["name"] for column in columns] == expected_columns
+        ingest_order = next(
+            column
+            for column in inspector.get_columns("realtime_quote_batches")
+            if column["name"] == "ingest_order"
+        )
+        assert ingest_order["type"].python_type is int
+        assert ingest_order["identity"]["always"] is True
     finally:
         database.close()
 
@@ -1224,6 +1231,10 @@ def test_realtime_source_version_catalog_binds_only_versioned_children(database_
         }
         assert unique_constraints == {
             (
+                "realtime_quote_batches_ingest_order_key",
+                ("ingest_order",),
+            ),
+            (
                 "realtime_quote_batches_source_batch_key",
                 ("source_id", "quote_batch_id"),
             ),
@@ -1232,6 +1243,15 @@ def test_realtime_source_version_catalog_binds_only_versioned_children(database_
                 ("source_id", "quote_batch_id", "source_version"),
             ),
         }
+        attempt_index = next(
+            index
+            for index in inspector.get_indexes("realtime_import_attempts")
+            if index["name"] == "realtime_import_attempts_accepted_idempotency_key"
+        )
+        assert attempt_index["unique"] is True
+        assert attempt_index["column_names"] == ["source_id", "idempotency_key"]
+        predicate = str(attempt_index["dialect_options"]["postgresql_where"])
+        assert "status" in predicate and "accepted" in predicate
 
         minute_batch_fk = next(
             constraint
@@ -1644,7 +1664,7 @@ def realtime_repository(database):
     return RealtimeRepository(database, clock=clock)
 
 
-def test_rt05_same_identity_and_canonical_hash_returns_original_without_new_attempt(
+def test_task21r_duplicate_import_records_attempt_and_preserves_accepted_result(
     realtime_repository,
 ):
     from sqlalchemy import func, select
@@ -1659,8 +1679,11 @@ def test_rt05_same_identity_and_canonical_hash_returns_original_without_new_atte
     first = realtime_repository.ingest_quote_batch(batch, key="quote-key-1")
     replay = realtime_repository.ingest_quote_batch(batch, key="quote-key-2")
 
-    assert replay == first
     assert first.status == "accepted"
+    assert replay.status == "duplicate"
+    assert replay.import_id != first.import_id
+    assert replay.batch_id == first.batch_id
+    assert replay.payload_hash == first.payload_hash
     with realtime_repository.database.engine.connect() as connection:
         assert (
             connection.scalar(select(func.count()).select_from(realtime_quote_batches))
@@ -1671,8 +1694,218 @@ def test_rt05_same_identity_and_canonical_hash_returns_original_without_new_atte
             connection.scalar(
                 select(func.count()).select_from(realtime_import_attempts)
             )
-            == 1
+            == 2
         )
+        attempts = {
+            row.status: (str(row.id), row.idempotency_key)
+            for row in connection.execute(
+                select(
+                    realtime_import_attempts.c.id,
+                    realtime_import_attempts.c.idempotency_key,
+                    realtime_import_attempts.c.status,
+                )
+            )
+        }
+    assert attempts == {
+        "accepted": (first.import_id, "quote-key-1"),
+        "duplicate": (replay.import_id, "quote-key-2"),
+    }
+
+
+def test_task21r_anomalies_require_visible_parent_batch(realtime_repository):
+    batch = _minute_batch(
+        "future-parent-anomaly",
+        (minute_bar("100", minute=0), minute_bar("103", minute=1)),
+    ).model_copy(
+        update={
+            "received_at": T0 + timedelta(minutes=30),
+            "available_at": T0 + timedelta(minutes=30),
+        }
+    )
+    realtime_repository.ingest_minute_batch(
+        MinuteBatchInput.model_validate(batch.model_dump()),
+        key="future-parent-anomaly",
+        rules=(return_rule(window=2),),
+    )
+
+    before_parent = realtime_repository.list_anomalies(
+        date=T0.date(),
+        as_of=T0 + timedelta(minutes=10),
+        limit=100,
+    )
+    at_parent = realtime_repository.list_anomalies(
+        date=T0.date(),
+        as_of=T0 + timedelta(minutes=30),
+        limit=100,
+    )
+
+    assert before_parent.items == ()
+    assert before_parent.completeness.received_count == 0
+    assert len(at_parent.items) == 1
+
+
+def test_task21r_cursor_uses_database_ingest_order_watermark(database):
+    from factories import grant
+    from sqlalchemy import insert
+
+    from dragon_radar.realtime.repository import RealtimeRepository
+    from dragon_radar.realtime.tables import (
+        realtime_anomaly_events,
+        realtime_quote_batches,
+    )
+    from dragon_radar.storage.repository import Repository
+
+    operation_now = T0 + timedelta(hours=1)
+    Repository(database, clock=lambda: operation_now).register_source(
+        grant(source_id="licensed-feed")
+    )
+    repository = RealtimeRepository(database, clock=lambda: operation_now)
+    rule = return_rule(window=2)
+    for revision in range(1, 4):
+        repository.ingest_minute_batch(
+            _minute_batch(
+                f"watermark-batch-{revision}",
+                (
+                    minute_bar("100", minute=0, revision=revision),
+                    minute_bar(str(102 + revision), minute=1, revision=revision),
+                ),
+            ),
+            key=f"watermark-key-{revision}",
+            rules=(rule.model_copy(update={"rule_version": f"return-v{revision}"}),),
+        )
+
+    expected = repository.list_anomalies(
+        date=T0.date(),
+        as_of=operation_now,
+        limit=100,
+    )
+    first_page = repository.list_anomalies(
+        date=T0.date(),
+        as_of=operation_now,
+        limit=1,
+    )
+    assert first_page.next_cursor is not None
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(realtime_quote_batches).values(
+                id=uuid4(),
+                quote_batch_id="late-commit-old-client-time",
+                source_id="licensed-feed",
+                source_version="v1",
+                source_event_at=T0,
+                received_at=T0,
+                available_at=T0,
+                source_sequence=None,
+                permission_snapshot=permission().model_dump(mode="json"),
+                payload_hash="f" * 64,
+                imported_at=T0,
+            )
+        )
+        connection.execute(
+            insert(realtime_anomaly_events).values(
+                event_id="0" * 64,
+                source_id="licensed-feed",
+                batch_id="late-commit-old-client-time",
+                security_id="600000.SH",
+                rule_version="return-late",
+                metric="window_return",
+                window=2,
+                value=Decimal("0.03"),
+                threshold=Decimal("0.02"),
+                event_at=T0,
+                available_at=T0,
+                quality="complete",
+                cooldown_bucket=T0,
+            )
+        )
+
+    seen = [first_page.items[0].event_id]
+    cursor = first_page.next_cursor
+    while cursor is not None:
+        page = repository.list_anomalies(
+            date=T0.date(),
+            as_of=operation_now,
+            limit=1,
+            cursor=cursor,
+        )
+        seen.extend(item.event_id for item in page.items)
+        cursor = page.next_cursor
+
+    assert seen == [item.event_id for item in expected.items]
+
+
+def test_task21r_exact_batch_selection_requires_complete_source_identity(
+    realtime_repository,
+):
+    from factories import grant
+
+    from dragon_radar.storage.repository import Repository
+
+    Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    ).register_source(grant(source_id="backup-feed"))
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("shared-batch", last="10", source_id="licensed-feed"),
+        key="shared-primary",
+    )
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("shared-batch", last="20", source_id="backup-feed"),
+        key="shared-backup",
+    )
+
+    with pytest.raises(ValueError, match="source_id"):
+        realtime_repository.list_quotes(
+            security_ids=("600000.SH",),
+            as_of=T0 + timedelta(hours=1),
+            batch_id="shared-batch",
+        )
+
+    selected = realtime_repository.list_quotes(
+        security_ids=("600000.SH",),
+        as_of=T0 + timedelta(hours=1),
+        batch_id="shared-batch",
+        source_id="backup-feed",
+    )
+    assert selected.items[0].source_id == "backup-feed"
+    assert selected.items[0].quote.last == Decimal("20")
+
+
+def test_task21r_duplicate_rule_identity_rejects_before_any_write(
+    realtime_repository,
+):
+    from sqlalchemy import func, select
+
+    from dragon_radar.realtime.tables import (
+        realtime_anomaly_events,
+        realtime_import_attempts,
+        realtime_minute_bars,
+        realtime_quote_batches,
+    )
+
+    rule = return_rule(window=2)
+    with pytest.raises(ValueError, match="duplicate.*rule"):
+        realtime_repository.ingest_minute_batch(
+            _minute_batch(
+                "duplicate-rule",
+                (minute_bar("100", minute=0), minute_bar("103", minute=1)),
+            ),
+            key="duplicate-rule",
+            rules=(rule, rule),
+        )
+
+    with realtime_repository.database.engine.connect() as connection:
+        counts = tuple(
+            connection.scalar(select(func.count()).select_from(table))
+            for table in (
+                realtime_quote_batches,
+                realtime_minute_bars,
+                realtime_anomaly_events,
+                realtime_import_attempts,
+            )
+        )
+    assert counts == (0, 0, 0, 0)
 
 
 def test_rt05_same_identity_different_payload_conflicts_without_partial_write(
@@ -1708,8 +1941,12 @@ def test_rt05_same_identity_different_payload_conflicts_without_partial_write(
             connection.scalar(
                 select(func.count()).select_from(realtime_import_attempts)
             )
-            == 1
+            == 2
         )
+        assert set(connection.scalars(select(realtime_import_attempts.c.status))) == {
+            "accepted",
+            "rejected",
+        }
 
 
 def test_quote_child_conflict_rolls_back_parent_and_attempt(realtime_repository):
@@ -1757,6 +1994,7 @@ def test_rt06_out_of_order_batches_remain_exactly_queryable(realtime_repository)
         security_ids=("600000.SH",),
         as_of=T0 + timedelta(minutes=3),
         batch_id="quote-earlier",
+        source_id="licensed-feed",
     )
     historical = realtime_repository.list_quotes(
         security_ids=("600000.SH",),
@@ -1834,6 +2072,7 @@ def test_rt07_point_in_time_minutes_select_visible_revision_without_fall_forward
         session_end=T0 + timedelta(minutes=4),
         as_of=T0 + timedelta(minutes=3),
         batch_id="minute-revision-1",
+        source_id="licensed-feed",
     )
 
     assert [(item.bar.revision, item.bar.close) for item in before_revision.items] == [
@@ -1931,6 +2170,7 @@ def test_rt08_missing_minutes_remain_absent_and_gap_is_incomplete(
         session_end=T0 + timedelta(minutes=4),
         as_of=T0 + timedelta(hours=1),
         batch_id="minute-gap",
+        source_id="licensed-feed",
     )
 
     assert [item.bar.event_at for item in result.items] == [
@@ -1961,6 +2201,7 @@ def test_rt09_sector_flow_preserves_null_and_reason(realtime_repository):
         session_end=T0 + timedelta(minutes=4),
         as_of=T0 + timedelta(hours=1),
         batch_id="flow-unavailable",
+        source_id="licensed-feed",
     )
 
     assert result.items[0].point.net_inflow is None
@@ -2004,7 +2245,9 @@ def test_rt11_event_id_and_cooldown_are_bound_to_rule_input_and_security(
         as_of=T0 + timedelta(hours=1),
         limit=100,
     )
-    assert replay == first
+    assert first.status == "incomplete"
+    assert replay.status == "duplicate"
+    assert replay.payload_hash == first.payload_hash
     assert len(events.items) == 2
     assert len({event.event_id for event in events.items}) == 2
     with realtime_repository.database.engine.connect() as connection:
@@ -2055,7 +2298,9 @@ def test_rt12_fixed_batch_replay_is_decimal_and_datetime_deterministic(
     first = realtime_repository.ingest_quote_batch(first_batch, key="canonical-1")
     replay = realtime_repository.ingest_quote_batch(equivalent, key="canonical-2")
 
-    assert replay == first
+    assert first.status == "accepted"
+    assert replay.status == "duplicate"
+    assert replay.payload_hash == first.payload_hash
 
 
 def test_rt12_canonical_hash_is_independent_of_decimal_context(
@@ -2074,7 +2319,9 @@ def test_rt12_canonical_hash_is_independent_of_decimal_context(
             key="decimal-context-2",
         )
 
-    assert replay == first
+    assert first.status == "accepted"
+    assert replay.status == "duplicate"
+    assert replay.payload_hash == first.payload_hash
 
 
 def test_anomaly_cursor_binds_signature_filters_expiry_watermark_and_last(
@@ -2273,7 +2520,8 @@ def test_same_batch_concurrency_persists_one_result(realtime_repository):
         ]
     results = [future.result() for future in futures]
 
-    assert results[0] == results[1]
+    assert {result.status for result in results} == {"accepted", "duplicate"}
+    assert len({result.payload_hash for result in results}) == 1
     with realtime_repository.database.engine.connect() as connection:
         assert (
             connection.scalar(select(func.count()).select_from(realtime_quote_batches))
@@ -2283,7 +2531,7 @@ def test_same_batch_concurrency_persists_one_result(realtime_repository):
             connection.scalar(
                 select(func.count()).select_from(realtime_import_attempts)
             )
-            == 1
+            == 2
         )
 
 
@@ -2328,8 +2576,12 @@ def test_conflicting_batch_concurrency_fails_closed(realtime_repository):
             connection.scalar(
                 select(func.count()).select_from(realtime_import_attempts)
             )
-            == 1
+            == 2
         )
+        assert set(connection.scalars(select(realtime_import_attempts.c.status))) == {
+            "accepted",
+            "rejected",
+        }
 
 
 def test_realtime_ingestion_validates_typed_models_and_maps_storage_conflict(
@@ -2386,4 +2638,5 @@ def test_realtime_import_and_read_recheck_current_permissions(database):
             security_ids=("600000.SH",),
             as_of=T0 + timedelta(hours=1),
             batch_id="permission-revoked",
+            source_id="licensed-feed",
         )

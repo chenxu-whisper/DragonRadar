@@ -2610,6 +2610,25 @@
     },
     {
       "columns": [
+        "ingest_order"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_quote_batches_ingest_order_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quote_batches"
+    },
+    {
+      "columns": [
         "input_role_run_id"
       ],
       "deferrable": false,
@@ -6280,26 +6299,6 @@
     {
       "columns": [
         "source_id",
-        "idempotency_key"
-      ],
-      "deferrable": false,
-      "expression": null,
-      "initially_deferred": false,
-      "key_expressions": [],
-      "kind": "unique",
-      "match_type": null,
-      "name": "realtime_import_attempts_idempotency_key",
-      "on_delete": null,
-      "on_update": null,
-      "operators": [],
-      "referenced_columns": [],
-      "referenced_schema": null,
-      "referenced_table": null,
-      "table": "realtime_import_attempts"
-    },
-    {
-      "columns": [
-        "source_id",
         "module"
       ],
       "deferrable": false,
@@ -9189,6 +9188,17 @@
     {
       "access_method": "btree",
       "key_expressions": [
+        "ingest_order"
+      ],
+      "name": "realtime_quote_batches_ingest_order_key",
+      "predicate": null,
+      "table": "realtime_quote_batches",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
         "local_key"
       ],
       "name": "owner_principals_local_key_key",
@@ -10065,8 +10075,8 @@
         "source_id",
         "idempotency_key"
       ],
-      "name": "realtime_import_attempts_idempotency_key",
-      "predicate": null,
+      "name": "realtime_import_attempts_accepted_idempotency_key",
+      "predicate": "((status)::text = 'accepted'::text)",
       "table": "realtime_import_attempts",
       "unique": true,
       "valid": true
@@ -10955,6 +10965,95 @@
         }
       ],
       "name": "source_dependencies"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": "always",
+          "name": "ingest_order",
+          "nullable": false,
+          "type": "bigint"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "quote_batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_version",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "received_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "available_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_sequence",
+          "nullable": true,
+          "type": "bigint"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "permission_snapshot",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "payload_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "imported_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "realtime_quote_batches"
     },
     {
       "columns": [
@@ -13681,88 +13780,6 @@
         }
       ],
       "name": "role_validations"
-    },
-    {
-      "columns": [
-        {
-          "generated": null,
-          "identity": null,
-          "name": "id",
-          "nullable": false,
-          "type": "uuid"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "quote_batch_id",
-          "nullable": false,
-          "type": "text"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "source_id",
-          "nullable": false,
-          "type": "text"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "source_version",
-          "nullable": false,
-          "type": "text"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "source_event_at",
-          "nullable": false,
-          "type": "timestamp with time zone"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "received_at",
-          "nullable": false,
-          "type": "timestamp with time zone"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "available_at",
-          "nullable": false,
-          "type": "timestamp with time zone"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "source_sequence",
-          "nullable": true,
-          "type": "bigint"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "permission_snapshot",
-          "nullable": false,
-          "type": "jsonb"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "payload_hash",
-          "nullable": false,
-          "type": "character varying(64)"
-        },
-        {
-          "generated": null,
-          "identity": null,
-          "name": "imported_at",
-          "nullable": false,
-          "type": "timestamp with time zone"
-        }
-      ],
-      "name": "realtime_quote_batches"
     },
     {
       "columns": [

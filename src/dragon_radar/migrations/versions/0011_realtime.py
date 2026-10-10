@@ -1,4 +1,4 @@
-"""Add immutable, version-bound realtime evidence with nonblank reasons."""
+"""Add immutable realtime evidence with commit-ordered point-in-time reads."""
 
 from alembic import op
 

@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     Numeric,
@@ -27,6 +28,7 @@ realtime_quote_batches = Table(
     "realtime_quote_batches",
     metadata,
     Column("id", PGUUID(as_uuid=True), nullable=False),
+    Column("ingest_order", BigInteger, Identity(always=True), nullable=False),
     Column("quote_batch_id", Text, nullable=False),
     Column("source_id", Text, nullable=False),
     Column("source_version", Text, nullable=False),
@@ -38,6 +40,10 @@ realtime_quote_batches = Table(
     Column("payload_hash", String(64), nullable=False),
     Column("imported_at", DateTime(timezone=True), nullable=False),
     PrimaryKeyConstraint("id", name="realtime_quote_batches_pkey"),
+    UniqueConstraint(
+        "ingest_order",
+        name="realtime_quote_batches_ingest_order_key",
+    ),
     UniqueConstraint(
         "source_id",
         "quote_batch_id",
@@ -364,10 +370,12 @@ realtime_import_attempts = Table(
     Column("details", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     PrimaryKeyConstraint("id", name="realtime_import_attempts_pkey"),
-    UniqueConstraint(
+    Index(
+        "realtime_import_attempts_accepted_idempotency_key",
         "source_id",
         "idempotency_key",
-        name="realtime_import_attempts_idempotency_key",
+        unique=True,
+        postgresql_where=text("status = 'accepted'"),
     ),
     CheckConstraint(
         "status IN ('accepted', 'duplicate', 'rejected', 'incomplete') "

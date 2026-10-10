@@ -1155,7 +1155,7 @@ def _insert_sentinel(
         return "ai_task", {"id": values["ai_task_id"], "hash": values["hash"]}
     if revision == "0011_realtime":
         _insert_source(connection, values)
-        connection.execute(
+        ingest_order = connection.scalar(
             text(
                 """
                 INSERT INTO realtime_quote_batches (
@@ -1169,6 +1169,7 @@ def _insert_sentinel(
                     '{"permission_id":"task21","state":"authorized"}',
                     :hash, :now
                 )
+                RETURNING ingest_order
                 """
             ),
             {**values, "now": now},
@@ -1209,6 +1210,7 @@ def _insert_sentinel(
             "realtime_evidence",
             {
                 "batch_id": values["realtime_batch_id"],
+                "ingest_order": ingest_order,
                 "minute_id": values["realtime_minute_id"],
                 "event_id": values["realtime_event_id"],
             },
@@ -1308,6 +1310,7 @@ def _sentinel_preserved(
         "realtime_evidence": (
             """
             SELECT batch.quote_batch_id AS batch_id,
+                   batch.ingest_order,
                    minute.id AS minute_id,
                    event.event_id
             FROM realtime_quote_batches batch
