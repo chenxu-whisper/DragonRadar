@@ -3144,6 +3144,97 @@ def test_rt08_missing_minutes_remain_absent_and_gap_is_incomplete(
     assert result.items[1].bar.available_at == T0 + timedelta(minutes=2, seconds=2)
 
 
+def _trading_day_minute_batch(
+    batch_id: str,
+    *,
+    missing_minute: int | None = None,
+    include_lunch: bool = False,
+) -> MinuteBatchInput:
+    minute_offsets = [*range(120), *range(210, 330)]
+    if missing_minute is not None:
+        minute_offsets.remove(missing_minute)
+    if include_lunch:
+        minute_offsets.append(150)
+    bars = tuple(
+        minute_bar(str(100 + minute), minute=minute) for minute in minute_offsets
+    )
+    latest_available = max(bar.available_at for bar in bars)
+    return MinuteBatchInput(
+        batch_id=batch_id,
+        source_id="licensed-feed",
+        source_version="v1",
+        source_event_at=T0,
+        received_at=latest_available,
+        available_at=latest_available,
+        permission=permission(),
+        session_start=T0,
+        session_end=T0 + timedelta(minutes=330),
+        bars=bars,
+    )
+
+
+def test_minute_session_windows_exclude_lunch_and_expect_240(
+    realtime_repository,
+):
+    batch = _trading_day_minute_batch(
+        "trading-day-complete",
+        include_lunch=True,
+    )
+    realtime_repository.ingest_minute_batch(batch, key="trading-day-complete")
+    windows = (
+        (T0, T0 + timedelta(minutes=120)),
+        (T0 + timedelta(minutes=210), T0 + timedelta(minutes=330)),
+    )
+
+    result = realtime_repository.list_minutes(
+        security_id="600000.SH",
+        session_start=windows[0][0],
+        session_end=windows[-1][1],
+        session_windows=windows,
+        as_of=T0 + timedelta(hours=6),
+        batch_id="trading-day-complete",
+        source_id="licensed-feed",
+    )
+
+    assert len(result.items) == 240
+    assert T0 + timedelta(minutes=150) not in {
+        item.bar.event_at for item in result.items
+    }
+    assert result.completeness.status == "complete"
+    assert result.completeness.expected_count == 240
+    assert result.completeness.received_count == 240
+
+
+def test_minute_session_windows_report_one_missing_minute_as_stream_gap(
+    realtime_repository,
+):
+    batch = _trading_day_minute_batch(
+        "trading-day-gap",
+        missing_minute=329,
+    )
+    realtime_repository.ingest_minute_batch(batch, key="trading-day-gap")
+    windows = (
+        (T0, T0 + timedelta(minutes=120)),
+        (T0 + timedelta(minutes=210), T0 + timedelta(minutes=330)),
+    )
+
+    result = realtime_repository.list_minutes(
+        security_id="600000.SH",
+        session_start=windows[0][0],
+        session_end=windows[-1][1],
+        session_windows=windows,
+        as_of=T0 + timedelta(hours=6),
+        batch_id="trading-day-gap",
+        source_id="licensed-feed",
+    )
+
+    assert len(result.items) == 239
+    assert result.completeness.status == "incomplete"
+    assert result.completeness.reason == "stream_gap"
+    assert result.completeness.expected_count == 240
+    assert result.completeness.received_count == 239
+
+
 def test_rt09_sector_flow_preserves_null_and_reason(realtime_repository):
     realtime_repository.ingest_sector_flow_batch(
         _flow_batch(
@@ -3165,6 +3256,55 @@ def test_rt09_sector_flow_preserves_null_and_reason(realtime_repository):
 
     assert result.items[0].point.net_inflow is None
     assert result.items[0].point.unavailable_reason == "field_not_authorized"
+
+
+def test_sector_flow_session_windows_exclude_lunch_without_minute_expectation(
+    realtime_repository,
+):
+    points = tuple(
+        SectorFlowPoint(
+            sector_id="sector-1",
+            event_at=T0 + timedelta(minutes=minute),
+            net_inflow=Decimal(str(minute)),
+            unit="CNY",
+        )
+        for minute in (0, 150, 210)
+    )
+    latest_available = T0 + timedelta(minutes=210, seconds=2)
+    realtime_repository.ingest_sector_flow_batch(
+        SectorFlowBatchInput(
+            batch_id="flow-trading-windows",
+            source_id="licensed-feed",
+            source_version="v1",
+            source_event_at=T0,
+            received_at=latest_available,
+            available_at=latest_available,
+            permission=permission(),
+            session_start=T0,
+            session_end=T0 + timedelta(minutes=330),
+            points=points,
+        ),
+        key="flow-trading-windows",
+    )
+    windows = (
+        (T0, T0 + timedelta(minutes=120)),
+        (T0 + timedelta(minutes=210), T0 + timedelta(minutes=330)),
+    )
+
+    result = realtime_repository.list_sector_flow(
+        sector_id="sector-1",
+        session_start=windows[0][0],
+        session_end=windows[-1][1],
+        session_windows=windows,
+        as_of=T0 + timedelta(hours=6),
+        batch_id="flow-trading-windows",
+        source_id="licensed-feed",
+    )
+
+    assert [item.point.event_at for item in result.items] == [T0, windows[1][0]]
+    assert result.completeness.status == "complete"
+    assert result.completeness.expected_count == 2
+    assert result.completeness.received_count == 2
 
 
 def test_rt11_event_id_and_cooldown_are_bound_to_rule_input_and_security(
@@ -4261,6 +4401,24 @@ async def test_ex04_quotes_has_exact_decimal_timestamp_and_delay_contract():
 
 
 @pytest.mark.anyio
+async def test_ex04_delay_uses_exact_integer_millisecond_floor():
+    repository = _HTTPRealtimeRepository()
+    quote = repository.quotes.items[0].model_copy(
+        update={"received_at": T0 + timedelta(milliseconds=1001)}
+    )
+    repository.quotes = repository.quotes.model_copy(update={"items": (quote,)})
+
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/quotes",
+            params={"security_ids": "600000.SH"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["delay_ms"] == 1001
+
+
+@pytest.mark.anyio
 async def test_ex05_minutes_has_exact_bar_contract_without_gap_fill():
     repository = _HTTPRealtimeRepository()
     async with await _http_client(repository) as client:
@@ -4290,6 +4448,29 @@ async def test_ex05_minutes_has_exact_bar_contract_without_gap_fill():
         "revision",
         "final",
     }
+    assert repository.calls == [
+        (
+            "minutes",
+            {
+                "security_id": "600000.SH",
+                "session_start": datetime(2026, 10, 9, 1, 30, tzinfo=UTC),
+                "session_end": datetime(2026, 10, 9, 7, 0, tzinfo=UTC),
+                "session_windows": (
+                    (
+                        datetime(2026, 10, 9, 1, 30, tzinfo=UTC),
+                        datetime(2026, 10, 9, 3, 30, tzinfo=UTC),
+                    ),
+                    (
+                        datetime(2026, 10, 9, 5, 0, tzinfo=UTC),
+                        datetime(2026, 10, 9, 7, 0, tzinfo=UTC),
+                    ),
+                ),
+                "as_of": T0 + timedelta(hours=1),
+                "source_id": None,
+                "batch_id": None,
+            },
+        )
+    ]
 
 
 @pytest.mark.anyio
@@ -4460,6 +4641,29 @@ async def test_ex07_sector_flow_preserves_source_value_unit_and_null_reason():
     assert point["net_inflow"] is None
     assert point["unavailable_reason"] == "field_not_authorized"
     assert "turnover" not in point
+    assert repository.calls == [
+        (
+            "flow",
+            {
+                "sector_id": "sector-1",
+                "session_start": datetime(2026, 10, 9, 1, 30, tzinfo=UTC),
+                "session_end": datetime(2026, 10, 9, 7, 0, tzinfo=UTC),
+                "session_windows": (
+                    (
+                        datetime(2026, 10, 9, 1, 30, tzinfo=UTC),
+                        datetime(2026, 10, 9, 3, 30, tzinfo=UTC),
+                    ),
+                    (
+                        datetime(2026, 10, 9, 5, 0, tzinfo=UTC),
+                        datetime(2026, 10, 9, 7, 0, tzinfo=UTC),
+                    ),
+                ),
+                "as_of": T0 + timedelta(hours=1),
+                "source_id": None,
+                "batch_id": None,
+            },
+        )
+    ]
 
 
 @pytest.mark.anyio
@@ -4494,6 +4698,80 @@ async def test_realtime_routes_reject_invalid_queries_before_repository(path, qu
         "message": "Invalid request",
     }
     assert repository.calls == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "\ufffd",
+        "%ZZ",
+        "\x00",
+        "\x1f",
+        " leading",
+        "trailing ",
+        "Ａ00001.SH",
+        "-leading",
+        ".leading",
+    ),
+)
+def test_realtime_identifier_rejects_noncanonical_or_nonascii_values(value):
+    from dragon_radar.http.routes.realtime import _identifier
+
+    with pytest.raises(ValueError, match="Invalid security_id"):
+        _identifier(value, "security_id")
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "600000.SH",
+        "source:v1-test_name",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ),
+)
+def test_realtime_identifier_accepts_stable_ascii_ids(value):
+    from dragon_radar.http.routes.realtime import _identifier
+
+    assert _identifier(value, "security_id") == value
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "query",
+    (
+        "security_id=%FF&date=2026-10-09",
+        "security_id=%ZZ&date=2026-10-09",
+        "security_id=%00&date=2026-10-09",
+    ),
+)
+async def test_realtime_routes_reject_malformed_encoded_identifiers(query):
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(f"/api/realtime/minutes?{query}")
+
+    assert response.status_code == 400
+    assert repository.calls == []
+
+
+def test_realtime_security_ids_checks_total_length_before_split():
+    from dragon_radar.http.routes.realtime import _security_ids
+
+    class MustNotSplit(str):
+        def split(self, *_args, **_kwargs):
+            raise AssertionError("oversized security_ids was split")
+
+    with pytest.raises(ValueError, match="security_ids"):
+        _security_ids(MustNotSplit("A" * 20100))
+
+
+def test_realtime_security_ids_accepts_exact_total_length_boundary():
+    from dragon_radar.http.routes.realtime import _security_ids
+
+    values = tuple(f"A{index:02d}{'x' * 197}" for index in range(100))
+    wire_value = ",".join(values)
+
+    assert len(wire_value) == 20099
+    assert _security_ids(wire_value) == values
 
 
 @pytest.mark.anyio
@@ -4680,6 +4958,49 @@ async def test_realtime_cursor_parser_accepts_large_base64url_shape():
     assert len(cursor) == 487
     assert response.status_code == 200
     assert repository.calls[-1][1]["cursor"] == cursor
+
+
+@pytest.mark.parametrize("cursor", ("é", "a" * 4097))
+def test_realtime_cursor_checks_ascii_and_length_before_regex(monkeypatch, cursor):
+    from dragon_radar.http.routes import realtime
+
+    class MustNotMatch:
+        def fullmatch(self, _value):
+            raise AssertionError("invalid cursor reached regex")
+
+    monkeypatch.setattr(realtime, "_SIGNED_CURSOR", MustNotMatch())
+    with pytest.raises(ValueError, match="Invalid cursor"):
+        realtime._cursor(cursor)
+
+
+def test_realtime_cursor_accepts_exact_length_boundary():
+    from dragon_radar.http.routes.realtime import _cursor
+
+    cursor = f"{'a' * 4052}.{'b' * 43}"
+
+    assert len(cursor) == 4096
+    assert _cursor(cursor) == cursor
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/api/realtime/minutes?security_id=600000.SH&date=9999-12-31",
+        "/api/market/sector-flow/intraday?sector=sector-1&date=9999-12-31",
+    ),
+)
+async def test_realtime_trading_window_overflow_is_invalid_request(path):
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(path)
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "INVALID_PARAM",
+        "message": "Invalid request",
+    }
+    assert repository.calls == []
 
 
 @pytest.mark.anyio

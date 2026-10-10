@@ -1,7 +1,8 @@
 """Authorized point-in-time realtime reads."""
 
 import re
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
 
@@ -21,7 +22,10 @@ _DATETIME = re.compile(
 _SIGNED_CURSOR = re.compile(
     r"(?P<payload>[A-Za-z0-9_-]+)\.(?P<signature>[A-Za-z0-9_-]{43})"
 )
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 _MAX_CURSOR_LENGTH = 4096
+_MAX_SECURITY_IDS_LENGTH = 20099
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def _repository(request: Request):
@@ -32,20 +36,16 @@ def _repository(request: Request):
 
 
 def _identifier(value: str | None, name: str) -> str:
-    if value is None or not value or value.strip() != value or len(value) > 200:
+    if value is None or _IDENTIFIER.fullmatch(value) is None:
         raise ValueError(f"Invalid {name}")
     return value
 
 
 def _cursor(value: str) -> str:
+    if not value or len(value) > _MAX_CURSOR_LENGTH or not value.isascii():
+        raise ValueError("Invalid cursor")
     match = _SIGNED_CURSOR.fullmatch(value)
-    if (
-        not value
-        or len(value) > _MAX_CURSOR_LENGTH
-        or not value.isascii()
-        or match is None
-        or len(match["payload"]) % 4 == 1
-    ):
+    if match is None or len(match["payload"]) % 4 == 1:
         raise ValueError("Invalid cursor")
     return value
 
@@ -71,9 +71,20 @@ def _required_date(value: str | None) -> date:
     return parsed
 
 
-def _day_window(day: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(day, time.min, tzinfo=UTC)
-    return start, start + timedelta(days=1)
+def _trading_windows(day: date) -> tuple[tuple[datetime, datetime], ...]:
+    if day == date.max:
+        raise ValueError("Date is outside the supported trading range")
+    local_windows = (
+        (time(9, 30), time(11, 30)),
+        (time(13), time(15)),
+    )
+    return tuple(
+        (
+            datetime.combine(day, start, tzinfo=_SHANGHAI).astimezone(UTC),
+            datetime.combine(day, end, tzinfo=_SHANGHAI).astimezone(UTC),
+        )
+        for start, end in local_windows
+    )
 
 
 def _batch_selection(
@@ -94,14 +105,26 @@ def _batch_selection(
 def _security_ids(value: str | None) -> tuple[str, ...]:
     if value is None:
         raise ValueError("security_ids is required")
-    values = tuple(value.split(","))
-    if (
-        not 1 <= len(values) <= 100
-        or len(set(values)) != len(values)
-        or any(not item or item.strip() != item or len(item) > 200 for item in values)
-    ):
+    if len(value) > _MAX_SECURITY_IDS_LENGTH:
         raise ValueError("security_ids must be 1-100 canonical unique IDs")
-    return values
+    values = tuple(value.split(","))
+    if not 1 <= len(values) <= 100 or len(set(values)) != len(values):
+        raise ValueError("security_ids must be 1-100 canonical unique IDs")
+    try:
+        return tuple(_identifier(item, "security_id") for item in values)
+    except ValueError:
+        raise ValueError("security_ids must be 1-100 canonical unique IDs") from None
+
+
+def _delay_milliseconds(start: datetime, end: datetime) -> int:
+    delta = end - start
+    total_microseconds = (
+        delta.days * 86400 + delta.seconds
+    ) * 1_000_000 + delta.microseconds
+    delay_ms = total_microseconds // 1000
+    if delay_ms < 0:
+        raise ArithmeticError("Negative realtime delay")
+    return delay_ms
 
 
 def _coverage(completeness: SourceCompleteness):
@@ -187,9 +210,7 @@ def realtime_quotes(request: Request):
         )
     source, source_version = _identity(result.items)
     first = result.items[0]
-    delay_ms = int((first.received_at - first.source_event_at).total_seconds() * 1000)
-    if delay_ms < 0:
-        raise ArithmeticError("Negative realtime delay")
+    delay_ms = _delay_milliseconds(first.source_event_at, first.received_at)
     data = {
         "quote_batch_id": result.batch_id,
         "source_event_at": first.source_event_at,
@@ -219,11 +240,12 @@ def realtime_minutes(request: Request):
     trade_date = _required_date(query.get("date"))
     source_id, batch_id = _batch_selection(query, "batch_id")
     repository = _repository(request)
-    session_start, session_end = _day_window(trade_date)
+    session_windows = _trading_windows(trade_date)
     result = repository.list_minutes(
         security_id=security_id,
-        session_start=session_start,
-        session_end=session_end,
+        session_start=session_windows[0][0],
+        session_end=session_windows[-1][1],
+        session_windows=session_windows,
         as_of=_as_of(query.get("as_of"), repository),
         source_id=source_id,
         batch_id=batch_id,
@@ -357,11 +379,12 @@ def realtime_sector_flow(request: Request):
     trade_date = _required_date(query.get("date"))
     source_id, batch_id = _batch_selection(query, "batch_id")
     repository = _repository(request)
-    session_start, session_end = _day_window(trade_date)
+    session_windows = _trading_windows(trade_date)
     result = repository.list_sector_flow(
         sector_id=sector,
-        session_start=session_start,
-        session_end=session_end,
+        session_start=session_windows[0][0],
+        session_end=session_windows[-1][1],
+        session_windows=session_windows,
         as_of=_as_of(query.get("as_of"), repository),
         source_id=source_id,
         batch_id=batch_id,

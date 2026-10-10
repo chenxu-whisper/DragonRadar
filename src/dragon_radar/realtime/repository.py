@@ -214,6 +214,50 @@ def _expected_minutes(session_start: datetime, session_end: datetime) -> int:
     return int(seconds // 60)
 
 
+def _session_window_filter(column, windows):
+    return or_(
+        *(
+            and_(column >= window_start, column < window_end)
+            for window_start, window_end in windows
+        )
+    )
+
+
+def _session_windows(
+    session_start: datetime,
+    session_end: datetime,
+    windows: tuple[tuple[datetime, datetime], ...] | None,
+) -> tuple[tuple[datetime, datetime], ...]:
+    session_start = _utc(session_start, "session_start")
+    session_end = _utc(session_end, "session_end")
+    if windows is None:
+        _expected_minutes(session_start, session_end)
+        return ((session_start, session_end),)
+    if not isinstance(windows, tuple) or not windows:
+        raise ValueError("session_windows must be a nonempty tuple")
+    normalized = tuple(
+        (
+            _utc(window_start, "session window start"),
+            _utc(window_end, "session window end"),
+        )
+        for window_start, window_end in windows
+    )
+    if (
+        normalized[0][0] != session_start
+        or normalized[-1][1] != session_end
+        or any(
+            current_start < previous_end
+            for (_, previous_end), (current_start, _) in zip(
+                normalized, normalized[1:], strict=False
+            )
+        )
+    ):
+        raise ValueError("session_windows must be ordered within the session")
+    for window_start, window_end in normalized:
+        _expected_minutes(window_start, window_end)
+    return normalized
+
+
 def _completeness(
     *,
     expected: int | None,
@@ -1141,13 +1185,20 @@ class RealtimeRepository(Repository):
         session_start: datetime,
         session_end: datetime,
         as_of: datetime,
+        session_windows: tuple[tuple[datetime, datetime], ...] | None = None,
         batch_id: str | None = None,
         source_id: str | None = None,
     ) -> MinuteReadResult:
         security_id = _identifier(security_id)
-        session_start = _utc(session_start, "session_start")
-        session_end = _utc(session_end, "session_end")
-        expected_per_source = _expected_minutes(session_start, session_end)
+        windows = _session_windows(session_start, session_end, session_windows)
+        expected_per_source = sum(
+            _expected_minutes(window_start, window_end)
+            for window_start, window_end in windows
+        )
+        window_filter = _session_window_filter(
+            realtime_minute_bars.c.event_at,
+            windows,
+        )
         as_of = _utc(as_of, "as_of")
         batch_id, source_id = _validate_batch_selection(batch_id, source_id)
         with self.database.engine.begin() as connection:
@@ -1171,8 +1222,7 @@ class RealtimeRepository(Repository):
                 )
                 .where(
                     realtime_minute_bars.c.security_id == security_id,
-                    realtime_minute_bars.c.event_at >= session_start,
-                    realtime_minute_bars.c.event_at < session_end,
+                    window_filter,
                     realtime_minute_bars.c.available_at <= as_of,
                     realtime_quote_batches.c.available_at <= as_of,
                 )
@@ -1199,8 +1249,7 @@ class RealtimeRepository(Repository):
                     source_id=source_id,
                     child_table=realtime_minute_bars,
                     child_filter=(
-                        realtime_minute_bars.c.event_at >= session_start,
-                        realtime_minute_bars.c.event_at < session_end,
+                        window_filter,
                         realtime_minute_bars.c.available_at <= as_of,
                     ),
                 )
@@ -1236,8 +1285,7 @@ class RealtimeRepository(Repository):
                 .where(
                     realtime_minute_bars.c.source_id.in_(authorized_sources),
                     realtime_minute_bars.c.security_id == security_id,
-                    realtime_minute_bars.c.event_at >= session_start,
-                    realtime_minute_bars.c.event_at < session_end,
+                    window_filter,
                     realtime_minute_bars.c.available_at <= as_of,
                     realtime_quote_batches.c.available_at <= as_of,
                 )
@@ -1283,14 +1331,16 @@ class RealtimeRepository(Repository):
         session_start: datetime,
         session_end: datetime,
         as_of: datetime,
+        session_windows: tuple[tuple[datetime, datetime], ...] | None = None,
         batch_id: str | None = None,
         source_id: str | None = None,
     ) -> SectorFlowReadResult:
         sector_id = _identifier(sector_id)
-        session_start = _utc(session_start, "session_start")
-        session_end = _utc(session_end, "session_end")
-        if session_end <= session_start:
-            raise ValueError("session_end must be after session_start")
+        windows = _session_windows(session_start, session_end, session_windows)
+        window_filter = _session_window_filter(
+            realtime_sector_flow_points.c.event_at,
+            windows,
+        )
         as_of = _utc(as_of, "as_of")
         batch_id, source_id = _validate_batch_selection(batch_id, source_id)
         with self.database.engine.begin() as connection:
@@ -1302,8 +1352,7 @@ class RealtimeRepository(Repository):
                 child_table=realtime_sector_flow_points,
                 child_filter=(
                     realtime_sector_flow_points.c.sector_id == sector_id,
-                    realtime_sector_flow_points.c.event_at >= session_start,
-                    realtime_sector_flow_points.c.event_at < session_end,
+                    window_filter,
                 ),
             )
             if batch is None:
@@ -1313,10 +1362,7 @@ class RealtimeRepository(Repository):
                     batch_id=batch_id,
                     source_id=source_id,
                     child_table=realtime_sector_flow_points,
-                    child_filter=(
-                        realtime_sector_flow_points.c.event_at >= session_start,
-                        realtime_sector_flow_points.c.event_at < session_end,
-                    ),
+                    child_filter=(window_filter,),
                 )
                 return SectorFlowReadResult(
                     as_of=as_of,
@@ -1338,8 +1384,7 @@ class RealtimeRepository(Repository):
                         realtime_sector_flow_points.c.batch_id
                         == batch["quote_batch_id"],
                         realtime_sector_flow_points.c.sector_id == sector_id,
-                        realtime_sector_flow_points.c.event_at >= session_start,
-                        realtime_sector_flow_points.c.event_at < session_end,
+                        window_filter,
                     )
                     .order_by(
                         realtime_sector_flow_points.c.event_at,
