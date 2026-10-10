@@ -3210,6 +3210,75 @@ def test_minute_completeness_counts_each_authorized_source(realtime_repository):
     assert result.completeness.received_count == 8
 
 
+def test_minutes_skip_revoked_source_without_leaking_identity_and_keep_pins_strict(
+    realtime_repository,
+):
+    from factories import grant
+
+    from dragon_radar.storage.repository import Forbidden, Repository
+
+    sources = Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    )
+    sources.register_source(grant(source_id="backup-feed"))
+    bars = tuple(minute_bar(str(10 + minute), minute=minute) for minute in range(4))
+    realtime_repository.ingest_minute_batch(
+        _minute_batch("revoked-minute-batch", bars),
+        key="revoked-minute-batch",
+    )
+    realtime_repository.ingest_minute_batch(
+        _minute_batch(
+            "authorized-minute-batch",
+            bars,
+            source_id="backup-feed",
+        ),
+        key="authorized-minute-batch",
+    )
+    sources.revoke_source("licensed-feed")
+
+    result = realtime_repository.list_minutes(
+        security_id="600000.SH",
+        session_start=T0,
+        session_end=T0 + timedelta(minutes=4),
+        as_of=T0 + timedelta(hours=1),
+    )
+
+    assert result.batch_id is None
+    assert {(item.source_id, item.batch_id) for item in result.items} == {
+        ("backup-feed", "authorized-minute-batch")
+    }
+    assert result.completeness.status == "complete"
+    assert result.completeness.expected_count == 4
+    assert result.completeness.received_count == 4
+    with pytest.raises(Forbidden):
+        realtime_repository.list_minutes(
+            security_id="600000.SH",
+            session_start=T0,
+            session_end=T0 + timedelta(minutes=4),
+            as_of=T0 + timedelta(hours=1),
+            source_id="licensed-feed",
+        )
+    with pytest.raises(Forbidden):
+        realtime_repository.list_minutes(
+            security_id="600000.SH",
+            session_start=T0,
+            session_end=T0 + timedelta(minutes=4),
+            as_of=T0 + timedelta(hours=1),
+            batch_id="revoked-minute-batch",
+            source_id="licensed-feed",
+        )
+
+    sources.revoke_source("backup-feed")
+    with pytest.raises(Forbidden):
+        realtime_repository.list_minutes(
+            security_id="600000.SH",
+            session_start=T0,
+            session_end=T0 + timedelta(minutes=4),
+            as_of=T0 + timedelta(hours=1),
+        )
+
+
 def test_minute_completeness_counts_unique_trading_minutes(realtime_repository):
     second_event = MinuteBarInput.model_validate(
         {
@@ -3552,6 +3621,73 @@ def test_rt11_anomaly_event_preserves_incomplete_input_quality(
     )
 
     assert events.items[0].quality == "incomplete"
+
+
+def test_anomalies_skip_revoked_source_and_keep_cursor_and_source_pin_strict(
+    realtime_repository,
+):
+    from factories import grant
+
+    from dragon_radar.storage.repository import Forbidden, Repository
+
+    sources = Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    )
+    sources.register_source(grant(source_id="backup-feed"))
+    bars = (minute_bar("100", minute=0), minute_bar("103", minute=1))
+    realtime_repository.ingest_minute_batch(
+        _minute_batch("revoked-anomaly-batch", bars),
+        key="revoked-anomaly-batch",
+        rules=(return_rule(window=2),),
+    )
+    realtime_repository.ingest_minute_batch(
+        _minute_batch(
+            "authorized-anomaly-batch",
+            bars,
+            source_id="backup-feed",
+        ),
+        key="authorized-anomaly-batch",
+        rules=(
+            return_rule(window=2),
+            return_rule(window=2).model_copy(
+                update={"rule_version": "authorized-return-v2"}
+            ),
+        ),
+    )
+    sources.revoke_source("licensed-feed")
+
+    first = realtime_repository.list_anomalies(
+        date=T0.date(),
+        as_of=T0 + timedelta(hours=1),
+        limit=1,
+    )
+    assert [event.batch_id for event in first.items] == ["authorized-anomaly-batch"]
+    assert first.next_cursor is not None
+    assert first.completeness.expected_count == 1
+    assert first.completeness.received_count == 1
+
+    second = realtime_repository.list_anomalies(
+        date=T0.date(),
+        as_of=T0 + timedelta(hours=1),
+        limit=1,
+        cursor=first.next_cursor,
+    )
+    assert [event.batch_id for event in second.items] == ["authorized-anomaly-batch"]
+    assert second.next_cursor is None
+    with pytest.raises(Forbidden):
+        realtime_repository.list_anomalies(
+            date=T0.date(),
+            as_of=T0 + timedelta(hours=1),
+            source_id="licensed-feed",
+        )
+
+    sources.revoke_source("backup-feed")
+    with pytest.raises(Forbidden):
+        realtime_repository.list_anomalies(
+            date=T0.date(),
+            as_of=T0 + timedelta(hours=1),
+        )
 
 
 def test_rt12_fixed_batch_replay_is_decimal_and_datetime_deterministic(

@@ -401,10 +401,12 @@ class RealtimeRepository(Repository):
         connection,
         batches: Sequence[Mapping[str, Any]],
         now: datetime,
-    ) -> None:
+        *,
+        filter_unauthorized: bool = False,
+    ) -> tuple[Mapping[str, Any], ...]:
         source_ids = sorted({batch["source_id"] for batch in batches})
         if not source_ids:
-            return
+            return ()
         current_rows = (
             connection.execute(
                 select(source_grants.c.source_id, source_grants.c.grant)
@@ -419,23 +421,32 @@ class RealtimeRepository(Repository):
             row["source_id"]: SourceGrant.model_validate(row["grant"])
             for row in current_rows
         }
-        if current_by_source.keys() != set(source_ids):
+        if not filter_unauthorized and current_by_source.keys() != set(source_ids):
             raise Forbidden("Source is not locally authorized")
+        authorized = []
         for batch in batches:
             source_id = batch["source_id"]
             permission = PermissionSnapshot.model_validate_json(
                 json.dumps(batch["permission_snapshot"])
             )
+            current = current_by_source.get(source_id)
             if (
-                permission.state != "authorized"
+                current is None
+                or permission.state != "authorized"
                 or permission.captured_at > now
                 or not grant_allows_display(
-                    current_by_source[source_id],
+                    current,
                     source_id=source_id,
                     now=now,
                 )
             ):
+                if filter_unauthorized:
+                    continue
                 raise Forbidden("Source is not authorized for realtime display")
+            authorized.append(batch)
+        if batches and not authorized:
+            raise Forbidden("Source is not authorized for realtime display")
+        return tuple(authorized)
 
     @staticmethod
     def _batch_values(batch, digest: str, imported_at: datetime) -> dict[str, Any]:
@@ -1316,10 +1327,11 @@ class RealtimeRepository(Repository):
                     realtime_minute_bars.c.source_id == source_id
                 )
             parents = connection.execute(parent_query.distinct()).mappings().all()
-            self._authorize_reads(
+            parents = self._authorize_reads(
                 connection,
                 parents,
                 _utc(self.clock(), "operation time"),
+                filter_unauthorized=source_id is None,
             )
             if not parents:
                 kind_batch = self._select_authorized_batch(
@@ -1628,10 +1640,11 @@ class RealtimeRepository(Repository):
                     realtime_quote_batches.c.source_id == source_id
                 )
             parents = connection.execute(source_query.distinct()).mappings().all()
-            self._authorize_reads(
+            parents = self._authorize_reads(
                 connection,
                 parents,
                 operation_now,
+                filter_unauthorized=source_id is None,
             )
             authorized_sources = {parent["source_id"] for parent in parents}
             if not authorized_sources:
