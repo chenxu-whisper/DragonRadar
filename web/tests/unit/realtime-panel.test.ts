@@ -1,9 +1,15 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { RealtimeResourceState } from '../../src/features/realtime/RealtimePanel';
+import {
+  FlowLedger,
+  RealtimeResourceState,
+} from '../../src/features/realtime/RealtimePanel';
 import { formatRealtimeDecimal } from '../../src/features/realtime/format';
-import type { RealtimeEnvelope } from '../../src/features/realtime/types';
+import type {
+  RealtimeEnvelope,
+  SectorFlowResponse,
+} from '../../src/features/realtime/types';
 
 function response(
   data: { status: 'incomplete' } | null,
@@ -69,5 +75,57 @@ describe('realtime Decimal display', () => {
     }
     expect(formatRealtimeDecimal(`1e${'9'.repeat(46)}`)).toBe('未知');
     expect(formatRealtimeDecimal(null)).toBe('未知');
+  });
+});
+
+describe('FlowLedger', () => {
+  it('explains mixed units and keeps every point unit in the audit table', () => {
+    const flow: SectorFlowResponse = {
+      ...response(null, []),
+      basis: {
+        unit: null,
+        currency: null,
+        price_type: 'raw',
+        benchmark: null,
+      },
+      coverage: { expected: 2, valid: 2, excluded: 0, missing: 0 },
+      data: {
+        status: 'complete',
+        points: [
+          {
+            batch_id: 'batch-1',
+            source_id: 'licensed-feed',
+            source_version: 'v1',
+            sector: 'sector-1',
+            event_at: '2026-10-09T01:30:00Z',
+            available_at: '2026-10-09T01:30:00Z',
+            net_inflow: '0',
+            unit: 'CNY',
+            unavailable_reason: null,
+          },
+          {
+            batch_id: 'batch-1',
+            source_id: 'licensed-feed',
+            source_version: 'v1',
+            sector: 'sector-1',
+            event_at: '2026-10-09T01:31:00Z',
+            available_at: '2026-10-09T01:31:00Z',
+            net_inflow: '2',
+            unit: 'USD',
+            unavailable_reason: null,
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(createElement(FlowLedger, { response: flow }));
+
+    expect(markup).toContain('混合单位');
+    expect(markup).toContain('按单位拆分');
+    expect(markup).toContain('aria-label="题材分时资金流审计记录"');
+    expect(markup).toContain('CNY');
+    expect(markup).toContain('USD');
+    expect(markup).toContain('>0<');
+    expect(markup).toContain('>2<');
   });
 });

@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { EChartsCoreOption } from 'echarts/core';
 import { ApiError } from '../../api';
-import { Chart } from '../../components/Chart';
+import { Chart, palette } from '../../components/Chart';
 import { ResourceStatus, TableScroll } from '../../components/Common';
 import { timestamp } from '../../format';
 import type { Resource } from '../../hooks/useResource';
@@ -172,37 +172,74 @@ function MinuteLedger({ response }: { response: MinuteResponse }) {
   </>;
 }
 
-function FlowLedger({ response }: { response: SectorFlowResponse }) {
+export function FlowLedger({ response }: { response: SectorFlowResponse }) {
   if (!response.data || response.data.points.length === 0) {
     return <p className="empty">当前题材没有授权的分时资金流记录。</p>;
   }
-  const available = response.data.points.filter(point => point.net_inflow !== null);
-  const unavailable = response.data.points.filter(point => point.net_inflow === null);
+  const points = response.data.points;
+  const available = points.filter(point => point.net_inflow !== null);
+  const unavailable = points.filter(point => point.net_inflow === null);
+  const units = [...new Set(points.map(point => point.unit))];
+  const availableUnits = units.filter(unit =>
+    available.some(point => point.unit === unit));
+  const mixedUnits = units.length > 1;
   const option: EChartsCoreOption = {
-    grid: { left: 68, right: 16, top: 20, bottom: 36 },
+    grid: { left: 68, right: 16, top: mixedUnits ? 48 : 20, bottom: 36 },
+    legend: mixedUnits ? { top: 0 } : undefined,
     xAxis: {
       type: 'category',
-      data: response.data.points.map(point => timestamp(point.event_at).slice(-8, -3)),
+      data: points.map(point => timestamp(point.event_at).slice(-8, -3)),
       boundaryGap: false,
     },
-    yAxis: { type: 'value', name: response.basis.unit ?? '' },
+    yAxis: {
+      type: 'value',
+      name: mixedUnits ? '按序列单位' : units[0] ?? response.basis.unit ?? '',
+    },
     tooltip: { trigger: 'axis', renderMode: 'richText' },
-    series: [{
-      name: '净流入',
+    series: availableUnits.map((unit, index) => ({
+      name: mixedUnits ? `净流入 (${unit})` : '净流入',
       type: 'line',
-      data: response.data.points.map(point =>
-        point.net_inflow === null ? null : decimalForChart(point.net_inflow)),
+      data: points.map(point =>
+        point.unit === unit && point.net_inflow !== null
+          ? decimalForChart(point.net_inflow)
+          : null),
       connectNulls: false,
       showSymbol: true,
-      lineStyle: { width: 1.5, color: '#1759ad' },
-      itemStyle: { color: '#1759ad' },
-    }],
+      lineStyle: { width: 1.5, color: palette[index % palette.length] },
+      itemStyle: { color: palette[index % palette.length] },
+    })),
   };
   return <>
+    {mixedUnits && <p className="muted">
+      检测到混合单位（{units.join('、')}），图表已按单位拆分序列；审计表保留每点原始单位。
+    </p>}
     {available.length > 0 && <Chart
       option={option}
-      description={`题材分时净流入，单位 ${response.basis.unit ?? '未知'}；空值不连线。`}
+      description={mixedUnits
+        ? `题材分时净流入，包含混合单位 ${units.join('、')}；已按单位拆分序列，空值不连线。`
+        : `题材分时净流入，单位 ${units[0] ?? response.basis.unit ?? '未知'}；空值不连线。`}
     />}
+    <TableScroll label="题材分时资金流审计记录横向滚动">
+      <table className="responsive-record-table" aria-label="题材分时资金流审计记录">
+        <thead><tr>
+          <th>来源时间</th><th>净流入</th><th>单位</th><th>批次 / 来源</th><th>状态</th>
+        </tr></thead>
+        <tbody>{points.map(point =>
+          <tr key={`${point.source_id}-${point.sector}-${point.event_at}`}>
+            <th data-label="来源时间">
+              <time dateTime={point.event_at}>{timestamp(point.event_at)}</time>
+            </th>
+            <td data-label="净流入">
+              {point.net_inflow === null ? '不可用' : number(point.net_inflow)}
+            </td>
+            <td data-label="单位">{point.unit}</td>
+            <td data-label="批次 / 来源">{point.batch_id}<small>{point.source_id}</small></td>
+            <td data-label="状态">
+              {point.unavailable_reason ?? '可用'}
+            </td>
+          </tr>)}</tbody>
+      </table>
+    </TableScroll>
     {unavailable.map(point =>
       <p className="leader-state" key={`${point.batch_id}-${point.event_at}`}>
         <span className="status-token state-missing">不可用</span>

@@ -566,16 +566,23 @@ export function validateMinuteResponse(value: unknown, selection: MinuteSelectio
   exact(data, MINUTE_DATA_KEYS, 'minute data');
   if (!Array.isArray(data.bars)) fail('minute bars');
   const bars = data.bars.map(validateMinuteBar);
-  const identities = new Set<string>();
-  let previous: bigint | null = null;
+  let previous: { sourceId: string; securityId: string; eventTime: bigint } | null = null;
   for (const bar of bars) {
-    const identity = `${bar.source_id}\0${bar.security_id}\0${bar.event_at}`;
     const eventTime = epochMicroseconds(bar.event_at, 'minute event timestamp');
-    if (identities.has(identity) || (previous !== null && eventTime < previous)) {
+    if (previous && (
+      bar.source_id < previous.sourceId
+      || (bar.source_id === previous.sourceId && bar.security_id < previous.securityId)
+      || (bar.source_id === previous.sourceId
+        && bar.security_id === previous.securityId
+        && eventTime <= previous.eventTime)
+    )) {
       fail('minute ordering');
     }
-    identities.add(identity);
-    previous = eventTime;
+    previous = {
+      sourceId: bar.source_id,
+      securityId: bar.security_id,
+      eventTime,
+    };
     if (bar.security_id !== selection.securityId) fail('minute security selection');
     if (selection.sourceId && bar.source_id !== selection.sourceId) fail('minute source selection');
     if (selection.batchId && bar.batch_id !== selection.batchId) fail('minute batch selection');

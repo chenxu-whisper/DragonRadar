@@ -764,6 +764,46 @@ describe('realtime strict response validation', () => {
     });
   });
 
+  it('accepts an earlier minute timestamp after the source tuple advances', () => {
+    const bars = [
+      { ...minuteBar('2026-10-09T01:32:00Z', 11), source_id: 'a-feed' },
+      { ...minuteBar('2026-10-09T01:30:00Z', 10), source_id: 'b-feed' },
+    ];
+    const response = minuteResponse(bars);
+    Object.assign(response, { source: null, source_version: null });
+
+    expect(validateMinuteResponse(response, {
+      securityId: security,
+      date,
+    }).data?.bars).toHaveLength(2);
+  });
+
+  it('rejects minute tuples returned in reverse source order', () => {
+    const bars = [
+      { ...minuteBar('2026-10-09T01:30:00Z', 10), source_id: 'b-feed' },
+      { ...minuteBar('2026-10-09T01:32:00Z', 11), source_id: 'a-feed' },
+    ];
+    const response = minuteResponse(bars);
+    Object.assign(response, { source: null, source_version: null });
+
+    expect(() => validateMinuteResponse(response, {
+      securityId: security,
+      date,
+    })).toThrow(/ordering/i);
+  });
+
+  it('rejects descending timestamps within one minute source and security tuple', () => {
+    const bars = [
+      minuteBar('2026-10-09T01:32:00Z', 11),
+      minuteBar('2026-10-09T01:30:00Z', 10),
+    ];
+
+    expect(() => validateMinuteResponse(minuteResponse(bars), {
+      securityId: security,
+      date,
+    })).toThrow(/ordering/i);
+  });
+
   it('rejects minute batch, source, security, and date selection mismatches', () => {
     const cases = [
       [minuteResponse([{ ...minuteBar('2026-10-09T01:30:00Z', 10), batch_id: 'batch-2' }]), /batch/i],

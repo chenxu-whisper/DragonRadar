@@ -14,6 +14,7 @@ type MockOptions = {
   failFirstQuote?: boolean;
   revokeFirstQuote?: boolean;
   flowGap?: boolean;
+  flowMixedUnits?: boolean;
   nullResources?: RealtimeResourceName[];
 };
 
@@ -153,8 +154,13 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
           quality_flags: ['no_data'],
         }) });
       }
-      const points = options.flowGap
+      const points = options.flowMixedUnits
         ? [
+          flowPoint('2026-09-10T01:30:00Z', 0, null, 'CNY'),
+          flowPoint('2026-09-10T01:31:00Z', 10, null, 'USD'),
+          flowPoint('2026-09-10T01:32:00Z', null, 'field_not_authorized', 'CNY'),
+        ]
+        : options.flowGap ? [
           flowPoint('2026-09-10T01:30:00Z', 1, null),
           flowPoint('2026-09-10T01:31:00Z', null, 'field_not_authorized'),
           flowPoint('2026-09-10T01:32:00Z', 2, null),
@@ -178,8 +184,8 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
         },
         quality_flags: unavailableReason ? [unavailableReason] : [],
         basis: {
-          unit: 'CNY',
-          currency: 'CNY',
+          unit: options.flowMixedUnits ? null : 'CNY',
+          currency: options.flowMixedUnits ? null : 'CNY',
           price_type: 'raw',
           benchmark: null,
         },
@@ -195,6 +201,7 @@ function flowPoint(
   eventAt: string,
   netInflow: number | null,
   unavailableReason: string | null,
+  unit = 'CNY',
 ) {
   return {
     batch_id: BATCH,
@@ -204,7 +211,7 @@ function flowPoint(
     event_at: eventAt,
     available_at: eventAt,
     net_inflow: netInflow,
-    unit: 'CNY',
+    unit,
     unavailable_reason: unavailableReason,
   };
 }
@@ -310,6 +317,42 @@ test('keeps an unavailable funding point as a disconnected chart gap', async ({ 
     data: [1, null, 2],
     labels: ['09:30', '09:31', '09:32'],
   });
+});
+
+test('splits mixed-unit flow series while retaining zero, gaps, and audit units', async ({ page }) => {
+  await mockRealtime(page, { flowMixedUnits: true });
+  await openSelected(page);
+
+  const panel = page.getByRole('region', { name: '实时证据账本' });
+  await expect(panel.getByText(/混合单位.*按单位拆分/)).toBeVisible();
+  const table = panel.getByRole('table', { name: '题材分时资金流审计记录' });
+  await expect(table.getByRole('row', { name: /09:30.*0.*CNY/ })).toBeVisible();
+  await expect(table.getByRole('row', { name: /09:31.*10.*USD/ })).toBeVisible();
+  await expect(table.getByRole('row', {
+    name: /09:32.*不可用.*CNY.*field_not_authorized/,
+  })).toBeVisible();
+
+  const chart = panel.getByRole('img', { name: /题材分时净流入.*混合单位/ });
+  const series = await chart.evaluate(async element => {
+    const url = performance.getEntriesByType('resource')
+      .map(entry => entry.name)
+      .find(name => name.includes('/echarts_core.js'));
+    if (!url) throw new Error('ECharts module was not loaded');
+    const echarts = await import(url);
+    return echarts.getInstanceByDom(element).getOption().series.map((item: {
+      name: unknown;
+      connectNulls: unknown;
+      data: unknown;
+    }) => ({
+      name: item.name,
+      connectNulls: item.connectNulls,
+      data: item.data,
+    }));
+  });
+  expect(series).toEqual([
+    { name: '净流入 (CNY)', connectNulls: false, data: [0, null, null] },
+    { name: '净流入 (USD)', connectNulls: false, data: [null, 10, null] },
+  ]);
 });
 
 test('keeps per-resource unavailable evidence when another resource has data', async ({ page }) => {
