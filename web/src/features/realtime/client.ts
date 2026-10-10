@@ -1,4 +1,6 @@
 import Decimal from 'decimal.js';
+import { ApiError } from '../../api';
+import { parseRealtimeJson, RealtimeDataFormatError } from './json';
 import type {
   AnomalyData,
   AnomalyEvent,
@@ -65,6 +67,71 @@ const SHANGHAI_DATE = new Intl.DateTimeFormat('en', {
 });
 
 type RecordValue = Record<string, unknown>;
+
+export async function requestRealtime<T>(
+  path: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<T> {
+  const allowed = /^\/api\/(?:realtime\/(?:quotes|minutes|anomalies)|market\/sector-flow\/intraday)(?:[?#]|$)/i.test(path);
+  if (!allowed || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
+  const controller = new AbortController();
+  let rejectAbort: (reason: unknown) => void = () => {};
+  const interrupted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  const abort = () => {
+    controller.abort();
+    rejectAbort(new DOMException('请求已取消', 'AbortError'));
+  };
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
+  const timeout = setTimeout(() => {
+    rejectAbort(new ApiError(408));
+    controller.abort();
+  }, 15000);
+  try {
+    const response = await Promise.race([
+      fetch(path, {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      }),
+      interrupted,
+    ]);
+    if (!response.ok) {
+      let code: string | undefined;
+      try {
+        const data = await Promise.race([response.json(), interrupted]);
+        code = typeof data?.code === 'string' ? data.code : undefined;
+      } catch {
+        // Fixed messages do not echo server payloads.
+      }
+      throw new ApiError(response.status, undefined, code);
+    }
+    try {
+      const text = await Promise.race([response.text(), interrupted]);
+      return parseRealtimeJson(text, path) as T;
+    } catch (error) {
+      if (error instanceof ApiError
+        || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+      if (error instanceof RealtimeDataFormatError) {
+        throw new ApiError(
+          502,
+          '当前运行环境不支持无损实时数值解析，已拒绝该响应。',
+          'DATA_FORMAT',
+        );
+      }
+      throw new ApiError(502, '接口响应格式无效，请重试。');
+    }
+  } catch (error) {
+    if (error instanceof ApiError
+      || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+    throw new ApiError(0);
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', abort);
+  }
+}
 
 function fail(field: string): never {
   throw new Error(`Invalid realtime ${field}`);

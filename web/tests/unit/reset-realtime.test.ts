@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { request } from '../../src/api';
 import {
   anomalyPath,
   decimalForChart,
   minutePath,
   quotePath,
   realtimeRequestPaths,
+  requestRealtime,
   sectorFlowPath,
   validateAnomalyResponse,
   validateMinuteResponse,
@@ -278,21 +278,19 @@ describe('realtime strict response validation', () => {
   });
 
   it('keeps a large unquoted Decimal exact from the HTTP wire through validation', async () => {
-    vi.stubEnv('VITE_RESET_WORKBENCH', '1');
     const body = JSON.stringify(quoteResponse()).replace(
       '9007199254740.125',
       '9007199254740993.01',
     );
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
 
-    const raw = await request<unknown>(quotePath({ securityIds: [security] }));
+    const raw = await requestRealtime<unknown>(quotePath({ securityIds: [security] }));
     const result = validateQuoteResponse(raw, { securityIds: [security] });
 
     expect(result.data?.quotes[0].amount).toBe('9007199254740993.01');
   });
 
   it('fails with DATA_FORMAT when JSON.parse lexical source is unsupported', async () => {
-    vi.stubEnv('VITE_RESET_WORKBENCH', '1');
     const nativeJson = JSON;
     vi.stubGlobal('JSON', {
       stringify: nativeJson.stringify.bind(nativeJson),
@@ -309,7 +307,7 @@ describe('realtime strict response validation', () => {
       new Response(nativeJson.stringify(quoteResponse())),
     ));
 
-    await expect(request<unknown>(quotePath({ securityIds: [security] })))
+    await expect(requestRealtime<unknown>(quotePath({ securityIds: [security] })))
       .rejects.toMatchObject({ status: 502, code: 'DATA_FORMAT' });
   });
 

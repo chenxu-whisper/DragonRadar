@@ -1,5 +1,6 @@
 type ObjectValue = Record<string, unknown>;
 export type ResetStockValidationError = 'malformed' | 'date_mismatch' | 'security_mismatch';
+export type LegacyStockValidationError = 'malformed' | 'security_mismatch';
 
 function record(value: unknown): value is ObjectValue {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -7,6 +8,35 @@ function record(value: unknown): value is ObjectValue {
 
 function nullableStrings(value: ObjectValue, keys: string[]): boolean {
   return keys.every(key => value[key] === null || typeof value[key] === 'string');
+}
+
+function quoteFields(value: ObjectValue): boolean {
+  return nullableStrings(
+    value,
+    ['currency', 'price_unit', 'volume_unit', 'amount_unit', 'close', 'amount'],
+  ) &&
+    (value.suspended === null || typeof value.suspended === 'boolean') &&
+    Array.isArray(value.missing_reasons) &&
+    value.missing_reasons.every(reason => typeof reason === 'string');
+}
+
+export function validateLegacySecurityResponse(
+  data: unknown,
+  id: string,
+): LegacyStockValidationError | null {
+  const result = record(data) ? data.result : undefined;
+  if (!record(result) || !record(result.security) ||
+    typeof result.security.security_id !== 'string' || !quoteFields(result.security) ||
+    !nullableStrings(result.security, ['name', 'exchange', 'board', 'change']) ||
+    result.security.change_unit !== 'fraction' ||
+    !Array.isArray(result.history) || !result.history.every(point =>
+      record(point) && typeof point.trade_date === 'string' && quoteFields(point) &&
+      nullableStrings(point, ['open', 'high', 'low', 'volume'])) ||
+    (result.chart_type !== 'candlestick' && result.chart_type !== 'line') ||
+    typeof result.price_basis !== 'string' || typeof result.basis !== 'string') {
+    return 'malformed';
+  }
+  return result.security.security_id === id ? null : 'security_mismatch';
 }
 
 function nullableFiniteNumber(value: unknown): boolean {

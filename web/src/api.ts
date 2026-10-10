@@ -18,43 +18,8 @@ export class ApiError extends Error {
   }
 }
 
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function nullableStrings(value: Record<string, unknown>, keys: string[]): boolean {
-  return keys.every(key => value[key] === null || typeof value[key] === 'string');
-}
-
-function quoteFields(value: Record<string, unknown>): boolean {
-  return nullableStrings(value, ['currency', 'price_unit', 'volume_unit', 'amount_unit', 'close', 'amount']) &&
-    (value.suspended === null || typeof value.suspended === 'boolean') &&
-    Array.isArray(value.missing_reasons) && value.missing_reasons.every(reason => typeof reason === 'string');
-}
-
-function validateSecurityResponse(data: unknown, id: string): void {
-  const result = record(data) ? data.result : undefined;
-  if (!record(result) || !record(result.security) ||
-    typeof result.security.security_id !== 'string' || !quoteFields(result.security) ||
-    !nullableStrings(result.security, ['name', 'exchange', 'board', 'change']) ||
-    result.security.change_unit !== 'fraction' ||
-    !Array.isArray(result.history) || !result.history.every(point =>
-      record(point) && typeof point.trade_date === 'string' && quoteFields(point) &&
-      nullableStrings(point, ['open', 'high', 'low', 'volume'])) ||
-    (result.chart_type !== 'candlestick' && result.chart_type !== 'line') ||
-    typeof result.price_basis !== 'string' || typeof result.basis !== 'string') {
-    throw new ApiError(502, '证券详情响应格式无效，已丢弃该响应，请重试。');
-  }
-  if (result.security.security_id !== id) {
-    throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
-  }
-}
-
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  const realtimePath = import.meta.env.VITE_RESET_WORKBENCH === '1'
-    && /^\/api\/(?:realtime\/(?:quotes|minutes|anomalies)|market\/sector-flow\/intraday)(?:[?#]|$)/i.test(path);
-  const resetPath = realtimePath
-    || /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|regulation\/(?:status|events)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|search)(?:[?#]|$)/i.test(path);
+  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|regulation\/(?:status|events)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|search)(?:[?#]|$)/i.test(path);
   if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
@@ -87,28 +52,7 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       throw new ApiError(response.status, undefined, code);
     }
     let data: unknown;
-    try {
-      if (realtimePath) {
-        const [{ parseRealtimeJson, RealtimeDataFormatError }, text] = await Promise.all([
-          import('./features/realtime/json'),
-          Promise.race([response.text(), interrupted]),
-        ]);
-        try {
-          data = parseRealtimeJson(text, path);
-        } catch (error) {
-          if (error instanceof RealtimeDataFormatError) {
-            throw new ApiError(
-              502,
-              '当前运行环境不支持无损实时数值解析，已拒绝该响应。',
-              'DATA_FORMAT',
-            );
-          }
-          throw error;
-        }
-      } else {
-        data = await Promise.race([response.json(), interrupted]);
-      }
-    }
+    try { data = await Promise.race([response.json(), interrupted]); }
     catch (error) { if (error instanceof ApiError || (error instanceof DOMException && error.name === 'AbortError')) throw error; throw new ApiError(502, '接口响应格式无效，请重试。'); }
     if (options.snapshot && (!data || typeof data !== 'object' || !('snapshot_id' in data) || data.snapshot_id !== options.snapshot)) {
       throw new ApiError(409, '响应快照与当前选择不匹配，已丢弃该响应。');
@@ -136,7 +80,16 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
         throw new ApiError(502, `${name}响应格式无效，已丢弃该响应。`, 'malformed_response');
       }
     }
-    if (securityId !== undefined) validateSecurityResponse(data, securityId);
+    if (securityId !== undefined) {
+      const { validateLegacySecurityResponse } = await import('./stock-validation');
+      const failure = validateLegacySecurityResponse(data, securityId);
+      if (failure === 'security_mismatch') {
+        throw new ApiError(409, '响应证券与当前请求不匹配，已丢弃该响应，请重试。');
+      }
+      if (failure) {
+        throw new ApiError(502, '证券详情响应格式无效，已丢弃该响应，请重试。');
+      }
+    }
     const resetStockPath = path.match(/^\/api\/stock\/([^/?#]+)\/?(?:[?#]|$)/);
     if (resetStockPath) {
       let requested: string;

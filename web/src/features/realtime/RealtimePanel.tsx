@@ -4,7 +4,7 @@ import { ApiError } from '../../api';
 import { Chart } from '../../components/Chart';
 import { ResourceStatus, TableScroll } from '../../components/Common';
 import { formatDecimal, timestamp } from '../../format';
-import { useResource, type Resource } from '../../hooks/useResource';
+import type { Resource } from '../../hooks/useResource';
 import {
   decimalForChart,
   realtimeRequestPaths,
@@ -13,6 +13,7 @@ import {
   validateQuoteResponse,
   validateSectorFlowResponse,
 } from './client';
+import { useRealtimeResource } from './useRealtimeResource';
 import type {
   AnomalyResponse,
   AnomalySelection,
@@ -39,8 +40,6 @@ const statusNames: Record<RealtimeStatus, string> = {
   incomplete: '部分',
   unavailable: '不可用',
 };
-const LOCAL_REALTIME_ERRORS = ['FORBIDDEN'] as const;
-
 function useValidated<T>(
   resource: Resource<unknown>,
   validate: (value: unknown) => T,
@@ -241,29 +240,21 @@ export default function RealtimePanel({
     [date, selected.join('\0'), sectorId],
   );
 
-  const quoteRaw = useResource<unknown>(
+  const quoteRaw = useRealtimeResource<unknown>(
     paths.quote,
-    undefined,
     refreshToken,
-    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
-  const minuteRaw = useResource<unknown>(
+  const minuteRaw = useRealtimeResource<unknown>(
     paths.minute,
-    undefined,
     refreshToken,
-    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
-  const anomalyRaw = useResource<unknown>(
+  const anomalyRaw = useRealtimeResource<unknown>(
     paths.anomaly,
-    undefined,
     refreshToken,
-    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
-  const flowRaw = useResource<unknown>(
+  const flowRaw = useRealtimeResource<unknown>(
     paths.flow,
-    undefined,
     refreshToken,
-    { localErrorCodes: LOCAL_REALTIME_ERRORS },
   );
   const rawResources = [quoteRaw, minuteRaw, anomalyRaw, flowRaw];
   const revoked = rawResources.some(

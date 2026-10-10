@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -19,6 +19,27 @@ describe('前端发布门禁', () => {
     };
 
     expect(packageJson.dependencies).not.toHaveProperty('lossless-json');
+  });
+
+  it('实时响应解码仅由 lazy feature client 静态引入', () => {
+    const sharedApi = read('src/api.ts');
+    const realtimeClient = read('src/features/realtime/client.ts');
+    const realtimeHook = 'src/features/realtime/useRealtimeResource.ts';
+    const sharedHook = read('src/hooks/useResource.tsx');
+
+    expect(sharedApi).not.toContain('features/realtime');
+    expect(sharedApi).not.toContain('parseRealtimeJson');
+    expect(sharedApi).not.toContain('function validateSecurityResponse');
+    expect(read('src/stock-validation.ts')).toContain('validateLegacySecurityResponse');
+    expect(realtimeClient).toContain("from './json'");
+    expect(realtimeClient).toContain('parseRealtimeJson');
+    expect(existsSync(resolve(process.cwd(), realtimeHook))).toBe(true);
+    expect(sharedHook).not.toContain('requester');
+    expect(sharedHook).not.toContain('localErrorCodes');
+    if (existsSync(resolve(process.cwd(), realtimeHook))) {
+      expect(read(realtimeHook)).toContain('requestRealtime');
+      expect(read(realtimeHook)).toContain('FORBIDDEN');
+    }
   });
 
   it('为每种 E2E 环境提供独立且明确的脚本', () => {
