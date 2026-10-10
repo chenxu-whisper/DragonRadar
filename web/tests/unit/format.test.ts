@@ -17,6 +17,28 @@ describe('exact decimal display', () => {
   it('does not round small nonzero values to zero', () => {
     expect(formatDecimal('0.00000000001')).toBe('0.00000000001');
   });
+  it('bounds extreme exponents and coefficients with scientific notation', () => {
+    const started = performance.now();
+    const outputs = [
+      formatDecimal('1e100000'),
+      formatDecimal('-1e100000'),
+      formatDecimal('1e-100000'),
+      formatDecimal('-1e-100000'),
+      formatDecimal('9'.repeat(1_000)),
+    ];
+
+    expect(outputs).toEqual(outputs.map(output => expect.stringMatching(/^-?\d(?:\.\d+)?e[+-]\d+$/)));
+    expect(outputs.every(output => output.length <= 80)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  }, 30_000);
+  it('keeps normal, negative-zero, and percent formatting semantics under the bound', () => {
+    expect(formatDecimal('1234567.8900')).toBe('1,234,567.89');
+    expect(formatDecimal('-0')).toBe('0');
+    expect(formatPercent('0.012345')).toBe('+1.2345%');
+    expect(formatPercent('-0')).toBe('0%');
+    expect(formatPercent('1e100000')).toMatch(/^\+\d(?:\.\d+)?e\+\d+%$/);
+    expect(formatPercent('1e100000').length).toBeLessThanOrEqual(81);
+  });
   it('keeps null distinct from lexical zero', () => {
     expect(formatDecimal(null)).toBe('未知');
     expect(formatDecimal('0')).toBe('0');

@@ -6,6 +6,9 @@ export function decimal(value: string | null | undefined): Decimal | null {
   try { const result = new Exact(value); return result.isFinite() ? result : null; } catch { return null; }
 }
 function grouped(value: Decimal): string {
+  if (value.e < -40 || value.e > 40 || value.sd() > 48) {
+    return value.toSignificantDigits(12).toExponential();
+  }
   const [whole, fraction] = value.toFixed().split('.');
   return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : '');
 }
