@@ -1,0 +1,1248 @@
+"""Transactional ingestion and point-in-time reads for realtime evidence."""
+
+import hashlib
+import json
+import os
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from datetime import date as Date
+from decimal import Decimal
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy import and_, insert, or_, select
+from sqlalchemy.exc import IntegrityError
+
+from dragon_radar.domain.models import SourceGrant
+from dragon_radar.domain.quality import grant_allows_display, grant_allows_storage
+from dragon_radar.realtime.anomalies import detect_anomalies
+from dragon_radar.realtime.models import (
+    AnomalyEvent,
+    AnomalyReadResult,
+    AnomalyResult,
+    AnomalyRule,
+    MinuteBarInput,
+    MinuteBarRecord,
+    MinuteBatchInput,
+    MinuteReadResult,
+    PermissionSnapshot,
+    QuoteBatchInput,
+    QuoteInput,
+    QuoteReadResult,
+    QuoteRecord,
+    RealtimeImportResult,
+    SectorFlowBatchInput,
+    SectorFlowPoint,
+    SectorFlowReadResult,
+    SectorFlowRecord,
+    SourceCompleteness,
+)
+from dragon_radar.realtime.tables import (
+    realtime_anomaly_events,
+    realtime_import_attempts,
+    realtime_minute_bars,
+    realtime_quote_batches,
+    realtime_quotes,
+    realtime_sector_flow_points,
+)
+from dragon_radar.storage.database import Database
+from dragon_radar.storage.repository import (
+    Conflict,
+    Forbidden,
+    Repository,
+    _identifier,
+)
+from dragon_radar.topics.repository import _decode_cursor, _encode_cursor
+
+ANOMALY_CURSOR_TTL = timedelta(minutes=15)
+_CURSOR_FIELDS = {
+    "version",
+    "sort_version",
+    "issued_at",
+    "expires_at",
+    "watermark",
+    "filters",
+    "last",
+}
+_CURSOR_FILTER_FIELDS = {"date", "as_of", "source_id", "security_id"}
+
+
+def _utc(value: datetime, field: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{field} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _canonical_datetime(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError
+    parsed = datetime.fromisoformat(value)
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() != timedelta(0)
+        or parsed.isoformat() != value
+    ):
+        raise ValueError
+    return parsed
+
+
+def _canonical_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        if value == 0:
+            return "0"
+        rendered = format(value, "f")
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        return rendered
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, Date):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (tuple, list)):
+        return [_canonical_value(item) for item in value]
+    return value
+
+
+def _canonical_hash(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        _canonical_value(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _model_payload(model: Any) -> dict[str, Any]:
+    return model.model_dump()
+
+
+def _quote(row: Mapping[str, Any]) -> QuoteInput:
+    return QuoteInput(
+        security_id=row["security_id"],
+        last=row["last"],
+        bid=row["bid"],
+        ask=row["ask"],
+        bid_size=row["bid_size"],
+        ask_size=row["ask_size"],
+        volume=row["volume"],
+        amount=row["amount"],
+        order_book_status=row["order_book_status"],
+        order_book_unavailable_reason=row["order_book_unavailable_reason"],
+    )
+
+
+def _minute(row: Mapping[str, Any]) -> MinuteBarInput:
+    return MinuteBarInput(
+        security_id=row["security_id"],
+        event_at=row["event_at"],
+        received_at=row["received_at"],
+        available_at=row["available_at"],
+        revision=row["revision"],
+        open=row["open"],
+        high=row["high"],
+        low=row["low"],
+        close=row["close"],
+        volume=row["volume"],
+        amount=row["amount"],
+        final=row["final"],
+    )
+
+
+def _sector_point(row: Mapping[str, Any]) -> SectorFlowPoint:
+    return SectorFlowPoint(
+        sector_id=row["sector_id"],
+        event_at=row["event_at"],
+        net_inflow=row["net_inflow"],
+        unit=row["unit"],
+        unavailable_reason=row["unavailable_reason"],
+    )
+
+
+def _result(
+    attempt: Mapping[str, Any], batch: Mapping[str, Any]
+) -> RealtimeImportResult:
+    return RealtimeImportResult(
+        import_id=str(attempt["id"]),
+        batch_id=batch["quote_batch_id"],
+        status=attempt["status"],
+        payload_hash=batch["payload_hash"],
+        imported_at=batch["imported_at"],
+        reason=attempt["reason"],
+    )
+
+
+def _expected_minutes(session_start: datetime, session_end: datetime) -> int:
+    seconds = (session_end - session_start).total_seconds()
+    if seconds <= 0 or seconds % 60:
+        raise ValueError("session interval must contain whole minutes")
+    return int(seconds // 60)
+
+
+def _completeness(
+    *,
+    expected: int,
+    received: int,
+    unavailable_reason: str | None = None,
+) -> SourceCompleteness:
+    if unavailable_reason is not None:
+        return SourceCompleteness(
+            status="unavailable",
+            expected_count=expected,
+            received_count=received,
+            reason=unavailable_reason,
+        )
+    if received < expected:
+        return SourceCompleteness(
+            status="incomplete",
+            expected_count=expected,
+            received_count=received,
+            reason="stream_gap",
+        )
+    return SourceCompleteness(
+        status="complete",
+        expected_count=expected,
+        received_count=received,
+    )
+
+
+class RealtimeRepository(Repository):
+    """Immutable realtime writes and permission-checked point-in-time reads."""
+
+    def __init__(
+        self, database: Database, *, clock: Callable[[], datetime] | None = None
+    ):
+        super().__init__(database, clock=clock)
+        secret = os.environ.get("DRAGON_REALTIME_CURSOR_SECRET")
+        if secret is None:
+            secret = database.engine.url.password
+        if not secret:
+            raise ValueError(
+                "DRAGON_REALTIME_CURSOR_SECRET is required when "
+                "DRAGON_DATABASE_URL has no password"
+            )
+        database_identity = (
+            database.engine.url.set(password=None)
+            .render_as_string(hide_password=False)
+            .encode()
+        )
+        self._cursor_signing_key = hashlib.sha256(
+            b"dragon-radar:realtime-anomaly-cursor:v1\0"
+            + secret.encode()
+            + b"\0"
+            + database_identity
+        ).digest()
+
+    @staticmethod
+    def _validate_type(value: object, expected_type: type, label: str):
+        if not isinstance(value, expected_type):
+            raise TypeError(f"{label} must be a {expected_type.__name__}")
+        return expected_type.model_validate(value.model_dump())
+
+    def _authorize_import(
+        self,
+        current: SourceGrant,
+        source_id: str,
+        permission: PermissionSnapshot,
+        now: datetime,
+    ) -> None:
+        if (
+            permission.state != "authorized"
+            or permission.captured_at > now
+            or not grant_allows_storage(current, source_id=source_id, now=now)
+        ):
+            raise Forbidden("Source is not authorized for realtime storage")
+
+    def _authorize_read(
+        self,
+        connection,
+        source_id: str,
+        permission_payload: Mapping[str, Any],
+        now: datetime,
+    ) -> None:
+        current = self._source(connection, source_id)
+        permission = PermissionSnapshot.model_validate_json(
+            json.dumps(permission_payload)
+        )
+        if (
+            permission.state != "authorized"
+            or permission.captured_at > now
+            or not grant_allows_display(current, source_id=source_id, now=now)
+        ):
+            raise Forbidden("Source is not authorized for realtime display")
+
+    @staticmethod
+    def _batch_values(batch, digest: str, imported_at: datetime) -> dict[str, Any]:
+        return {
+            "id": uuid4(),
+            "quote_batch_id": batch.batch_id,
+            "source_id": batch.source_id,
+            "source_version": batch.source_version,
+            "source_event_at": batch.source_event_at,
+            "received_at": batch.received_at,
+            "available_at": batch.available_at,
+            "source_sequence": getattr(batch, "source_sequence", None),
+            "permission_snapshot": batch.permission.model_dump(mode="json"),
+            "payload_hash": digest,
+            "imported_at": imported_at,
+        }
+
+    @staticmethod
+    def _existing_attempt(connection, batch_row):
+        return (
+            connection.execute(
+                select(realtime_import_attempts)
+                .where(
+                    realtime_import_attempts.c.source_id == batch_row["source_id"],
+                    realtime_import_attempts.c.batch_id == batch_row["quote_batch_id"],
+                )
+                .order_by(
+                    realtime_import_attempts.c.created_at,
+                    realtime_import_attempts.c.id,
+                )
+            )
+            .mappings()
+            .first()
+        )
+
+    def _begin_ingest(
+        self,
+        connection,
+        batch,
+        *,
+        key: str,
+        digest: str,
+    ) -> tuple[datetime, Mapping[str, Any] | None, RealtimeImportResult | None]:
+        _identifier(key)
+        _identifier(batch.source_id)
+        _identifier(batch.batch_id)
+        current = self._source(connection, batch.source_id)
+        self._lock(
+            connection,
+            f"realtime-batch:{batch.source_id}:{batch.batch_id}",
+        )
+        self._lock(connection, f"realtime-import-key:{batch.source_id}:{key}")
+        now = _utc(self.clock(), "operation time")
+        self._authorize_import(
+            current,
+            batch.source_id,
+            batch.permission,
+            now,
+        )
+        existing = (
+            connection.execute(
+                select(realtime_quote_batches).where(
+                    realtime_quote_batches.c.source_id == batch.source_id,
+                    realtime_quote_batches.c.quote_batch_id == batch.batch_id,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if existing is not None:
+            if existing["payload_hash"] != digest:
+                raise Conflict("Realtime batch identity belongs to another payload")
+            attempt = self._existing_attempt(connection, existing)
+            if attempt is None:
+                raise Conflict("Realtime batch exists without an import attempt")
+            return now, existing, _result(attempt, existing)
+        used_key = (
+            connection.execute(
+                select(realtime_import_attempts).where(
+                    realtime_import_attempts.c.source_id == batch.source_id,
+                    realtime_import_attempts.c.idempotency_key == key,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if used_key is not None:
+            raise Conflict("Realtime idempotency key belongs to another payload")
+        return now, None, None
+
+    @staticmethod
+    def _finish_ingest(
+        connection,
+        batch,
+        *,
+        key: str,
+        digest: str,
+        imported_at: datetime,
+        status: str,
+        reason: str | None,
+        details: Mapping[str, Any],
+    ) -> RealtimeImportResult:
+        attempt = (
+            connection.execute(
+                insert(realtime_import_attempts)
+                .values(
+                    id=uuid4(),
+                    source_id=batch.source_id,
+                    batch_id=batch.batch_id,
+                    idempotency_key=key,
+                    payload_hash=digest,
+                    status=status,
+                    reason=reason,
+                    details=dict(details),
+                    created_at=imported_at,
+                )
+                .returning(realtime_import_attempts)
+            )
+            .mappings()
+            .one()
+        )
+        parent = {
+            "quote_batch_id": batch.batch_id,
+            "payload_hash": digest,
+            "imported_at": imported_at,
+        }
+        return _result(attempt, parent)
+
+    def ingest_quote_batch(
+        self,
+        batch: QuoteBatchInput,
+        *,
+        key: str,
+    ) -> RealtimeImportResult:
+        batch = self._validate_type(batch, QuoteBatchInput, "batch")
+        digest = _canonical_hash({"kind": "quote", "batch": _model_payload(batch)})
+        try:
+            with self.database.engine.begin() as connection:
+                now, _existing, replay = self._begin_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                )
+                if replay is not None:
+                    return replay
+                connection.execute(
+                    insert(realtime_quote_batches).values(
+                        **self._batch_values(batch, digest, now)
+                    )
+                )
+                if batch.quotes:
+                    connection.execute(
+                        insert(realtime_quotes),
+                        [
+                            {
+                                "id": uuid4(),
+                                "source_id": batch.source_id,
+                                "batch_id": batch.batch_id,
+                                **quote.model_dump(),
+                            }
+                            for quote in batch.quotes
+                        ],
+                    )
+                return self._finish_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                    imported_at=now,
+                    status="accepted",
+                    reason=None,
+                    details={"kind": "quote", "row_count": len(batch.quotes)},
+                )
+        except IntegrityError:
+            raise Conflict("Conflicting realtime quote batch") from None
+
+    @staticmethod
+    def _cooldown_bucket(event_at: datetime, seconds: int) -> datetime:
+        if seconds == 0:
+            return event_at
+        epoch_seconds = int(event_at.timestamp())
+        return datetime.fromtimestamp(
+            epoch_seconds - epoch_seconds % seconds,
+            tz=UTC,
+        )
+
+    @classmethod
+    def _anomaly_rows(
+        cls,
+        batch: MinuteBatchInput,
+        rules: Sequence[AnomalyRule],
+        *,
+        quality: str,
+    ) -> tuple[dict[str, Any], ...]:
+        grouped: dict[str, list[MinuteBarInput]] = defaultdict(list)
+        for bar in batch.bars:
+            grouped[bar.security_id].append(bar)
+        rows = []
+        for security_id in sorted(grouped):
+            bars = tuple(grouped[security_id])
+            input_identity = [
+                {
+                    "event_at": bar.event_at.isoformat(),
+                    "revision": bar.revision,
+                }
+                for bar in sorted(
+                    bars,
+                    key=lambda item: (item.event_at, item.revision),
+                )
+            ]
+            for rule in sorted(
+                rules,
+                key=lambda item: (
+                    item.rule_version,
+                    item.metric,
+                    item.window,
+                    str(item.threshold),
+                    item.cooldown_seconds,
+                ),
+            ):
+                result = detect_anomalies(bars=bars, rule=rule)
+                if not result.triggered:
+                    continue
+                event_at = max(bar.event_at for bar in bars)
+                available_at = max(bar.available_at for bar in bars)
+                bucket = cls._cooldown_bucket(event_at, rule.cooldown_seconds)
+                identity = {
+                    "source_id": batch.source_id,
+                    "batch_id": batch.batch_id,
+                    "security_id": security_id,
+                    "rule_version": rule.rule_version,
+                    "metric": rule.metric,
+                    "window": rule.window,
+                    "cooldown_bucket": bucket.isoformat(),
+                    "input": input_identity,
+                }
+                rows.append(
+                    {
+                        "event_id": _canonical_hash(identity),
+                        "source_id": batch.source_id,
+                        "batch_id": batch.batch_id,
+                        "security_id": security_id,
+                        "rule_version": rule.rule_version,
+                        "metric": result.metric,
+                        "window": result.window,
+                        "value": result.value,
+                        "threshold": result.threshold,
+                        "event_at": event_at,
+                        "available_at": available_at,
+                        "quality": quality,
+                        "cooldown_bucket": bucket,
+                    }
+                )
+        return tuple(rows)
+
+    def ingest_minute_batch(
+        self,
+        batch: MinuteBatchInput,
+        *,
+        key: str,
+        rules: Sequence[AnomalyRule] = (),
+    ) -> RealtimeImportResult:
+        batch = self._validate_type(batch, MinuteBatchInput, "batch")
+        if isinstance(rules, (str, bytes)) or not isinstance(rules, Sequence):
+            raise TypeError("rules must be a sequence of AnomalyRule")
+        validated_rules = tuple(
+            self._validate_type(rule, AnomalyRule, "rule") for rule in rules
+        )
+        expected_per_security = _expected_minutes(
+            batch.session_start,
+            batch.session_end,
+        )
+        securities = {bar.security_id for bar in batch.bars}
+        expected = expected_per_security * len(securities)
+        received = len({(bar.security_id, bar.event_at) for bar in batch.bars})
+        incomplete = received < expected
+        anomaly_rows = self._anomaly_rows(
+            batch,
+            validated_rules,
+            quality="incomplete" if incomplete else "complete",
+        )
+        digest = _canonical_hash(
+            {
+                "kind": "minute",
+                "batch": _model_payload(batch),
+                "anomalies": anomaly_rows,
+            }
+        )
+        try:
+            with self.database.engine.begin() as connection:
+                now, _existing, replay = self._begin_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                )
+                if replay is not None:
+                    return replay
+                connection.execute(
+                    insert(realtime_quote_batches).values(
+                        **self._batch_values(batch, digest, now)
+                    )
+                )
+                if batch.bars:
+                    connection.execute(
+                        insert(realtime_minute_bars),
+                        [
+                            {
+                                "id": uuid4(),
+                                "source_id": batch.source_id,
+                                "batch_id": batch.batch_id,
+                                "source_version": batch.source_version,
+                                **bar.model_dump(),
+                                "source_event_at": batch.source_event_at,
+                            }
+                            for bar in batch.bars
+                        ],
+                    )
+                if anomaly_rows:
+                    connection.execute(insert(realtime_anomaly_events), anomaly_rows)
+                return self._finish_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                    imported_at=now,
+                    status="incomplete" if incomplete else "accepted",
+                    reason="stream_gap" if incomplete else None,
+                    details={
+                        "kind": "minute",
+                        "expected_count": expected,
+                        "received_count": received,
+                        "event_count": len(anomaly_rows),
+                    },
+                )
+        except IntegrityError:
+            raise Conflict("Conflicting realtime minute batch or revision") from None
+
+    def ingest_sector_flow_batch(
+        self,
+        batch: SectorFlowBatchInput,
+        *,
+        key: str,
+    ) -> RealtimeImportResult:
+        batch = self._validate_type(batch, SectorFlowBatchInput, "batch")
+        digest = _canonical_hash(
+            {"kind": "sector_flow", "batch": _model_payload(batch)}
+        )
+        try:
+            with self.database.engine.begin() as connection:
+                now, _existing, replay = self._begin_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                )
+                if replay is not None:
+                    return replay
+                connection.execute(
+                    insert(realtime_quote_batches).values(
+                        **self._batch_values(batch, digest, now)
+                    )
+                )
+                if batch.points:
+                    connection.execute(
+                        insert(realtime_sector_flow_points),
+                        [
+                            {
+                                "id": uuid4(),
+                                "source_id": batch.source_id,
+                                "batch_id": batch.batch_id,
+                                **point.model_dump(),
+                            }
+                            for point in batch.points
+                        ],
+                    )
+                return self._finish_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                    imported_at=now,
+                    status="accepted",
+                    reason=None,
+                    details={
+                        "kind": "sector_flow",
+                        "row_count": len(batch.points),
+                    },
+                )
+        except IntegrityError:
+            raise Conflict("Conflicting realtime sector flow batch") from None
+
+    def _batch_candidates(
+        self,
+        connection,
+        *,
+        as_of: datetime,
+        batch_id: str | None,
+        source_id: str | None,
+        child_table=None,
+        child_filter=(),
+    ):
+        query = select(realtime_quote_batches)
+        if child_table is not None:
+            query = query.join(
+                child_table,
+                and_(
+                    child_table.c.source_id == realtime_quote_batches.c.source_id,
+                    child_table.c.batch_id == realtime_quote_batches.c.quote_batch_id,
+                ),
+            ).where(*child_filter)
+        query = query.where(realtime_quote_batches.c.available_at <= as_of)
+        if batch_id is not None:
+            query = query.where(realtime_quote_batches.c.quote_batch_id == batch_id)
+        if source_id is not None:
+            query = query.where(realtime_quote_batches.c.source_id == source_id)
+        return (
+            connection.execute(
+                query.order_by(
+                    realtime_quote_batches.c.available_at.desc(),
+                    realtime_quote_batches.c.source_event_at.desc(),
+                    realtime_quote_batches.c.id.desc(),
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    def _select_authorized_batch(
+        self,
+        connection,
+        *,
+        as_of: datetime,
+        batch_id: str | None,
+        source_id: str | None,
+        child_table=None,
+        child_filter=(),
+    ):
+        candidates = self._batch_candidates(
+            connection,
+            as_of=as_of,
+            batch_id=batch_id,
+            source_id=source_id,
+            child_table=child_table,
+            child_filter=child_filter,
+        )
+        if not candidates:
+            return None
+        row = candidates[0]
+        self._authorize_read(
+            connection,
+            row["source_id"],
+            row["permission_snapshot"],
+            self.clock(),
+        )
+        return row
+
+    def list_quotes(
+        self,
+        *,
+        security_ids: tuple[str, ...],
+        as_of: datetime,
+        batch_id: str | None = None,
+        source_id: str | None = None,
+    ) -> QuoteReadResult:
+        if (
+            not isinstance(security_ids, tuple)
+            or not 1 <= len(security_ids) <= 100
+            or len(set(security_ids)) != len(security_ids)
+        ):
+            raise ValueError("security_ids must contain 1-100 unique identifiers")
+        security_ids = tuple(_identifier(value) for value in security_ids)
+        as_of = _utc(as_of, "as_of")
+        if batch_id is not None:
+            _identifier(batch_id)
+        if source_id is not None:
+            _identifier(source_id)
+        with self.database.engine.begin() as connection:
+            batch = self._select_authorized_batch(
+                connection,
+                as_of=as_of,
+                batch_id=batch_id,
+                source_id=source_id,
+                child_table=realtime_quotes,
+            )
+            if batch is None:
+                return QuoteReadResult(
+                    as_of=as_of,
+                    batch_id=None,
+                    items=(),
+                    completeness=_completeness(
+                        expected=len(security_ids),
+                        received=0,
+                        unavailable_reason="no_data",
+                    ),
+                )
+            rows = (
+                connection.execute(
+                    select(realtime_quotes)
+                    .where(
+                        realtime_quotes.c.source_id == batch["source_id"],
+                        realtime_quotes.c.batch_id == batch["quote_batch_id"],
+                        realtime_quotes.c.security_id.in_(security_ids),
+                    )
+                    .order_by(realtime_quotes.c.security_id, realtime_quotes.c.id)
+                )
+                .mappings()
+                .all()
+            )
+        return QuoteReadResult(
+            as_of=as_of,
+            batch_id=batch["quote_batch_id"],
+            items=tuple(
+                QuoteRecord(
+                    batch_id=batch["quote_batch_id"],
+                    source_id=batch["source_id"],
+                    source_version=batch["source_version"],
+                    source_event_at=batch["source_event_at"],
+                    received_at=batch["received_at"],
+                    available_at=batch["available_at"],
+                    quote=_quote(row),
+                )
+                for row in rows
+            ),
+            completeness=_completeness(
+                expected=len(security_ids),
+                received=len(rows),
+            ),
+        )
+
+    def list_minutes(
+        self,
+        *,
+        security_id: str,
+        session_start: datetime,
+        session_end: datetime,
+        as_of: datetime,
+        batch_id: str | None = None,
+        source_id: str | None = None,
+    ) -> MinuteReadResult:
+        security_id = _identifier(security_id)
+        session_start = _utc(session_start, "session_start")
+        session_end = _utc(session_end, "session_end")
+        expected_per_source = _expected_minutes(session_start, session_end)
+        as_of = _utc(as_of, "as_of")
+        if batch_id is not None:
+            _identifier(batch_id)
+        if source_id is not None:
+            _identifier(source_id)
+        with self.database.engine.begin() as connection:
+            parent_query = (
+                select(
+                    realtime_quote_batches.c.source_id,
+                    realtime_quote_batches.c.permission_snapshot,
+                )
+                .join(
+                    realtime_minute_bars,
+                    and_(
+                        realtime_minute_bars.c.source_id
+                        == realtime_quote_batches.c.source_id,
+                        realtime_minute_bars.c.batch_id
+                        == realtime_quote_batches.c.quote_batch_id,
+                        realtime_minute_bars.c.source_version
+                        == realtime_quote_batches.c.source_version,
+                    ),
+                )
+                .where(
+                    realtime_minute_bars.c.security_id == security_id,
+                    realtime_minute_bars.c.event_at >= session_start,
+                    realtime_minute_bars.c.event_at < session_end,
+                    realtime_minute_bars.c.available_at <= as_of,
+                    realtime_quote_batches.c.available_at <= as_of,
+                )
+            )
+            if batch_id is not None:
+                parent_query = parent_query.where(
+                    realtime_minute_bars.c.batch_id == batch_id
+                )
+            if source_id is not None:
+                parent_query = parent_query.where(
+                    realtime_minute_bars.c.source_id == source_id
+                )
+            parents = connection.execute(parent_query.distinct()).mappings().all()
+            for parent in parents:
+                self._authorize_read(
+                    connection,
+                    parent["source_id"],
+                    parent["permission_snapshot"],
+                    self.clock(),
+                )
+            if not parents:
+                return MinuteReadResult(
+                    as_of=as_of,
+                    batch_id=batch_id,
+                    items=(),
+                    completeness=_completeness(
+                        expected=expected_per_source,
+                        received=0,
+                        unavailable_reason="no_data",
+                    ),
+                )
+            authorized_sources = {parent["source_id"] for parent in parents}
+            expected = expected_per_source * len(authorized_sources)
+            query = (
+                select(realtime_minute_bars)
+                .join(
+                    realtime_quote_batches,
+                    and_(
+                        realtime_quote_batches.c.source_id
+                        == realtime_minute_bars.c.source_id,
+                        realtime_quote_batches.c.quote_batch_id
+                        == realtime_minute_bars.c.batch_id,
+                        realtime_quote_batches.c.source_version
+                        == realtime_minute_bars.c.source_version,
+                    ),
+                )
+                .where(
+                    realtime_minute_bars.c.source_id.in_(authorized_sources),
+                    realtime_minute_bars.c.security_id == security_id,
+                    realtime_minute_bars.c.event_at >= session_start,
+                    realtime_minute_bars.c.event_at < session_end,
+                    realtime_minute_bars.c.available_at <= as_of,
+                    realtime_quote_batches.c.available_at <= as_of,
+                )
+            )
+            if batch_id is not None:
+                query = query.where(realtime_minute_bars.c.batch_id == batch_id)
+            rows = (
+                connection.execute(
+                    query.distinct(
+                        realtime_minute_bars.c.source_id,
+                        realtime_minute_bars.c.security_id,
+                        realtime_minute_bars.c.event_at,
+                    ).order_by(
+                        realtime_minute_bars.c.source_id,
+                        realtime_minute_bars.c.security_id,
+                        realtime_minute_bars.c.event_at,
+                        realtime_minute_bars.c.revision.desc(),
+                        realtime_minute_bars.c.id.desc(),
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return MinuteReadResult(
+            as_of=as_of,
+            batch_id=batch_id,
+            items=tuple(
+                MinuteBarRecord(
+                    batch_id=row["batch_id"],
+                    source_id=row["source_id"],
+                    source_version=row["source_version"],
+                    bar=_minute(row),
+                )
+                for row in rows
+            ),
+            completeness=_completeness(expected=expected, received=len(rows)),
+        )
+
+    def list_sector_flow(
+        self,
+        *,
+        sector_id: str,
+        session_start: datetime,
+        session_end: datetime,
+        as_of: datetime,
+        batch_id: str | None = None,
+        source_id: str | None = None,
+    ) -> SectorFlowReadResult:
+        sector_id = _identifier(sector_id)
+        session_start = _utc(session_start, "session_start")
+        session_end = _utc(session_end, "session_end")
+        if session_end <= session_start:
+            raise ValueError("session_end must be after session_start")
+        as_of = _utc(as_of, "as_of")
+        if batch_id is not None:
+            _identifier(batch_id)
+        if source_id is not None:
+            _identifier(source_id)
+        with self.database.engine.begin() as connection:
+            batch = self._select_authorized_batch(
+                connection,
+                as_of=as_of,
+                batch_id=batch_id,
+                source_id=source_id,
+                child_table=realtime_sector_flow_points,
+                child_filter=(
+                    realtime_sector_flow_points.c.sector_id == sector_id,
+                    realtime_sector_flow_points.c.event_at >= session_start,
+                    realtime_sector_flow_points.c.event_at < session_end,
+                ),
+            )
+            if batch is None:
+                return SectorFlowReadResult(
+                    as_of=as_of,
+                    batch_id=None,
+                    items=(),
+                    completeness=_completeness(
+                        expected=0,
+                        received=0,
+                        unavailable_reason="no_data",
+                    ),
+                )
+            rows = (
+                connection.execute(
+                    select(realtime_sector_flow_points)
+                    .where(
+                        realtime_sector_flow_points.c.source_id == batch["source_id"],
+                        realtime_sector_flow_points.c.batch_id
+                        == batch["quote_batch_id"],
+                        realtime_sector_flow_points.c.sector_id == sector_id,
+                        realtime_sector_flow_points.c.event_at >= session_start,
+                        realtime_sector_flow_points.c.event_at < session_end,
+                    )
+                    .order_by(
+                        realtime_sector_flow_points.c.event_at,
+                        realtime_sector_flow_points.c.id,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        unavailable = next(
+            (row["unavailable_reason"] for row in rows if row["net_inflow"] is None),
+            None,
+        )
+        return SectorFlowReadResult(
+            as_of=as_of,
+            batch_id=batch["quote_batch_id"],
+            items=tuple(
+                SectorFlowRecord(
+                    batch_id=row["batch_id"],
+                    source_id=row["source_id"],
+                    source_version=batch["source_version"],
+                    available_at=batch["available_at"],
+                    point=_sector_point(row),
+                )
+                for row in rows
+            ),
+            completeness=_completeness(
+                expected=len(rows),
+                received=len(rows),
+                unavailable_reason=unavailable,
+            ),
+        )
+
+    def _decode_anomaly_cursor(
+        self,
+        cursor: str,
+        *,
+        filters: Mapping[str, Any],
+        operation_now: datetime,
+    ) -> tuple[datetime, datetime, tuple[datetime, str]]:
+        try:
+            payload = _decode_cursor(cursor, self._cursor_signing_key)
+            if (
+                _encode_cursor(payload, self._cursor_signing_key) != cursor
+                or set(payload) != _CURSOR_FIELDS
+                or type(payload["version"]) is not int
+                or payload["version"] != 1
+                or type(payload["sort_version"]) is not int
+                or payload["sort_version"] != 1
+                or not isinstance(payload["filters"], dict)
+                or set(payload["filters"]) != _CURSOR_FILTER_FIELDS
+                or payload["filters"] != filters
+            ):
+                raise ValueError
+            issued_at = _canonical_datetime(payload["issued_at"])
+            expires_at = _canonical_datetime(payload["expires_at"])
+            watermark = _canonical_datetime(payload["watermark"])
+            if (
+                expires_at != issued_at + ANOMALY_CURSOR_TTL
+                or issued_at > operation_now
+                or operation_now >= expires_at
+                or watermark != issued_at
+            ):
+                raise ValueError
+            last = payload["last"]
+            if (
+                not isinstance(last, list)
+                or len(last) != 2
+                or not isinstance(last[1], str)
+            ):
+                raise ValueError
+            last_available = _canonical_datetime(last[0])
+            _identifier(last[1])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("Invalid realtime anomaly cursor") from None
+        return issued_at, watermark, (last_available, last[1])
+
+    def list_anomalies(
+        self,
+        *,
+        date: Date,
+        as_of: datetime,
+        limit: int = 50,
+        cursor: str | None = None,
+        source_id: str | None = None,
+        security_id: str | None = None,
+    ) -> AnomalyReadResult:
+        if not isinstance(date, Date):
+            raise TypeError("date must be a date")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("limit must be from 1 to 100")
+        as_of = _utc(as_of, "as_of")
+        if source_id is not None:
+            source_id = _identifier(source_id)
+        if security_id is not None:
+            security_id = _identifier(security_id)
+        operation_now = _utc(self.clock(), "operation time")
+        filters = {
+            "date": date.isoformat(),
+            "as_of": as_of.isoformat(),
+            "source_id": source_id,
+            "security_id": security_id,
+        }
+        last = None
+        if cursor is None:
+            issued_at = watermark = operation_now
+        else:
+            issued_at, watermark, last = self._decode_anomaly_cursor(
+                cursor,
+                filters=filters,
+                operation_now=operation_now,
+            )
+        day_start = datetime.combine(date, datetime.min.time(), tzinfo=UTC)
+        day_end = day_start + timedelta(days=1)
+        with self.database.engine.begin() as connection:
+            source_query = (
+                select(
+                    realtime_quote_batches.c.source_id,
+                    realtime_quote_batches.c.permission_snapshot,
+                )
+                .join(
+                    realtime_anomaly_events,
+                    and_(
+                        realtime_anomaly_events.c.source_id
+                        == realtime_quote_batches.c.source_id,
+                        realtime_anomaly_events.c.batch_id
+                        == realtime_quote_batches.c.quote_batch_id,
+                    ),
+                )
+                .where(
+                    realtime_anomaly_events.c.event_at >= day_start,
+                    realtime_anomaly_events.c.event_at < day_end,
+                    realtime_anomaly_events.c.available_at <= as_of,
+                    realtime_quote_batches.c.imported_at <= watermark,
+                )
+            )
+            if source_id is not None:
+                source_query = source_query.where(
+                    realtime_anomaly_events.c.source_id == source_id
+                )
+            if security_id is not None:
+                source_query = source_query.where(
+                    realtime_anomaly_events.c.security_id == security_id
+                )
+            parents = connection.execute(source_query.distinct()).mappings().all()
+            for parent in parents:
+                self._authorize_read(
+                    connection,
+                    parent["source_id"],
+                    parent["permission_snapshot"],
+                    self.clock(),
+                )
+            authorized_sources = {parent["source_id"] for parent in parents}
+            if not authorized_sources:
+                return AnomalyReadResult(
+                    as_of=as_of,
+                    items=(),
+                    next_cursor=None,
+                    completeness=_completeness(expected=0, received=0),
+                )
+            query = (
+                select(realtime_anomaly_events)
+                .join(
+                    realtime_quote_batches,
+                    and_(
+                        realtime_quote_batches.c.source_id
+                        == realtime_anomaly_events.c.source_id,
+                        realtime_quote_batches.c.quote_batch_id
+                        == realtime_anomaly_events.c.batch_id,
+                    ),
+                )
+                .where(
+                    realtime_anomaly_events.c.source_id.in_(authorized_sources),
+                    realtime_anomaly_events.c.event_at >= day_start,
+                    realtime_anomaly_events.c.event_at < day_end,
+                    realtime_anomaly_events.c.available_at <= as_of,
+                    realtime_quote_batches.c.imported_at <= watermark,
+                )
+            )
+            if security_id is not None:
+                query = query.where(
+                    realtime_anomaly_events.c.security_id == security_id
+                )
+            if last is not None:
+                last_available, last_event_id = last
+                query = query.where(
+                    or_(
+                        realtime_anomaly_events.c.available_at < last_available,
+                        and_(
+                            realtime_anomaly_events.c.available_at == last_available,
+                            realtime_anomaly_events.c.event_id < last_event_id,
+                        ),
+                    )
+                )
+            rows = (
+                connection.execute(
+                    query.order_by(
+                        realtime_anomaly_events.c.available_at.desc(),
+                        realtime_anomaly_events.c.event_id.desc(),
+                    ).limit(limit + 1)
+                )
+                .mappings()
+                .all()
+            )
+        visible = rows[:limit]
+        items = tuple(
+            AnomalyEvent(
+                event_id=row["event_id"],
+                batch_id=row["batch_id"],
+                security_id=row["security_id"],
+                rule_version=row["rule_version"],
+                event_at=row["event_at"],
+                available_at=row["available_at"],
+                result=AnomalyResult(
+                    triggered=True,
+                    metric=row["metric"],
+                    window=row["window"],
+                    value=row["value"],
+                    threshold=row["threshold"],
+                    reason=None,
+                ),
+                quality=row["quality"],
+            )
+            for row in visible
+        )
+        next_cursor = None
+        if len(rows) > limit:
+            final = visible[-1]
+            next_cursor = _encode_cursor(
+                {
+                    "version": 1,
+                    "sort_version": 1,
+                    "issued_at": issued_at.isoformat(),
+                    "expires_at": (issued_at + ANOMALY_CURSOR_TTL).isoformat(),
+                    "watermark": watermark.isoformat(),
+                    "filters": filters,
+                    "last": [
+                        final["available_at"].isoformat(),
+                        final["event_id"],
+                    ],
+                },
+                self._cursor_signing_key,
+            )
+        return AnomalyReadResult(
+            as_of=as_of,
+            items=items,
+            next_cursor=next_cursor,
+            completeness=_completeness(
+                expected=len(items),
+                received=len(items),
+            ),
+        )
+
+
+__all__ = ["ANOMALY_CURSOR_TTL", "RealtimeRepository"]
