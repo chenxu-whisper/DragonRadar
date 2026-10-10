@@ -58,11 +58,10 @@ const ORDER_BOOK_STATUSES = new Set(['available', 'disabled', 'unavailable']);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const UNIT = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
-const JSON_DECIMAL = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE]([+-]?\d+))?$/;
-const MAX_DECIMAL_TOKEN_LENGTH = 128;
-const MAX_DECIMAL_COEFFICIENT_DIGITS = 80;
-const MAX_DECIMAL_EXPONENT = 10_000;
+const TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2}):(\d{2}))$/;
+const JSON_DECIMAL = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+const ZERO_DECIMAL = /^-?0(?:\.0*)?(?:[eE][+-]?\d+)?$/;
+const NEGATIVE_NONZERO_DECIMAL = /^-(?!0(?:\.0*)?(?:[eE][+-]?\d+)?$)/;
 const SHANGHAI_DATE = new Intl.DateTimeFormat('en', {
   timeZone: 'Asia/Shanghai',
   year: 'numeric',
@@ -172,19 +171,8 @@ function nullableUnit(value: unknown, field: string): string | null {
   return value === null ? null : unit(value, field);
 }
 
-function parseDecimalToken(text: string): Decimal | null {
-  if (text.length > MAX_DECIMAL_TOKEN_LENGTH) return null;
-  const match = JSON_DECIMAL.exec(text);
-  if (!match) return null;
-  const coefficient = text.split(/[eE]/, 1)[0].replace(/[-.]/g, '');
-  if (coefficient.length > MAX_DECIMAL_COEFFICIENT_DIGITS
-    || Math.abs(Number(match[1] ?? 0)) > MAX_DECIMAL_EXPONENT) return null;
-  try {
-    const value = new Decimal(text);
-    return value.isFinite() ? value : null;
-  } catch {
-    return null;
-  }
+function validDecimalToken(text: string): boolean {
+  return JSON_DECIMAL.test(text);
 }
 
 function finite(value: unknown, field: string, nullable = false): string | null {
@@ -194,23 +182,27 @@ function finite(value: unknown, field: string, nullable = false): string | null 
     : typeof value === 'string'
       ? value
       : null;
-  if (text === null || parseDecimalToken(text) === null) fail(field);
+  if (text === null || !validDecimalToken(text)) fail(field);
   return text;
 }
 
 function nonnegative(value: unknown, field: string, nullable = false): string | null {
   const result = finite(value, field, nullable);
-  if (result !== null && new Decimal(result).lt(0)) fail(field);
+  if (result !== null && NEGATIVE_NONZERO_DECIMAL.test(result)) fail(field);
   return result;
 }
 
 export function decimalForChart(value: string): number | null {
-  const exact = parseDecimalToken(value);
-  if (exact === null) return null;
-  if (exact.abs().gt(Number.MAX_SAFE_INTEGER)) return null;
-  const converted = exact.toNumber();
-  if (!Number.isFinite(converted) || (converted === 0 && !exact.isZero())) return null;
-  return converted;
+  if (!validDecimalToken(value)) return null;
+  try {
+    const exact = new Decimal(value);
+    if (!exact.isFinite() || exact.abs().gt(Number.MAX_SAFE_INTEGER)) return null;
+    const converted = exact.toNumber();
+    if (!Number.isFinite(converted) || (converted === 0 && !ZERO_DECIMAL.test(value))) return null;
+    return converted;
+  } catch {
+    return null;
+  }
 }
 
 function integer(value: unknown, field: string, minimum = 0): number {
@@ -227,10 +219,35 @@ function dateValue(value: unknown, field: string): string {
 }
 
 function timestamp(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !TIMESTAMP.test(value) || !Number.isFinite(Date.parse(value))) {
+  if (typeof value !== 'string') fail(field);
+  epochMicroseconds(value, field);
+  return value;
+}
+
+function epochMicroseconds(value: string, field: string): bigint {
+  const match = TIMESTAMP.exec(value);
+  if (!match) fail(field);
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText,
+    fraction = '', zone, offsetSign, offsetHourText = '0', offsetMinuteText = '0'] = match;
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = [
+    yearText, monthText, dayText, hourText, minuteText, secondText,
+    offsetHourText, offsetMinuteText,
+  ].map(Number);
+  if (hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) {
     fail(field);
   }
-  return value;
+  const local = new Date(0);
+  local.setUTCFullYear(year, month - 1, day);
+  local.setUTCHours(hour, minute, second, 0);
+  if (local.getUTCFullYear() !== year
+    || local.getUTCMonth() !== month - 1
+    || local.getUTCDate() !== day) {
+    fail(field);
+  }
+  const offsetDirection = zone === 'Z' ? 0 : offsetSign === '+' ? 1 : -1;
+  const offsetMilliseconds = offsetDirection * (offsetHour * 60 + offsetMinute) * 60_000;
+  return BigInt(local.getTime() - offsetMilliseconds) * 1_000n
+    + BigInt(fraction.padEnd(6, '0'));
 }
 
 function validateEventDate(value: string, selected: string): void {
@@ -340,13 +357,17 @@ function selectionBatch(selection: { sourceId?: string; batchId?: string }): voi
 }
 
 function validateAsOfSelection(asOf: string, selected?: string): void {
-  if (selected && Date.parse(timestamp(selected, 'selected as_of')) !== Date.parse(asOf)) {
+  if (selected
+    && epochMicroseconds(timestamp(selected, 'selected as_of'), 'selected as_of')
+      !== epochMicroseconds(asOf, 'as_of')) {
     fail('as_of selection');
   }
 }
 
 function validateKnownByAsOf(value: string, asOf: string): void {
-  if (Date.parse(value) > Date.parse(asOf)) fail('as_of record time');
+  if (epochMicroseconds(value, 'record time') > epochMicroseconds(asOf, 'as_of')) {
+    fail('as_of record time');
+  }
 }
 
 export function quotePath(selection: QuoteSelection): string {
@@ -469,7 +490,8 @@ export function validateQuoteResponse(value: unknown, selection: QuoteSelection)
   exact(data, QUOTE_DATA_KEYS, 'quote data');
   const sourceEvent = timestamp(data.source_event_at, 'quote source timestamp');
   const received = timestamp(data.received_at, 'quote received timestamp');
-  if (Date.parse(received) < Date.parse(sourceEvent)) fail('quote timestamp order');
+  if (epochMicroseconds(received, 'quote received timestamp')
+    < epochMicroseconds(sourceEvent, 'quote source timestamp')) fail('quote timestamp order');
   validateKnownByAsOf(received, base.as_of);
   const quotes = data.quotes;
   if (!Array.isArray(quotes)) fail('quotes');
@@ -501,8 +523,10 @@ function validateMinuteBar(value: unknown): MinuteBar {
   const eventAt = timestamp(item.event_at, 'minute event timestamp');
   const receivedAt = timestamp(item.received_at, 'minute received timestamp');
   const availableAt = timestamp(item.available_at, 'minute available timestamp');
-  if (Date.parse(receivedAt) < Date.parse(eventAt)
-    || Date.parse(availableAt) < Date.parse(receivedAt)) fail('minute timestamp order');
+  if (epochMicroseconds(receivedAt, 'minute received timestamp')
+      < epochMicroseconds(eventAt, 'minute event timestamp')
+    || epochMicroseconds(availableAt, 'minute available timestamp')
+      < epochMicroseconds(receivedAt, 'minute received timestamp')) fail('minute timestamp order');
   const open = nonnegative(item.open, 'minute open') as string;
   const high = nonnegative(item.high, 'minute high') as string;
   const low = nonnegative(item.low, 'minute low') as string;
@@ -543,12 +567,15 @@ export function validateMinuteResponse(value: unknown, selection: MinuteSelectio
   if (!Array.isArray(data.bars)) fail('minute bars');
   const bars = data.bars.map(validateMinuteBar);
   const identities = new Set<string>();
-  let previous = '';
+  let previous: bigint | null = null;
   for (const bar of bars) {
     const identity = `${bar.source_id}\0${bar.security_id}\0${bar.event_at}`;
-    if (identities.has(identity) || (previous && bar.event_at < previous)) fail('minute ordering');
+    const eventTime = epochMicroseconds(bar.event_at, 'minute event timestamp');
+    if (identities.has(identity) || (previous !== null && eventTime < previous)) {
+      fail('minute ordering');
+    }
     identities.add(identity);
-    previous = bar.event_at;
+    previous = eventTime;
     if (bar.security_id !== selection.securityId) fail('minute security selection');
     if (selection.sourceId && bar.source_id !== selection.sourceId) fail('minute source selection');
     if (selection.batchId && bar.batch_id !== selection.batchId) fail('minute batch selection');
@@ -575,7 +602,8 @@ function validateAnomaly(value: unknown): AnomalyEvent {
   }
   const eventAt = timestamp(item.event_at, 'anomaly event timestamp');
   const availableAt = timestamp(item.available_at, 'anomaly available timestamp');
-  if (Date.parse(availableAt) < Date.parse(eventAt)) fail('anomaly timestamp order');
+  if (epochMicroseconds(availableAt, 'anomaly available timestamp')
+    < epochMicroseconds(eventAt, 'anomaly event timestamp')) fail('anomaly timestamp order');
   return {
     event_id: identifier(item.event_id, 'anomaly event'),
     batch_id: identifier(item.batch_id, 'anomaly batch'),
@@ -638,7 +666,8 @@ function validateFlowPoint(value: unknown): SectorFlowPoint {
   if ((netInflow === null) === (reason === null)) fail('sector flow reason');
   const eventAt = timestamp(item.event_at, 'sector flow event timestamp');
   const availableAt = timestamp(item.available_at, 'sector flow available timestamp');
-  if (Date.parse(availableAt) < Date.parse(eventAt)) fail('sector flow timestamp order');
+  if (epochMicroseconds(availableAt, 'sector flow available timestamp')
+    < epochMicroseconds(eventAt, 'sector flow event timestamp')) fail('sector flow timestamp order');
   return {
     batch_id: identifier(item.batch_id, 'sector flow batch'),
     source_id: identifier(item.source_id, 'sector flow source'),

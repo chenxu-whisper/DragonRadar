@@ -3,7 +3,7 @@ import type { EChartsCoreOption } from 'echarts/core';
 import { ApiError } from '../../api';
 import { Chart } from '../../components/Chart';
 import { ResourceStatus, TableScroll } from '../../components/Common';
-import { formatDecimal, timestamp } from '../../format';
+import { timestamp } from '../../format';
 import type { Resource } from '../../hooks/useResource';
 import {
   decimalForChart,
@@ -13,6 +13,7 @@ import {
   validateQuoteResponse,
   validateSectorFlowResponse,
 } from './client';
+import { formatRealtimeDecimal } from './format';
 import { useRealtimeResource } from './useRealtimeResource';
 import type {
   AnomalyResponse,
@@ -99,7 +100,7 @@ export function RealtimeResourceState({
 }
 
 function number(value: string | null): string {
-  return value === null ? '—' : formatDecimal(value);
+  return value === null ? '—' : formatRealtimeDecimal(value);
 }
 
 function minuteAxis(response: MinuteResponse): { labels: string[]; values: (number | null)[] } {

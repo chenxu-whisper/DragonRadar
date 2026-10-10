@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { RealtimeResourceState } from '../../src/features/realtime/RealtimePanel';
+import { formatRealtimeDecimal } from '../../src/features/realtime/format';
 import type { RealtimeEnvelope } from '../../src/features/realtime/types';
 
 function response(
@@ -56,5 +57,17 @@ describe('RealtimeResourceState', () => {
     expect(markup).toContain('class="leader-state');
     expect(markup).not.toContain('class="card');
     expect(markup).not.toContain('无可用数据');
+  });
+});
+
+describe('realtime Decimal display', () => {
+  it('keeps ordinary precision exact while bounding extreme wire values', () => {
+    expect(formatRealtimeDecimal('9007199254740993.1234'))
+      .toBe('9,007,199,254,740,993.1234');
+    for (const value of ['1e100000', '1e-100000', '1234567890'.repeat(40)]) {
+      expect(formatRealtimeDecimal(value).length).toBeLessThanOrEqual(80);
+    }
+    expect(formatRealtimeDecimal(`1e${'9'.repeat(46)}`)).toBe('未知');
+    expect(formatRealtimeDecimal(null)).toBe('未知');
   });
 });

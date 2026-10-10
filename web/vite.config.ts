@@ -19,7 +19,6 @@ export default defineConfig({
       output: {
         codeSplitting: {
           groups: [
-            { name: 'decimal-runtime', test: /node_modules[\\/]decimal.js[\\/]/, priority: 30 },
             { name: 'chart-renderer', test: /node_modules[\\/]zrender[\\/]/, priority: 20 },
             { name: 'chart-core', test: /node_modules[\\/]echarts[\\/]lib[\\/](core|model|view|data|util)[\\/]/, priority: 10 },
             { name: 'chart-components', test: /node_modules[\\/]echarts[\\/]/ },

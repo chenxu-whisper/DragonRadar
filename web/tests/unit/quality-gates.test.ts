@@ -42,15 +42,6 @@ describe('前端发布门禁', () => {
     }
   });
 
-  it('默认入口拆分共享 Decimal runtime 且保持 realtime feature lazy', () => {
-    const vite = read('vite.config.ts');
-    const overview = read('src/pages/Overview.tsx');
-
-    expect(vite).toContain("name: 'decimal-runtime'");
-    expect(vite).toContain('node_modules[\\\\/]decimal.js[\\\\/]');
-    expect(overview).toContain("lazy(() => import('../features/realtime/RealtimePanel'))");
-  });
-
   it('为每种 E2E 环境提供独立且明确的脚本', () => {
     const packageJson = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
 

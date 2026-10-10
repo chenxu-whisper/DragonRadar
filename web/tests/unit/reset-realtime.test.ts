@@ -302,49 +302,47 @@ describe('realtime strict response validation', () => {
     })).toThrow(/last/i);
   });
 
-  it('bounds Decimal coefficient and exponent while accepting scientific notation and negative zero', () => {
+  it('accepts arbitrary Decimal precision and exponent text from the backend', () => {
     const valid = quoteResponse();
+    const eightyOneDigits = '1'.repeat(81);
+    const longCoefficient = `${'9'.repeat(512)}.${'8'.repeat(512)}`;
+    const largeExponent = `1e${'9'.repeat(46)}`;
     (valid.data as { quotes: Record<string, unknown>[] }).quotes[0] = {
       ...(valid.data as { quotes: Record<string, unknown>[] }).quotes[0],
       last: '1.25e2',
       volume: '-0',
-      amount: '9007199254740993.01',
+      amount: eightyOneDigits,
     };
     expect(validateQuoteResponse(valid, {
       securityIds: [security],
     }).data?.quotes[0]).toMatchObject({
       last: '1.25e2',
       volume: '-0',
-      amount: '9007199254740993.01',
+      amount: eightyOneDigits,
     });
     expect(decimalForChart('1.25e2')).toBe(125);
 
-    for (const invalid of [
-      '1'.repeat(81),
-      '1e10001',
-      '1e-10001',
-      `${'1'.repeat(80)}e${'9'.repeat(46)}`,
-    ]) {
+    for (const exact of [longCoefficient, largeExponent, `1e-${'9'.repeat(46)}`]) {
       const response = quoteResponse();
-      (response.data as { quotes: Record<string, unknown>[] }).quotes[0].last = invalid;
-      expect(() => validateQuoteResponse(response, {
+      (response.data as { quotes: Record<string, unknown>[] }).quotes[0].last = exact;
+      expect(validateQuoteResponse(response, {
         securityIds: [security],
-      })).toThrow(/last/i);
-      expect(decimalForChart(invalid)).toBeNull();
+      }).data?.quotes[0].last).toBe(exact);
+      expect(decimalForChart(exact)).toBeNull();
     }
   });
 
-  it('keeps a large unquoted Decimal exact from the HTTP wire through validation', async () => {
-    const body = JSON.stringify(quoteResponse()).replace(
-      '9007199254740.125',
-      '9007199254740993.01',
-    );
+  it.each([
+    '1'.repeat(81),
+    `${'9'.repeat(512)}.${'8'.repeat(512)}`,
+  ])('keeps an unquoted arbitrary-precision Decimal exact through HTTP validation', async exact => {
+    const body = JSON.stringify(quoteResponse()).replace('9007199254740.125', exact);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
 
     const raw = await requestRealtime<unknown>(quotePath({ securityIds: [security] }));
     const result = validateQuoteResponse(raw, { securityIds: [security] });
 
-    expect(result.data?.quotes[0].amount).toBe('9007199254740993.01');
+    expect(result.data?.quotes[0].amount).toBe(exact);
   });
 
   it('fails with DATA_FORMAT when JSON.parse lexical source is unsupported', async () => {
@@ -487,6 +485,104 @@ describe('realtime strict response validation', () => {
       asOf: '2026-10-09T02:00:01Z',
     })).toThrow(/as.of/i);
   });
+
+  it('compares the selected point in time at backend microsecond precision', () => {
+    const response = quoteResponse();
+    response.as_of = '2026-10-09T02:00:00.000001Z';
+    expect(validateQuoteResponse(response, {
+      securityIds: [security],
+      asOf: '2026-10-09T10:00:00.000001+08:00',
+    }).as_of).toBe(response.as_of);
+    for (const asOf of [
+      '2026-10-09T02:00:00.000000Z',
+      '2026-10-09T02:00:00.000002Z',
+    ]) {
+      expect(() => validateQuoteResponse(response, {
+        securityIds: [security],
+        asOf,
+      })).toThrow(/as.of/i);
+    }
+  });
+
+  it('enforces as_of visibility for every realtime timestamp at one microsecond', () => {
+    const asOf = '2026-10-09T02:00:00.000001Z';
+    const earlier = '2026-10-09T02:00:00.000000Z';
+    const equalOffset = '2026-10-08T22:00:00.000001-04:00';
+    const future = '2026-10-09T02:00:00.000002Z';
+    for (const receivedAt of [earlier, equalOffset]) {
+      const quote = quoteResponse({ received_at: receivedAt });
+      quote.as_of = asOf;
+      expect(validateQuoteResponse(quote, { securityIds: [security] }).data?.received_at)
+        .toBe(receivedAt);
+    }
+
+    const equalMinute = minuteResponse([{
+      ...minuteBar('2026-10-09T01:30:00Z', 10),
+      received_at: asOf,
+      available_at: equalOffset,
+    }]);
+    equalMinute.as_of = asOf;
+    expect(validateMinuteResponse(equalMinute, {
+      securityId: security,
+      date,
+    }).data?.bars[0].available_at).toBe(equalOffset);
+
+    for (const patch of [
+      { received_at: future, available_at: future },
+      { received_at: asOf, available_at: future },
+    ]) {
+      const response = minuteResponse([{
+        ...minuteBar('2026-10-09T01:30:00Z', 10),
+        ...patch,
+      }]);
+      response.as_of = asOf;
+      expect(() => validateMinuteResponse(response, {
+        securityId: security,
+        date,
+      })).toThrow(/as.of/i);
+    }
+
+    const futureQuote = quoteResponse({ received_at: future });
+    futureQuote.as_of = asOf;
+    expect(() => validateQuoteResponse(futureQuote, {
+      securityIds: [security],
+    })).toThrow(/as.of/i);
+
+    const event = (anomalyResponse().data as {
+      events: Record<string, unknown>[];
+    }).events[0];
+    const anomaly = anomalyResponse({ events: [{ ...event, available_at: future }] });
+    anomaly.as_of = asOf;
+    expect(() => validateAnomalyResponse(anomaly, { date })).toThrow(/as.of/i);
+
+    const flow = flowResponse();
+    flow.as_of = asOf;
+    (flow.data as { points: Record<string, unknown>[] }).points[0].available_at = future;
+    expect(() => validateSectorFlowResponse(flow, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/as.of/i);
+  });
+
+  it('rejects timestamps beyond the backend six-digit fractional precision', () => {
+    expect(() => validateQuoteResponse(quoteResponse({
+      received_at: '2026-10-09T01:30:02.0000001Z',
+    }), {
+      securityIds: [security],
+    })).toThrow(/timestamp/i);
+  });
+
+  it.each(['', '.1', '.12', '.123', '.1234', '.12345', '.123456'])(
+    'accepts backend timestamps with 0-6 fractional digits (%s)',
+    fraction => {
+      const response = quoteResponse();
+      response.as_of = `2026-10-09T02:00:00${fraction}Z`;
+      expect(validateQuoteResponse(response, {
+        securityIds: [security],
+        asOf: `2026-10-09T10:00:00${fraction}+08:00`,
+      }).as_of).toBe(response.as_of);
+    },
+  );
 
   it('rejects future-visible or future-received records across every realtime resource', () => {
     const future = '2026-10-09T02:00:01Z';
