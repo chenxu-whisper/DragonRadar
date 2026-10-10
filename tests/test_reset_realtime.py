@@ -1,8 +1,10 @@
 import json
+import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from threading import Event, current_thread
+from time import perf_counter
 from uuid import uuid4
 
 import pytest
@@ -30,7 +32,7 @@ T0 = datetime(2026, 10, 9, 1, 30, tzinfo=UTC)
 
 def permission(state: str = "authorized") -> PermissionSnapshot:
     return PermissionSnapshot(
-        permission_id=" permission-1 ",
+        permission_id="permission-1",
         state=state,
         captured_at=T0,
     )
@@ -45,7 +47,7 @@ def minute_bar(
 ) -> MinuteBarInput:
     close_value = Decimal(close)
     return MinuteBarInput(
-        security_id=" 600000.SH ",
+        security_id="600000.SH",
         event_at=T0 + timedelta(minutes=minute),
         received_at=T0 + timedelta(minutes=minute, seconds=1),
         available_at=T0 + timedelta(minutes=minute, seconds=2),
@@ -208,21 +210,90 @@ def test_model_rejects_naive_timestamps(field):
         QuoteBatchInput(**values)
 
 
-def test_model_trims_stable_security_id_and_rejects_blank_ids():
-    quote = QuoteInput(
-        security_id=" 600000.SH ",
-        last=Decimal("10"),
-        order_book_status="disabled",
-        order_book_unavailable_reason="order_book_not_authorized",
+@pytest.mark.parametrize(
+    "value",
+    (
+        "",
+        " 600000.SH ",
+        "é",
+        "\x1f",
+        "-leading",
+        ".leading",
+        "A" * 201,
+    ),
+)
+def test_model_rejects_noncanonical_persisted_child_identifiers(value):
+    model_payloads = (
+        (
+            QuoteInput,
+            {
+                "security_id": value,
+                "last": Decimal("10"),
+                "order_book_status": "disabled",
+                "order_book_unavailable_reason": "provider policy unavailable",
+            },
+        ),
+        (
+            MinuteBarInput,
+            {
+                **minute_bar().model_dump(),
+                "security_id": value,
+            },
+        ),
+        (
+            SectorFlowPoint,
+            {
+                "sector_id": value,
+                "event_at": T0,
+                "net_inflow": None,
+                "unit": "currency/share",
+                "unavailable_reason": "供应商 暂未授权",
+            },
+        ),
+        (
+            AnomalyRule,
+            {
+                "rule_version": value,
+                "metric": "window_return",
+                "window": 2,
+                "threshold": Decimal("0.02"),
+                "cooldown_seconds": 300,
+            },
+        ),
     )
 
-    assert quote.security_id == "600000.SH"
+    for model_type, payload in model_payloads:
+        with pytest.raises(ValidationError):
+            model_type.model_validate(payload)
+
+
+def test_model_preserves_nonidentity_unit_and_human_reasons():
+    quote = QuoteInput(
+        security_id="600000.SH",
+        last=None,
+        order_book_status="unavailable",
+        order_book_unavailable_reason="provider policy unavailable",
+    )
+    point = SectorFlowPoint(
+        sector_id="sector-1",
+        event_at=T0,
+        net_inflow=None,
+        unit="currency/share",
+        unavailable_reason="供应商 暂未授权",
+    )
+
+    assert quote.order_book_unavailable_reason == "provider policy unavailable"
+    assert point.unit == "currency/share"
+    assert point.unavailable_reason == "供应商 暂未授权"
+
+
+def test_model_rejects_blank_nonidentity_text():
     with pytest.raises(ValidationError):
         QuoteInput(
-            security_id="  ",
+            security_id="600000.SH",
             last=None,
             order_book_status="unavailable",
-            order_book_unavailable_reason="source_unavailable",
+            order_book_unavailable_reason="  ",
         )
 
 
@@ -730,7 +801,7 @@ def test_model_sector_flow_requires_explicit_unavailable_reason():
         )
 
     point = SectorFlowPoint(
-        sector_id=" sector-1 ",
+        sector_id="sector-1",
         event_at=T0,
         net_inflow=None,
         unit="CNY",
@@ -1770,6 +1841,19 @@ def realtime_repository(database):
 
     Repository(database, clock=clock).register_source(grant(source_id="licensed-feed"))
     return RealtimeRepository(database, clock=clock)
+
+
+def test_ingestion_revalidates_persisted_child_identifiers(realtime_repository):
+    malformed_quote = _quote().model_copy(update={"security_id": "é"})
+    malformed_batch = _quote_batch("malformed-child").model_copy(
+        update={"quotes": (malformed_quote,)}
+    )
+
+    with pytest.raises(ValidationError):
+        realtime_repository.ingest_quote_batch(
+            malformed_batch,
+            key="malformed-child",
+        )
 
 
 def test_task21r_duplicate_import_records_attempt_and_preserves_accepted_result(
@@ -2994,6 +3078,56 @@ def test_latest_quote_selection_ignores_newer_non_quote_batches(
     assert result.items[0].quote.last == Decimal("10")
 
 
+def test_latest_quote_selection_skips_newer_currently_revoked_source(
+    realtime_repository,
+):
+    from factories import grant
+
+    from dragon_radar.storage.repository import Forbidden, Repository
+
+    sources = Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    )
+    sources.register_source(grant(source_id="backup-feed"))
+    realtime_repository.ingest_quote_batch(
+        _quote_batch(
+            "older-authorized",
+            minute=1,
+            last="11",
+            source_id="backup-feed",
+        ),
+        key="older-authorized",
+    )
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("newer-revoked", minute=2, last="12"),
+        key="newer-revoked",
+    )
+    sources.revoke_source("licensed-feed")
+
+    latest = realtime_repository.list_quotes(
+        security_ids=("600000.SH",),
+        as_of=T0 + timedelta(hours=1),
+    )
+
+    assert latest.batch_id == "older-authorized"
+    assert latest.items[0].source_id == "backup-feed"
+    assert latest.items[0].quote.last == Decimal("11")
+    with pytest.raises(Forbidden):
+        realtime_repository.list_quotes(
+            security_ids=("600000.SH",),
+            as_of=T0 + timedelta(hours=1),
+            source_id="licensed-feed",
+            batch_id="newer-revoked",
+        )
+    with pytest.raises(Forbidden):
+        realtime_repository.list_quotes(
+            security_ids=("600000.SH",),
+            as_of=T0 + timedelta(hours=1),
+            source_id="licensed-feed",
+        )
+
+
 def test_rt07_point_in_time_minutes_select_visible_revision_without_fall_forward(
     realtime_repository,
 ):
@@ -3460,6 +3594,72 @@ def test_rt12_canonical_hash_is_independent_of_decimal_context(
             batch,
             key="decimal-context-2",
         )
+
+    assert first.status == "accepted"
+    assert replay.status == "duplicate"
+    assert replay.payload_hash == first.payload_hash
+
+
+def test_decimal_canonical_value_is_bounded_by_coefficient_not_exponent():
+    from dragon_radar.realtime.repository import _canonical_value
+
+    tracemalloc.start()
+    started = perf_counter()
+    try:
+        canonical = _canonical_value(Decimal("1e10000000"))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert perf_counter() - started < 2
+    assert peak < 1_000_000
+    assert len(json.dumps(canonical)) < 100
+
+
+def test_decimal_canonical_hash_is_numeric_and_context_independent():
+    from dragon_radar.realtime.repository import _canonical_hash
+
+    equivalent = {
+        _canonical_hash({"value": Decimal(value)}) for value in ("1", "1.0", "1.00")
+    }
+    distinct = {
+        _canonical_hash({"value": Decimal(value)})
+        for value in ("1", "1.01", "10", "-1")
+    }
+    with localcontext() as context:
+        context.prec = 2
+        low_precision = _canonical_hash(
+            {"value": Decimal("123456789.123456789e100000")}
+        )
+    with localcontext() as context:
+        context.prec = 50
+        high_precision = _canonical_hash(
+            {"value": Decimal("123456789.123456789e100000")}
+        )
+
+    assert len(equivalent) == 1
+    assert len(distinct) == 4
+    assert low_precision == high_precision
+
+
+def test_large_exponent_ingestion_hash_is_stable(realtime_repository):
+    first_batch = _quote_batch("large-exponent", last="1e100000")
+    equivalent = first_batch.model_copy(
+        update={
+            "quotes": (
+                first_batch.quotes[0].model_copy(update={"last": Decimal("10e99999")}),
+            )
+        }
+    )
+
+    first = realtime_repository.ingest_quote_batch(
+        first_batch,
+        key="large-exponent-first",
+    )
+    replay = realtime_repository.ingest_quote_batch(
+        equivalent,
+        key="large-exponent-replay",
+    )
 
     assert first.status == "accepted"
     assert replay.status == "duplicate"

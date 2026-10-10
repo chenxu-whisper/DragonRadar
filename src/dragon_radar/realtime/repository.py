@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, insert, or_, select
+from sqlalchemy import DateTime, and_, cast, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from dragon_radar.domain.models import SourceGrant
@@ -93,12 +93,17 @@ def _canonical_datetime(value: Any) -> datetime:
 
 def _canonical_value(value: Any) -> Any:
     if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("Canonical decimals must be finite")
         if value == 0:
-            return "0"
-        rendered = format(value, "f")
-        if "." in rendered:
-            rendered = rendered.rstrip("0").rstrip(".")
-        return rendered
+            return {"__decimal__": [0, "0", 0]}
+        sign, digits, exponent = value.as_tuple()
+        end = len(digits)
+        while end > 1 and digits[end - 1] == 0:
+            end -= 1
+            exponent += 1
+        coefficient = "".join(str(digit) for digit in digits[:end])
+        return {"__decimal__": [sign, coefficient, exponent]}
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
     if isinstance(value, Date):
@@ -1084,12 +1089,35 @@ class RealtimeRepository(Repository):
         connection,
         *,
         as_of: datetime,
+        operation_now: datetime,
         batch_id: str | None,
         source_id: str | None,
         child_table=None,
         child_filter=(),
     ):
         query = select(realtime_quote_batches)
+        if batch_id is None and source_id is None:
+            grant = source_grants.c.grant
+            permission = realtime_quote_batches.c.permission_snapshot
+            query = query.join(
+                source_grants,
+                source_grants.c.source_id == realtime_quote_batches.c.source_id,
+            ).where(
+                grant["source_id"].as_string() == source_grants.c.source_id,
+                grant["approved"].as_boolean().is_(True),
+                grant["reference"].as_string().is_not(None),
+                cast(grant["starts_at"].as_string(), DateTime(timezone=True))
+                <= operation_now,
+                cast(grant["expires_at"].as_string(), DateTime(timezone=True))
+                > operation_now,
+                grant["local_display"].as_boolean().is_(True),
+                permission["state"].as_string() == "authorized",
+                cast(
+                    permission["captured_at"].as_string(),
+                    DateTime(timezone=True),
+                )
+                <= operation_now,
+            )
         if child_table is not None:
             query = query.where(
                 select(1)
@@ -1107,6 +1135,8 @@ class RealtimeRepository(Repository):
             query = query.where(realtime_quote_batches.c.quote_batch_id == batch_id)
         if source_id is not None:
             query = query.where(realtime_quote_batches.c.source_id == source_id)
+        if batch_id is None and source_id is None:
+            query = query.with_for_update(of=source_grants, read=True)
         return (
             connection.execute(
                 query.order_by(
@@ -1129,9 +1159,11 @@ class RealtimeRepository(Repository):
         child_table=None,
         child_filter=(),
     ):
+        operation_now = _utc(self.clock(), "operation time")
         candidates = self._batch_candidates(
             connection,
             as_of=as_of,
+            operation_now=operation_now,
             batch_id=batch_id,
             source_id=source_id,
             child_table=child_table,
@@ -1142,7 +1174,7 @@ class RealtimeRepository(Repository):
         self._authorize_reads(
             connection,
             (candidates,),
-            _utc(self.clock(), "operation time"),
+            operation_now,
         )
         return candidates
 

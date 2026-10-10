@@ -41,7 +41,15 @@ def _nonnegative(value: Decimal) -> Decimal:
     return value
 
 
-Identifier = Annotated[str, AfterValidator(_trim_identifier)]
+SafeIdentifier = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    ),
+]
+NonBlankText = Annotated[str, AfterValidator(_trim_identifier)]
 UTCDateTime = Annotated[
     AwareDatetime,
     AfterValidator(lambda value: value.astimezone(UTC)),
@@ -70,15 +78,15 @@ class RealtimeModel(BaseModel):
 
 
 class PermissionSnapshot(RealtimeModel):
-    permission_id: Identifier
+    permission_id: SafeIdentifier
     state: Literal["authorized", "revoked", "unavailable"]
     captured_at: UTCDateTime
 
 
 class _TimestampedBatch(RealtimeModel):
-    batch_id: Identifier
-    source_id: Identifier
-    source_version: Identifier
+    batch_id: SafeIdentifier
+    source_id: SafeIdentifier
+    source_version: SafeIdentifier
     source_event_at: UTCDateTime
     received_at: UTCDateTime
     available_at: UTCDateTime
@@ -96,7 +104,7 @@ class _TimestampedBatch(RealtimeModel):
 
 
 class QuoteInput(RealtimeModel):
-    security_id: Identifier
+    security_id: SafeIdentifier
     last: NonNegativeDecimal | None = None
     bid: NonNegativeDecimal | None = None
     ask: NonNegativeDecimal | None = None
@@ -105,7 +113,7 @@ class QuoteInput(RealtimeModel):
     volume: NonNegativeDecimal | None = None
     amount: NonNegativeDecimal | None = None
     order_book_status: Literal["available", "disabled", "unavailable"]
-    order_book_unavailable_reason: Identifier | None = None
+    order_book_unavailable_reason: NonBlankText | None = None
 
     @model_validator(mode="after")
     def validate_order_book_availability(self) -> Self:
@@ -129,7 +137,7 @@ class QuoteBatchInput(_TimestampedBatch):
 
 
 class MinuteBarInput(RealtimeModel):
-    security_id: Identifier
+    security_id: SafeIdentifier
     event_at: UTCDateTime
     received_at: UTCDateTime
     available_at: UTCDateTime
@@ -180,11 +188,11 @@ class MinuteBatchInput(_SessionBatch):
 
 
 class SectorFlowPoint(RealtimeModel):
-    sector_id: Identifier
+    sector_id: SafeIdentifier
     event_at: UTCDateTime
     net_inflow: FiniteDecimal | None
-    unit: Identifier
-    unavailable_reason: Identifier | None = None
+    unit: NonBlankText
+    unavailable_reason: NonBlankText | None = None
 
     @model_validator(mode="after")
     def validate_availability(self) -> Self:
@@ -209,7 +217,7 @@ class SectorFlowBatchInput(_SessionBatch):
 
 
 class AnomalyRule(RealtimeModel):
-    rule_version: Identifier
+    rule_version: SafeIdentifier
     metric: Literal[
         "window_return",
         "relative_volume",
@@ -230,14 +238,14 @@ class AnomalyResult(RealtimeModel):
     window: Annotated[int, Field(ge=2, le=120)]
     value: FiniteDecimal | None
     threshold: FiniteDecimal
-    reason: Identifier | None
+    reason: NonBlankText | None
 
 
 class SourceCompleteness(RealtimeModel):
     status: Literal["complete", "delayed", "incomplete", "unavailable"]
     expected_count: Annotated[int, Field(ge=0)] | None = None
     received_count: Annotated[int, Field(ge=0)]
-    reason: Identifier | None = None
+    reason: NonBlankText | None = None
 
     @model_validator(mode="after")
     def validate_counts_and_reason(self) -> Self:
@@ -266,9 +274,9 @@ class SourceCompleteness(RealtimeModel):
 
 
 class QuoteRecord(RealtimeModel):
-    batch_id: Identifier
-    source_id: Identifier
-    source_version: Identifier
+    batch_id: SafeIdentifier
+    source_id: SafeIdentifier
+    source_version: SafeIdentifier
     source_event_at: UTCDateTime
     received_at: UTCDateTime
     available_at: UTCDateTime
@@ -284,17 +292,17 @@ class QuoteRecord(RealtimeModel):
 
 
 class MinuteBarRecord(RealtimeModel):
-    batch_id: Identifier
-    source_id: Identifier
-    source_version: Identifier
+    batch_id: SafeIdentifier
+    source_id: SafeIdentifier
+    source_version: SafeIdentifier
     bar: MinuteBarInput
 
 
 class AnomalyEvent(RealtimeModel):
-    event_id: Identifier
-    batch_id: Identifier
-    security_id: Identifier
-    rule_version: Identifier
+    event_id: SafeIdentifier
+    batch_id: SafeIdentifier
+    security_id: SafeIdentifier
+    rule_version: SafeIdentifier
     event_at: UTCDateTime
     available_at: UTCDateTime
     result: AnomalyResult
@@ -308,23 +316,23 @@ class AnomalyEvent(RealtimeModel):
 
 
 class SectorFlowRecord(RealtimeModel):
-    batch_id: Identifier
-    source_id: Identifier
-    source_version: Identifier
+    batch_id: SafeIdentifier
+    source_id: SafeIdentifier
+    source_version: SafeIdentifier
     available_at: UTCDateTime
     point: SectorFlowPoint
 
 
 class QuoteReadResult(RealtimeModel):
     as_of: UTCDateTime
-    batch_id: Identifier | None
+    batch_id: SafeIdentifier | None
     items: tuple[QuoteRecord, ...]
     completeness: SourceCompleteness
 
 
 class MinuteReadResult(RealtimeModel):
     as_of: UTCDateTime
-    batch_id: Identifier | None
+    batch_id: SafeIdentifier | None
     items: tuple[MinuteBarRecord, ...]
     completeness: SourceCompleteness
 
@@ -338,18 +346,18 @@ class AnomalyReadResult(RealtimeModel):
 
 class SectorFlowReadResult(RealtimeModel):
     as_of: UTCDateTime
-    batch_id: Identifier | None
+    batch_id: SafeIdentifier | None
     items: tuple[SectorFlowRecord, ...]
     completeness: SourceCompleteness
 
 
 class RealtimeImportResult(RealtimeModel):
-    import_id: Identifier
-    batch_id: Identifier
+    import_id: SafeIdentifier
+    batch_id: SafeIdentifier
     status: Literal["accepted", "duplicate", "rejected", "incomplete"]
     payload_hash: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     imported_at: UTCDateTime
-    reason: Identifier | None = None
+    reason: NonBlankText | None = None
 
 
 __all__ = [
