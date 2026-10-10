@@ -357,6 +357,57 @@ class RealtimeRepository(Repository):
             batch.permission,
             now,
         )
+        used_key = (
+            connection.execute(
+                select(realtime_import_attempts).where(
+                    realtime_import_attempts.c.source_id == batch.source_id,
+                    realtime_import_attempts.c.idempotency_key == key,
+                    realtime_import_attempts.c.status.in_(("accepted", "incomplete")),
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if used_key is not None:
+            if (
+                used_key["source_id"] != batch.source_id
+                or used_key["batch_id"] != batch.batch_id
+                or used_key["payload_hash"] != digest
+            ):
+                return (
+                    now,
+                    None,
+                    None,
+                    "Realtime idempotency key belongs to another import",
+                )
+            original = (
+                connection.execute(
+                    select(realtime_quote_batches).where(
+                        realtime_quote_batches.c.source_id == used_key["source_id"],
+                        realtime_quote_batches.c.quote_batch_id == used_key["batch_id"],
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if original is None or original["payload_hash"] != used_key["payload_hash"]:
+                return (
+                    now,
+                    None,
+                    None,
+                    "Realtime idempotency key owner is invalid",
+                )
+            duplicate = self._finish_ingest(
+                connection,
+                batch,
+                key=key,
+                digest=digest,
+                imported_at=now,
+                status="duplicate",
+                reason=None,
+                details={"original_import_id": str(used_key["id"])},
+            )
+            return now, original, duplicate, None
         existing = (
             connection.execute(
                 select(realtime_quote_batches).where(
@@ -401,57 +452,6 @@ class RealtimeRepository(Repository):
                 details={"original_import_id": str(attempt["id"])},
             )
             return now, existing, duplicate, None
-        used_key = (
-            connection.execute(
-                select(realtime_import_attempts).where(
-                    realtime_import_attempts.c.source_id == batch.source_id,
-                    realtime_import_attempts.c.idempotency_key == key,
-                    realtime_import_attempts.c.status.in_(("accepted", "incomplete")),
-                )
-            )
-            .mappings()
-            .first()
-        )
-        if used_key is not None:
-            if used_key["payload_hash"] == digest:
-                original = (
-                    connection.execute(
-                        select(realtime_quote_batches).where(
-                            realtime_quote_batches.c.source_id == batch.source_id,
-                            realtime_quote_batches.c.quote_batch_id
-                            == used_key["batch_id"],
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
-                duplicate = self._finish_ingest(
-                    connection,
-                    batch,
-                    key=key,
-                    digest=digest,
-                    imported_at=now,
-                    status="duplicate",
-                    reason=None,
-                    details={"original_import_id": str(used_key["id"])},
-                )
-                return now, original, duplicate, None
-            self._finish_ingest(
-                connection,
-                batch,
-                key=key,
-                digest=digest,
-                imported_at=now,
-                status="rejected",
-                reason="idempotency_key_conflict",
-                details={"original_import_id": str(used_key["id"])},
-            )
-            return (
-                now,
-                None,
-                None,
-                "Realtime idempotency key belongs to another payload",
-            )
         # New parents always lock source/batch, import key, then cursor order.
         self._lock(connection, REALTIME_CURSOR_ORDER_LOCK)
         return now, None, None, None

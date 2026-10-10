@@ -1783,6 +1783,68 @@ def test_task21r_duplicate_import_records_attempt_and_preserves_accepted_result(
     }
 
 
+@pytest.mark.parametrize("owner_status", ("accepted", "incomplete"))
+def test_task21r_key_owner_is_checked_before_existing_batch(
+    realtime_repository,
+    owner_status,
+):
+    from sqlalchemy import func, select
+
+    from dragon_radar.realtime.tables import (
+        realtime_import_attempts,
+        realtime_quote_batches,
+    )
+    from dragon_radar.storage.repository import Conflict
+
+    if owner_status == "accepted":
+        batch_a = _quote_batch("owned-key-batch-a", last="10")
+        batch_b = _quote_batch("owned-key-batch-b", minute=1, last="11")
+        ingest = realtime_repository.ingest_quote_batch
+    else:
+        batch_a = _minute_batch(
+            "owned-key-batch-a",
+            (minute_bar("100", minute=0),),
+        )
+        batch_b = _minute_batch(
+            "owned-key-batch-b",
+            (minute_bar("101", minute=1),),
+        )
+        ingest = realtime_repository.ingest_minute_batch
+
+    owner = ingest(batch_a, key="owned-key")
+    existing = ingest(batch_b, key="batch-b-key")
+    assert owner.status == owner_status
+    assert existing.status == owner_status
+
+    with realtime_repository.database.engine.connect() as connection:
+        parent_count = connection.scalar(
+            select(func.count()).select_from(realtime_quote_batches)
+        )
+        attempt_count = connection.scalar(
+            select(func.count()).select_from(realtime_import_attempts)
+        )
+
+    with pytest.raises(Conflict, match="idempotency key"):
+        ingest(batch_b, key="owned-key")
+
+    with realtime_repository.database.engine.connect() as connection:
+        assert (
+            connection.scalar(select(func.count()).select_from(realtime_quote_batches))
+            == parent_count
+        )
+        assert (
+            connection.scalar(
+                select(func.count()).select_from(realtime_import_attempts)
+            )
+            == attempt_count
+        )
+
+    replay = ingest(batch_a, key="owned-key")
+    assert replay.status == "duplicate"
+    assert replay.batch_id == owner.batch_id
+    assert replay.payload_hash == owner.payload_hash
+
+
 def test_task21r_same_key_and_hash_replays_incomplete_parent(
     realtime_repository,
 ):
@@ -1864,17 +1926,8 @@ def test_task21r_incomplete_parent_owns_key_for_conflicting_hash(
             connection.scalar(select(func.count()).select_from(realtime_quote_batches))
             == 1
         )
-        attempts = list(
-            connection.execute(
-                select(
-                    realtime_import_attempts.c.status,
-                    realtime_import_attempts.c.details,
-                )
-            ).mappings()
-        )
-    assert {attempt["status"] for attempt in attempts} == {"incomplete", "rejected"}
-    rejected = next(attempt for attempt in attempts if attempt["status"] == "rejected")
-    assert rejected["details"]["original_import_id"] == first.import_id
+        attempts = set(connection.scalars(select(realtime_import_attempts.c.status)))
+    assert attempts == {"incomplete"}
 
 
 def test_task21r_concurrent_incomplete_imports_bind_one_key_and_parent(
@@ -1923,8 +1976,7 @@ def test_task21r_concurrent_incomplete_imports_bind_one_key_and_parent(
             == 1
         )
         assert set(connection.scalars(select(realtime_import_attempts.c.status))) == {
-            "incomplete",
-            "rejected",
+            "incomplete"
         }
 
 
