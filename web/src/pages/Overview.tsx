@@ -1,10 +1,15 @@
-import { useMemo, type ComponentType } from 'react';
+import { lazy, Suspense, useMemo, type ComponentType } from 'react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
 import type { Envelope, Overview as Breadth, ResetHeatmap, ResetOverview, ResetSecurityIdentity, Securities, WorkbenchEnvelope } from '../types';
 import type { ResearchState } from '../state';
 import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
+import { LazyLoadBoundary } from '../components/LazyLoadBoundary';
+
+const RealtimePanel = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(() => import('../features/realtime/RealtimePanel'))
+  : null;
 interface Props {
   state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, sector: string | undefined, trigger: HTMLElement) => void;
   compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>; reset?: boolean;
@@ -115,6 +120,17 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
             </dl>
           </div>
         </section>
+        {RealtimePanel && state.date && (state.compare.length > 0 || state.security || state.sector) &&
+          <LazyLoadBoundary>
+            <Suspense fallback={<p role="status" className="status">正在加载实时证据账本…</p>}>
+              <RealtimePanel
+                date={state.date}
+                securityIds={[...state.compare, ...(state.security ? [state.security] : [])]}
+                sectorId={state.sector || undefined}
+                refreshToken={refreshToken}
+              />
+            </Suspense>
+          </LazyLoadBoundary>}
         <section aria-labelledby="factor-title">
           <div className="section-heading"><h2 id="factor-title">市场因子</h2><span className="muted">独立窗口 · 发布时物化</span></div>
           <div className="factor-grid">
