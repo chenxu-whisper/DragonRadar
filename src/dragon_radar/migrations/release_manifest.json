@@ -1,7 +1,7 @@
 {
   "schema": "dragon-radar.migration-release-manifest",
   "schema_version": 1,
-  "head": "0010_ai_tasks",
+  "head": "0011_realtime",
   "rollback_mode": "backup_restore_only",
   "supported_from": [
     "0001_foundation",
@@ -13,7 +13,8 @@
     "0008_news",
     "0009_regulation",
     "0009d_reg_event_complete_set",
-    "0010_ai_tasks"
+    "0010_ai_tasks",
+    "0011_realtime"
   ],
   "revisions": [
     {
@@ -141,6 +142,13 @@
       "parent": "0009d_reg_event_complete_set",
       "sha256": "6bc6e3ff370d10387ccea45d4868070eed8455cc32db851896ff13160682a5b9",
       "bytes": 3272
+    },
+    {
+      "filename": "0011_realtime.py",
+      "revision": "0011_realtime",
+      "parent": "0010_ai_tasks",
+      "sha256": "b904e7592378e4509b8c34c2583561e97508d7706ee9a88fa294c3ff5da84460",
+      "bytes": 1277
     }
   ]
 }

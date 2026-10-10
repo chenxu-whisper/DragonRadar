@@ -13,7 +13,7 @@ from dragon_radar.storage.schema_contract import (
     load_packaged_schema_contract,
 )
 
-SCHEMA_REVISION = "0010_ai_tasks"
+SCHEMA_REVISION = "0011_realtime"
 
 
 class Database:

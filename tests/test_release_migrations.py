@@ -33,6 +33,7 @@ SUPPORTED_FROM = [
     "0009_regulation",
     "0009d_reg_event_complete_set",
     "0010_ai_tasks",
+    "0011_realtime",
 ]
 
 
@@ -138,11 +139,11 @@ def test_release_manifest_matches_single_linear_graph(verifier):
     assert manifest["rollback_mode"] == "backup_restore_only"
     assert manifest["supported_from"] == SUPPORTED_FROM
     assert graph["bases"] == ["0001_foundation"]
-    assert graph["heads"] == ["0010_ai_tasks"]
-    assert graph["revision_count"] == 18
+    assert graph["heads"] == ["0011_realtime"]
+    assert graph["revision_count"] == 19
     assert result == {
-        "head": "0010_ai_tasks",
-        "revision_count": 18,
+        "head": "0011_realtime",
+        "revision_count": 19,
         "errors": [],
     }
 
@@ -520,8 +521,8 @@ def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "0010_ai_tasks" in result.stdout
-    assert "18 revisions" in result.stdout
+    assert "0011_realtime" in result.stdout
+    assert "19 revisions" in result.stdout
 
 
 def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
@@ -563,14 +564,25 @@ def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
         timeout=30,
         check=False,
     )
+    committed_manifest = json.loads(
+        subprocess.check_output(
+            [
+                "git",
+                "cat-file",
+                "blob",
+                f"{commit}:src/dragon_radar/migrations/release_manifest.json",
+            ],
+            cwd=ROOT,
+        )
+    )
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
         "schema": "dragon-radar.release-migration-verification",
         "schema_version": 1,
         "audited_commit": commit,
-        "head": "0010_ai_tasks",
-        "revision_count": 18,
+        "head": committed_manifest["head"],
+        "revision_count": len(committed_manifest["revisions"]),
         "release_manifest_sha256": hashlib.sha256(
             subprocess.check_output(
                 [
@@ -712,7 +724,7 @@ def test_supported_revision_upgrades_with_sentinel(
     result = verifier["exercise_upgrade"](database_url, revision)
 
     assert result["from_revision"] == revision
-    assert result["to_revision"] == "0010_ai_tasks"
+    assert result["to_revision"] == "0011_realtime"
     assert result["sentinel_preserved"] is True
     assert result["ready"] is True
 
@@ -764,7 +776,7 @@ def test_built_wheel_contains_all_release_migration_resources(built_wheel):
         f"dragon_radar/migrations/versions/{path.name}"
         for path in (MIGRATIONS / "versions").glob("*.py")
     }
-    assert len(migration_files) == 18
+    assert len(migration_files) == 19
     assert "dragon_radar/migrations/release_manifest.json" in names
     assert "dragon_radar/storage/schema_contract.json" in names
 
@@ -1221,7 +1233,7 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
     assert f"dragon_radar imported from {imported_from}" in result.stdout
     assert not imported_from.is_relative_to(ROOT)
     assert evidence["fresh"] == {
-        "to_revision": "0010_ai_tasks",
+        "to_revision": "0011_realtime",
         "ready": True,
     }
     assert [item["from_revision"] for item in evidence["supported_upgrades"]] == (
@@ -1738,6 +1750,84 @@ def test_readiness_rejects_required_schema_drift(
     assert database.ready()
     with database.engine.begin() as connection:
         assert connection.scalar(text(catalog_query), catalog_parameters) == 1
+        connection.execute(text(ddl))
+    assert not database.ready()
+
+
+@pytest.mark.parametrize(
+    ("catalog_query", "ddl"),
+    [
+        (
+            """
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'realtime_quote_batches'
+              AND column_name = 'source_version'
+            """,
+            "ALTER TABLE realtime_quote_batches DROP COLUMN source_version",
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_constraint constraint_record
+            JOIN pg_class relation ON relation.oid = constraint_record.conrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'realtime_quotes'
+              AND constraint_record.conname = 'realtime_quotes_order_book_status'
+            """,
+            (
+                "ALTER TABLE realtime_quotes DROP CONSTRAINT "
+                "realtime_quotes_order_book_status"
+            ),
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_constraint constraint_record
+            JOIN pg_class relation ON relation.oid = constraint_record.conrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'realtime_minute_bars'
+              AND constraint_record.conname = 'realtime_minute_bars_batch_fkey'
+              AND constraint_record.contype = 'f'
+            """,
+            (
+                "ALTER TABLE realtime_minute_bars DROP CONSTRAINT "
+                "realtime_minute_bars_batch_fkey"
+            ),
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_class index_record
+            JOIN pg_namespace namespace ON namespace.oid = index_record.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND index_record.relname = 'realtime_minute_bars_as_of'
+              AND index_record.relkind = 'i'
+            """,
+            "DROP INDEX realtime_minute_bars_as_of",
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_trigger trigger
+            JOIN pg_class relation ON relation.oid = trigger.tgrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'realtime_anomaly_events'
+              AND trigger.tgname = 'immutable_rows'
+              AND NOT trigger.tgisinternal
+            """,
+            "DROP TRIGGER immutable_rows ON realtime_anomaly_events",
+        ),
+    ],
+    ids=("column", "check", "foreign-key", "index", "trigger"),
+)
+def test_readiness_rejects_realtime_schema_drift(database, catalog_query, ddl):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        assert connection.scalar(text(catalog_query)) == 1
         connection.execute(text(ddl))
     assert not database.ready()
 
@@ -2326,7 +2416,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 
         def scalar(self, statement):
             events.append(str(statement))
-            return "0010_ai_tasks"
+            return "0011_realtime"
 
     class FakeEngine:
         @contextmanager
@@ -2387,7 +2477,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 @pytest.mark.parametrize(
     ("revision", "close_fails", "expected_error"),
     [
-        ("0010_ai_tasks", False, "capture failed"),
+        ("0011_realtime", False, "capture failed"),
         ("wrong_revision", False, "generated database revision"),
     ],
     ids=["capture", "revision"],
@@ -2525,7 +2615,7 @@ def _configure_generation_failures(
                 raise RuntimeError("drop failed")
 
         def scalar(self, _statement):
-            return "0010_ai_tasks"
+            return "0011_realtime"
 
     class FakeEngine:
         @contextmanager
@@ -2634,8 +2724,8 @@ def test_write_cli_never_reveals_database_password(
         verifier_globals,
         "verify_manifest",
         lambda root: {
-            "head": "0010_ai_tasks",
-            "revision_count": 18,
+            "head": "0011_realtime",
+            "revision_count": 19,
             "errors": [],
         },
     )
@@ -2830,7 +2920,7 @@ def _configure_fake_restore_drill(
         if failure == "verify":
             raise RuntimeError("verify failed")
         return {
-            "revision": "0010_ai_tasks",
+            "revision": "0011_realtime",
             "restored_ready": True,
             "sentinel_preserved": True,
             "permissions_preserved": True,

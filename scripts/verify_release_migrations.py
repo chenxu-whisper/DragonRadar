@@ -45,7 +45,7 @@ MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
 AUDIT_SCHEMA = "dragon-radar.release-migration-verification"
 AUDIT_SCHEMA_VERSION = 1
-RELEASE_HEAD = "0010_ai_tasks"
+RELEASE_HEAD = "0011_realtime"
 ROLLBACK_MODE = "backup_restore_only"
 SUPPORTED_FROM = [
     "0001_foundation",
@@ -58,6 +58,7 @@ SUPPORTED_FROM = [
     "0009_regulation",
     "0009d_reg_event_complete_set",
     "0010_ai_tasks",
+    "0011_realtime",
 ]
 MANIFEST_FIELDS = {
     "schema",
@@ -667,6 +668,10 @@ def _sentinel_values() -> dict[str, object]:
         "event_id": f"E{token[:12]}",
         "regulation_snapshot_id": uuid4(),
         "ai_task_id": uuid4(),
+        "realtime_batch_record_id": uuid4(),
+        "realtime_batch_id": f"B{token[:12]}",
+        "realtime_minute_id": uuid4(),
+        "realtime_event_id": f"RT{token[:12]}",
         "hash": hashlib.sha256(token.encode("ascii")).hexdigest(),
     }
 
@@ -1148,6 +1153,66 @@ def _insert_sentinel(
             {**values, "now": now},
         )
         return "ai_task", {"id": values["ai_task_id"], "hash": values["hash"]}
+    if revision == "0011_realtime":
+        _insert_source(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO realtime_quote_batches (
+                    id, quote_batch_id, source_id, source_version,
+                    source_event_at, received_at, available_at,
+                    source_sequence, permission_snapshot, payload_hash,
+                    imported_at
+                ) VALUES (
+                    :realtime_batch_record_id, :realtime_batch_id, :source_id,
+                    'v1', :now, :now, :now, 1,
+                    '{"permission_id":"task21","state":"authorized"}',
+                    :hash, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO realtime_minute_bars (
+                    id, source_id, batch_id, source_version, security_id,
+                    event_at, revision, open, high, low, close, volume, amount,
+                    final, source_event_at, received_at, available_at
+                ) VALUES (
+                    :realtime_minute_id, :source_id, :realtime_batch_id, 'v1',
+                    :security_id, :now, 1, 10, 11, 9, 10.5, NULL, NULL, true,
+                    :now, :now, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO realtime_anomaly_events (
+                    event_id, source_id, batch_id, security_id, rule_version,
+                    metric, "window", value, threshold, event_at, available_at,
+                    quality, cooldown_bucket
+                ) VALUES (
+                    :realtime_event_id, :source_id, :realtime_batch_id,
+                    :security_id, 'return-v1', 'window_return', 3, 0.05, 0.02,
+                    :now, :now, 'complete', :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "realtime_evidence",
+            {
+                "batch_id": values["realtime_batch_id"],
+                "minute_id": values["realtime_minute_id"],
+                "event_id": values["realtime_event_id"],
+            },
+        )
     raise ValueError(f"unsupported upgrade baseline: {revision}")
 
 
@@ -1238,6 +1303,24 @@ def _sentinel_preserved(
         ),
         "ai_task": (
             "SELECT id, request_hash AS hash FROM ai_tasks WHERE id = :id",
+            expected,
+        ),
+        "realtime_evidence": (
+            """
+            SELECT batch.quote_batch_id AS batch_id,
+                   minute.id AS minute_id,
+                   event.event_id
+            FROM realtime_quote_batches batch
+            JOIN realtime_minute_bars minute
+              ON minute.source_id = batch.source_id
+             AND minute.batch_id = batch.quote_batch_id
+            JOIN realtime_anomaly_events event
+              ON event.source_id = batch.source_id
+             AND event.batch_id = batch.quote_batch_id
+            WHERE batch.quote_batch_id = :batch_id
+              AND minute.id = :minute_id
+              AND event.event_id = :event_id
+            """,
             expected,
         ),
     }
@@ -1352,7 +1435,7 @@ def exercise_upgrade(
                 text("SELECT version_num FROM alembic_version")
             )
             if final_revision != RELEASE_HEAD:
-                raise ValueError("supported upgrade did not reach 0010_ai_tasks")
+                raise ValueError(f"supported upgrade did not reach {RELEASE_HEAD}")
             preserved = _sentinel_preserved(connection, kind, expected)
             if kind == "legacy_regulation_graph":
                 sentinel_after = _legacy_regulation_state(
@@ -1456,7 +1539,7 @@ def exercise_fresh_upgrade(
             )
         ready = database.ready()
         if revision != RELEASE_HEAD:
-            raise ValueError("fresh upgrade did not reach 0010_ai_tasks")
+            raise ValueError(f"fresh upgrade did not reach {RELEASE_HEAD}")
         if not ready:
             raise ValueError("fresh upgraded schema is not ready")
         result = {"to_revision": revision, "ready": ready}
@@ -2067,6 +2150,7 @@ def _restore_schema_metadata():
         "dragon_radar.news.tables",
         "dragon_radar.regulation.tables",
         "dragon_radar.ai.tables",
+        "dragon_radar.realtime.tables",
     )
     for module in modules:
         importlib.import_module(module)
@@ -2241,7 +2325,7 @@ def _verify_restored_database(
         database.close()
     restore_fingerprint = _database_fingerprint(restore_url)
     if revision != RELEASE_HEAD:
-        raise ValueError("restored database revision is not 0010_ai_tasks")
+        raise ValueError(f"restored database revision is not {RELEASE_HEAD}")
     if not ready:
         raise ValueError("restored database schema is not ready")
     if not sentinel_preserved:
@@ -2962,7 +3046,7 @@ def _run_generation_lifecycle(database_url: str) -> dict[str, object]:
                 text("SELECT version_num FROM alembic_version")
             )
             if revision != RELEASE_HEAD:
-                raise ValueError("generated database revision is not 0010_ai_tasks")
+                raise ValueError(f"generated database revision is not {RELEASE_HEAD}")
             capture_schema_contract, validate_schema_contract = (
                 _schema_contract_functions()
             )

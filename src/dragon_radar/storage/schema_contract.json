@@ -424,6 +424,27 @@
     {
       "columns": [
         "available_at",
+        "event_at",
+        "cooldown_bucket"
+      ],
+      "deferrable": false,
+      "expression": "((available_at >= event_at) AND (cooldown_bucket <= event_at))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_anomaly_events_timestamp_order",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_anomaly_events"
+    },
+    {
+      "columns": [
+        "available_at",
         "received_at"
       ],
       "deferrable": false,
@@ -987,6 +1008,25 @@
       "key_expressions": [],
       "kind": "primary_key",
       "match_type": null,
+      "name": "realtime_anomaly_events_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_anomaly_events"
+    },
+    {
+      "columns": [
+        "event_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
       "name": "regulation_events_pkey",
       "on_delete": null,
       "on_update": null,
@@ -1212,6 +1252,28 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "source_grants"
+    },
+    {
+      "columns": [
+        "high",
+        "open",
+        "close",
+        "low"
+      ],
+      "deferrable": false,
+      "expression": "((high >= open) AND (high >= close) AND (high >= low) AND (low <= open) AND (low <= close) AND (low <= high))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_minute_bars_ohlc",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_minute_bars"
     },
     {
       "columns": [
@@ -1804,6 +1866,101 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "realtime_import_attempts_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_import_attempts"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "realtime_minute_bars_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_minute_bars"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "realtime_quote_batches_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quote_batches"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "realtime_quotes_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quotes"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "realtime_sector_flow_points_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_sector_flow_points"
     },
     {
       "columns": [
@@ -2531,6 +2688,31 @@
     },
     {
       "columns": [
+        "last",
+        "bid",
+        "ask",
+        "bid_size",
+        "ask_size",
+        "volume",
+        "amount"
+      ],
+      "deferrable": false,
+      "expression": "(((last IS NULL) OR ((last >= (0)::numeric) AND (last < 'Infinity'::numeric))) AND ((bid IS NULL) OR ((bid >= (0)::numeric) AND (bid < 'Infinity'::numeric))) AND ((ask IS NULL) OR ((ask >= (0)::numeric) AND (ask < 'Infinity'::numeric))) AND ((bid_size IS NULL) OR ((bid_size >= (0)::numeric) AND (bid_size < 'Infinity'::numeric))) AND ((ask_size IS NULL) OR ((ask_size >= (0)::numeric) AND (ask_size < 'Infinity'::numeric))) AND ((volume IS NULL) OR ((volume >= (0)::numeric) AND (volume < 'Infinity'::numeric))) AND ((amount IS NULL) OR ((amount >= (0)::numeric) AND (amount < 'Infinity'::numeric))))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_quotes_nonnegative_values",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quotes"
+    },
+    {
+      "columns": [
         "latency_ms"
       ],
       "deferrable": false,
@@ -2690,6 +2872,47 @@
     },
     {
       "columns": [
+        "metric",
+        "value",
+        "threshold"
+      ],
+      "deferrable": false,
+      "expression": "(((metric)::text = ANY ((ARRAY['window_return'::character varying, 'relative_volume'::character varying, 'order_book_imbalance'::character varying])::text[])) AND ((value IS NULL) OR ((value > '-Infinity'::numeric) AND (value < 'Infinity'::numeric))) AND (threshold > '-Infinity'::numeric) AND (threshold < 'Infinity'::numeric))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_anomaly_events_metric",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_anomaly_events"
+    },
+    {
+      "columns": [
+        "net_inflow",
+        "unavailable_reason"
+      ],
+      "deferrable": false,
+      "expression": "(((net_inflow IS NOT NULL) AND (net_inflow > '-Infinity'::numeric) AND (net_inflow < 'Infinity'::numeric) AND (unavailable_reason IS NULL)) OR ((net_inflow IS NULL) AND (unavailable_reason IS NOT NULL)))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_sector_flow_points_availability",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_sector_flow_points"
+    },
+    {
+      "columns": [
         "news_input_id"
       ],
       "deferrable": false,
@@ -2771,6 +2994,71 @@
       "referenced_schema": "current_schema",
       "referenced_table": "role_runs",
       "table": "role_pending_validations"
+    },
+    {
+      "columns": [
+        "open",
+        "high",
+        "low",
+        "close"
+      ],
+      "deferrable": false,
+      "expression": "((open >= (0)::numeric) AND (open < 'Infinity'::numeric) AND (high >= (0)::numeric) AND (high < 'Infinity'::numeric) AND (low >= (0)::numeric) AND (low < 'Infinity'::numeric) AND (close >= (0)::numeric) AND (close < 'Infinity'::numeric))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_minute_bars_nonnegative_values",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_minute_bars"
+    },
+    {
+      "columns": [
+        "order_book_status",
+        "bid",
+        "ask",
+        "bid_size",
+        "ask_size",
+        "order_book_unavailable_reason"
+      ],
+      "deferrable": false,
+      "expression": "((((order_book_status)::text = 'available'::text) AND (bid IS NOT NULL) AND (ask IS NOT NULL) AND (bid_size IS NOT NULL) AND (ask_size IS NOT NULL) AND (order_book_unavailable_reason IS NULL)) OR (((order_book_status)::text = ANY ((ARRAY['disabled'::character varying, 'unavailable'::character varying])::text[])) AND (bid IS NULL) AND (ask IS NULL) AND (bid_size IS NULL) AND (ask_size IS NULL) AND (order_book_unavailable_reason IS NOT NULL)))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_quotes_order_book_availability",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quotes"
+    },
+    {
+      "columns": [
+        "order_book_status"
+      ],
+      "deferrable": false,
+      "expression": "((order_book_status)::text = ANY ((ARRAY['available'::character varying, 'disabled'::character varying, 'unavailable'::character varying])::text[]))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_quotes_order_book_status",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quotes"
     },
     {
       "columns": [
@@ -3552,6 +3840,44 @@
     },
     {
       "columns": [
+        "payload_hash"
+      ],
+      "deferrable": false,
+      "expression": "((payload_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_import_attempts_payload_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_import_attempts"
+    },
+    {
+      "columns": [
+        "payload_hash"
+      ],
+      "deferrable": false,
+      "expression": "((payload_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_quote_batches_payload_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quote_batches"
+    },
+    {
+      "columns": [
         "pending_result_id",
         "observation_run_id",
         "topic_id",
@@ -3918,6 +4244,25 @@
     },
     {
       "columns": [
+        "quality"
+      ],
+      "deferrable": false,
+      "expression": "((quality)::text = ANY ((ARRAY['complete'::character varying, 'delayed'::character varying, 'incomplete'::character varying])::text[]))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_anomaly_events_quality",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_anomaly_events"
+    },
+    {
+      "columns": [
         "regulation_input_id"
       ],
       "deferrable": false,
@@ -4071,6 +4416,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "news_snapshot_items"
+    },
+    {
+      "columns": [
+        "revision"
+      ],
+      "deferrable": false,
+      "expression": "(revision > 0)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_minute_bars_positive_revision",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_minute_bars"
     },
     {
       "columns": [
@@ -5687,6 +6051,49 @@
     },
     {
       "columns": [
+        "source_event_at",
+        "received_at",
+        "available_at"
+      ],
+      "deferrable": false,
+      "expression": "((source_event_at <= received_at) AND (received_at <= available_at))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_quote_batches_timestamp_order",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quote_batches"
+    },
+    {
+      "columns": [
+        "source_event_at",
+        "received_at",
+        "event_at",
+        "available_at"
+      ],
+      "deferrable": false,
+      "expression": "((source_event_at <= received_at) AND (event_at <= received_at) AND (received_at <= available_at))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_minute_bars_timestamp_order",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_minute_bars"
+    },
+    {
+      "columns": [
         "source_id",
         "archive_type",
         "archive_id",
@@ -5711,6 +6118,186 @@
     {
       "columns": [
         "source_id",
+        "batch_id",
+        "sector_id",
+        "event_at"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_sector_flow_points_identity_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_sector_flow_points"
+    },
+    {
+      "columns": [
+        "source_id",
+        "batch_id",
+        "security_id",
+        "rule_version",
+        "metric",
+        "window",
+        "cooldown_bucket"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_anomaly_events_cooldown_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_anomaly_events"
+    },
+    {
+      "columns": [
+        "source_id",
+        "batch_id",
+        "security_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_quotes_batch_security_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quotes"
+    },
+    {
+      "columns": [
+        "source_id",
+        "batch_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "realtime_anomaly_events_batch_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "quote_batch_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "realtime_quote_batches",
+      "table": "realtime_anomaly_events"
+    },
+    {
+      "columns": [
+        "source_id",
+        "batch_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "realtime_minute_bars_batch_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "quote_batch_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "realtime_quote_batches",
+      "table": "realtime_minute_bars"
+    },
+    {
+      "columns": [
+        "source_id",
+        "batch_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "realtime_quotes_batch_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "quote_batch_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "realtime_quote_batches",
+      "table": "realtime_quotes"
+    },
+    {
+      "columns": [
+        "source_id",
+        "batch_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "realtime_sector_flow_points_batch_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "quote_batch_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "realtime_quote_batches",
+      "table": "realtime_sector_flow_points"
+    },
+    {
+      "columns": [
+        "source_id",
+        "idempotency_key"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_import_attempts_idempotency_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_import_attempts"
+    },
+    {
+      "columns": [
+        "source_id",
         "module"
       ],
       "deferrable": false,
@@ -5727,6 +6314,48 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "publication_module_controls"
+    },
+    {
+      "columns": [
+        "source_id",
+        "quote_batch_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_quote_batches_source_batch_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quote_batches"
+    },
+    {
+      "columns": [
+        "source_id",
+        "security_id",
+        "event_at",
+        "revision"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "realtime_minute_bars_revision_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_minute_bars"
     },
     {
       "columns": [
@@ -5966,6 +6595,48 @@
       "key_expressions": [],
       "kind": "foreign_key",
       "match_type": "simple",
+      "name": "realtime_import_attempts_source_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "source_grants",
+      "table": "realtime_import_attempts"
+    },
+    {
+      "columns": [
+        "source_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "realtime_quote_batches_source_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "source_grants",
+      "table": "realtime_quote_batches"
+    },
+    {
+      "columns": [
+        "source_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
       "name": "regulation_events_source_id_fkey",
       "on_delete": "restrict",
       "on_update": "no_action",
@@ -6100,6 +6771,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "source_grants"
+    },
+    {
+      "columns": [
+        "source_sequence"
+      ],
+      "deferrable": false,
+      "expression": "((source_sequence IS NULL) OR (source_sequence >= 0))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_quote_batches_source_sequence",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_quote_batches"
     },
     {
       "columns": [
@@ -6285,6 +6975,26 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
+    },
+    {
+      "columns": [
+        "status",
+        "reason"
+      ],
+      "deferrable": false,
+      "expression": "(((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'incomplete'::character varying])::text[])) AND ((((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying])::text[])) AND (reason IS NULL)) OR (((status)::text = ANY ((ARRAY['rejected'::character varying, 'incomplete'::character varying])::text[])) AND (reason IS NOT NULL))))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_import_attempts_status",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_import_attempts"
     },
     {
       "columns": [
@@ -7173,6 +7883,26 @@
     },
     {
       "columns": [
+        "volume",
+        "amount"
+      ],
+      "deferrable": false,
+      "expression": "(((volume IS NULL) OR ((volume >= (0)::numeric) AND (volume < 'Infinity'::numeric))) AND ((amount IS NULL) OR ((amount >= (0)::numeric) AND (amount < 'Infinity'::numeric))))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_minute_bars_optional_values",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_minute_bars"
+    },
+    {
+      "columns": [
         "volume"
       ],
       "deferrable": false,
@@ -7208,6 +7938,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "index_daily_kline"
+    },
+    {
+      "columns": [
+        "window"
+      ],
+      "deferrable": false,
+      "expression": "((\"window\" >= 2) AND (\"window\" <= 120))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "realtime_anomaly_events_window",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "realtime_anomaly_events"
     },
     {
       "columns": [
@@ -7492,6 +8241,18 @@
     {
       "access_method": "btree",
       "key_expressions": [
+        "available_at",
+        "event_id"
+      ],
+      "name": "realtime_anomaly_events_listing",
+      "predicate": null,
+      "table": "realtime_anomaly_events",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
         "batch_id"
       ],
       "name": "snapshots_batch_id_key",
@@ -7590,6 +8351,17 @@
       "name": "news_event_articles_pkey",
       "predicate": null,
       "table": "news_event_articles",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "event_id"
+      ],
+      "name": "realtime_anomaly_events_pkey",
+      "predicate": null,
+      "table": "realtime_anomaly_events",
       "unique": true,
       "valid": true
     },
@@ -7948,6 +8720,61 @@
       "name": "publications_pkey",
       "predicate": null,
       "table": "publications",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "realtime_import_attempts_pkey",
+      "predicate": null,
+      "table": "realtime_import_attempts",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "realtime_minute_bars_pkey",
+      "predicate": null,
+      "table": "realtime_minute_bars",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "realtime_quote_batches_pkey",
+      "predicate": null,
+      "table": "realtime_quote_batches",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "realtime_quotes_pkey",
+      "predicate": null,
+      "table": "realtime_quotes",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "realtime_sector_flow_points_pkey",
+      "predicate": null,
+      "table": "realtime_sector_flow_points",
       "unique": true,
       "valid": true
     },
@@ -8794,12 +9621,63 @@
     {
       "access_method": "btree",
       "key_expressions": [
+        "sector_id",
+        "event_at"
+      ],
+      "name": "realtime_sector_flow_points_event",
+      "predicate": null,
+      "table": "realtime_sector_flow_points",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "security_id",
+        "batch_id"
+      ],
+      "name": "realtime_quotes_security",
+      "predicate": null,
+      "table": "realtime_quotes",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
         "security_id",
         "effective_from"
       ],
       "name": "regulation_events_security_effective",
       "predicate": null,
       "table": "regulation_events",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "security_id",
+        "event_at",
+        "available_at",
+        "revision",
+        "id"
+      ],
+      "name": "realtime_minute_bars_as_of",
+      "predicate": null,
+      "table": "realtime_minute_bars",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "security_id",
+        "event_at"
+      ],
+      "name": "realtime_anomaly_events_security",
+      "predicate": null,
+      "table": "realtime_anomaly_events",
       "unique": false,
       "valid": true
     },
@@ -9067,12 +9945,107 @@
       "access_method": "btree",
       "key_expressions": [
         "source_id",
+        "available_at",
+        "source_event_at",
+        "id"
+      ],
+      "name": "realtime_quote_batches_as_of",
+      "predicate": null,
+      "table": "realtime_quote_batches",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "batch_id",
+        "sector_id",
+        "event_at"
+      ],
+      "name": "realtime_sector_flow_points_identity_key",
+      "predicate": null,
+      "table": "realtime_sector_flow_points",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "batch_id",
+        "security_id",
+        "rule_version",
+        "metric",
+        "\"window\"",
+        "cooldown_bucket"
+      ],
+      "name": "realtime_anomaly_events_cooldown_key",
+      "predicate": null,
+      "table": "realtime_anomaly_events",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "batch_id",
+        "security_id"
+      ],
+      "name": "realtime_quotes_batch_security_key",
+      "predicate": null,
+      "table": "realtime_quotes",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "batch_id"
+      ],
+      "name": "realtime_minute_bars_batch",
+      "predicate": null,
+      "table": "realtime_minute_bars",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "created_at",
+        "id"
+      ],
+      "name": "realtime_import_attempts_listing",
+      "predicate": null,
+      "table": "realtime_import_attempts",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
         "dependency_sequence"
       ],
       "name": "source_dependencies_source_sequence",
       "predicate": null,
       "table": "source_dependencies",
       "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "idempotency_key"
+      ],
+      "name": "realtime_import_attempts_idempotency_key",
+      "predicate": null,
+      "table": "realtime_import_attempts",
+      "unique": true,
       "valid": true
     },
     {
@@ -9097,6 +10070,32 @@
       "predicate": null,
       "table": "source_dependencies",
       "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "quote_batch_id"
+      ],
+      "name": "realtime_quote_batches_source_batch_key",
+      "predicate": null,
+      "table": "realtime_quote_batches",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "security_id",
+        "event_at",
+        "revision"
+      ],
+      "name": "realtime_minute_bars_revision_key",
+      "predicate": null,
+      "table": "realtime_minute_bars",
+      "unique": true,
       "valid": true
     },
     {
@@ -9566,6 +10565,102 @@
         }
       ],
       "name": "regulation_events"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "event_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "security_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "rule_version",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "metric",
+          "nullable": false,
+          "type": "character varying(30)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "window",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "value",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "threshold",
+          "nullable": false,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "available_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "quality",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "cooldown_bucket",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "realtime_anomaly_events"
     },
     {
       "columns": [
@@ -12563,6 +13658,88 @@
         {
           "generated": null,
           "identity": null,
+          "name": "quote_batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_version",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "received_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "available_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_sequence",
+          "nullable": true,
+          "type": "bigint"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "permission_snapshot",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "payload_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "imported_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "realtime_quote_batches"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
           "name": "role_run_id",
           "nullable": false,
           "type": "uuid"
@@ -12934,6 +14111,355 @@
         }
       ],
       "name": "regulation_calculations"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "payload_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "status",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reason",
+          "nullable": true,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "details",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "realtime_import_attempts"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "sector_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "net_inflow",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "unit",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "unavailable_reason",
+          "nullable": true,
+          "type": "text"
+        }
+      ],
+      "name": "realtime_sector_flow_points"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "security_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "last",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "bid",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "ask",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "bid_size",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "ask_size",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "volume",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "amount",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "order_book_status",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "order_book_unavailable_reason",
+          "nullable": true,
+          "type": "text"
+        }
+      ],
+      "name": "realtime_quotes"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_version",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "security_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "open",
+          "nullable": false,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "high",
+          "nullable": false,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "low",
+          "nullable": false,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "close",
+          "nullable": false,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "volume",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "amount",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "final",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "received_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "available_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "realtime_minute_bars"
     },
     {
       "columns": [
@@ -15172,6 +16698,120 @@
       "initially_deferred": false,
       "level": "STATEMENT",
       "name": "immutable_truncate",
+      "table": "realtime_anomaly_events",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "realtime_import_attempts",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "realtime_minute_bars",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "realtime_quote_batches",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "realtime_quotes",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "realtime_sector_flow_points",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
       "table": "snapshots",
       "timing": "BEFORE",
       "update_of_columns": [],
@@ -16201,6 +17841,126 @@
       "level": "ROW",
       "name": "immutable_rows",
       "table": "import_batches",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "realtime_anomaly_events",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "realtime_import_attempts",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "realtime_minute_bars",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "realtime_quote_batches",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "realtime_quotes",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "realtime_sector_flow_points",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null

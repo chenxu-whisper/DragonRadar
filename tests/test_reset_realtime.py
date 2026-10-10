@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -746,3 +747,485 @@ def test_model_sector_flow_requires_explicit_unavailable_reason():
 
     assert batch.points[0].sector_id == "sector-1"
     assert batch.points[0].net_inflow is None
+
+
+EXPECTED_REALTIME_TABLES = {
+    "realtime_quote_batches",
+    "realtime_quotes",
+    "realtime_minute_bars",
+    "realtime_anomaly_events",
+    "realtime_sector_flow_points",
+    "realtime_import_attempts",
+}
+
+EXPECTED_REALTIME_COLUMNS = {
+    "realtime_quote_batches": [
+        "id",
+        "quote_batch_id",
+        "source_id",
+        "source_version",
+        "source_event_at",
+        "received_at",
+        "available_at",
+        "source_sequence",
+        "permission_snapshot",
+        "payload_hash",
+        "imported_at",
+    ],
+    "realtime_quotes": [
+        "id",
+        "source_id",
+        "batch_id",
+        "security_id",
+        "last",
+        "bid",
+        "ask",
+        "bid_size",
+        "ask_size",
+        "volume",
+        "amount",
+        "order_book_status",
+        "order_book_unavailable_reason",
+    ],
+    "realtime_minute_bars": [
+        "id",
+        "source_id",
+        "batch_id",
+        "source_version",
+        "security_id",
+        "event_at",
+        "revision",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "final",
+        "source_event_at",
+        "received_at",
+        "available_at",
+    ],
+    "realtime_anomaly_events": [
+        "event_id",
+        "source_id",
+        "batch_id",
+        "security_id",
+        "rule_version",
+        "metric",
+        "window",
+        "value",
+        "threshold",
+        "event_at",
+        "available_at",
+        "quality",
+        "cooldown_bucket",
+    ],
+    "realtime_sector_flow_points": [
+        "id",
+        "source_id",
+        "batch_id",
+        "sector_id",
+        "event_at",
+        "net_inflow",
+        "unit",
+        "unavailable_reason",
+    ],
+    "realtime_import_attempts": [
+        "id",
+        "source_id",
+        "batch_id",
+        "idempotency_key",
+        "payload_hash",
+        "status",
+        "reason",
+        "details",
+        "created_at",
+    ],
+}
+
+EXPECTED_REALTIME_CONSTRAINTS = {
+    "realtime_quote_batches": {
+        "realtime_quote_batches_pkey",
+        "realtime_quote_batches_source_batch_key",
+        "realtime_quote_batches_source_id_fkey",
+        "realtime_quote_batches_timestamp_order",
+        "realtime_quote_batches_source_sequence",
+        "realtime_quote_batches_payload_hash",
+    },
+    "realtime_quotes": {
+        "realtime_quotes_pkey",
+        "realtime_quotes_batch_fkey",
+        "realtime_quotes_batch_security_key",
+        "realtime_quotes_nonnegative_values",
+        "realtime_quotes_order_book_status",
+        "realtime_quotes_order_book_availability",
+    },
+    "realtime_minute_bars": {
+        "realtime_minute_bars_pkey",
+        "realtime_minute_bars_batch_fkey",
+        "realtime_minute_bars_revision_key",
+        "realtime_minute_bars_positive_revision",
+        "realtime_minute_bars_nonnegative_values",
+        "realtime_minute_bars_ohlc",
+        "realtime_minute_bars_optional_values",
+        "realtime_minute_bars_timestamp_order",
+    },
+    "realtime_anomaly_events": {
+        "realtime_anomaly_events_pkey",
+        "realtime_anomaly_events_batch_fkey",
+        "realtime_anomaly_events_cooldown_key",
+        "realtime_anomaly_events_metric",
+        "realtime_anomaly_events_window",
+        "realtime_anomaly_events_quality",
+        "realtime_anomaly_events_timestamp_order",
+    },
+    "realtime_sector_flow_points": {
+        "realtime_sector_flow_points_pkey",
+        "realtime_sector_flow_points_batch_fkey",
+        "realtime_sector_flow_points_identity_key",
+        "realtime_sector_flow_points_availability",
+    },
+    "realtime_import_attempts": {
+        "realtime_import_attempts_pkey",
+        "realtime_import_attempts_source_id_fkey",
+        "realtime_import_attempts_idempotency_key",
+        "realtime_import_attempts_status",
+        "realtime_import_attempts_payload_hash",
+    },
+}
+
+EXPECTED_REALTIME_INDEXES = {
+    "realtime_quote_batches_as_of",
+    "realtime_quotes_security",
+    "realtime_minute_bars_as_of",
+    "realtime_minute_bars_batch",
+    "realtime_anomaly_events_listing",
+    "realtime_anomaly_events_security",
+    "realtime_sector_flow_points_event",
+    "realtime_import_attempts_listing",
+}
+
+
+def _upgrade_realtime(database_url):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    with database.engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "0010_ai_tasks")
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0010_ai_tasks"
+        )
+        command.upgrade(config, "0011_realtime")
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0011_realtime"
+        )
+    return database
+
+
+def test_0011_realtime_extends_0010_with_six_exact_tables(database_url):
+    from sqlalchemy import inspect
+
+    database = _upgrade_realtime(database_url)
+    try:
+        inspector = inspect(database.engine)
+        assert EXPECTED_REALTIME_TABLES <= set(inspector.get_table_names())
+        for table, expected_columns in EXPECTED_REALTIME_COLUMNS.items():
+            assert [
+                column["name"] for column in inspector.get_columns(table)
+            ] == expected_columns
+    finally:
+        database.close()
+
+
+def test_realtime_schema_has_exact_named_constraints_indexes_and_triggers(
+    database_url,
+):
+    from sqlalchemy import text
+
+    database = _upgrade_realtime(database_url)
+    try:
+        with database.engine.connect() as connection:
+            constraints = connection.execute(
+                text(
+                    """
+                    SELECT relation.relname, constraint_record.conname
+                    FROM pg_constraint constraint_record
+                    JOIN pg_class relation
+                      ON relation.oid = constraint_record.conrelid
+                    JOIN pg_namespace namespace
+                      ON namespace.oid = relation.relnamespace
+                    WHERE namespace.nspname = current_schema()
+                      AND relation.relname = ANY(:tables)
+                    """
+                ),
+                {"tables": sorted(EXPECTED_REALTIME_TABLES)},
+            )
+            actual_constraints = {table: set() for table in EXPECTED_REALTIME_TABLES}
+            for table, name in constraints:
+                actual_constraints[table].add(name)
+            assert actual_constraints == EXPECTED_REALTIME_CONSTRAINTS
+
+            indexes = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT index_relation.relname
+                        FROM pg_index index_record
+                        JOIN pg_class relation
+                          ON relation.oid = index_record.indrelid
+                        JOIN pg_namespace namespace
+                          ON namespace.oid = relation.relnamespace
+                        JOIN pg_class index_relation
+                          ON index_relation.oid = index_record.indexrelid
+                        WHERE namespace.nspname = current_schema()
+                          AND relation.relname = ANY(:tables)
+                          AND NOT index_record.indisunique
+                        """
+                    ),
+                    {"tables": sorted(EXPECTED_REALTIME_TABLES)},
+                ).scalars()
+            )
+            assert indexes == EXPECTED_REALTIME_INDEXES
+
+            triggers = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT relation.relname, trigger.tgname,
+                               function.proname,
+                               pg_get_triggerdef(trigger.oid, false)
+                        FROM pg_trigger trigger
+                        JOIN pg_class relation ON relation.oid = trigger.tgrelid
+                        JOIN pg_namespace namespace
+                          ON namespace.oid = relation.relnamespace
+                        JOIN pg_proc function ON function.oid = trigger.tgfoid
+                        WHERE namespace.nspname = current_schema()
+                          AND relation.relname = ANY(:tables)
+                          AND NOT trigger.tgisinternal
+                        """
+                    ),
+                    {"tables": sorted(EXPECTED_REALTIME_TABLES)},
+                )
+            )
+        assert len(triggers) == 12
+        for table in EXPECTED_REALTIME_TABLES:
+            table_triggers = {
+                (name, function, definition)
+                for trigger_table, name, function, definition in triggers
+                if trigger_table == table
+            }
+            assert {
+                (name, function) for name, function, _definition in table_triggers
+            } == {
+                ("immutable_rows", "reject_immutable_mutation"),
+                ("immutable_truncate", "reject_immutable_mutation"),
+            }
+            definitions = " ".join(
+                definition for _name, _function, definition in table_triggers
+            )
+            assert "UPDATE" in definitions
+            assert "DELETE" in definitions
+            assert "TRUNCATE" in definitions
+    finally:
+        database.close()
+
+
+def test_realtime_schema_preserves_nulls_decimal_precision_and_source_time(
+    database_url,
+):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_realtime(database_url)
+    source_id = "licensed-feed"
+    batch_id = "batch-null-preservation"
+    batch_record_id = uuid4()
+    quote_id = uuid4()
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO source_grants (source_id, "grant", updated_at)
+                    VALUES (:source_id, '{}', :now)
+                    """
+                ),
+                {"source_id": source_id, "now": T0},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_quote_batches (
+                        id, quote_batch_id, source_id, source_version,
+                        source_event_at, received_at, available_at,
+                        source_sequence, permission_snapshot, payload_hash,
+                        imported_at
+                    ) VALUES (
+                        :id, :batch_id, :source_id, 'v1', :source_event_at,
+                        :received_at, :available_at, NULL, '{}', :payload_hash,
+                        :imported_at
+                    )
+                    """
+                ),
+                {
+                    "id": batch_record_id,
+                    "batch_id": batch_id,
+                    "source_id": source_id,
+                    "source_event_at": T0,
+                    "received_at": T0 + timedelta(seconds=1),
+                    "available_at": T0 + timedelta(seconds=2),
+                    "payload_hash": "a" * 64,
+                    "imported_at": T0 + timedelta(seconds=3),
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_quotes (
+                        id, source_id, batch_id, security_id, last, bid, ask,
+                        bid_size, ask_size, volume, amount, order_book_status,
+                        order_book_unavailable_reason
+                    ) VALUES (
+                        :id, :source_id, :batch_id, '600000.SH',
+                        :last, NULL, NULL, NULL, NULL, NULL, NULL, 'disabled',
+                        'order_book_not_authorized'
+                    )
+                    """
+                ),
+                {
+                    "id": quote_id,
+                    "source_id": source_id,
+                    "batch_id": batch_id,
+                    "last": Decimal("12345678901234567890.123456789012345678"),
+                },
+            )
+        with database.engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    """
+                    SELECT batch.source_event_at, batch.received_at,
+                           batch.available_at, batch.source_sequence,
+                           quote.last, quote.bid, quote.volume, quote.amount
+                    FROM realtime_quote_batches batch
+                    JOIN realtime_quotes quote
+                      ON quote.source_id = batch.source_id
+                     AND quote.batch_id = batch.quote_batch_id
+                    WHERE quote.id = :id
+                    """
+                ),
+                {"id": quote_id},
+            ).one()
+        assert row._tuple() == (
+            T0,
+            T0 + timedelta(seconds=1),
+            T0 + timedelta(seconds=2),
+            None,
+            Decimal("12345678901234567890.123456789012345678"),
+            None,
+            None,
+            None,
+        )
+
+        with pytest.raises(DBAPIError), database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_quotes (
+                        id, source_id, batch_id, security_id, last,
+                        order_book_status, order_book_unavailable_reason
+                    ) VALUES (
+                        :id, :source_id, :batch_id, 'bad-negative', -1,
+                        'disabled', 'not_authorized'
+                    )
+                    """
+                ),
+                {"id": uuid4(), "source_id": source_id, "batch_id": batch_id},
+            )
+    finally:
+        database.close()
+
+
+def test_realtime_immutable_tables_reject_update_delete_and_truncate(database_url):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_realtime(database_url)
+    source_id = "immutable-feed"
+    batch_id = "immutable-batch"
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO source_grants (source_id, "grant", updated_at)
+                    VALUES (:source_id, '{}', :now)
+                    """
+                ),
+                {"source_id": source_id, "now": T0},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_quote_batches (
+                        id, quote_batch_id, source_id, source_version,
+                        source_event_at, received_at, available_at,
+                        permission_snapshot, payload_hash, imported_at
+                    ) VALUES (
+                        :id, :batch_id, :source_id, 'v1', :now, :now, :now,
+                        '{}', :payload_hash, :now
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "batch_id": batch_id,
+                    "source_id": source_id,
+                    "payload_hash": "b" * 64,
+                    "now": T0,
+                },
+            )
+
+        statements = (
+            (
+                "UPDATE realtime_quote_batches SET source_version = 'v2' "
+                "WHERE quote_batch_id = :batch_id"
+            ),
+            ("DELETE FROM realtime_quote_batches WHERE quote_batch_id = :batch_id"),
+            "TRUNCATE TABLE realtime_quote_batches",
+        )
+        for statement in statements:
+            with pytest.raises(DBAPIError), database.engine.begin() as connection:
+                connection.execute(text(statement), {"batch_id": batch_id})
+    finally:
+        database.close()
+
+
+def test_0011_realtime_downgrade_is_forbidden(database_url):
+    from alembic import command
+    from alembic.config import Config
+
+    database = _upgrade_realtime(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with (
+            pytest.raises(
+                RuntimeError,
+                match="Realtime evidence history cannot be downgraded",
+            ),
+            database.engine.begin() as connection,
+        ):
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0010_ai_tasks")
+    finally:
+        database.close()
