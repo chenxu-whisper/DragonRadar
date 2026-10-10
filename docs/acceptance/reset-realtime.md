@@ -128,5 +128,27 @@ The observed command logs and installed-wheel JSON are retained under
 `.temp/task21r/`. They are local execution evidence, not separately trusted
 attestations and not production input.
 
+| Complete command | Evidence under `.temp/task21r/` | Key result |
+| --- | --- | --- |
+| `uv run pytest tests/test_reset_realtime.py tests/test_release_migrations.py tests/test_storage.py -q` | `backend-focused.log` | 425 passed, 4 skipped; exit 0 |
+| `uv run pytest -q -W error` | `backend-full-green.log` | 3034 passed, 15 skipped; exit 0 |
+| `uv run ruff check .` | `static-gates.log` | All checks passed |
+| `uv run ruff format --check src tests scripts` | `static-gates.log` | 190 files already formatted |
+| `uv run python -m compileall -q src tests scripts` | `static-gates.log` | Passed |
+| `npm test -- --run` | `web-gates.log` | The runner forwarded `--run` to Vitest only; 435 Vitest tests passed |
+| `npm test` | `web-npm-full.log` | The full runner executed both gates; 435 Vitest and 10 Node tests passed; exit 0 |
+| `npm run build` | `web-gates.log` | Default production build passed |
+| `npm run check:bundle` | `web-gates.log` | Default entry bundle was 314852 bytes against the 315500-byte limit |
+| `VITE_RESET_WORKBENCH=1 npm run build` | `web-gates.log` | Reset production build passed |
+| `npx playwright test tests/e2e/reset-realtime.spec.ts` | `web-gates.log` | 11 focused realtime browser tests passed |
+| `npm run test:e2e:reset` | `web-gates.log` | 97 full Reset browser tests passed |
+| `uv build --out-dir .temp/task21r/dist` | `wheel-build.log` | Built the source distribution and `dragon_radar-0.1.0-py3-none-any.whl` |
+| `uv run python scripts/verify_release_migrations.py --database-url "$DRAGON_TEST_DATABASE_URL" --wheel .temp/task21r/dist/dragon_radar-0.1.0-py3-none-any.whl --output .temp/task21r/wheel-evidence.json --audited-commit b2b204520f7d558dd43a11e6ce34bcbfc4a0ab9a` | `wheel-verify.log`, `wheel-evidence.json` | Installed-wheel import passed; fresh and all 11 supported upgrades reached `0011_realtime`, preserved sentinels, and reported ready; audited commit matched `b2b2045`; exit 0 |
+
+The database argument above is an environment-variable placeholder; no secret
+is recorded. Failed precondition and earlier-attempt logs are diagnostic only
+and are not green evidence. Final green evidence is limited to the logs and
+JSON named in the table.
+
 No merge, tag, version bump, image publication, release, or deployment
 occurred. Task 21R.7 was not started.
