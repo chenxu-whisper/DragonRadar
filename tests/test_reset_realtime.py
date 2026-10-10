@@ -1696,23 +1696,27 @@ def _minute_batch(
 def _flow_batch(
     batch_id: str,
     *,
+    minute: int = 0,
+    sector_id: str = "sector-1",
+    source_id: str = "licensed-feed",
     net_inflow: Decimal | None = Decimal("12.5"),
     reason: str | None = None,
 ) -> SectorFlowBatchInput:
+    source_event_at = T0 + timedelta(minutes=minute)
     return SectorFlowBatchInput(
         batch_id=batch_id,
-        source_id="licensed-feed",
+        source_id=source_id,
         source_version="v1",
-        source_event_at=T0,
-        received_at=T0 + timedelta(seconds=1),
-        available_at=T0 + timedelta(seconds=2),
+        source_event_at=source_event_at,
+        received_at=source_event_at + timedelta(seconds=1),
+        available_at=source_event_at + timedelta(seconds=2),
         permission=permission(),
         session_start=T0,
-        session_end=T0 + timedelta(minutes=4),
+        session_end=T0 + timedelta(minutes=minute + 4),
         points=(
             SectorFlowPoint(
-                sector_id="sector-1",
-                event_at=T0,
+                sector_id=sector_id,
+                event_at=source_event_at,
                 net_inflow=net_inflow,
                 unit="CNY",
                 unavailable_reason=reason,
@@ -3108,6 +3112,220 @@ def test_realtime_public_read_methods_execute_no_dml_and_have_bounded_queries(
         )
 
     assert max(query_counts) <= 5
+
+
+def test_realtime_multibatch_permission_checks_have_constant_query_counts(
+    realtime_repository,
+):
+    from factories import grant
+    from sqlalchemy import event
+
+    from dragon_radar.storage.repository import Repository
+
+    source_repository = Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    )
+    source_ids = tuple(f"bounded-feed-{index}" for index in range(8))
+    for index, source_id in enumerate(source_ids):
+        source_repository.register_source(grant(source_id=source_id))
+        snapshot = permission().model_copy(
+            update={"permission_id": f"permission-{index}"}
+        )
+        realtime_repository.ingest_quote_batch(
+            _quote_batch(
+                f"bounded-quote-{index}",
+                minute=index,
+                source_id=source_id,
+            ).model_copy(update={"permission": snapshot}),
+            key=f"bounded-quote-{index}",
+        )
+        realtime_repository.ingest_minute_batch(
+            _minute_batch(
+                f"bounded-minute-{index}",
+                minute_bars(["100", "103"]),
+                source_id=source_id,
+            ).model_copy(update={"permission": snapshot}),
+            key=f"bounded-minute-{index}",
+            rules=(
+                return_rule(window=2).model_copy(
+                    update={"rule_version": f"bounded-return-{index}"}
+                ),
+            ),
+        )
+        realtime_repository.ingest_sector_flow_batch(
+            _flow_batch(
+                f"bounded-flow-{index}",
+                minute=index,
+                source_id=source_id,
+            ).model_copy(update={"permission": snapshot}),
+            key=f"bounded-flow-{index}",
+        )
+
+    statements = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        statements.append(statement)
+
+    event.listen(
+        realtime_repository.database.engine,
+        "before_cursor_execute",
+        record_statement,
+    )
+    try:
+        calls = {
+            "quotes": lambda: realtime_repository.list_quotes(
+                security_ids=("600000.SH",),
+                as_of=T0 + timedelta(hours=1),
+            ),
+            "minutes": lambda: realtime_repository.list_minutes(
+                security_id="600000.SH",
+                session_start=T0,
+                session_end=T0 + timedelta(minutes=4),
+                as_of=T0 + timedelta(hours=1),
+            ),
+            "anomalies": lambda: realtime_repository.list_anomalies(
+                date=T0.date(),
+                as_of=T0 + timedelta(hours=1),
+                limit=100,
+            ),
+            "flow": lambda: realtime_repository.list_sector_flow(
+                sector_id="sector-1",
+                session_start=T0,
+                session_end=T0 + timedelta(minutes=12),
+                as_of=T0 + timedelta(hours=1),
+            ),
+        }
+        query_counts = {}
+        grant_query_counts = {}
+        for name, call in calls.items():
+            before = len(statements)
+            call()
+            executed = statements[before:]
+            query_counts[name] = len(executed)
+            grant_query_counts[name] = sum(
+                "FROM source_grants" in statement for statement in executed
+            )
+    finally:
+        event.remove(
+            realtime_repository.database.engine,
+            "before_cursor_execute",
+            record_statement,
+        )
+
+    assert query_counts == {
+        "quotes": 3,
+        "minutes": 3,
+        "anomalies": 4,
+        "flow": 3,
+    }
+    assert grant_query_counts == {
+        "quotes": 1,
+        "minutes": 1,
+        "anomalies": 1,
+        "flow": 1,
+    }
+
+
+def test_latest_quote_and_flow_batch_selection_is_limited_and_child_filtered(
+    realtime_repository,
+):
+    from sqlalchemy import event
+
+    history_size = 64
+    for index in range(history_size):
+        realtime_repository.ingest_quote_batch(
+            _quote_batch(
+                f"history-quote-{index}",
+                minute=index,
+                last=str(index),
+            ),
+            key=f"history-quote-{index}",
+        )
+        realtime_repository.ingest_sector_flow_batch(
+            _flow_batch(
+                f"history-flow-{index}",
+                minute=index,
+                net_inflow=Decimal(index),
+            ),
+            key=f"history-flow-{index}",
+        )
+    realtime_repository.ingest_quote_batch(
+        _quote_batch(
+            "newer-unrelated-quote",
+            minute=history_size,
+        ).model_copy(update={"quotes": (_quote(security_id="000001.SZ"),)}),
+        key="newer-unrelated-quote",
+    )
+    realtime_repository.ingest_sector_flow_batch(
+        _flow_batch(
+            "newer-unrelated-flow",
+            minute=history_size,
+            sector_id="sector-2",
+        ),
+        key="newer-unrelated-flow",
+    )
+    statements = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        statements.append(statement)
+
+    event.listen(
+        realtime_repository.database.engine,
+        "before_cursor_execute",
+        record_statement,
+    )
+    try:
+        quotes = realtime_repository.list_quotes(
+            security_ids=("600000.SH",),
+            as_of=T0 + timedelta(hours=2),
+        )
+        flow = realtime_repository.list_sector_flow(
+            sector_id="sector-1",
+            session_start=T0,
+            session_end=T0 + timedelta(hours=2),
+            as_of=T0 + timedelta(hours=2),
+        )
+    finally:
+        event.remove(
+            realtime_repository.database.engine,
+            "before_cursor_execute",
+            record_statement,
+        )
+
+    candidate_statements = [
+        statement
+        for statement in statements
+        if "FROM realtime_quote_batches" in statement
+        and "ORDER BY realtime_quote_batches.available_at DESC" in statement
+    ]
+    assert quotes.batch_id == f"history-quote-{history_size - 1}"
+    assert quotes.items[0].quote.last == Decimal(history_size - 1)
+    assert flow.batch_id == f"history-flow-{history_size - 1}"
+    assert flow.items[0].point.net_inflow == Decimal(history_size - 1)
+    assert len(candidate_statements) == 2
+    for statement in candidate_statements:
+        assert "EXISTS (SELECT" in statement
+        assert "realtime_quote_batches.ingest_order DESC" in statement
+        assert "LIMIT" in statement
+    assert "JOIN realtime_quotes" not in candidate_statements[0]
+    assert "realtime_quotes.security_id IN" in candidate_statements[0]
+    assert "JOIN realtime_sector_flow_points" not in candidate_statements[1]
+    assert "realtime_sector_flow_points.sector_id =" in candidate_statements[1]
 
 
 def test_same_batch_concurrency_persists_one_result(realtime_repository):
