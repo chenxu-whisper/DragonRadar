@@ -51,7 +51,10 @@ function validateSecurityResponse(data: unknown, id: string): void {
 }
 
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow(?:\/intraday)?|sentiment|heatmap)|realtime\/(?:quotes|minutes|anomalies)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|regulation\/(?:status|events)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|search)(?:[?#]|$)/i.test(path);
+  const realtimePath = import.meta.env.VITE_RESET_WORKBENCH === '1'
+    && /^\/api\/(?:realtime\/(?:quotes|minutes|anomalies)|market\/sector-flow\/intraday)(?:[?#]|$)/i.test(path);
+  const resetPath = realtimePath
+    || /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|regulation\/(?:status|events)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|search)(?:[?#]|$)/i.test(path);
   if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
@@ -84,7 +87,17 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       throw new ApiError(response.status, undefined, code);
     }
     let data: unknown;
-    try { data = await Promise.race([response.json(), interrupted]); }
+    try {
+      if (realtimePath) {
+        const [{ parse }, text] = await Promise.all([
+          import('lossless-json'),
+          Promise.race([response.text(), interrupted]),
+        ]);
+        data = parse(text);
+      } else {
+        data = await Promise.race([response.json(), interrupted]);
+      }
+    }
     catch (error) { if (error instanceof ApiError || (error instanceof DOMException && error.name === 'AbortError')) throw error; throw new ApiError(502, '接口响应格式无效，请重试。'); }
     if (options.snapshot && (!data || typeof data !== 'object' || !('snapshot_id' in data) || data.snapshot_id !== options.snapshot)) {
       throw new ApiError(409, '响应快照与当前选择不匹配，已丢弃该响应。');

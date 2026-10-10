@@ -120,7 +120,8 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
             </dl>
           </div>
         </section>
-        {RealtimePanel && state.date && (state.compare.length > 0 || state.security || state.sector) &&
+        {import.meta.env.VITE_RESET_WORKBENCH === '1' && RealtimePanel
+          && state.date && (state.compare.length > 0 || state.security || state.sector) &&
           <LazyLoadBoundary>
             <Suspense fallback={<p role="status" className="status">正在加载实时证据账本…</p>}>
               <RealtimePanel

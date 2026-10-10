@@ -1,3 +1,5 @@
+import Decimal from 'decimal.js';
+import { isLosslessNumber } from 'lossless-json';
 import type {
   AnomalyData,
   AnomalyEvent,
@@ -55,6 +57,12 @@ const ORDER_BOOK_STATUSES = new Set(['available', 'disabled', 'unavailable']);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
+const SHANGHAI_DATE = new Intl.DateTimeFormat('en', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 type RecordValue = Record<string, unknown>;
 
@@ -84,21 +92,43 @@ function nullableIdentifier(value: unknown, field: string): string | null {
   return value === null ? null : identifier(value, field);
 }
 
-function finite(value: unknown, field: string, nullable = false): number | null {
+function finite(value: unknown, field: string, nullable = false): string | null {
   if (nullable && value === null) return null;
-  if (typeof value !== 'number' || !Number.isFinite(value)) fail(field);
-  return value;
+  const text = isLosslessNumber(value)
+    ? value.toString()
+    : typeof value === 'number'
+      ? String(value)
+      : typeof value === 'string'
+        ? value
+        : null;
+  if (text === null || text.trim() === '') fail(field);
+  try {
+    if (!new Decimal(text).isFinite()) fail(field);
+  } catch {
+    fail(field);
+  }
+  return text;
 }
 
-function nonnegative(value: unknown, field: string, nullable = false): number | null {
+function nonnegative(value: unknown, field: string, nullable = false): string | null {
   const result = finite(value, field, nullable);
-  if (result !== null && result < 0) fail(field);
+  if (result !== null && new Decimal(result).isNegative()) fail(field);
   return result;
 }
 
+export function decimalForChart(value: string): number | null {
+  const exact = new Decimal(value);
+  if (exact.abs().gt(Number.MAX_SAFE_INTEGER)) return null;
+  const converted = exact.toNumber();
+  if (!Number.isFinite(converted) || (converted === 0 && !exact.isZero())) return null;
+  return converted;
+}
+
 function integer(value: unknown, field: string, minimum = 0): number {
-  if (!Number.isSafeInteger(value) || (value as number) < minimum) fail(field);
-  return value as number;
+  const candidate = isLosslessNumber(value) ? value.toString() : value;
+  const parsed = typeof candidate === 'string' ? Number(candidate) : candidate;
+  if (!Number.isSafeInteger(parsed) || (parsed as number) < minimum) fail(field);
+  return parsed as number;
 }
 
 function dateValue(value: unknown, field: string): string {
@@ -113,6 +143,15 @@ function timestamp(value: unknown, field: string): string {
     fail(field);
   }
   return value;
+}
+
+function validateEventDate(value: string, selected: string): void {
+  const parts = Object.fromEntries(
+    SHANGHAI_DATE.formatToParts(new Date(value))
+      .filter(part => part.type !== 'literal')
+      .map(part => [part.type, part.value]),
+  );
+  if (`${parts.year}-${parts.month}-${parts.day}` !== selected) fail('event date');
 }
 
 function status(value: unknown): RealtimeStatus {
@@ -139,6 +178,7 @@ function coverage(value: unknown): RealtimeCoverage | null {
   if (result.valid + result.excluded + result.missing !== result.expected) {
     fail('coverage counts');
   }
+  if (result.excluded !== 0) fail('coverage exclusions');
   return result;
 }
 
@@ -159,7 +199,8 @@ function baseEnvelope(value: unknown): RealtimeEnvelope<unknown> {
   exact(item, ENVELOPE_KEYS, 'envelope');
   if (item.trade_date !== null) dateValue(item.trade_date, 'trade date');
   const flags = item.quality_flags;
-  if (!Array.isArray(flags) || !flags.every(flag => typeof flag === 'string' && flag.trim() !== '')) {
+  if (!Array.isArray(flags) || flags.length > 1
+    || !flags.every(flag => typeof flag === 'string' && flag.trim() !== '')) {
     fail('quality flags');
   }
   if (item.snapshot_id !== null || item.rule_version !== null) fail('intraday identity');
@@ -175,12 +216,27 @@ function baseEnvelope(value: unknown): RealtimeEnvelope<unknown> {
     basis: realtimeBasis(item.basis),
     data: item.data,
   };
-  if (result.data === null) {
-    if (result.coverage !== null || result.quality_flags.length === 0) fail('unavailable envelope');
-  } else if (result.coverage === null) {
-    fail('available envelope coverage');
+  if (result.quality_flags.length === 0
+    && (result.coverage === null || result.coverage.missing !== 0)) {
+    fail('completeness');
   }
   return result;
+}
+
+function validateCompleteness(
+  value: RealtimeStatus,
+  envelope: RealtimeEnvelope<unknown>,
+): RealtimeStatus {
+  const known = envelope.coverage;
+  const hasReason = envelope.quality_flags.length === 1;
+  if (value === 'complete') {
+    if (known === null || known.missing !== 0 || hasReason) fail('completeness');
+  } else if (value === 'incomplete') {
+    if (known === null || known.missing === 0 || !hasReason) fail('completeness');
+  } else if (!hasReason) {
+    fail('completeness');
+  }
+  return value;
 }
 
 function query(entries: [string, string | undefined][]): string {
@@ -244,6 +300,27 @@ export function sectorFlowPath(selection: SectorFlowSelection): string {
   ])}`;
 }
 
+export function realtimeRequestPaths(
+  selectedDate: string,
+  securityIds: string[],
+  sectorId?: string,
+): { quote: string | null; minute: string | null; anomaly: string | null; flow: string | null } {
+  try {
+    dateValue(selectedDate, 'selected date');
+  } catch {
+    return { quote: null, minute: null, anomaly: null, flow: null };
+  }
+  const primary = securityIds[0];
+  return {
+    quote: primary ? quotePath({ securityIds }) : null,
+    minute: primary ? minutePath({ securityId: primary, date: selectedDate }) : null,
+    anomaly: primary
+      ? anomalyPath({ securityId: primary, date: selectedDate, limit: 50 })
+      : null,
+    flow: sectorId ? sectorFlowPath({ sectorId, date: selectedDate }) : null,
+  };
+}
+
 function validateQuote(value: unknown): RealtimeQuote {
   const item = record(value, 'quote');
   exact(item, QUOTE_KEYS, 'quote');
@@ -294,6 +371,7 @@ export function validateQuoteResponse(value: unknown, selection: QuoteSelection)
   }
   const batchId = identifier(data.quote_batch_id, 'quote batch');
   if (selection.batchId && batchId !== selection.batchId) fail('quote batch selection');
+  const completeness = validateCompleteness(status(data.status), base);
   return {
     ...base,
     data: {
@@ -301,7 +379,7 @@ export function validateQuoteResponse(value: unknown, selection: QuoteSelection)
       source_event_at: sourceEvent,
       received_at: received,
       delay_ms: integer(data.delay_ms, 'quote delay'),
-      status: status(data.status),
+      status: completeness,
       quotes: parsed,
     },
   };
@@ -315,11 +393,12 @@ function validateMinuteBar(value: unknown): MinuteBar {
   const availableAt = timestamp(item.available_at, 'minute available timestamp');
   if (Date.parse(receivedAt) < Date.parse(eventAt)
     || Date.parse(availableAt) < Date.parse(receivedAt)) fail('minute timestamp order');
-  const open = nonnegative(item.open, 'minute open') as number;
-  const high = nonnegative(item.high, 'minute high') as number;
-  const low = nonnegative(item.low, 'minute low') as number;
-  const close = nonnegative(item.close, 'minute close') as number;
-  if (high < Math.max(open, close, low) || low > Math.min(open, close, high)) fail('minute OHLC');
+  const open = nonnegative(item.open, 'minute open') as string;
+  const high = nonnegative(item.high, 'minute high') as string;
+  const low = nonnegative(item.low, 'minute low') as string;
+  const close = nonnegative(item.close, 'minute close') as string;
+  if (new Decimal(high).lt(Decimal.max(open, close, low))
+    || new Decimal(low).gt(Decimal.min(open, close, high))) fail('minute OHLC');
   if (typeof item.final !== 'boolean') fail('minute final');
   return {
     batch_id: identifier(item.batch_id, 'minute batch'),
@@ -362,8 +441,12 @@ export function validateMinuteResponse(value: unknown, selection: MinuteSelectio
     if (selection.batchId && bar.batch_id !== selection.batchId) fail('minute batch selection');
     if (base.source && bar.source_id !== base.source) fail('minute source identity');
     if (base.source_version && bar.source_version !== base.source_version) fail('minute source version');
+    validateEventDate(bar.event_at, selection.date);
   }
-  return { ...base, data: { status: status(data.status), bars } };
+  return {
+    ...base,
+    data: { status: validateCompleteness(status(data.status), base), bars },
+  };
 }
 
 function validateAnomaly(value: unknown): AnomalyEvent {
@@ -386,7 +469,7 @@ function validateAnomaly(value: unknown): AnomalyEvent {
     metric: item.metric as AnomalyEvent['metric'],
     window: integer(item.window, 'anomaly window', 2),
     value: finite(item.value, 'anomaly value', true),
-    threshold: finite(item.threshold, 'anomaly threshold') as number,
+    threshold: finite(item.threshold, 'anomaly threshold') as string,
     quality: item.quality as AnomalyEvent['quality'],
   };
 }
@@ -404,6 +487,7 @@ export function validateAnomalyResponse(
   exact(data, ANOMALY_DATA_KEYS, 'anomaly data');
   if (!Array.isArray(data.events)) fail('anomaly events');
   const events = data.events.map(validateAnomaly);
+  events.forEach(event => validateEventDate(event.event_at, selection.date));
   if (selection.securityId && events.some(item => item.security_id !== selection.securityId)) {
     fail('anomaly security selection');
   }
@@ -414,7 +498,7 @@ export function validateAnomalyResponse(
   return {
     ...base,
     data: {
-      status: status(data.status),
+      status: validateCompleteness(status(data.status), base),
       events,
       next_cursor: cursor as string | null,
     },
@@ -464,6 +548,10 @@ export function validateSectorFlowResponse(
     if (base.source_version && point.source_version !== base.source_version) {
       fail('sector flow source version');
     }
+    validateEventDate(point.event_at, selection.date);
   }
-  return { ...base, data: { status: status(data.status), points } };
+  return {
+    ...base,
+    data: { status: validateCompleteness(status(data.status), base), points },
+  };
 }

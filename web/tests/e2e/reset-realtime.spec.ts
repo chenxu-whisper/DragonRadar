@@ -11,6 +11,7 @@ const BATCH = 'batch-1';
 
 type MockOptions = {
   failFirstQuote?: boolean;
+  revokeFirstQuote?: boolean;
 };
 
 function envelope(
@@ -54,6 +55,9 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
       quoteAttempts += 1;
       if (options.failFirstQuote && quoteAttempts === 1) {
         return route.fulfill({ status: 503, json: { code: 'STORAGE_UNAVAILABLE' } });
+      }
+      if (options.revokeFirstQuote && quoteAttempts === 1) {
+        return route.fulfill({ status: 403, json: { code: 'source_forbidden' } });
       }
       return route.fulfill({ json: envelope({
         quote_batch_id: BATCH,
@@ -206,6 +210,21 @@ test('retry is keyboard reachable and restores the quote ledger without layout s
   await expect(retry).toHaveCount(0);
 });
 
+test('shows revoked state and keyboard-reachable recovery without retaining evidence', async ({ page }) => {
+  await mockRealtime(page, { revokeFirstQuote: true });
+  await openSelected(page);
+
+  const panel = page.getByRole('region', { name: '实时证据账本' });
+  await expect(panel.getByText('实时来源授权已撤销')).toBeVisible();
+  await expect(panel.getByText(BATCH, { exact: true })).toHaveCount(0);
+  const retry = panel.getByRole('button', { name: '重新检查实时来源' });
+  await retry.focus();
+  await expect(retry).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(panel.getByText('延迟 5,000 ms')).toBeVisible();
+  await expect(panel.getByText('实时来源授权已撤销')).toHaveCount(0);
+});
+
 for (const target of [
   { name: '375px', width: 375, height: 900 },
   { name: '1440px', width: 1440, height: 1000 },
@@ -216,6 +235,7 @@ for (const target of [
     page.on('console', message => {
       if (message.type() === 'error') consoleErrors.push(message.text());
     });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.setViewportSize({ width: target.width, height: target.height });
     await mockRealtime(page);
     await openSelected(page);
@@ -238,6 +258,9 @@ for (const target of [
       panelOverflow: false,
       tableOverlap: false,
     });
+    expect(await page.evaluate(
+      () => matchMedia('(prefers-reduced-motion: reduce)').matches,
+    )).toBe(true);
     expect(await new AxeBuilder({ page }).include('[aria-label="实时证据账本"]').analyze())
       .toMatchObject({ violations: [] });
     expect(consoleErrors).toEqual([]);

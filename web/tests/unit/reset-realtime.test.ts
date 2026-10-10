@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { request } from '../../src/api';
 import {
   anomalyPath,
+  decimalForChart,
   minutePath,
   quotePath,
+  realtimeRequestPaths,
   sectorFlowPath,
   validateAnomalyResponse,
   validateMinuteResponse,
@@ -22,6 +25,8 @@ const basis = {
   price_type: 'raw',
   benchmark: null,
 };
+
+afterEach(() => vi.unstubAllGlobals());
 
 function envelope(data: unknown, changes: Record<string, unknown> = {}) {
   return {
@@ -61,6 +66,7 @@ function quoteResponse(changes: Record<string, unknown> = {}) {
     ...changes,
   }, {
     trade_date: null,
+    quality_flags: ['delayed'],
   });
 }
 
@@ -197,20 +203,139 @@ describe('realtime public GET path builders', () => {
       + '&source_id=licensed-feed&batch_id=batch-1',
     );
   });
+
+  it.each(['', '2026-02-30', 'not-a-date'])(
+    'does not plan requests for invalid date %j',
+    invalidDate => {
+      expect(realtimeRequestPaths(invalidDate, [security], 'sector-1')).toEqual({
+        quote: null,
+        minute: null,
+        anomaly: null,
+        flow: null,
+      });
+    },
+  );
+
+  it('plans requests only for selections required by each endpoint', () => {
+    expect(realtimeRequestPaths(date, [], undefined)).toEqual({
+      quote: null,
+      minute: null,
+      anomaly: null,
+      flow: null,
+    });
+    expect(realtimeRequestPaths(date, [security], undefined)).toMatchObject({
+      quote: expect.stringContaining('/api/realtime/quotes?'),
+      minute: expect.stringContaining('/api/realtime/minutes?'),
+      anomaly: expect.stringContaining('/api/realtime/anomalies?'),
+      flow: null,
+    });
+    expect(realtimeRequestPaths(date, [], 'sector-1')).toMatchObject({
+      quote: null,
+      minute: null,
+      anomaly: null,
+      flow: expect.stringContaining('/api/market/sector-flow/intraday?'),
+    });
+  });
 });
 
 describe('realtime strict response validation', () => {
-  it('accepts finite decimal wire numbers and keeps zero values', () => {
-    const result = validateQuoteResponse(quoteResponse(), {
+  it('bounds lossy chart conversion without changing exact Decimal storage', () => {
+    expect(decimalForChart('10.125')).toBe(10.125);
+    expect(decimalForChart('0')).toBe(0);
+    expect(decimalForChart('9007199254740993.01')).toBeNull();
+    expect(decimalForChart('1e10000')).toBeNull();
+    expect(decimalForChart('1e-10000')).toBeNull();
+  });
+
+  it('keeps a large unquoted Decimal exact from the HTTP wire through validation', async () => {
+    vi.stubEnv('VITE_RESET_WORKBENCH', '1');
+    const body = JSON.stringify(quoteResponse()).replace(
+      '9007199254740.125',
+      '9007199254740993.01',
+    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
+
+    const raw = await request<unknown>(quotePath({ securityIds: [security] }));
+    const result = validateQuoteResponse(raw, { securityIds: [security] });
+
+    expect(result.data?.quotes[0].amount).toBe('9007199254740993.01');
+  });
+
+  it('preserves every quote Decimal field as exact wire text and keeps zero values', () => {
+    const response = quoteResponse();
+    (response.data as { quotes: Record<string, unknown>[] }).quotes[0] = {
+      ...(response.data as { quotes: Record<string, unknown>[] }).quotes[0],
+      last: '9007199254740993.01',
+      bid: '9007199254740993.02',
+      ask: '9007199254740993.03',
+      bid_size: '9007199254740993.04',
+      ask_size: '9007199254740993.05',
+      volume: '0',
+      amount: '9007199254740993.06',
+      order_book_status: 'available',
+      order_book_unavailable_reason: null,
+    };
+    const result = validateQuoteResponse(response, {
       securityIds: [security],
       sourceId: source,
       batchId: batch,
     });
     expect(result.data?.quotes[0]).toMatchObject({
-      last: 10.125,
-      volume: 0,
-      amount: 9007199254740.125,
+      last: '9007199254740993.01',
+      bid: '9007199254740993.02',
+      ask: '9007199254740993.03',
+      bid_size: '9007199254740993.04',
+      ask_size: '9007199254740993.05',
+      volume: '0',
+      amount: '9007199254740993.06',
     });
+  });
+
+  it('preserves all minute, anomaly, and flow Decimal fields as exact wire text', () => {
+    const exact = '9007199254740993.01';
+    const bar = {
+      ...minuteBar('2026-10-09T01:30:00Z', 10),
+      open: exact,
+      high: exact,
+      low: exact,
+      close: exact,
+      volume: '0',
+      amount: exact,
+    };
+    const minute = validateMinuteResponse(minuteResponse([bar]), {
+      securityId: security,
+      date,
+    });
+    expect(minute.data?.bars[0]).toMatchObject({
+      open: exact,
+      high: exact,
+      low: exact,
+      close: exact,
+      volume: '0',
+      amount: exact,
+    });
+
+    const anomaly = anomalyResponse();
+    (anomaly.data as { events: Record<string, unknown>[] }).events[0] = {
+      ...(anomaly.data as { events: Record<string, unknown>[] }).events[0],
+      value: exact,
+      threshold: '0.02000000000000000001',
+    };
+    expect(validateAnomalyResponse(anomaly, { date }).data?.events[0]).toMatchObject({
+      value: exact,
+      threshold: '0.02000000000000000001',
+    });
+
+    const flow = flowResponse();
+    (flow.data as { points: Record<string, unknown>[] }).points[0] = {
+      ...(flow.data as { points: Record<string, unknown>[] }).points[0],
+      net_inflow: exact,
+      unavailable_reason: null,
+    };
+    expect(validateSectorFlowResponse(flow, {
+      sectorId: 'sector-1',
+      date,
+    }).data?.points[0].net_inflow).toBe(exact);
   });
 
   it.each([
@@ -330,6 +455,18 @@ describe('realtime strict response validation', () => {
     }
   });
 
+  it('binds each minute event to the selected Asia/Shanghai trade date', () => {
+    expect(validateMinuteResponse(
+      minuteResponse([minuteBar('2026-10-08T16:00:00Z', 10)]),
+      { securityId: security, date },
+    ).data?.bars[0].event_at).toBe('2026-10-08T16:00:00Z');
+
+    expect(() => validateMinuteResponse(
+      minuteResponse([minuteBar('2026-10-08T15:59:59Z', 10)]),
+      { securityId: security, date },
+    )).toThrow(/event date/i);
+  });
+
   it('validates anomaly rule evidence and preserves the opaque next cursor', () => {
     const result = validateAnomalyResponse(anomalyResponse(), {
       date,
@@ -340,8 +477,8 @@ describe('realtime strict response validation', () => {
     });
     expect(result.data?.events[0]).toMatchObject({
       rule_version: 'return-v1',
-      value: 0.03,
-      threshold: 0.02,
+      value: '0.03',
+      threshold: '0.02',
       batch_id: batch,
       quality: 'complete',
     });
@@ -376,6 +513,17 @@ describe('realtime strict response validation', () => {
     })).toThrow(/timestamp/i);
   });
 
+  it('binds each anomaly event to the selected Asia/Shanghai trade date', () => {
+    const event = (anomalyResponse().data as { events: Record<string, unknown>[] }).events[0];
+    expect(() => validateAnomalyResponse(anomalyResponse({
+      events: [{
+        ...event,
+        event_at: '2026-10-09T16:00:00Z',
+        available_at: '2026-10-09T16:00:00Z',
+      }],
+    }), { date })).toThrow(/event date/i);
+  });
+
   it('keeps unavailable flow null separate from an observed zero', () => {
     const unavailable = validateSectorFlowResponse(flowResponse(), {
       sectorId: 'sector-1',
@@ -391,7 +539,7 @@ describe('realtime strict response validation', () => {
     });
     expect(unavailable.data?.points[0].net_inflow).toBeNull();
     expect(unavailable.data?.points[0].unavailable_reason).toBe('field_not_supplied');
-    expect(zero.data?.points[0].net_inflow).toBe(0);
+    expect(zero.data?.points[0].net_inflow).toBe('0');
     expect(zero.data?.points[0].unavailable_reason).toBeNull();
   });
 
@@ -431,24 +579,124 @@ describe('realtime strict response validation', () => {
     })).toThrow(/timestamp/i);
   });
 
-  it('accepts unavailable null-data envelopes but rejects inconsistent coverage', () => {
-    const unavailable = envelope(null, {
+  it('binds each flow point to the selected Asia/Shanghai trade date', () => {
+    const response = flowResponse();
+    const point = (response.data as { points: Record<string, unknown>[] }).points[0];
+    point.event_at = '2026-10-09T16:00:00Z';
+    point.available_at = '2026-10-09T16:00:00Z';
+    expect(() => validateSectorFlowResponse(response, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/event date/i);
+  });
+
+  it('accepts legal null-data envelopes with known missing or zero coverage', () => {
+    const missing = envelope(null, {
       trade_date: null,
       source: null,
       source_version: null,
-      coverage: null,
+      coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
       quality_flags: ['no_data'],
     });
-    expect(validateQuoteResponse(unavailable, {
+    expect(validateQuoteResponse(missing, {
+      securityIds: [security],
+    })).toMatchObject({
+      data: null,
+      coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
+    });
+
+    const completeZero = envelope(null, {
+      trade_date: null,
+      coverage: { expected: 0, valid: 0, excluded: 0, missing: 0 },
+      quality_flags: [],
+    });
+    expect(validateQuoteResponse(completeZero, {
       securityIds: [security],
     }).data).toBeNull();
+  });
 
-    expect(() => validateQuoteResponse(envelope(null, {
-      trade_date: null,
-      coverage,
+  it.each([
+    ['complete with missing coverage', minuteResponse([], {
+      status: 'complete',
+    })],
+    ['complete with a reason', envelope({
+      status: 'complete',
+      bars: [],
+    }, { quality_flags: ['stale_stream'] })],
+    ['incomplete without missing coverage', envelope({
+      status: 'incomplete',
+      bars: [],
+    })],
+    ['incomplete without known coverage', envelope({
+      status: 'incomplete',
+      bars: [],
+    }, { coverage: null, quality_flags: ['stream_gap'] })],
+    ['incomplete without a reason', envelope({
+      status: 'incomplete',
+      bars: [],
+    }, {
+      coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
       quality_flags: [],
-    }), {
-      securityIds: [security],
+    })],
+    ['delayed without a reason', envelope({
+      status: 'delayed',
+      bars: [],
+    })],
+    ['unavailable without a reason', envelope({
+      status: 'unavailable',
+      bars: [],
+    })],
+  ])('rejects SourceCompleteness contradiction: %s', (_name, response) => {
+    expect(() => validateMinuteResponse(response, {
+      securityId: security,
+      date,
+    })).toThrow(/completeness/i);
+  });
+
+  it('accepts delayed and unavailable states allowed by backend SourceCompleteness', () => {
+    const delayedUnknown = envelope({
+      status: 'delayed',
+      bars: [],
+    }, {
+      coverage: null,
+      quality_flags: ['stale_stream'],
+    });
+    expect(validateMinuteResponse(delayedUnknown, {
+      securityId: security,
+      date,
+    }).data?.status).toBe('delayed');
+
+    const unavailableKnown = envelope({
+      status: 'unavailable',
+      bars: [],
+    }, {
+      coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
+      quality_flags: ['source_unavailable'],
+    });
+    expect(validateMinuteResponse(unavailableKnown, {
+      securityId: security,
+      date,
+    }).data?.status).toBe('unavailable');
+  });
+
+  it.each([
+    ['realtime exclusions', envelope({
+      status: 'incomplete',
+      bars: [],
+    }, {
+      coverage: { expected: 1, valid: 0, excluded: 1, missing: 0 },
+      quality_flags: ['stream_gap'],
+    })],
+    ['multiple quality reasons', envelope({
+      status: 'delayed',
+      bars: [],
+    }, {
+      quality_flags: ['stream_gap', 'second_reason'],
+    })],
+  ])('rejects noncanonical %s', (_name, response) => {
+    expect(() => validateMinuteResponse(response, {
+      securityId: security,
+      date,
     })).toThrow();
   });
 });

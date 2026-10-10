@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check:bundle": "node scripts/check-default-bundle.mjs",
-    "test": "vitest run && node --test scripts/*.test.mjs",
+    "test": "node scripts/test-runner.mjs",
     "test:e2e": "playwright test --config playwright.config.ts",
     "test:e2e:reset": "playwright test --config playwright.reset.config.ts",
     "test:e2e:private": "playwright test --config playwright.private.config.ts",
@@ -23,6 +23,7 @@
   "dependencies": {
     "decimal.js": "10.6.0",
     "echarts": "6.1.0",
+    "lossless-json": "4.3.1",
     "lucide-react": "1.43.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"

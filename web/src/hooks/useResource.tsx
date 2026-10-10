@@ -46,6 +46,9 @@ export function useResource<T>(path: string | null, snapshot?: string, refreshTo
         setResult({ key: null, loading: false }); return;
       }
       if (failure.status === 403 && (!enabled || failure.code === 'source_forbidden' || !failure.code)) {
+        if (!enabled && failure.code === 'source_forbidden') {
+          setResult({ key, error: failure, loading: false }); return;
+        }
         revoke();
         if (enabled) window.dispatchEvent(new Event('private-source-revoked'));
         setResult({ key: null, loading: false }); return;

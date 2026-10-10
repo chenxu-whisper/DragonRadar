@@ -1,6 +1,25 @@
 import { expect, test } from '@playwright/test';
 import { ID, OLD, mockMarket, type MockState } from '../fixtures/market';
 
+test('realtime feature flag disabled sends no realtime requests with active selections', async ({ page }) => {
+  const realtimeRequests: string[] = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/realtime/')
+      || url.pathname === '/api/market/sector-flow/intraday') {
+      realtimeRequests.push(url.pathname);
+    }
+  });
+  await mockMarket(page);
+  await page.goto(
+    `/?view=overview&snapshot=${ID}&date=2026-09-10&security=TEST001&sector=SEC001`,
+  );
+  await expect(page.getByRole('heading', { name: '市场总览' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '实时证据账本' })).toHaveCount(0);
+  await page.waitForTimeout(100);
+  expect(realtimeRequests).toEqual([]);
+});
+
 test('overview, server pagination, drawer focus and fullpage back preserve context', async ({ page }) => {
   await mockMarket(page);
   await page.goto('/');

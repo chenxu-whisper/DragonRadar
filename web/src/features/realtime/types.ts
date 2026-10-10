@@ -1,6 +1,7 @@
 export type RealtimeStatus = 'complete' | 'delayed' | 'incomplete' | 'unavailable';
 export type RealtimeMetric = 'window_return' | 'relative_volume' | 'order_book_imbalance';
 export type OrderBookStatus = 'available' | 'disabled' | 'unavailable';
+export type RealtimeDecimal = string;
 
 export interface RealtimeCoverage {
   expected: number;
@@ -60,13 +61,13 @@ export interface SectorFlowSelection extends BatchSelection {
 
 export interface RealtimeQuote {
   security_id: string;
-  last: number | null;
-  bid: number | null;
-  ask: number | null;
-  bid_size: number | null;
-  ask_size: number | null;
-  volume: number | null;
-  amount: number | null;
+  last: RealtimeDecimal | null;
+  bid: RealtimeDecimal | null;
+  ask: RealtimeDecimal | null;
+  bid_size: RealtimeDecimal | null;
+  ask_size: RealtimeDecimal | null;
+  volume: RealtimeDecimal | null;
+  amount: RealtimeDecimal | null;
   order_book_status: OrderBookStatus;
   order_book_unavailable_reason: string | null;
 }
@@ -88,12 +89,12 @@ export interface MinuteBar {
   event_at: string;
   received_at: string;
   available_at: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number | null;
-  amount: number | null;
+  open: RealtimeDecimal;
+  high: RealtimeDecimal;
+  low: RealtimeDecimal;
+  close: RealtimeDecimal;
+  volume: RealtimeDecimal | null;
+  amount: RealtimeDecimal | null;
   revision: number;
   final: boolean;
 }
@@ -112,8 +113,8 @@ export interface AnomalyEvent {
   available_at: string;
   metric: RealtimeMetric;
   window: number;
-  value: number | null;
-  threshold: number;
+  value: RealtimeDecimal | null;
+  threshold: RealtimeDecimal;
   quality: 'complete' | 'delayed' | 'incomplete';
 }
 
@@ -130,7 +131,7 @@ export interface SectorFlowPoint {
   sector: string;
   event_at: string;
   available_at: string;
-  net_inflow: number | null;
+  net_inflow: RealtimeDecimal | null;
   unit: string;
   unavailable_reason: string | null;
 }

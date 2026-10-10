@@ -3,13 +3,11 @@ import type { EChartsCoreOption } from 'echarts/core';
 import { ApiError } from '../../api';
 import { Chart } from '../../components/Chart';
 import { ResourceStatus, TableScroll } from '../../components/Common';
-import { timestamp } from '../../format';
+import { formatDecimal, timestamp } from '../../format';
 import { useResource, type Resource } from '../../hooks/useResource';
 import {
-  anomalyPath,
-  minutePath,
-  quotePath,
-  sectorFlowPath,
+  decimalForChart,
+  realtimeRequestPaths,
   validateAnomalyResponse,
   validateMinuteResponse,
   validateQuoteResponse,
@@ -77,16 +75,15 @@ function CoverageText({ value }: { value: RealtimeCoverage | null }) {
   </span>;
 }
 
-function number(value: number | null): string {
-  if (value === null) return '—';
-  return new Intl.NumberFormat('zh-CN', { maximumSignificantDigits: 15 }).format(value);
+function number(value: string | null): string {
+  return value === null ? '—' : formatDecimal(value);
 }
 
 function minuteAxis(response: MinuteResponse): { labels: string[]; values: (number | null)[] } {
   const bars = response.data?.bars ?? [];
   if (bars.length === 0) return { labels: [], values: [] };
   const byMinute = new Map(
-    bars.map(bar => [Math.floor(Date.parse(bar.event_at) / 60_000), bar.close]),
+    bars.map(bar => [Math.floor(Date.parse(bar.event_at) / 60_000), decimalForChart(bar.close)]),
   );
   const first = Math.min(...byMinute.keys());
   const last = Math.max(...byMinute.keys());
@@ -169,7 +166,7 @@ function FlowLedger({ response }: { response: SectorFlowResponse }) {
     series: [{
       name: '净流入',
       type: 'line',
-      data: available.map(point => point.net_inflow),
+      data: available.map(point => decimalForChart(point.net_inflow!)),
       connectNulls: false,
       showSymbol: true,
       lineStyle: { width: 1.5, color: '#1759ad' },
@@ -214,26 +211,34 @@ export default function RealtimePanel({
     () => sectorId ? { sectorId, date } : null,
     [sectorId, date],
   );
+  const paths = useMemo(
+    () => realtimeRequestPaths(date, selected, sectorId),
+    [date, selected.join('\0'), sectorId],
+  );
 
   const quoteRaw = useResource<unknown>(
-    date && selected.length ? quotePath(quoteSelection) : null,
+    paths.quote,
     undefined,
     refreshToken,
   );
   const minuteRaw = useResource<unknown>(
-    minuteSelection ? minutePath(minuteSelection) : null,
+    paths.minute,
     undefined,
     refreshToken,
   );
   const anomalyRaw = useResource<unknown>(
-    anomalySelection ? anomalyPath(anomalySelection) : null,
+    paths.anomaly,
     undefined,
     refreshToken,
   );
   const flowRaw = useResource<unknown>(
-    flowSelection ? sectorFlowPath(flowSelection) : null,
+    paths.flow,
     undefined,
     refreshToken,
+  );
+  const rawResources = [quoteRaw, minuteRaw, anomalyRaw, flowRaw];
+  const revoked = rawResources.some(
+    resource => resource.error?.status === 403 && resource.error.code === 'source_forbidden',
   );
 
   const quotes = useValidated(
@@ -258,6 +263,24 @@ export default function RealtimePanel({
   );
 
   if (!date || (!selected.length && !sectorId)) return null;
+  if (revoked) {
+    return <section className="securities" aria-label="实时证据账本">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">授权实时证据 / 来源不可用</p>
+          <h2>实时证据账本</h2>
+        </div>
+      </div>
+      <div className="leader-state" role="alert">
+        <span className="status-token state-missing">已撤销</span>
+        <strong>实时来源授权已撤销</strong>
+        <span>已清除实时证据，不会展示撤销前的缓存内容。</span>
+        <button type="button" onClick={() => rawResources.forEach(resource => resource.refresh())}>
+          重新检查实时来源
+        </button>
+      </div>
+    </section>;
+  }
   const quoteData = quotes.data?.data;
   const minuteData = minutes.data?.data;
   const anomalyData = anomalies.data?.data;

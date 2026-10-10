@@ -29,6 +29,7 @@ describe('前端发布门禁', () => {
   it('每个 spec 家族仅由匹配其环境的命令收集一次', () => {
     expect(read('playwright.config.ts')).toContain("testIgnore: '**/reset-*.spec.ts'");
     expect(read('playwright.reset.config.ts')).toContain("testMatch: 'reset-*.spec.ts'");
+    expect(read('playwright.reset.config.ts')).toContain('explicitWorkbench');
     expect(read('playwright.reset.config.ts')).toContain("'**/reset-ai.spec.ts'");
     expect(read('playwright.reset.config.ts')).toContain("'**/reset-ai-public.spec.ts'");
     expect(read('playwright.private.config.ts')).toContain("testDir: './tests/private'");
