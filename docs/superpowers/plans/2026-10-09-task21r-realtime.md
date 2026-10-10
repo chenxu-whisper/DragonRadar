@@ -215,6 +215,11 @@ git commit -m "feat: define realtime evidence models"
 - Create: `src/dragon_radar/realtime/tables.py`
 - Create: `src/dragon_radar/migrations/versions/0011_realtime.py`
 - Modify: `tests/test_reset_realtime.py`
+- Modify: `src/dragon_radar/storage/database.py`
+- Modify: `src/dragon_radar/migrations/release_manifest.json`
+- Modify: `src/dragon_radar/storage/schema_contract.json`
+- Modify: `scripts/verify_release_migrations.py`
+- Modify: `tests/test_release_migrations.py`
 
 - [ ] **Step 1: Write failing migration and immutability tests**
 
@@ -275,21 +280,42 @@ release rollback; `downgrade()` must raise
 Define SQLAlchemy `Table` objects with names and column types identical to the
 migration. Do not call `metadata.create_all()`.
 
-- [ ] **Step 5: Verify Task 2**
+- [ ] **Step 5: Advance the release manifest and readiness atomically**
+
+Append `0011_realtime.py` with canonical LF byte count, SHA-256, revision, and
+parent. Change the manifest head to `0011_realtime`, append it to
+`supported_from`, and leave every prior revision entry byte-identical.
+
+Set `SCHEMA_REVISION = "0011_realtime"`. Against a fresh PostgreSQL 17 database
+at the new head, regenerate:
+
+```powershell
+uv run python scripts/verify_release_migrations.py `
+  --database-url $env:DRAGON_TEST_DATABASE_URL `
+  --write-schema-contract src/dragon_radar/storage/schema_contract.json
+```
+
+Add an `0011_realtime` sentinel containing one batch, minute revision, and
+anomaly event. Extend release migration tests to require 19 revisions, the new
+wheel member, strict readiness, and drift detection for one realtime column,
+constraint, FK, index, and trigger.
+
+- [ ] **Step 6: Verify Task 2**
 
 Run against PostgreSQL 17:
 
 ```powershell
 uv run pytest tests/test_reset_realtime.py -q -k "0011 or realtime_schema or immutable"
+uv run pytest tests/test_release_migrations.py tests/test_storage.py -q
 uv run ruff check src/dragon_radar/realtime/tables.py src/dragon_radar/migrations/versions/0011_realtime.py tests/test_reset_realtime.py
 ```
 
 Expected: all selected tests pass.
 
-- [ ] **Step 6: Commit Task 2**
+- [ ] **Step 7: Commit Task 2**
 
 ```powershell
-git add src/dragon_radar/realtime/tables.py src/dragon_radar/migrations/versions/0011_realtime.py tests/test_reset_realtime.py
+git add src/dragon_radar/realtime/tables.py src/dragon_radar/migrations/versions/0011_realtime.py tests/test_reset_realtime.py src/dragon_radar/storage/database.py src/dragon_radar/migrations/release_manifest.json src/dragon_radar/storage/schema_contract.json scripts/verify_release_migrations.py tests/test_release_migrations.py
 git commit -m "feat: add realtime storage migration"
 ```
 
@@ -582,73 +608,19 @@ git add web/src/features/realtime web/src/pages/Overview.tsx web/tests/unit/rese
 git commit -m "feat: add realtime research panel"
 ```
 
-## Task 6: Advance Release Contracts To `0011_realtime`
+## Task 6: Verify `0011_realtime` Release Contracts And Evidence
 
 **Files:**
-- Modify: `src/dragon_radar/storage/database.py`
-- Modify: `src/dragon_radar/migrations/release_manifest.json`
-- Modify: `src/dragon_radar/storage/schema_contract.json`
-- Modify: `scripts/verify_release_migrations.py`
-- Modify: `tests/test_release_migrations.py`
 - Modify: `.github/workflows/ci.yml`
 - Create: `docs/acceptance/reset-realtime.md`
 
-- [ ] **Step 1: Write failing release-chain tests**
+- [ ] **Step 1: Extend CI verification**
 
-Assert:
-
-```python
-def test_release_chain_advances_to_realtime():
-    result = verify_manifest(REPOSITORY_ROOT)
-    assert result["head"] == "0011_realtime"
-    assert result["revision_count"] == 19
-    assert result["errors"] == []
-
-
-def test_installed_wheel_contains_realtime_revision(wheel_members):
-    assert any(name.endswith("/0011_realtime.py") for name in wheel_members)
-```
-
-Add a supported-upgrade sentinel for `0011_realtime` containing one quote batch,
-minute revision, and anomaly event. Add schema drift tests for one realtime
-constraint, index, trigger, FK, and column.
-
-- [ ] **Step 2: Confirm RED**
-
-Run:
-
-```powershell
-uv run pytest tests/test_release_migrations.py -q -k "realtime or release_chain or installed_wheel"
-```
-
-Expected: current manifest and readiness still identify `0010_ai_tasks`.
-
-- [ ] **Step 3: Update the migration manifest**
-
-Append `0011_realtime.py` with canonical LF byte count, SHA-256, revision, and
-parent. Change head to `0011_realtime` and append it to `supported_from`.
-Do not alter any prior revision entry.
-
-- [ ] **Step 4: Regenerate and bind the schema contract**
-
-Against a fresh PostgreSQL 17 schema migrated to `0011_realtime`:
-
-```powershell
-uv run python scripts/verify_release_migrations.py `
-  --database-url $env:DRAGON_TEST_DATABASE_URL `
-  --write-schema-contract src/dragon_radar/storage/schema_contract.json
-```
-
-Review that the contract contains the six realtime tables and no credentials,
-owners, OIDs, or private paths. Set `SCHEMA_REVISION = "0011_realtime"`.
-
-- [ ] **Step 5: Extend wheel and CI verification**
-
-Add the `0011` sentinel to `verify_release_migrations.py`. Update CI focused
+Update CI focused
 commands so the PostgreSQL 17 job runs `tests/test_reset_realtime.py` and the web
 job runs the realtime unit/E2E test without removing any existing gate.
 
-- [ ] **Step 6: Generate Task 21R acceptance evidence**
+- [ ] **Step 2: Generate Task 21R acceptance evidence**
 
 Write `docs/acceptance/reset-realtime.md` with:
 
@@ -660,7 +632,7 @@ Write `docs/acceptance/reset-realtime.md` with:
 - missing licensed minute/order-book/flow inputs;
 - explicit production `NO_GO`.
 
-- [ ] **Step 7: Run Task 21R full verification**
+- [ ] **Step 3: Run Task 21R full verification**
 
 Run:
 
@@ -680,10 +652,10 @@ npx playwright test tests/e2e/reset-realtime.spec.ts
 Run the installed-wheel migration verifier against a labeled disposable
 PostgreSQL 17 container and retain temporary evidence under `.temp/`.
 
-- [ ] **Step 8: Commit release integration and evidence**
+- [ ] **Step 4: Commit CI integration and evidence**
 
 ```powershell
-git add src/dragon_radar/storage/database.py src/dragon_radar/migrations/release_manifest.json src/dragon_radar/storage/schema_contract.json scripts/verify_release_migrations.py tests/test_release_migrations.py .github/workflows/ci.yml docs/acceptance/reset-realtime.md
+git add .github/workflows/ci.yml docs/acceptance/reset-realtime.md
 git commit -m "chore: verify realtime release contracts"
 ```
 
