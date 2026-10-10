@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
+from threading import Event, current_thread
 from uuid import uuid4
 
 import pytest
@@ -1712,6 +1714,177 @@ def test_task21r_duplicate_import_records_attempt_and_preserves_accepted_result(
     }
 
 
+def test_task21r_cross_source_commit_order_serializes_ingest_watermarks(
+    realtime_repository,
+):
+    from factories import grant
+    from sqlalchemy import event, select
+
+    from dragon_radar.realtime.tables import realtime_quote_batches
+    from dragon_radar.storage.repository import Repository
+
+    Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    ).register_source(grant(source_id="backup-feed"))
+    first_inserted = Event()
+    release_first = Event()
+
+    def pause_first_parent_insert(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        if current_thread().name.startswith(
+            "cursor-order-first"
+        ) and statement.startswith("INSERT INTO realtime_quote_batches"):
+            first_inserted.set()
+            assert release_first.wait(5)
+
+    event.listen(
+        realtime_repository.database.engine,
+        "after_cursor_execute",
+        pause_first_parent_insert,
+    )
+    try:
+        with (
+            ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix="cursor-order-first",
+            ) as first_executor,
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="cursor-order-second",
+            ) as second_executor,
+        ):
+            first = first_executor.submit(
+                realtime_repository.ingest_quote_batch,
+                _quote_batch("commit-order-first"),
+                key="commit-order-first",
+            )
+            assert first_inserted.wait(5)
+            second = second_executor.submit(
+                realtime_repository.ingest_quote_batch,
+                _quote_batch(
+                    "commit-order-second",
+                    source_id="backup-feed",
+                ),
+                key="commit-order-second",
+            )
+            with pytest.raises(FutureTimeout):
+                second.result(timeout=0.25)
+            release_first.set()
+            assert first.result(timeout=5).status == "accepted"
+            assert second.result(timeout=5).status == "accepted"
+    finally:
+        release_first.set()
+        event.remove(
+            realtime_repository.database.engine,
+            "after_cursor_execute",
+            pause_first_parent_insert,
+        )
+
+    with realtime_repository.database.engine.connect() as connection:
+        orders = dict(
+            connection.execute(
+                select(
+                    realtime_quote_batches.c.quote_batch_id,
+                    realtime_quote_batches.c.ingest_order,
+                ).where(
+                    realtime_quote_batches.c.quote_batch_id.in_(
+                        ("commit-order-first", "commit-order-second")
+                    )
+                )
+            ).all()
+        )
+    assert orders["commit-order-first"] < orders["commit-order-second"]
+
+
+def test_task21r_cross_source_rollback_releases_watermark_with_gap(
+    realtime_repository,
+):
+    from factories import grant
+    from sqlalchemy import event, select
+
+    from dragon_radar.realtime.tables import realtime_quote_batches
+    from dragon_radar.storage.repository import Repository
+
+    Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    ).register_source(grant(source_id="backup-feed"))
+    first_inserted = Event()
+    release_first = Event()
+
+    def roll_back_first_parent_insert(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        if current_thread().name.startswith(
+            "cursor-rollback-first"
+        ) and statement.startswith("INSERT INTO realtime_quote_batches"):
+            first_inserted.set()
+            assert release_first.wait(5)
+            raise RuntimeError("force first realtime transaction rollback")
+
+    event.listen(
+        realtime_repository.database.engine,
+        "after_cursor_execute",
+        roll_back_first_parent_insert,
+    )
+    try:
+        with (
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="cursor-rollback-first",
+            ) as first_executor,
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="cursor-rollback-second",
+            ) as second_executor,
+        ):
+            first = first_executor.submit(
+                realtime_repository.ingest_quote_batch,
+                _quote_batch("rollback-order-first"),
+                key="rollback-order-first",
+            )
+            assert first_inserted.wait(5)
+            second = second_executor.submit(
+                realtime_repository.ingest_quote_batch,
+                _quote_batch(
+                    "rollback-order-second",
+                    source_id="backup-feed",
+                ),
+                key="rollback-order-second",
+            )
+            with pytest.raises(FutureTimeout):
+                second.result(timeout=0.25)
+            release_first.set()
+            with pytest.raises(
+                RuntimeError,
+                match="force first realtime transaction rollback",
+            ):
+                first.result(timeout=5)
+            assert second.result(timeout=5).status == "accepted"
+    finally:
+        release_first.set()
+        event.remove(
+            realtime_repository.database.engine,
+            "after_cursor_execute",
+            roll_back_first_parent_insert,
+        )
+
+    with realtime_repository.database.engine.connect() as connection:
+        rows = connection.execute(
+            select(
+                realtime_quote_batches.c.quote_batch_id,
+                realtime_quote_batches.c.ingest_order,
+            ).where(
+                realtime_quote_batches.c.quote_batch_id.in_(
+                    ("rollback-order-first", "rollback-order-second")
+                )
+            )
+        ).all()
+    assert rows == [("rollback-order-second", 2)]
+
+
 def test_task21r_anomalies_require_visible_parent_batch(realtime_repository):
     batch = _minute_batch(
         "future-parent-anomaly",
@@ -1833,6 +2006,135 @@ def test_task21r_cursor_uses_database_ingest_order_watermark(database):
         cursor = page.next_cursor
 
     assert seen == [item.event_id for item in expected.items]
+
+
+def test_task21r_cursor_chain_excludes_batches_committed_after_first_page(
+    realtime_repository,
+):
+    from factories import grant
+    from sqlalchemy import event, select
+
+    from dragon_radar.realtime.tables import realtime_anomaly_events
+    from dragon_radar.storage.repository import Repository
+
+    storage = Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    )
+    storage.register_source(grant(source_id="backup-feed"))
+    storage.register_source(grant(source_id="delayed-feed"))
+    rule = return_rule(window=2)
+    for revision in range(1, 4):
+        realtime_repository.ingest_minute_batch(
+            _minute_batch(
+                f"cursor-seed-{revision}",
+                (
+                    minute_bar("100", minute=2, revision=revision),
+                    minute_bar(str(102 + revision), minute=3, revision=revision),
+                ),
+            ),
+            key=f"cursor-seed-{revision}",
+            rules=(rule.model_copy(update={"rule_version": f"seed-v{revision}"}),),
+        )
+
+    first_inserted = Event()
+    release_first = Event()
+
+    def pause_first_parent_insert(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        if current_thread().name.startswith(
+            "cursor-chain-first"
+        ) and statement.startswith("INSERT INTO realtime_quote_batches"):
+            first_inserted.set()
+            assert release_first.wait(5)
+
+    event.listen(
+        realtime_repository.database.engine,
+        "after_cursor_execute",
+        pause_first_parent_insert,
+    )
+    try:
+        with (
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="cursor-chain-first",
+            ) as first_executor,
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="cursor-chain-second",
+            ) as second_executor,
+        ):
+            first = first_executor.submit(
+                realtime_repository.ingest_minute_batch,
+                _minute_batch(
+                    "cursor-late-first",
+                    (
+                        minute_bar("100", minute=0),
+                        minute_bar("110", minute=1),
+                    ),
+                    source_id="backup-feed",
+                ),
+                key="cursor-late-first",
+                rules=(rule.model_copy(update={"rule_version": "late-first"}),),
+            )
+            assert first_inserted.wait(5)
+            second = second_executor.submit(
+                realtime_repository.ingest_minute_batch,
+                _minute_batch(
+                    "cursor-second",
+                    (
+                        minute_bar("100", minute=2),
+                        minute_bar("109", minute=3),
+                    ),
+                    source_id="delayed-feed",
+                ),
+                key="cursor-second",
+                rules=(rule.model_copy(update={"rule_version": "second"}),),
+            )
+            try:
+                second.result(timeout=0.25)
+            except FutureTimeout:
+                pass
+
+            first_page = realtime_repository.list_anomalies(
+                date=T0.date(),
+                as_of=T0 + timedelta(hours=1),
+                limit=1,
+            )
+            assert first_page.next_cursor is not None
+            release_first.set()
+            assert first.result(timeout=5).status == "incomplete"
+            assert second.result(timeout=5).status == "incomplete"
+    finally:
+        release_first.set()
+        event.remove(
+            realtime_repository.database.engine,
+            "after_cursor_execute",
+            pause_first_parent_insert,
+        )
+
+    with realtime_repository.database.engine.connect() as connection:
+        late_event_id = connection.scalar(
+            select(realtime_anomaly_events.c.event_id).where(
+                realtime_anomaly_events.c.source_id == "backup-feed",
+                realtime_anomaly_events.c.batch_id == "cursor-late-first",
+            )
+        )
+    assert late_event_id is not None
+
+    seen = [item.event_id for item in first_page.items]
+    cursor = first_page.next_cursor
+    while cursor is not None:
+        page = realtime_repository.list_anomalies(
+            date=T0.date(),
+            as_of=T0 + timedelta(hours=1),
+            limit=1,
+            cursor=cursor,
+        )
+        seen.extend(item.event_id for item in page.items)
+        cursor = page.next_cursor
+    assert late_event_id not in seen
 
 
 def test_task21r_exact_batch_selection_requires_complete_source_identity(

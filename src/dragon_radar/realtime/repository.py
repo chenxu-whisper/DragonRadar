@@ -56,6 +56,7 @@ from dragon_radar.storage.repository import (
 from dragon_radar.topics.repository import _decode_cursor, _encode_cursor
 
 ANOMALY_CURSOR_TTL = timedelta(minutes=15)
+REALTIME_CURSOR_ORDER_LOCK = "dragon-radar:realtime:cursor-order:v1"
 _CURSOR_FIELDS = {
     "version",
     "sort_version",
@@ -428,6 +429,8 @@ class RealtimeRepository(Repository):
                 None,
                 "Realtime idempotency key belongs to another payload",
             )
+        # New parents always lock source/batch, import key, then cursor order.
+        self._lock(connection, REALTIME_CURSOR_ORDER_LOCK)
         return now, None, None, None
 
     @staticmethod
@@ -1331,4 +1334,8 @@ class RealtimeRepository(Repository):
         )
 
 
-__all__ = ["ANOMALY_CURSOR_TTL", "RealtimeRepository"]
+__all__ = [
+    "ANOMALY_CURSOR_TTL",
+    "REALTIME_CURSOR_ORDER_LOCK",
+    "RealtimeRepository",
+]
