@@ -1,5 +1,4 @@
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from threading import Event, current_thread
@@ -902,6 +901,7 @@ EXPECTED_REALTIME_CONSTRAINTS = {
 
 EXPECTED_REALTIME_INDEXES = {
     "realtime_quote_batches_as_of",
+    "realtime_quote_batches_source_as_of",
     "realtime_quotes_security",
     "realtime_minute_bars_as_of",
     "realtime_minute_bars_batch",
@@ -1007,6 +1007,37 @@ def test_realtime_schema_has_exact_named_constraints_indexes_and_triggers(
                 ).scalars()
             )
             assert indexes == EXPECTED_REALTIME_INDEXES
+            index_definitions = dict(
+                connection.execute(
+                    text(
+                        """
+                        SELECT index_relation.relname,
+                               pg_get_indexdef(index_relation.oid)
+                        FROM pg_class index_relation
+                        JOIN pg_namespace namespace
+                          ON namespace.oid = index_relation.relnamespace
+                        WHERE namespace.nspname = current_schema()
+                          AND index_relation.relname = ANY(:indexes)
+                        """
+                    ),
+                    {
+                        "indexes": [
+                            "realtime_quote_batches_as_of",
+                            "realtime_quote_batches_source_as_of",
+                            "realtime_quotes_security",
+                        ]
+                    },
+                ).all()
+            )
+            assert index_definitions["realtime_quote_batches_as_of"].endswith(
+                "USING btree (available_at DESC, ingest_order DESC, id DESC)"
+            )
+            assert index_definitions["realtime_quote_batches_source_as_of"].endswith(
+                "USING btree (source_id, available_at DESC, ingest_order DESC, id DESC)"
+            )
+            assert index_definitions["realtime_quotes_security"].endswith(
+                "USING btree (security_id, source_id, batch_id)"
+            )
 
             triggers = set(
                 connection.execute(
@@ -1840,8 +1871,22 @@ def test_task21r_key_owner_is_checked_before_existing_batch(
             connection.scalar(
                 select(func.count()).select_from(realtime_import_attempts)
             )
-            == attempt_count
+            == attempt_count + 1
         )
+        rejected = (
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.reason,
+                    realtime_import_attempts.c.details,
+                ).where(realtime_import_attempts.c.status == "rejected")
+            )
+            .mappings()
+            .one()
+        )
+    assert rejected == {
+        "reason": "idempotency_key_conflict",
+        "details": {"kind": "quote" if owner_status == "accepted" else "minute"},
+    }
 
     replay = ingest(batch_a, key="owned-key")
     assert replay.status == "duplicate"
@@ -1931,7 +1976,7 @@ def test_task21r_incomplete_parent_owns_key_for_conflicting_hash(
             == 1
         )
         attempts = set(connection.scalars(select(realtime_import_attempts.c.status)))
-    assert attempts == {"incomplete"}
+    assert attempts == {"incomplete", "rejected"}
 
 
 def test_task21r_concurrent_incomplete_imports_bind_one_key_and_parent(
@@ -1979,9 +2024,24 @@ def test_task21r_concurrent_incomplete_imports_bind_one_key_and_parent(
             connection.scalar(select(func.count()).select_from(realtime_quote_batches))
             == 1
         )
-        assert set(connection.scalars(select(realtime_import_attempts.c.status))) == {
-            "incomplete"
-        }
+        attempts = (
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.status,
+                    realtime_import_attempts.c.reason,
+                    realtime_import_attempts.c.details,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert {(attempt["status"], attempt["reason"]) for attempt in attempts} == {
+        ("incomplete", "stream_gap"),
+        ("rejected", "idempotency_key_conflict"),
+    }
+    assert next(
+        attempt["details"] for attempt in attempts if attempt["status"] == "rejected"
+    ) == {"kind": "minute"}
 
 
 def test_task21r_accepted_and_incomplete_attempt_statuses_are_immutable(
@@ -2040,7 +2100,18 @@ def test_task21r_cross_source_commit_order_serializes_ingest_watermarks(
         clock=realtime_repository.clock,
     ).register_source(grant(source_id="backup-feed"))
     first_inserted = Event()
+    second_at_lock = Event()
     release_first = Event()
+
+    def observe_second_lock(
+        _connection, _cursor, statement, parameters, _context, _executemany
+    ):
+        if (
+            current_thread().name.startswith("cursor-order-second")
+            and "pg_advisory_xact_lock" in statement
+            and parameters.get("key") == "dragon-radar:realtime:cursor-order:v1"
+        ):
+            second_at_lock.set()
 
     def pause_first_parent_insert(
         _connection, _cursor, statement, _parameters, _context, _executemany
@@ -2055,6 +2126,11 @@ def test_task21r_cross_source_commit_order_serializes_ingest_watermarks(
         realtime_repository.database.engine,
         "after_cursor_execute",
         pause_first_parent_insert,
+    )
+    event.listen(
+        realtime_repository.database.engine,
+        "before_cursor_execute",
+        observe_second_lock,
     )
     try:
         with (
@@ -2081,8 +2157,8 @@ def test_task21r_cross_source_commit_order_serializes_ingest_watermarks(
                 ),
                 key="commit-order-second",
             )
-            with pytest.raises(FutureTimeout):
-                second.result(timeout=0.25)
+            assert second_at_lock.wait(5)
+            assert not second.done()
             release_first.set()
             assert first.result(timeout=5).status == "accepted"
             assert second.result(timeout=5).status == "accepted"
@@ -2092,6 +2168,11 @@ def test_task21r_cross_source_commit_order_serializes_ingest_watermarks(
             realtime_repository.database.engine,
             "after_cursor_execute",
             pause_first_parent_insert,
+        )
+        event.remove(
+            realtime_repository.database.engine,
+            "before_cursor_execute",
+            observe_second_lock,
         )
 
     with realtime_repository.database.engine.connect() as connection:
@@ -2124,7 +2205,18 @@ def test_task21r_cross_source_rollback_releases_watermark_with_gap(
         clock=realtime_repository.clock,
     ).register_source(grant(source_id="backup-feed"))
     first_inserted = Event()
+    second_at_lock = Event()
     release_first = Event()
+
+    def observe_second_lock(
+        _connection, _cursor, statement, parameters, _context, _executemany
+    ):
+        if (
+            current_thread().name.startswith("cursor-rollback-second")
+            and "pg_advisory_xact_lock" in statement
+            and parameters.get("key") == "dragon-radar:realtime:cursor-order:v1"
+        ):
+            second_at_lock.set()
 
     def roll_back_first_parent_insert(
         _connection, _cursor, statement, _parameters, _context, _executemany
@@ -2140,6 +2232,11 @@ def test_task21r_cross_source_rollback_releases_watermark_with_gap(
         realtime_repository.database.engine,
         "after_cursor_execute",
         roll_back_first_parent_insert,
+    )
+    event.listen(
+        realtime_repository.database.engine,
+        "before_cursor_execute",
+        observe_second_lock,
     )
     try:
         with (
@@ -2166,8 +2263,8 @@ def test_task21r_cross_source_rollback_releases_watermark_with_gap(
                 ),
                 key="rollback-order-second",
             )
-            with pytest.raises(FutureTimeout):
-                second.result(timeout=0.25)
+            assert second_at_lock.wait(5)
+            assert not second.done()
             release_first.set()
             with pytest.raises(
                 RuntimeError,
@@ -2181,6 +2278,11 @@ def test_task21r_cross_source_rollback_releases_watermark_with_gap(
             realtime_repository.database.engine,
             "after_cursor_execute",
             roll_back_first_parent_insert,
+        )
+        event.remove(
+            realtime_repository.database.engine,
+            "before_cursor_execute",
+            observe_second_lock,
         )
 
     with realtime_repository.database.engine.connect() as connection:
@@ -2350,7 +2452,18 @@ def test_task21r_cursor_chain_excludes_batches_committed_after_first_page(
         )
 
     first_inserted = Event()
+    second_at_lock = Event()
     release_first = Event()
+
+    def observe_second_lock(
+        _connection, _cursor, statement, parameters, _context, _executemany
+    ):
+        if (
+            current_thread().name.startswith("cursor-chain-second")
+            and "pg_advisory_xact_lock" in statement
+            and parameters.get("key") == "dragon-radar:realtime:cursor-order:v1"
+        ):
+            second_at_lock.set()
 
     def pause_first_parent_insert(
         _connection, _cursor, statement, _parameters, _context, _executemany
@@ -2365,6 +2478,11 @@ def test_task21r_cursor_chain_excludes_batches_committed_after_first_page(
         realtime_repository.database.engine,
         "after_cursor_execute",
         pause_first_parent_insert,
+    )
+    event.listen(
+        realtime_repository.database.engine,
+        "before_cursor_execute",
+        observe_second_lock,
     )
     try:
         with (
@@ -2404,10 +2522,8 @@ def test_task21r_cursor_chain_excludes_batches_committed_after_first_page(
                 key="cursor-second",
                 rules=(rule.model_copy(update={"rule_version": "second"}),),
             )
-            try:
-                second.result(timeout=0.25)
-            except FutureTimeout:
-                pass
+            assert second_at_lock.wait(5)
+            assert not second.done()
 
             first_page = realtime_repository.list_anomalies(
                 date=T0.date(),
@@ -2424,6 +2540,11 @@ def test_task21r_cursor_chain_excludes_batches_committed_after_first_page(
             realtime_repository.database.engine,
             "after_cursor_execute",
             pause_first_parent_insert,
+        )
+        event.remove(
+            realtime_repository.database.engine,
+            "before_cursor_execute",
+            observe_second_lock,
         )
 
     with realtime_repository.database.engine.connect() as connection:
@@ -2519,7 +2640,22 @@ def test_task21r_duplicate_rule_identity_rejects_before_any_write(
                 realtime_import_attempts,
             )
         )
-    assert counts == (0, 0, 0, 0)
+    assert counts == (0, 0, 0, 1)
+    with realtime_repository.database.engine.connect() as connection:
+        rejected = (
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.reason,
+                    realtime_import_attempts.c.details,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert rejected == {
+        "reason": "duplicate_rule_identity",
+        "details": {"kind": "minute"},
+    }
 
 
 def test_rt05_same_identity_different_payload_conflicts_without_partial_write(
@@ -2561,9 +2697,25 @@ def test_rt05_same_identity_different_payload_conflicts_without_partial_write(
             "accepted",
             "rejected",
         }
+        rejected = (
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.reason,
+                    realtime_import_attempts.c.details,
+                ).where(realtime_import_attempts.c.status == "rejected")
+            )
+            .mappings()
+            .one()
+        )
+    assert rejected == {
+        "reason": "batch_identity_conflict",
+        "details": {"kind": "quote"},
+    }
 
 
-def test_quote_child_conflict_rolls_back_parent_and_attempt(realtime_repository):
+def test_duplicate_quote_identity_is_rejected_without_partial_data(
+    realtime_repository,
+):
     from sqlalchemy import func, select
 
     from dragon_radar.realtime.models import QuoteBatchInput
@@ -2572,13 +2724,12 @@ def test_quote_child_conflict_rolls_back_parent_and_attempt(realtime_repository)
         realtime_quote_batches,
         realtime_quotes,
     )
-    from dragon_radar.storage.repository import Conflict
 
     batch = _quote_batch("quote-child-conflict").model_copy(
         update={"quotes": (_quote(), _quote())}
     )
 
-    with pytest.raises(Conflict):
+    with pytest.raises(ValueError, match="duplicate.*identity"):
         realtime_repository.ingest_quote_batch(
             QuoteBatchInput.model_validate(batch.model_dump()),
             key="quote-child-conflict",
@@ -2590,12 +2741,163 @@ def test_quote_child_conflict_rolls_back_parent_and_attempt(realtime_repository)
             == 0
         )
         assert connection.scalar(select(func.count()).select_from(realtime_quotes)) == 0
-        assert (
-            connection.scalar(
-                select(func.count()).select_from(realtime_import_attempts)
+        rejected = (
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.reason,
+                    realtime_import_attempts.c.details,
+                )
             )
+            .mappings()
+            .one()
+        )
+    assert rejected == {
+        "reason": "duplicate_quote_identity",
+        "details": {"kind": "quote"},
+    }
+
+
+@pytest.mark.parametrize("kind", ("minute", "sector_flow"))
+def test_duplicate_relationship_identity_is_rejected_before_data_write(
+    realtime_repository,
+    kind,
+):
+    from sqlalchemy import func, select
+
+    from dragon_radar.realtime.tables import (
+        realtime_import_attempts,
+        realtime_minute_bars,
+        realtime_quote_batches,
+        realtime_sector_flow_points,
+    )
+
+    if kind == "minute":
+        item = minute_bar()
+        batch = _minute_batch("duplicate-minute", (item, item))
+        ingest = realtime_repository.ingest_minute_batch
+        child_table = realtime_minute_bars
+    else:
+        item = _flow_batch("duplicate-flow").points[0]
+        batch = _flow_batch("duplicate-flow").model_copy(
+            update={"points": (item, item)}
+        )
+        ingest = realtime_repository.ingest_sector_flow_batch
+        child_table = realtime_sector_flow_points
+
+    with pytest.raises(ValueError, match="duplicate.*identity"):
+        ingest(batch, key=f"duplicate-{kind}")
+
+    with realtime_repository.database.engine.connect() as connection:
+        assert (
+            connection.scalar(select(func.count()).select_from(realtime_quote_batches))
             == 0
         )
+        assert connection.scalar(select(func.count()).select_from(child_table)) == 0
+        rejected = (
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.reason,
+                    realtime_import_attempts.c.details,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert rejected == {
+        "reason": f"duplicate_{kind}_identity",
+        "details": {"kind": kind},
+    }
+
+
+def test_child_integrity_error_rolls_back_data_then_records_redacted_rejection(
+    realtime_repository,
+):
+    from sqlalchemy import func, select
+
+    from dragon_radar.realtime.tables import (
+        realtime_import_attempts,
+        realtime_minute_bars,
+        realtime_quote_batches,
+    )
+    from dragon_radar.storage.repository import Conflict
+
+    first = _minute_batch("integrity-first", (minute_bar(),))
+    second = _minute_batch("integrity-second", (minute_bar(),))
+    realtime_repository.ingest_minute_batch(first, key="integrity-first")
+
+    with pytest.raises(Conflict, match="minute batch or revision"):
+        realtime_repository.ingest_minute_batch(second, key="integrity-second")
+
+    with realtime_repository.database.engine.connect() as connection:
+        assert (
+            connection.scalar(select(func.count()).select_from(realtime_quote_batches))
+            == 1
+        )
+        minute_count = connection.scalar(
+            select(func.count()).select_from(realtime_minute_bars)
+        )
+        assert minute_count == 1
+        rejected = (
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.reason,
+                    realtime_import_attempts.c.details,
+                ).where(realtime_import_attempts.c.status == "rejected")
+            )
+            .mappings()
+            .one()
+        )
+    assert rejected == {
+        "reason": "integrity_error",
+        "details": {"error_type": "IntegrityError", "kind": "minute"},
+    }
+    assert "integrity-first" not in str(rejected)
+
+
+def test_rejected_attempt_failure_preserves_primary_error_and_safe_cleanup_context(
+    realtime_repository,
+):
+    from sqlalchemy import event
+
+    from dragon_radar.storage.repository import Conflict
+
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("cleanup-context", last="10"),
+        key="cleanup-context-first",
+    )
+
+    def fail_rejected_attempt(
+        _connection, _cursor, statement, parameters, _context, _executemany
+    ):
+        if (
+            statement.startswith("INSERT INTO realtime_import_attempts")
+            and parameters.get("status") == "rejected"
+        ):
+            raise RuntimeError("database-password-secret")
+
+    event.listen(
+        realtime_repository.database.engine,
+        "before_cursor_execute",
+        fail_rejected_attempt,
+    )
+    try:
+        with pytest.raises(Conflict, match="batch identity") as captured:
+            realtime_repository.ingest_quote_batch(
+                _quote_batch("cleanup-context", last="11"),
+                key="cleanup-context-second",
+            )
+    finally:
+        event.remove(
+            realtime_repository.database.engine,
+            "before_cursor_execute",
+            fail_rejected_attempt,
+        )
+
+    assert captured.value.__notes__ == [
+        "Rejected attempt persistence failed (RuntimeError)"
+    ]
+    assert "database-password-secret" not in str(captured.value)
+    assert "database-password-secret" not in repr(captured.value.__notes__)
 
 
 def test_rt06_out_of_order_batches_remain_exactly_queryable(realtime_repository):
@@ -2936,6 +3238,78 @@ def test_rt12_canonical_hash_is_independent_of_decimal_context(
     assert first.status == "accepted"
     assert replay.status == "duplicate"
     assert replay.payload_hash == first.payload_hash
+
+
+def test_canonical_hash_is_independent_of_relationship_collection_order(
+    realtime_repository,
+):
+    quote_batch = _quote_batch("ordered-quotes").model_copy(
+        update={
+            "quotes": (
+                _quote(security_id="600000.SH", last="10"),
+                _quote(security_id="000001.SZ", last="11"),
+            )
+        }
+    )
+    quote_first = realtime_repository.ingest_quote_batch(
+        quote_batch,
+        key="ordered-quotes-first",
+    )
+    quote_replay = realtime_repository.ingest_quote_batch(
+        quote_batch.model_copy(update={"quotes": tuple(reversed(quote_batch.quotes))}),
+        key="ordered-quotes-replay",
+    )
+
+    minute_batch = _minute_batch(
+        "ordered-minutes",
+        (minute_bar("100", minute=0), minute_bar("103", minute=1)),
+    )
+    rules = (
+        return_rule(window=2),
+        AnomalyRule(
+            rule_version="volume-v1",
+            metric="relative_volume",
+            window=2,
+            threshold=Decimal("1.1"),
+            cooldown_seconds=300,
+        ),
+    )
+    minute_first = realtime_repository.ingest_minute_batch(
+        minute_batch,
+        key="ordered-minutes-first",
+        rules=rules,
+    )
+    minute_replay = realtime_repository.ingest_minute_batch(
+        minute_batch.model_copy(update={"bars": tuple(reversed(minute_batch.bars))}),
+        key="ordered-minutes-replay",
+        rules=tuple(reversed(rules)),
+    )
+
+    flow_batch = _flow_batch("ordered-flow").model_copy(
+        update={
+            "points": (
+                _flow_batch("ignored", sector_id="sector-1").points[0],
+                _flow_batch("ignored", sector_id="sector-2").points[0],
+            )
+        }
+    )
+    flow_first = realtime_repository.ingest_sector_flow_batch(
+        flow_batch,
+        key="ordered-flow-first",
+    )
+    flow_replay = realtime_repository.ingest_sector_flow_batch(
+        flow_batch.model_copy(update={"points": tuple(reversed(flow_batch.points))}),
+        key="ordered-flow-replay",
+    )
+
+    for first, replay in (
+        (quote_first, quote_replay),
+        (minute_first, minute_replay),
+        (flow_first, flow_replay),
+    ):
+        assert first.status in {"accepted", "incomplete"}
+        assert replay.status == "duplicate"
+        assert replay.payload_hash == first.payload_hash
 
 
 def test_anomaly_cursor_binds_signature_filters_expiry_watermark_and_last(
@@ -3328,6 +3702,117 @@ def test_latest_quote_and_flow_batch_selection_is_limited_and_child_filtered(
     assert "realtime_sector_flow_points.sector_id =" in candidate_statements[1]
 
 
+def test_latest_quote_pg17_plan_uses_matching_indexes_with_optional_source(database):
+    from factories import grant
+    from sqlalchemy import text
+
+    from dragon_radar.storage.repository import Repository
+
+    Repository(database, clock=lambda: T0 + timedelta(hours=1)).register_source(
+        grant(source_id="plan-feed")
+    )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO realtime_quote_batches (
+                    id, quote_batch_id, source_id, source_version,
+                    source_event_at, received_at, available_at,
+                    permission_snapshot, payload_hash, imported_at
+                )
+                SELECT
+                    md5('plan-parent-' || value::text)::uuid,
+                    'plan-batch-' || value::text,
+                    'plan-feed',
+                    'v1',
+                    :base + value * interval '1 millisecond',
+                    :base + value * interval '1 millisecond',
+                    :base + value * interval '1 millisecond',
+                    '{}',
+                    repeat('a', 64),
+                    :base
+                FROM generate_series(1, 20000) AS value
+                """
+            ),
+            {"base": T0},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO realtime_quotes (
+                    id, source_id, batch_id, security_id, last,
+                    order_book_status, order_book_unavailable_reason
+                )
+                SELECT
+                    md5('plan-child-' || value::text)::uuid,
+                    'plan-feed',
+                    'plan-batch-' || value::text,
+                    CASE WHEN value = 19999 THEN '600000.SH' ELSE '000001.SZ' END,
+                    value,
+                    'disabled',
+                    'not_provided'
+                FROM generate_series(1, 20000) AS value
+                """
+            )
+        )
+        connection.execute(text("ANALYZE realtime_quote_batches"))
+        connection.execute(text("ANALYZE realtime_quotes"))
+
+        plans = []
+        for source_clause in ("", "AND parent.source_id = 'plan-feed'"):
+            plans.append(
+                connection.scalar(
+                    text(
+                        f"""
+                        EXPLAIN (ANALYZE, FORMAT JSON)
+                        SELECT parent.*
+                        FROM realtime_quote_batches AS parent
+                        WHERE parent.available_at <= :as_of
+                          {source_clause}
+                          AND EXISTS (
+                              SELECT 1
+                              FROM realtime_quotes AS child
+                              WHERE child.source_id = parent.source_id
+                                AND child.batch_id = parent.quote_batch_id
+                                AND child.security_id = '600000.SH'
+                              OFFSET 0
+                          )
+                        ORDER BY parent.available_at DESC,
+                                 parent.ingest_order DESC,
+                                 parent.id DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"as_of": T0 + timedelta(minutes=1)},
+                )[0]["Plan"]
+            )
+
+    def nodes(plan):
+        yield plan
+        for child in plan.get("Plans", ()):
+            yield from nodes(child)
+
+    for plan in plans:
+        flattened = tuple(nodes(plan))
+        assert not any(node["Node Type"] == "Sort" for node in flattened)
+        assert not any(
+            node["Node Type"] == "Seq Scan"
+            and node.get("Relation Name")
+            in {"realtime_quote_batches", "realtime_quotes"}
+            for node in flattened
+        )
+        used_indexes = {
+            node.get("Index Name")
+            for node in flattened
+            if node.get("Index Name") is not None
+        }
+        assert used_indexes & {
+            "realtime_quote_batches_as_of",
+            "realtime_quote_batches_source_as_of",
+        }
+        assert "realtime_quotes_security" in used_indexes
+
+
 def test_same_batch_concurrency_persists_one_result(realtime_repository):
     from sqlalchemy import func, select
 
@@ -3467,4 +3952,85 @@ def test_realtime_import_and_read_recheck_current_permissions(database):
             as_of=T0 + timedelta(hours=1),
             batch_id="permission-revoked",
             source_id="licensed-feed",
+        )
+
+
+def test_permission_readers_share_locks_and_permission_update_times_out(
+    realtime_repository,
+):
+    from sqlalchemy import event, text
+    from sqlalchemy.exc import OperationalError
+
+    batch = _quote_batch("permission-share-lock")
+    realtime_repository.ingest_quote_batch(batch, key="permission-share-lock")
+    reader_one_locked = Event()
+    reader_two_locked = Event()
+    release_readers = Event()
+
+    def hold_permission_readers(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        if "FROM source_grants" not in statement or "FOR SHARE" not in statement:
+            return
+        if current_thread().name.startswith("permission-reader-one"):
+            reader_one_locked.set()
+        elif current_thread().name.startswith("permission-reader-two"):
+            reader_two_locked.set()
+        else:
+            return
+        assert release_readers.wait(5)
+
+    event.listen(
+        realtime_repository.database.engine,
+        "after_cursor_execute",
+        hold_permission_readers,
+    )
+    try:
+        with (
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="permission-reader-one",
+            ) as first_executor,
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="permission-reader-two",
+            ) as second_executor,
+        ):
+            first = first_executor.submit(
+                realtime_repository.list_quotes,
+                security_ids=("600000.SH",),
+                as_of=T0 + timedelta(hours=1),
+            )
+            second = second_executor.submit(
+                realtime_repository.list_quotes,
+                security_ids=("600000.SH",),
+                as_of=T0 + timedelta(hours=1),
+            )
+            assert reader_one_locked.wait(5)
+            assert reader_two_locked.wait(5)
+
+            with (
+                pytest.raises(OperationalError, match="lock timeout"),
+                realtime_repository.database.engine.begin() as connection,
+            ):
+                connection.execute(text("SET LOCAL lock_timeout = '200ms'"))
+                connection.execute(
+                    text(
+                        """
+                        UPDATE source_grants
+                        SET updated_at = updated_at
+                        WHERE source_id = 'licensed-feed'
+                        """
+                    )
+                )
+
+            release_readers.set()
+            assert first.result(timeout=5).batch_id == batch.batch_id
+            assert second.result(timeout=5).batch_id == batch.batch_id
+    finally:
+        release_readers.set()
+        event.remove(
+            realtime_repository.database.engine,
+            "after_cursor_execute",
+            hold_permission_readers,
         )

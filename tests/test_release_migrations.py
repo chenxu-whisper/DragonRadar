@@ -1889,6 +1889,17 @@ def test_readiness_rejects_required_schema_drift(
         (
             """
             SELECT count(*)
+            FROM pg_class index_record
+            JOIN pg_namespace namespace ON namespace.oid = index_record.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND index_record.relname = 'realtime_quote_batches_source_as_of'
+              AND index_record.relkind = 'i'
+            """,
+            "DROP INDEX realtime_quote_batches_source_as_of",
+        ),
+        (
+            """
+            SELECT count(*)
             FROM pg_trigger trigger
             JOIN pg_class relation ON relation.oid = trigger.tgrelid
             JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -1900,7 +1911,15 @@ def test_readiness_rejects_required_schema_drift(
             "DROP TRIGGER immutable_rows ON realtime_anomaly_events",
         ),
     ],
-    ids=("identity", "column", "check", "foreign-key", "index", "trigger"),
+    ids=(
+        "identity",
+        "column",
+        "check",
+        "foreign-key",
+        "index",
+        "pit-index",
+        "trigger",
+    ),
 )
 def test_readiness_rejects_realtime_schema_drift(database, catalog_query, ddl):
     assert database.ready()

@@ -8275,6 +8275,19 @@
     {
       "access_method": "btree",
       "key_expressions": [
+        "available_at",
+        "ingest_order",
+        "id"
+      ],
+      "name": "realtime_quote_batches_as_of",
+      "predicate": null,
+      "table": "realtime_quote_batches",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
         "batch_id"
       ],
       "name": "snapshots_batch_id_key",
@@ -9667,18 +9680,6 @@
       "access_method": "btree",
       "key_expressions": [
         "security_id",
-        "batch_id"
-      ],
-      "name": "realtime_quotes_security",
-      "predicate": null,
-      "table": "realtime_quotes",
-      "unique": false,
-      "valid": true
-    },
-    {
-      "access_method": "btree",
-      "key_expressions": [
-        "security_id",
         "effective_from"
       ],
       "name": "regulation_events_security_effective",
@@ -9711,6 +9712,19 @@
       "name": "realtime_anomaly_events_security",
       "predicate": null,
       "table": "realtime_anomaly_events",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "security_id",
+        "source_id",
+        "batch_id"
+      ],
+      "name": "realtime_quotes_security",
+      "predicate": null,
+      "table": "realtime_quotes",
       "unique": false,
       "valid": true
     },
@@ -9979,10 +9993,10 @@
       "key_expressions": [
         "source_id",
         "available_at",
-        "source_event_at",
+        "ingest_order",
         "id"
       ],
-      "name": "realtime_quote_batches_as_of",
+      "name": "realtime_quote_batches_source_as_of",
       "predicate": null,
       "table": "realtime_quote_batches",
       "unique": false,

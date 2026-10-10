@@ -126,6 +126,32 @@ def _model_payload(model: Any) -> dict[str, Any]:
     return model.model_dump()
 
 
+def _sorted_relation_payload(
+    batch: Any,
+    field: str,
+    identity: Callable[[Any], tuple[Any, ...]],
+) -> tuple[dict[str, Any], bool]:
+    payload = _model_payload(batch)
+    items = tuple(getattr(batch, field))
+    identities = tuple(identity(item) for item in items)
+    payload[field] = [_model_payload(item) for item in sorted(items, key=identity)]
+    return payload, len(identities) != len(set(identities))
+
+
+class _RejectedImport(Exception):
+    def __init__(
+        self,
+        primary: Exception,
+        *,
+        reason: str,
+        details: Mapping[str, Any],
+    ):
+        super().__init__(reason)
+        self.primary = primary
+        self.reason = reason
+        self.details = details
+
+
 def _quote(row: Mapping[str, Any]) -> QuoteInput:
     return QuoteInput(
         security_id=row["security_id"],
@@ -289,7 +315,7 @@ class RealtimeRepository(Repository):
                 select(source_grants.c.source_id, source_grants.c.grant)
                 .where(source_grants.c.source_id.in_(source_ids))
                 .order_by(source_grants.c.source_id)
-                .with_for_update()
+                .with_for_update(read=True)
             )
             .mappings()
             .all()
@@ -359,6 +385,7 @@ class RealtimeRepository(Repository):
         *,
         key: str,
         digest: str,
+        kind: str,
     ) -> tuple[
         datetime,
         Mapping[str, Any] | None,
@@ -398,11 +425,10 @@ class RealtimeRepository(Repository):
                 or used_key["batch_id"] != batch.batch_id
                 or used_key["payload_hash"] != digest
             ):
-                return (
-                    now,
-                    None,
-                    None,
-                    "Realtime idempotency key belongs to another import",
+                raise _RejectedImport(
+                    Conflict("Realtime idempotency key belongs to another import"),
+                    reason="idempotency_key_conflict",
+                    details={"kind": kind},
                 )
             original = (
                 connection.execute(
@@ -415,11 +441,10 @@ class RealtimeRepository(Repository):
                 .first()
             )
             if original is None or original["payload_hash"] != used_key["payload_hash"]:
-                return (
-                    now,
-                    None,
-                    None,
-                    "Realtime idempotency key owner is invalid",
+                raise _RejectedImport(
+                    Conflict("Realtime idempotency key owner is invalid"),
+                    reason="idempotency_key_owner_invalid",
+                    details={"kind": kind},
                 )
             duplicate = self._finish_ingest(
                 connection,
@@ -444,27 +469,18 @@ class RealtimeRepository(Repository):
         )
         if existing is not None:
             if existing["payload_hash"] != digest:
-                self._finish_ingest(
-                    connection,
-                    batch,
-                    key=key,
-                    digest=digest,
-                    imported_at=now,
-                    status="rejected",
+                raise _RejectedImport(
+                    Conflict("Realtime batch identity belongs to another payload"),
                     reason="batch_identity_conflict",
-                    details={
-                        "original_payload_hash": existing["payload_hash"],
-                    },
-                )
-                return (
-                    now,
-                    existing,
-                    None,
-                    "Realtime batch identity belongs to another payload",
+                    details={"kind": kind},
                 )
             attempt = self._existing_attempt(connection, existing)
             if attempt is None:
-                raise Conflict("Realtime batch exists without an import attempt")
+                raise _RejectedImport(
+                    Conflict("Realtime batch exists without an import attempt"),
+                    reason="batch_attempt_missing",
+                    details={"kind": kind},
+                )
             duplicate = self._finish_ingest(
                 connection,
                 batch,
@@ -518,6 +534,34 @@ class RealtimeRepository(Repository):
         }
         return _result(attempt, parent)
 
+    def _raise_rejected(
+        self,
+        batch,
+        *,
+        key: str,
+        digest: str,
+        primary: Exception,
+        reason: str,
+        details: Mapping[str, Any],
+    ) -> None:
+        try:
+            with self.database.engine.begin() as connection:
+                self._finish_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                    imported_at=_utc(self.clock(), "operation time"),
+                    status="rejected",
+                    reason=reason,
+                    details=details,
+                )
+        except Exception as cleanup_error:
+            primary.add_note(
+                f"Rejected attempt persistence failed ({type(cleanup_error).__name__})"
+            )
+        raise primary from None
+
     def ingest_quote_batch(
         self,
         batch: QuoteBatchInput,
@@ -525,7 +569,22 @@ class RealtimeRepository(Repository):
         key: str,
     ) -> RealtimeImportResult:
         batch = self._validate_type(batch, QuoteBatchInput, "batch")
-        digest = _canonical_hash({"kind": "quote", "batch": _model_payload(batch)})
+        _identifier(key)
+        payload, duplicate_identity = _sorted_relation_payload(
+            batch,
+            "quotes",
+            lambda quote: (quote.security_id,),
+        )
+        digest = _canonical_hash({"kind": "quote", "batch": payload})
+        if duplicate_identity:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=ValueError("duplicate quote identity"),
+                reason="duplicate_quote_identity",
+                details={"kind": "quote"},
+            )
         try:
             with self.database.engine.begin() as connection:
                 now, _existing, replay, conflict_message = self._begin_ingest(
@@ -533,6 +592,7 @@ class RealtimeRepository(Repository):
                     batch,
                     key=key,
                     digest=digest,
+                    kind="quote",
                 )
                 if replay is not None:
                     return replay
@@ -568,8 +628,33 @@ class RealtimeRepository(Repository):
             if conflict_message is None:
                 raise RuntimeError("realtime quote ingestion produced no result")
             raise Conflict(conflict_message)
+        except _RejectedImport as rejected:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=rejected.primary,
+                reason=rejected.reason,
+                details=rejected.details,
+            )
         except IntegrityError:
-            raise Conflict("Conflicting realtime quote batch") from None
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=Conflict("Conflicting realtime quote batch"),
+                reason="integrity_error",
+                details={"error_type": "IntegrityError", "kind": "quote"},
+            )
+        except Forbidden as error:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=error,
+                reason="authorization_rejected",
+                details={"kind": "quote"},
+            )
 
     @staticmethod
     def _cooldown_bucket(event_at: datetime, seconds: int) -> datetime:
@@ -658,16 +743,30 @@ class RealtimeRepository(Repository):
         rules: Sequence[AnomalyRule] = (),
     ) -> RealtimeImportResult:
         batch = self._validate_type(batch, MinuteBatchInput, "batch")
+        _identifier(key)
         if isinstance(rules, (str, bytes)) or not isinstance(rules, Sequence):
             raise TypeError("rules must be a sequence of AnomalyRule")
         validated_rules = tuple(
             self._validate_type(rule, AnomalyRule, "rule") for rule in rules
         )
+        batch_payload, duplicate_bar_identity = _sorted_relation_payload(
+            batch,
+            "bars",
+            lambda bar: (bar.security_id, bar.event_at, bar.revision),
+        )
         rule_identities = [
             (rule.rule_version, rule.metric, rule.window) for rule in validated_rules
         ]
-        if len(rule_identities) != len(set(rule_identities)):
-            raise ValueError("duplicate anomaly rule identity")
+        ordered_rules = tuple(
+            sorted(
+                validated_rules,
+                key=lambda rule: (
+                    rule.rule_version,
+                    rule.metric,
+                    rule.window,
+                ),
+            )
+        )
         expected_per_security = _expected_minutes(
             batch.session_start,
             batch.session_end,
@@ -684,10 +783,29 @@ class RealtimeRepository(Repository):
         digest = _canonical_hash(
             {
                 "kind": "minute",
-                "batch": _model_payload(batch),
+                "batch": batch_payload,
+                "rules": [_model_payload(rule) for rule in ordered_rules],
                 "anomalies": anomaly_rows,
             }
         )
+        if duplicate_bar_identity:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=ValueError("duplicate minute identity"),
+                reason="duplicate_minute_identity",
+                details={"kind": "minute"},
+            )
+        if len(rule_identities) != len(set(rule_identities)):
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=ValueError("duplicate anomaly rule identity"),
+                reason="duplicate_rule_identity",
+                details={"kind": "minute"},
+            )
         try:
             with self.database.engine.begin() as connection:
                 now, _existing, replay, conflict_message = self._begin_ingest(
@@ -695,6 +813,7 @@ class RealtimeRepository(Repository):
                     batch,
                     key=key,
                     digest=digest,
+                    kind="minute",
                 )
                 if replay is not None:
                     return replay
@@ -741,8 +860,33 @@ class RealtimeRepository(Repository):
             if conflict_message is None:
                 raise RuntimeError("realtime minute ingestion produced no result")
             raise Conflict(conflict_message)
+        except _RejectedImport as rejected:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=rejected.primary,
+                reason=rejected.reason,
+                details=rejected.details,
+            )
         except IntegrityError:
-            raise Conflict("Conflicting realtime minute batch or revision") from None
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=Conflict("Conflicting realtime minute batch or revision"),
+                reason="integrity_error",
+                details={"error_type": "IntegrityError", "kind": "minute"},
+            )
+        except Forbidden as error:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=error,
+                reason="authorization_rejected",
+                details={"kind": "minute"},
+            )
 
     def ingest_sector_flow_batch(
         self,
@@ -751,9 +895,22 @@ class RealtimeRepository(Repository):
         key: str,
     ) -> RealtimeImportResult:
         batch = self._validate_type(batch, SectorFlowBatchInput, "batch")
-        digest = _canonical_hash(
-            {"kind": "sector_flow", "batch": _model_payload(batch)}
+        _identifier(key)
+        payload, duplicate_identity = _sorted_relation_payload(
+            batch,
+            "points",
+            lambda point: (point.sector_id, point.event_at),
         )
+        digest = _canonical_hash({"kind": "sector_flow", "batch": payload})
+        if duplicate_identity:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=ValueError("duplicate sector flow identity"),
+                reason="duplicate_sector_flow_identity",
+                details={"kind": "sector_flow"},
+            )
         try:
             with self.database.engine.begin() as connection:
                 now, _existing, replay, conflict_message = self._begin_ingest(
@@ -761,6 +918,7 @@ class RealtimeRepository(Repository):
                     batch,
                     key=key,
                     digest=digest,
+                    kind="sector_flow",
                 )
                 if replay is not None:
                     return replay
@@ -799,8 +957,33 @@ class RealtimeRepository(Repository):
             if conflict_message is None:
                 raise RuntimeError("realtime sector flow ingestion produced no result")
             raise Conflict(conflict_message)
+        except _RejectedImport as rejected:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=rejected.primary,
+                reason=rejected.reason,
+                details=rejected.details,
+            )
         except IntegrityError:
-            raise Conflict("Conflicting realtime sector flow batch") from None
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=Conflict("Conflicting realtime sector flow batch"),
+                reason="integrity_error",
+                details={"error_type": "IntegrityError", "kind": "sector_flow"},
+            )
+        except Forbidden as error:
+            self._raise_rejected(
+                batch,
+                key=key,
+                digest=digest,
+                primary=error,
+                reason="authorization_rejected",
+                details={"kind": "sector_flow"},
+            )
 
     def _batch_candidates(
         self,
@@ -822,6 +1005,7 @@ class RealtimeRepository(Repository):
                     child_table.c.batch_id == realtime_quote_batches.c.quote_batch_id,
                     *child_filter,
                 )
+                .offset(0)
                 .exists()
             )
         query = query.where(realtime_quote_batches.c.available_at <= as_of)

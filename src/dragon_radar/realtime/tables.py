@@ -75,9 +75,15 @@ realtime_quote_batches = Table(
     ),
     Index(
         "realtime_quote_batches_as_of",
+        text("available_at DESC"),
+        text("ingest_order DESC"),
+        text("id DESC"),
+    ),
+    Index(
+        "realtime_quote_batches_source_as_of",
         "source_id",
         text("available_at DESC"),
-        text("source_event_at DESC"),
+        text("ingest_order DESC"),
         text("id DESC"),
     ),
 )
@@ -151,7 +157,12 @@ realtime_quotes = Table(
         ")",
         name="realtime_quotes_order_book_availability",
     ),
-    Index("realtime_quotes_security", "security_id", "batch_id"),
+    Index(
+        "realtime_quotes_security",
+        "security_id",
+        "source_id",
+        "batch_id",
+    ),
 )
 
 realtime_minute_bars = Table(
