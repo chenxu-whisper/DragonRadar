@@ -52,6 +52,13 @@ def detect_anomalies(
     if len({bar.security_id for bar in bars}) > 1:
         raise ValueError("anomaly bars must have the same security_id")
 
+    seen_identities: set[tuple[str, datetime, int]] = set()
+    for bar in bars:
+        identity = (bar.security_id, bar.event_at, bar.revision)
+        if identity in seen_identities:
+            raise ValueError("duplicate minute bar revision")
+        seen_identities.add(identity)
+
     if rule.metric == "order_book_imbalance":
         return _unavailable(rule, "order_book_unavailable")
 
@@ -59,8 +66,6 @@ def detect_anomalies(
     for bar in bars:
         key = (bar.security_id, bar.event_at)
         previous = latest.get(key)
-        if previous is not None and previous.revision == bar.revision:
-            raise ValueError("duplicate minute bar revision")
         if previous is None or bar.revision > previous.revision:
             latest[key] = bar
     ordered = tuple(sorted(latest.values(), key=lambda bar: bar.event_at))

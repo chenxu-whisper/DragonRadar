@@ -623,11 +623,18 @@ def test_old_revision_cannot_fill_anomaly_window():
     assert result.reason == "insufficient_window"
 
 
-def test_anomaly_window_rejects_tied_revisions_for_same_event():
-    bars = (
-        minute_bar("100", minute=0),
-        minute_bar("101", minute=1, revision=1),
-        minute_bar("102", minute=1, revision=1),
+@pytest.mark.parametrize(
+    "revisions",
+    [
+        (2, 1, 1),
+        (1, 1, 2),
+        (1, 2, 1),
+    ],
+)
+def test_anomaly_window_rejects_duplicate_revisions_in_any_order(revisions):
+    bars = tuple(
+        minute_bar(str(100 + index), minute=1, revision=revision)
+        for index, revision in enumerate(revisions)
     )
 
     with pytest.raises(ValueError, match="duplicate minute bar revision"):
