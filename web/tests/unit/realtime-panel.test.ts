@@ -3,10 +3,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
   FlowLedger,
+  MinuteLedger,
   RealtimeResourceState,
 } from '../../src/features/realtime/RealtimePanel';
 import { formatRealtimeDecimal } from '../../src/features/realtime/format';
 import type {
+  MinuteResponse,
   RealtimeEnvelope,
   SectorFlowResponse,
 } from '../../src/features/realtime/types';
@@ -75,6 +77,65 @@ describe('realtime Decimal display', () => {
     }
     expect(formatRealtimeDecimal(`1e${'9'.repeat(46)}`)).toBe('未知');
     expect(formatRealtimeDecimal(null)).toBe('未知');
+  });
+});
+
+describe('MinuteLedger', () => {
+  function minuteResponse(sources: string[]): MinuteResponse {
+    return {
+      ...response(null, []),
+      source: sources.length === 1 ? sources[0] : null,
+      source_version: sources.length === 1 ? 'v1' : null,
+      coverage: {
+        expected: sources.length,
+        valid: sources.length,
+        excluded: 0,
+        missing: 0,
+      },
+      data: {
+        status: 'complete',
+        bars: sources.map((source, index) => ({
+          batch_id: `batch-${index + 1}`,
+          source_id: source,
+          source_version: 'v1',
+          security_id: '600000.SH',
+          event_at: '2026-10-09T01:30:00Z',
+          received_at: '2026-10-09T01:30:00Z',
+          available_at: '2026-10-09T01:30:00Z',
+          open: String(10 + index),
+          high: String(10 + index),
+          low: String(10 + index),
+          close: String(10 + index),
+          volume: '0',
+          amount: '0',
+          revision: 1,
+          final: true,
+        })),
+      },
+    };
+  }
+
+  it('keeps same-minute evidence from each source in the chart and audit table', () => {
+    const markup = renderToStaticMarkup(createElement(MinuteLedger, {
+      response: minuteResponse(['alpha-feed', 'beta-feed']),
+    }));
+
+    expect(markup).toContain('按来源拆分');
+    expect(markup).toContain('alpha-feed');
+    expect(markup).toContain('beta-feed');
+    expect(markup).toContain('batch-1');
+    expect(markup).toContain('batch-2');
+    expect(markup.match(/2026-10-09T01:30:00Z/g)).toHaveLength(2);
+  });
+
+  it('retains the single-source minute ledger', () => {
+    const markup = renderToStaticMarkup(createElement(MinuteLedger, {
+      response: minuteResponse(['licensed-feed']),
+    }));
+
+    expect(markup).toContain('licensed-feed');
+    expect(markup).toContain('batch-1');
+    expect(markup).toContain('>10<');
   });
 });
 

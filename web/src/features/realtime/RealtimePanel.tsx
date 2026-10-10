@@ -103,16 +103,25 @@ function number(value: string | null): string {
   return value === null ? '—' : formatRealtimeDecimal(value);
 }
 
-function minuteAxis(response: MinuteResponse): { labels: string[]; values: (number | null)[] } {
+function sourceColor(sourceId: string): string {
+  let hash = 2166136261;
+  for (const character of sourceId) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return palette[(hash >>> 0) % palette.length];
+}
+
+function minuteAxis(response: MinuteResponse): {
+  labels: string[];
+  series: { sourceId: string; values: (number | null)[] }[];
+} {
   const bars = response.data?.bars ?? [];
-  if (bars.length === 0) return { labels: [], values: [] };
-  const byMinute = new Map(
-    bars.map(bar => [Math.floor(Date.parse(bar.event_at) / 60_000), decimalForChart(bar.close)]),
-  );
-  const first = Math.min(...byMinute.keys());
-  const last = Math.max(...byMinute.keys());
+  if (bars.length === 0) return { labels: [], series: [] };
+  const minutes = bars.map(bar => Math.floor(Date.parse(bar.event_at) / 60_000));
+  const first = Math.min(...minutes);
+  const last = Math.max(...minutes);
   const labels: string[] = [];
-  const values: (number | null)[] = [];
   for (let minute = first; minute <= last; minute += 1) {
     labels.push(new Intl.DateTimeFormat('zh-CN', {
       timeZone: 'Asia/Shanghai',
@@ -120,42 +129,63 @@ function minuteAxis(response: MinuteResponse): { labels: string[]; values: (numb
       minute: '2-digit',
       hour12: false,
     }).format(new Date(minute * 60_000)));
-    values.push(byMinute.get(minute) ?? null);
   }
-  return { labels, values };
+  const sources = [...new Set(bars.map(bar => bar.source_id))].sort();
+  return {
+    labels,
+    series: sources.map(sourceId => {
+      const byMinute = new Map(
+        bars
+          .filter(bar => bar.source_id === sourceId)
+          .map(bar => [
+            Math.floor(Date.parse(bar.event_at) / 60_000),
+            decimalForChart(bar.close),
+          ]),
+      );
+      const values: (number | null)[] = [];
+      for (let minute = first; minute <= last; minute += 1) {
+        values.push(byMinute.get(minute) ?? null);
+      }
+      return { sourceId, values };
+    }),
+  };
 }
 
-function MinuteLedger({ response }: { response: MinuteResponse }) {
+export function MinuteLedger({ response }: { response: MinuteResponse }) {
   if (!response.data || response.data.bars.length === 0) {
     return <p className="empty">当前证券没有可显示的分钟记录；不会补零或沿用上一分钟。</p>;
   }
   const axis = minuteAxis(response);
+  const multipleSources = axis.series.length > 1;
   const option: EChartsCoreOption = {
-    grid: { left: 56, right: 16, top: 20, bottom: 36 },
+    grid: { left: 56, right: 16, top: multipleSources ? 48 : 20, bottom: 36 },
+    legend: multipleSources ? { top: 0 } : undefined,
     xAxis: { type: 'category', data: axis.labels, boundaryGap: false },
     yAxis: { type: 'value', scale: true, name: '价格' },
     tooltip: { trigger: 'axis', renderMode: 'richText' },
-    series: [{
-      name: '分钟收盘',
+    series: axis.series.map(({ sourceId, values }) => ({
+      id: `minute-source:${sourceId}`,
+      name: `分钟收盘 · ${sourceId}`,
       type: 'line',
-      data: axis.values,
+      data: values,
       connectNulls: false,
       showSymbol: true,
       symbolSize: 5,
-      lineStyle: { width: 1.5, color: '#1759ad' },
-      itemStyle: { color: '#1759ad' },
-    }],
+      lineStyle: { width: 1.5, color: sourceColor(sourceId) },
+      itemStyle: { color: sourceColor(sourceId) },
+    })),
   };
+  const sourceNames = axis.series.map(item => item.sourceId).join('、');
   return <>
     <Chart
       option={option}
-      description="分钟收盘价时间序列；没有来源记录的分钟保留为空白断点，下方表格仅列真实记录。"
+      description={`分钟收盘价按来源拆分时间序列（${sourceNames}）；每个来源没有记录的分钟分别保留为空白断点，下方表格仅列真实记录。`}
     />
     <TableScroll label="分钟记录横向滚动">
       <table className="responsive-record-table" aria-label="分钟记录">
         <thead><tr>
           <th>来源时间</th><th>开</th><th>高</th><th>低</th><th>收</th>
-          <th>成交量</th><th>批次 / 修订</th>
+          <th>成交量</th><th>批次 / 来源</th>
         </tr></thead>
         <tbody>{response.data.bars.map(bar =>
           <tr key={`${bar.source_id}-${bar.security_id}-${bar.event_at}`}>
@@ -165,7 +195,9 @@ function MinuteLedger({ response }: { response: MinuteResponse }) {
             <td data-label="低">{number(bar.low)}</td>
             <td data-label="收">{number(bar.close)}</td>
             <td data-label="成交量">{number(bar.volume)}</td>
-            <td data-label="批次 / 修订">{bar.batch_id}<small>修订 {bar.revision} · {bar.final ? '终值' : '暂值'}</small></td>
+            <td data-label="批次 / 来源">{bar.batch_id}<small>
+              {bar.source_id} / {bar.source_version} · 修订 {bar.revision} · {bar.final ? '终值' : '暂值'}
+            </small></td>
           </tr>)}</tbody>
       </table>
     </TableScroll>

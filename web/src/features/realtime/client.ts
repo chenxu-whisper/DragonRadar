@@ -57,6 +57,9 @@ const METRICS = new Set(['window_return', 'relative_volume', 'order_book_imbalan
 const ORDER_BOOK_STATUSES = new Set(['available', 'disabled', 'unavailable']);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const UNIT = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+const CONTROL_CHARACTER = /\p{Cc}/u;
+const REASON_CONTENT = /[^\p{White_Space}\p{Cc}]/u;
+const MAX_REASON_CODEPOINTS = 4096;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2}):(\d{2}))$/;
 const JSON_DECIMAL = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
@@ -160,6 +163,17 @@ function identifier(value: unknown, field: string): string {
 
 function nullableIdentifier(value: unknown, field: string): string | null {
   return value === null ? null : identifier(value, field);
+}
+
+function nullableReason(value: unknown, field: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string'
+    || [...value].length > MAX_REASON_CODEPOINTS
+    || CONTROL_CHARACTER.test(value)
+    || !REASON_CONTENT.test(value)) {
+    fail(field);
+  }
+  return value;
 }
 
 function unit(value: unknown, field: string): string {
@@ -447,7 +461,7 @@ function validateQuote(value: unknown): RealtimeQuote {
     volume: nonnegative(item.volume, 'quote volume', true),
     amount: nonnegative(item.amount, 'quote amount', true),
     order_book_status: item.order_book_status as RealtimeQuote['order_book_status'],
-    order_book_unavailable_reason: nullableIdentifier(
+    order_book_unavailable_reason: nullableReason(
       item.order_book_unavailable_reason,
       'quote order book reason',
     ),
@@ -669,7 +683,7 @@ function validateFlowPoint(value: unknown): SectorFlowPoint {
   const item = record(value, 'sector flow point');
   exact(item, FLOW_KEYS, 'sector flow point');
   const netInflow = finite(item.net_inflow, 'sector flow value', true);
-  const reason = nullableIdentifier(item.unavailable_reason, 'sector flow reason');
+  const reason = nullableReason(item.unavailable_reason, 'sector flow reason');
   if ((netInflow === null) === (reason === null)) fail('sector flow reason');
   const eventAt = timestamp(item.event_at, 'sector flow event timestamp');
   const availableAt = timestamp(item.available_at, 'sector flow available timestamp');

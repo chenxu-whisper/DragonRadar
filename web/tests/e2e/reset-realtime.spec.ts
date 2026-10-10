@@ -15,6 +15,7 @@ type MockOptions = {
   revokeFirstQuote?: boolean;
   flowGap?: boolean;
   flowMixedUnits?: boolean;
+  minuteMultiSource?: boolean;
   nullResources?: RealtimeResourceName[];
 };
 
@@ -103,6 +104,22 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
           source_version: null,
           coverage: { expected: 3, valid: 0, excluded: 0, missing: 3 },
           quality_flags: ['no_data'],
+        }) });
+      }
+      if (options.minuteMultiSource) {
+        return route.fulfill({ json: envelope({
+          status: 'incomplete',
+          bars: [
+            minute('2026-09-10T01:30:00Z', 10, 'alpha-feed', 'alpha-batch'),
+            minute('2026-09-10T01:32:00Z', 12, 'alpha-feed', 'alpha-batch'),
+            minute('2026-09-10T01:30:00Z', 20, 'beta-feed', 'beta-batch'),
+            minute('2026-09-10T01:31:00Z', 21, 'beta-feed', 'beta-batch'),
+          ],
+        }, {
+          source: null,
+          source_version: null,
+          coverage: { expected: 6, valid: 4, excluded: 0, missing: 2 },
+          quality_flags: ['stream_gap'],
         }) });
       }
       return route.fulfill({ json: envelope({
@@ -216,10 +233,15 @@ function flowPoint(
   };
 }
 
-function minute(eventAt: string, close: number) {
+function minute(
+  eventAt: string,
+  close: number,
+  source = SOURCE,
+  batch = BATCH,
+) {
   return {
-    batch_id: BATCH,
-    source_id: SOURCE,
+    batch_id: batch,
+    source_id: source,
     source_version: 'v1',
     security_id: SECURITY,
     event_at: eventAt,
@@ -317,6 +339,62 @@ test('keeps an unavailable funding point as a disconnected chart gap', async ({ 
     data: [1, null, 2],
     labels: ['09:30', '09:31', '09:32'],
   });
+});
+
+test('keeps same-minute sources as separate minute series with independent gaps', async ({ page }) => {
+  await mockRealtime(page, { minuteMultiSource: true });
+  await openSelected(page);
+
+  const panel = page.getByRole('region', { name: '实时证据账本' });
+  const table = panel.getByRole('table', { name: '分钟记录' });
+  await expect(table.getByRole('row', {
+    name: /09:30.*10.*alpha-batch.*alpha-feed/,
+  })).toBeVisible();
+  await expect(table.getByRole('row', {
+    name: /09:30.*20.*beta-batch.*beta-feed/,
+  })).toBeVisible();
+
+  const chart = panel.getByRole('img', { name: /分钟收盘价.*按来源拆分/ });
+  const series = await chart.evaluate(async element => {
+    const url = performance.getEntriesByType('resource')
+      .map(entry => entry.name)
+      .find(name => name.includes('/echarts_core.js'));
+    if (!url) throw new Error('ECharts module was not loaded');
+    const echarts = await import(url);
+    const option = echarts.getInstanceByDom(element).getOption();
+    return {
+      labels: option.xAxis[0].data,
+      series: option.series.map((item: {
+        id: unknown;
+        name: unknown;
+        connectNulls: unknown;
+        data: unknown;
+        lineStyle: { color: unknown };
+      }) => ({
+        id: item.id,
+        name: item.name,
+        connectNulls: item.connectNulls,
+        data: item.data,
+        color: item.lineStyle.color,
+      })),
+    };
+  });
+  expect(series.labels).toEqual(['09:30', '09:31', '09:32']);
+  expect(series.series).toMatchObject([
+    {
+      id: 'minute-source:alpha-feed',
+      name: '分钟收盘 · alpha-feed',
+      connectNulls: false,
+      data: [10, null, 12],
+    },
+    {
+      id: 'minute-source:beta-feed',
+      name: '分钟收盘 · beta-feed',
+      connectNulls: false,
+      data: [20, 21, null],
+    },
+  ]);
+  expect(new Set(series.series.map((item: { color: unknown }) => item.color)).size).toBe(2);
 });
 
 test('splits mixed-unit flow series while retaining zero, gaps, and audit units', async ({ page }) => {

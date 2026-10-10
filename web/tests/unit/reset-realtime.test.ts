@@ -643,6 +643,44 @@ describe('realtime strict response validation', () => {
     })).toThrow(/reason/i);
   });
 
+  it.each([
+    ['Unicode', '行情源暂不可用'],
+    ['spaces and punctuation', 'Provider policy unavailable; retry later.'],
+  ])('accepts human-readable %s reasons without relaxing identities', (_name, reason) => {
+    const quote = quoteResponse();
+    (quote.data as { quotes: Record<string, unknown>[] })
+      .quotes[0].order_book_unavailable_reason = reason;
+    expect(validateQuoteResponse(quote, {
+      securityIds: [security],
+    }).data?.quotes[0].order_book_unavailable_reason).toBe(reason);
+
+    expect(validateSectorFlowResponse(flowResponse(null, reason), {
+      sectorId: 'sector-1',
+      date,
+    }).data?.points[0].unavailable_reason).toBe(reason);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['blank', ' \t\u3000 '],
+    ['control-only', '\u0001\u0002'],
+    ['embedded control', 'source\u0000unavailable'],
+    ['oversize', 'x'.repeat(4097)],
+  ])('rejects %s human-readable reasons', (_name, reason) => {
+    const quote = quoteResponse();
+    (quote.data as { quotes: Record<string, unknown>[] })
+      .quotes[0].order_book_unavailable_reason = reason;
+    expect(() => validateQuoteResponse(quote, {
+      securityIds: [security],
+    })).toThrow(/reason/i);
+
+    const flow = flowResponse(null, reason);
+    expect(() => validateSectorFlowResponse(flow, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow();
+  });
+
   it('binds quote coverage to the request and actual returned quotes', () => {
     const partial = quoteResponse({
       status: 'incomplete',
