@@ -87,7 +87,12 @@ function minuteResponse(
     bars,
     ...changes,
   }, {
-    coverage: { expected: 3, valid: 2, excluded: 0, missing: 1 },
+    coverage: {
+      expected: 3,
+      valid: bars.length,
+      excluded: 0,
+      missing: 3 - bars.length,
+    },
     quality_flags: ['stream_gap'],
   });
 }
@@ -275,6 +280,58 @@ describe('realtime strict response validation', () => {
     expect(decimalForChart('9007199254740993.01')).toBeNull();
     expect(decimalForChart('1e10000')).toBeNull();
     expect(decimalForChart('1e-10000')).toBeNull();
+    expect(decimalForChart('Infinity')).toBeNull();
+  });
+
+  it.each([
+    '0xff',
+    '0b101',
+    '1_000',
+    '+1',
+    '01',
+    '.1',
+    '1.',
+    'NaN',
+    'Infinity',
+    '-Infinity',
+  ])('rejects non-RFC8259 Decimal token %j', invalid => {
+    const response = quoteResponse();
+    (response.data as { quotes: Record<string, unknown>[] }).quotes[0].last = invalid;
+    expect(() => validateQuoteResponse(response, {
+      securityIds: [security],
+    })).toThrow(/last/i);
+  });
+
+  it('bounds Decimal coefficient and exponent while accepting scientific notation and negative zero', () => {
+    const valid = quoteResponse();
+    (valid.data as { quotes: Record<string, unknown>[] }).quotes[0] = {
+      ...(valid.data as { quotes: Record<string, unknown>[] }).quotes[0],
+      last: '1.25e2',
+      volume: '-0',
+      amount: '9007199254740993.01',
+    };
+    expect(validateQuoteResponse(valid, {
+      securityIds: [security],
+    }).data?.quotes[0]).toMatchObject({
+      last: '1.25e2',
+      volume: '-0',
+      amount: '9007199254740993.01',
+    });
+    expect(decimalForChart('1.25e2')).toBe(125);
+
+    for (const invalid of [
+      '1'.repeat(81),
+      '1e10001',
+      '1e-10001',
+      `${'1'.repeat(80)}e${'9'.repeat(46)}`,
+    ]) {
+      const response = quoteResponse();
+      (response.data as { quotes: Record<string, unknown>[] }).quotes[0].last = invalid;
+      expect(() => validateQuoteResponse(response, {
+        securityIds: [security],
+      })).toThrow(/last/i);
+      expect(decimalForChart(invalid)).toBeNull();
+    }
   });
 
   it('keeps a large unquoted Decimal exact from the HTTP wire through validation', async () => {
@@ -431,6 +488,42 @@ describe('realtime strict response validation', () => {
     })).toThrow(/as.of/i);
   });
 
+  it('rejects future-visible or future-received records across every realtime resource', () => {
+    const future = '2026-10-09T02:00:01Z';
+    expect(() => validateQuoteResponse(quoteResponse({
+      received_at: future,
+    }), {
+      securityIds: [security],
+    })).toThrow(/as.of/i);
+
+    for (const patch of [
+      { received_at: future, available_at: future },
+      { available_at: future },
+    ]) {
+      expect(() => validateMinuteResponse(minuteResponse([{
+        ...minuteBar('2026-10-09T01:30:00Z', 10),
+        ...patch,
+      }]), {
+        securityId: security,
+        date,
+      })).toThrow(/as.of/i);
+    }
+
+    const event = (anomalyResponse().data as {
+      events: Record<string, unknown>[];
+    }).events[0];
+    expect(() => validateAnomalyResponse(anomalyResponse({
+      events: [{ ...event, available_at: future }],
+    }), { date })).toThrow(/as.of/i);
+
+    const flow = flowResponse();
+    (flow.data as { points: Record<string, unknown>[] }).points[0].available_at = future;
+    expect(() => validateSectorFlowResponse(flow, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/as.of/i);
+  });
+
   it.each([
     ['invalid source timestamp', { source_event_at: 'not-a-date' }],
     ['timestamp without timezone', { received_at: '2026-10-09T01:30:02' }],
@@ -483,6 +576,77 @@ describe('realtime strict response validation', () => {
     expect(() => validateQuoteResponse(wrongValid, {
       securityIds: [security],
     })).toThrow(/coverage valid/i);
+  });
+
+  it('binds minute, anomaly, and flow coverage to actual returned record counts', () => {
+    const wrongMinute = minuteResponse();
+    Object.assign(wrongMinute, {
+      coverage: { expected: 3, valid: 1, excluded: 0, missing: 2 },
+    });
+    expect(() => validateMinuteResponse(wrongMinute, {
+      securityId: security,
+      date,
+    })).toThrow(/coverage valid/i);
+
+    const wrongAnomaly = anomalyResponse();
+    Object.assign(wrongAnomaly, {
+      coverage: { expected: 2, valid: 2, excluded: 0, missing: 0 },
+    });
+    expect(() => validateAnomalyResponse(wrongAnomaly, {
+      date,
+    })).toThrow(/coverage valid/i);
+
+    const wrongFlow = flowResponse(0, null);
+    Object.assign(wrongFlow, {
+      coverage: { expected: 2, valid: 2, excluded: 0, missing: 0 },
+    });
+    expect(() => validateSectorFlowResponse(wrongFlow, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/coverage valid/i);
+
+    const falseEmpty = envelope(null, {
+      coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
+      quality_flags: ['no_data'],
+    });
+    expect(() => validateMinuteResponse(falseEmpty, {
+      securityId: security,
+      date,
+    })).toThrow(/coverage valid/i);
+  });
+
+  it('accepts truthful empty, partial, and complete coverage for realtime records', () => {
+    const empty = envelope(null, {
+      coverage: { expected: 0, valid: 0, excluded: 0, missing: 0 },
+      quality_flags: ['no_data'],
+    });
+    expect(validateMinuteResponse(empty, {
+      securityId: security,
+      date,
+    }).data).toBeNull();
+    expect(validateSectorFlowResponse(empty, {
+      sectorId: 'sector-1',
+      date,
+    }).data).toBeNull();
+
+    expect(validateMinuteResponse(minuteResponse(), {
+      securityId: security,
+      date,
+    }).data?.bars).toHaveLength(2);
+
+    const partialAnomaly = anomalyResponse({ status: 'incomplete' });
+    Object.assign(partialAnomaly, {
+      coverage: { expected: 2, valid: 1, excluded: 0, missing: 1 },
+      quality_flags: ['stream_gap'],
+    });
+    expect(validateAnomalyResponse(partialAnomaly, {
+      date,
+    }).data?.events).toHaveLength(1);
+
+    expect(validateSectorFlowResponse(flowResponse(0, null), {
+      sectorId: 'sector-1',
+      date,
+    }).data?.points).toHaveLength(1);
   });
 
   it('preserves missing minutes as an absent timestamp instead of interpolating', () => {
@@ -814,7 +978,7 @@ describe('realtime strict response validation', () => {
       status: 'unavailable',
       bars: [],
     }, {
-      coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
+      coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
       quality_flags: ['source_unavailable'],
     });
     expect(validateMinuteResponse(unavailableKnown, {

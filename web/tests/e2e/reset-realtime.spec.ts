@@ -170,6 +170,12 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
         status: unavailableReason ? 'unavailable' : 'complete',
         points,
       }, {
+        coverage: {
+          expected: points.length,
+          valid: points.length,
+          excluded: 0,
+          missing: 0,
+        },
         quality_flags: unavailableReason ? [unavailableReason] : [],
         basis: {
           unit: 'CNY',

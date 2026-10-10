@@ -59,6 +59,10 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const UNIT = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
+const JSON_DECIMAL = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE]([+-]?\d+))?$/;
+const MAX_DECIMAL_TOKEN_LENGTH = 128;
+const MAX_DECIMAL_COEFFICIENT_DIGITS = 80;
+const MAX_DECIMAL_EXPONENT = 10_000;
 const SHANGHAI_DATE = new Intl.DateTimeFormat('en', {
   timeZone: 'Asia/Shanghai',
   year: 'numeric',
@@ -168,6 +172,21 @@ function nullableUnit(value: unknown, field: string): string | null {
   return value === null ? null : unit(value, field);
 }
 
+function parseDecimalToken(text: string): Decimal | null {
+  if (text.length > MAX_DECIMAL_TOKEN_LENGTH) return null;
+  const match = JSON_DECIMAL.exec(text);
+  if (!match) return null;
+  const coefficient = text.split(/[eE]/, 1)[0].replace(/[-.]/g, '');
+  if (coefficient.length > MAX_DECIMAL_COEFFICIENT_DIGITS
+    || Math.abs(Number(match[1] ?? 0)) > MAX_DECIMAL_EXPONENT) return null;
+  try {
+    const value = new Decimal(text);
+    return value.isFinite() ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function finite(value: unknown, field: string, nullable = false): string | null {
   if (nullable && value === null) return null;
   const text = typeof value === 'number'
@@ -175,23 +194,19 @@ function finite(value: unknown, field: string, nullable = false): string | null 
     : typeof value === 'string'
       ? value
       : null;
-  if (text === null || text.trim() === '') fail(field);
-  try {
-    if (!new Decimal(text).isFinite()) fail(field);
-  } catch {
-    fail(field);
-  }
+  if (text === null || parseDecimalToken(text) === null) fail(field);
   return text;
 }
 
 function nonnegative(value: unknown, field: string, nullable = false): string | null {
   const result = finite(value, field, nullable);
-  if (result !== null && new Decimal(result).isNegative()) fail(field);
+  if (result !== null && new Decimal(result).lt(0)) fail(field);
   return result;
 }
 
 export function decimalForChart(value: string): number | null {
-  const exact = new Decimal(value);
+  const exact = parseDecimalToken(value);
+  if (exact === null) return null;
   if (exact.abs().gt(Number.MAX_SAFE_INTEGER)) return null;
   const converted = exact.toNumber();
   if (!Number.isFinite(converted) || (converted === 0 && !exact.isZero())) return null;
@@ -330,6 +345,10 @@ function validateAsOfSelection(asOf: string, selected?: string): void {
   }
 }
 
+function validateKnownByAsOf(value: string, asOf: string): void {
+  if (Date.parse(value) > Date.parse(asOf)) fail('as_of record time');
+}
+
 export function quotePath(selection: QuoteSelection): string {
   selectionBatch(selection);
   return `/api/realtime/quotes?${query([
@@ -424,13 +443,17 @@ function validateQuote(value: unknown): RealtimeQuote {
   return result;
 }
 
-function validateQuoteCoverage(
+function validateCoverageCount(
   value: RealtimeCoverage | null,
-  requested: number,
   returned: number,
+  resource: string,
 ): void {
+  if (value !== null && value.valid !== returned) fail(`${resource} coverage valid`);
+}
+
+function validateQuoteCoverage(value: RealtimeCoverage | null, requested: number, returned: number) {
   if (value === null || value.expected !== requested) fail('quote coverage expected');
-  if (value.valid !== returned) fail('quote coverage valid');
+  validateCoverageCount(value, returned, 'quote');
 }
 
 export function validateQuoteResponse(value: unknown, selection: QuoteSelection): QuoteResponse {
@@ -447,6 +470,7 @@ export function validateQuoteResponse(value: unknown, selection: QuoteSelection)
   const sourceEvent = timestamp(data.source_event_at, 'quote source timestamp');
   const received = timestamp(data.received_at, 'quote received timestamp');
   if (Date.parse(received) < Date.parse(sourceEvent)) fail('quote timestamp order');
+  validateKnownByAsOf(received, base.as_of);
   const quotes = data.quotes;
   if (!Array.isArray(quotes)) fail('quotes');
   const parsed = quotes.map(validateQuote);
@@ -510,7 +534,10 @@ export function validateMinuteResponse(value: unknown, selection: MinuteSelectio
   validateAsOfSelection(base.as_of, selection.asOf);
   if (base.trade_date !== selection.date) fail('minute date selection');
   if (selection.sourceId && base.source !== selection.sourceId) fail('minute source selection');
-  if (base.data === null) return base as MinuteResponse;
+  if (base.data === null) {
+    validateCoverageCount(base.coverage, 0, 'minute');
+    return base as MinuteResponse;
+  }
   const data = record(base.data, 'minute data');
   exact(data, MINUTE_DATA_KEYS, 'minute data');
   if (!Array.isArray(data.bars)) fail('minute bars');
@@ -527,11 +554,15 @@ export function validateMinuteResponse(value: unknown, selection: MinuteSelectio
     if (selection.batchId && bar.batch_id !== selection.batchId) fail('minute batch selection');
     if (base.source && bar.source_id !== base.source) fail('minute source identity');
     if (base.source_version && bar.source_version !== base.source_version) fail('minute source version');
+    validateKnownByAsOf(bar.received_at, base.as_of);
+    validateKnownByAsOf(bar.available_at, base.as_of);
     validateEventDate(bar.event_at, selection.date);
   }
+  const minuteStatus = validateCompleteness(status(data.status), base);
+  validateCoverageCount(base.coverage, bars.length, 'minute');
   return {
     ...base,
-    data: { status: validateCompleteness(status(data.status), base), bars },
+    data: { status: minuteStatus, bars },
   };
 }
 
@@ -568,12 +599,18 @@ export function validateAnomalyResponse(
   validateAsOfSelection(base.as_of, selection.asOf);
   if (base.trade_date !== selection.date) fail('anomaly date selection');
   if (selection.sourceId && base.source !== selection.sourceId) fail('anomaly source selection');
-  if (base.data === null) return base as AnomalyResponse;
+  if (base.data === null) {
+    validateCoverageCount(base.coverage, 0, 'anomaly');
+    return base as AnomalyResponse;
+  }
   const data = record(base.data, 'anomaly data');
   exact(data, ANOMALY_DATA_KEYS, 'anomaly data');
   if (!Array.isArray(data.events)) fail('anomaly events');
   const events = data.events.map(validateAnomaly);
-  events.forEach(event => validateEventDate(event.event_at, selection.date));
+  events.forEach(event => {
+    validateEventDate(event.event_at, selection.date);
+    validateKnownByAsOf(event.available_at, base.as_of);
+  });
   if (selection.securityId && events.some(item => item.security_id !== selection.securityId)) {
     fail('anomaly security selection');
   }
@@ -581,10 +618,12 @@ export function validateAnomalyResponse(
   if (cursor !== null && (typeof cursor !== 'string' || cursor.length === 0 || cursor.length > 4096)) {
     fail('anomaly cursor');
   }
+  const anomalyStatus = validateCompleteness(status(data.status), base);
+  validateCoverageCount(base.coverage, events.length, 'anomaly');
   return {
     ...base,
     data: {
-      status: validateCompleteness(status(data.status), base),
+      status: anomalyStatus,
       events,
       next_cursor: cursor as string | null,
     },
@@ -621,7 +660,10 @@ export function validateSectorFlowResponse(
   validateAsOfSelection(base.as_of, selection.asOf);
   if (base.trade_date !== selection.date) fail('sector flow date selection');
   if (selection.sourceId && base.source !== selection.sourceId) fail('sector flow source selection');
-  if (base.data === null) return base as SectorFlowResponse;
+  if (base.data === null) {
+    validateCoverageCount(base.coverage, 0, 'sector flow');
+    return base as SectorFlowResponse;
+  }
   const data = record(base.data, 'sector flow data');
   exact(data, FLOW_DATA_KEYS, 'sector flow data');
   if (!Array.isArray(data.points)) fail('sector flow points');
@@ -645,7 +687,9 @@ export function validateSectorFlowResponse(
       fail('sector flow source version');
     }
     validateEventDate(point.event_at, selection.date);
+    validateKnownByAsOf(point.available_at, base.as_of);
   }
+  validateCoverageCount(base.coverage, points.length, 'sector flow');
   return {
     ...base,
     data: { status: flowStatus, points },
