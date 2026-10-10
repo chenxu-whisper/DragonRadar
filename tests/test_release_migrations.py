@@ -1383,14 +1383,18 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
         "nullable": False,
         "type": "bigint",
     }
-    accepted_attempt = next(
+    bound_attempt = next(
         index
         for index in expected["indexes"]
-        if index["name"] == "realtime_import_attempts_accepted_idempotency_key"
+        if index["name"] == "realtime_import_attempts_bound_idempotency_key"
     )
-    assert accepted_attempt["unique"] is True
-    assert accepted_attempt["key_expressions"] == ["source_id", "idempotency_key"]
-    assert accepted_attempt["predicate"] == "((status)::text = 'accepted'::text)"
+    assert bound_attempt["unique"] is True
+    assert bound_attempt["key_expressions"] == ["source_id", "idempotency_key"]
+    assert bound_attempt["predicate"] == (
+        "((status)::text = ANY "
+        "((ARRAY['accepted'::character varying, "
+        "'incomplete'::character varying])::text[]))"
+    )
     trigger = next(
         trigger
         for trigger in expected["triggers"]
@@ -1694,11 +1698,11 @@ def test_readiness_rejects_partial_index_without_required_predicate(database):
     assert not database.ready()
 
 
-def test_readiness_rejects_realtime_attempt_index_without_accepted_predicate(
+def test_readiness_rejects_realtime_attempt_index_without_bound_predicate(
     database,
 ):
     assert database.ready()
-    index_name = "realtime_import_attempts_accepted_idempotency_key"
+    index_name = "realtime_import_attempts_bound_idempotency_key"
     with database.engine.begin() as connection:
         index_definition = connection.scalar(
             text(
@@ -1722,7 +1726,7 @@ def test_readiness_rejects_realtime_attempt_index_without_accepted_predicate(
             " WHERE "
         )
         assert separator
-        assert "status" in predicate and "accepted" in predicate
+        assert "accepted" in predicate and "incomplete" in predicate
         connection.execute(text(f"DROP INDEX {index_name}"))
         connection.execute(text(create_without_predicate))
 

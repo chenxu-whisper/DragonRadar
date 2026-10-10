@@ -1,4 +1,4 @@
-"""Add immutable realtime evidence with commit-ordered point-in-time reads."""
+"""Add immutable realtime evidence with bound accepted/incomplete import keys."""
 
 from alembic import op
 

@@ -406,13 +406,36 @@ class RealtimeRepository(Repository):
                 select(realtime_import_attempts).where(
                     realtime_import_attempts.c.source_id == batch.source_id,
                     realtime_import_attempts.c.idempotency_key == key,
-                    realtime_import_attempts.c.status == "accepted",
+                    realtime_import_attempts.c.status.in_(("accepted", "incomplete")),
                 )
             )
             .mappings()
             .first()
         )
         if used_key is not None:
+            if used_key["payload_hash"] == digest:
+                original = (
+                    connection.execute(
+                        select(realtime_quote_batches).where(
+                            realtime_quote_batches.c.source_id == batch.source_id,
+                            realtime_quote_batches.c.quote_batch_id
+                            == used_key["batch_id"],
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                duplicate = self._finish_ingest(
+                    connection,
+                    batch,
+                    key=key,
+                    digest=digest,
+                    imported_at=now,
+                    status="duplicate",
+                    reason=None,
+                    details={"original_import_id": str(used_key["id"])},
+                )
+                return now, original, duplicate, None
             self._finish_ingest(
                 connection,
                 batch,

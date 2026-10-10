@@ -371,11 +371,11 @@ realtime_import_attempts = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     PrimaryKeyConstraint("id", name="realtime_import_attempts_pkey"),
     Index(
-        "realtime_import_attempts_accepted_idempotency_key",
+        "realtime_import_attempts_bound_idempotency_key",
         "source_id",
         "idempotency_key",
         unique=True,
-        postgresql_where=text("status = 'accepted'"),
+        postgresql_where=text("status IN ('accepted', 'incomplete')"),
     ),
     CheckConstraint(
         "status IN ('accepted', 'duplicate', 'rejected', 'incomplete') "

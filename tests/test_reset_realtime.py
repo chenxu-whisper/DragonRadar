@@ -1248,12 +1248,12 @@ def test_realtime_source_version_catalog_binds_only_versioned_children(database_
         attempt_index = next(
             index
             for index in inspector.get_indexes("realtime_import_attempts")
-            if index["name"] == "realtime_import_attempts_accepted_idempotency_key"
+            if index["name"] == "realtime_import_attempts_bound_idempotency_key"
         )
         assert attempt_index["unique"] is True
         assert attempt_index["column_names"] == ["source_id", "idempotency_key"]
         predicate = str(attempt_index["dialect_options"]["postgresql_where"])
-        assert "status" in predicate and "accepted" in predicate
+        assert "accepted" in predicate and "incomplete" in predicate
 
         minute_batch_fk = next(
             constraint
@@ -1279,6 +1279,75 @@ def test_realtime_source_version_catalog_binds_only_versioned_children(database_
             assert "source_version" not in {
                 column["name"] for column in inspector.get_columns(table)
             }
+    finally:
+        database.close()
+
+
+def test_realtime_key_index_binds_incomplete_but_keeps_audit_attempts(database_url):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_realtime(database_url)
+    source_id = "incomplete-index-feed"
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO source_grants (source_id, "grant", updated_at)
+                    VALUES (:source_id, '{}', :now)
+                    """
+                ),
+                {"source_id": source_id, "now": T0},
+            )
+            for status, reason in (
+                ("incomplete", "stream_gap"),
+                ("duplicate", None),
+                ("rejected", "idempotency_key_conflict"),
+            ):
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO realtime_import_attempts (
+                            id, source_id, batch_id, idempotency_key,
+                            payload_hash, status, reason, details, created_at
+                        ) VALUES (
+                            :id, :source_id, :batch_id, 'occupied-key',
+                            :payload_hash, :status, :reason, '{}', :now
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "source_id": source_id,
+                        "batch_id": f"{status}-batch",
+                        "payload_hash": "a" * 64,
+                        "status": status,
+                        "reason": reason,
+                        "now": T0,
+                    },
+                )
+
+        with pytest.raises(DBAPIError), database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_import_attempts (
+                        id, source_id, batch_id, idempotency_key,
+                        payload_hash, status, reason, details, created_at
+                    ) VALUES (
+                        :id, :source_id, 'second-incomplete', 'occupied-key',
+                        :payload_hash, 'incomplete', 'stream_gap', '{}', :now
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "source_id": source_id,
+                    "payload_hash": "b" * 64,
+                    "now": T0,
+                },
+            )
     finally:
         database.close()
 
@@ -1712,6 +1781,193 @@ def test_task21r_duplicate_import_records_attempt_and_preserves_accepted_result(
         "accepted": (first.import_id, "quote-key-1"),
         "duplicate": (replay.import_id, "quote-key-2"),
     }
+
+
+def test_task21r_same_key_and_hash_replays_incomplete_parent(
+    realtime_repository,
+):
+    from sqlalchemy import func, select
+
+    from dragon_radar.realtime.tables import (
+        realtime_import_attempts,
+        realtime_quote_batches,
+    )
+
+    batch = _minute_batch(
+        "incomplete-key-replay",
+        (minute_bar("100", minute=0),),
+    )
+    first = realtime_repository.ingest_minute_batch(
+        batch,
+        key="incomplete-key",
+    )
+    replay = realtime_repository.ingest_minute_batch(
+        batch,
+        key="incomplete-key",
+    )
+
+    assert first.status == "incomplete"
+    assert replay.status == "duplicate"
+    assert replay.batch_id == first.batch_id
+    assert replay.payload_hash == first.payload_hash
+    with realtime_repository.database.engine.connect() as connection:
+        assert (
+            connection.scalar(select(func.count()).select_from(realtime_quote_batches))
+            == 1
+        )
+        attempts = connection.execute(
+            select(
+                realtime_import_attempts.c.id,
+                realtime_import_attempts.c.status,
+                realtime_import_attempts.c.details,
+            )
+        ).mappings()
+        attempts = list(attempts)
+    assert {attempt["status"] for attempt in attempts} == {"incomplete", "duplicate"}
+    duplicate = next(
+        attempt for attempt in attempts if attempt["status"] == "duplicate"
+    )
+    assert duplicate["details"]["original_import_id"] == first.import_id
+
+
+def test_task21r_incomplete_parent_owns_key_for_conflicting_hash(
+    realtime_repository,
+):
+    from sqlalchemy import func, select
+
+    from dragon_radar.realtime.tables import (
+        realtime_import_attempts,
+        realtime_quote_batches,
+    )
+    from dragon_radar.storage.repository import Conflict
+
+    first = realtime_repository.ingest_minute_batch(
+        _minute_batch(
+            "incomplete-key-owner",
+            (minute_bar("100", minute=0),),
+        ),
+        key="incomplete-owned-key",
+    )
+
+    with pytest.raises(Conflict, match="idempotency key"):
+        realtime_repository.ingest_minute_batch(
+            _minute_batch(
+                "incomplete-key-conflict",
+                (minute_bar("101", minute=1),),
+            ),
+            key="incomplete-owned-key",
+        )
+
+    assert first.status == "incomplete"
+    with realtime_repository.database.engine.connect() as connection:
+        assert (
+            connection.scalar(select(func.count()).select_from(realtime_quote_batches))
+            == 1
+        )
+        attempts = list(
+            connection.execute(
+                select(
+                    realtime_import_attempts.c.status,
+                    realtime_import_attempts.c.details,
+                )
+            ).mappings()
+        )
+    assert {attempt["status"] for attempt in attempts} == {"incomplete", "rejected"}
+    rejected = next(attempt for attempt in attempts if attempt["status"] == "rejected")
+    assert rejected["details"]["original_import_id"] == first.import_id
+
+
+def test_task21r_concurrent_incomplete_imports_bind_one_key_and_parent(
+    realtime_repository,
+):
+    from sqlalchemy import func, select
+
+    from dragon_radar.realtime.tables import (
+        realtime_import_attempts,
+        realtime_quote_batches,
+    )
+    from dragon_radar.storage.repository import Conflict
+
+    batches = (
+        _minute_batch(
+            "concurrent-incomplete-first",
+            (minute_bar("100", minute=0),),
+        ),
+        _minute_batch(
+            "concurrent-incomplete-second",
+            (minute_bar("101", minute=1),),
+        ),
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                realtime_repository.ingest_minute_batch,
+                batch,
+                key="concurrent-incomplete-key",
+            )
+            for batch in batches
+        ]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(future.result())
+        except Conflict as error:
+            outcomes.append(error)
+
+    assert sum(isinstance(outcome, Conflict) for outcome in outcomes) == 1
+    result = next(outcome for outcome in outcomes if not isinstance(outcome, Conflict))
+    assert result.status == "incomplete"
+    with realtime_repository.database.engine.connect() as connection:
+        assert (
+            connection.scalar(select(func.count()).select_from(realtime_quote_batches))
+            == 1
+        )
+        assert set(connection.scalars(select(realtime_import_attempts.c.status))) == {
+            "incomplete",
+            "rejected",
+        }
+
+
+def test_task21r_accepted_and_incomplete_attempt_statuses_are_immutable(
+    realtime_repository,
+):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("immutable-accepted"),
+        key="immutable-accepted",
+    )
+    realtime_repository.ingest_minute_batch(
+        _minute_batch(
+            "immutable-incomplete",
+            (minute_bar("100", minute=0),),
+        ),
+        key="immutable-incomplete",
+    )
+
+    for current, replacement in (
+        ("accepted", "incomplete"),
+        ("incomplete", "accepted"),
+    ):
+        with (
+            pytest.raises(DBAPIError),
+            realtime_repository.database.engine.begin() as connection,
+        ):
+            connection.execute(
+                text(
+                    """
+                    UPDATE realtime_import_attempts
+                    SET status = :replacement,
+                        reason = CASE
+                            WHEN :replacement = 'incomplete' THEN 'stream_gap'
+                            ELSE NULL
+                        END
+                    WHERE status = :current
+                    """
+                ),
+                {"current": current, "replacement": replacement},
+            )
 
 
 def test_task21r_cross_source_commit_order_serializes_ingest_watermarks(

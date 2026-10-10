@@ -10075,8 +10075,8 @@
         "source_id",
         "idempotency_key"
       ],
-      "name": "realtime_import_attempts_accepted_idempotency_key",
-      "predicate": "((status)::text = 'accepted'::text)",
+      "name": "realtime_import_attempts_bound_idempotency_key",
+      "predicate": "((status)::text = ANY ((ARRAY['accepted'::character varying, 'incomplete'::character varying])::text[]))",
       "table": "realtime_import_attempts",
       "unique": true,
       "valid": true
