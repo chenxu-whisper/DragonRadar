@@ -3090,9 +3090,8 @@ def test_minute_completeness_counts_unique_trading_minutes(realtime_repository):
         second_event,
         minute_bar("11", minute=1),
         minute_bar("12", minute=2),
-        minute_bar("13", minute=3),
     )
-    realtime_repository.ingest_minute_batch(
+    ingest = realtime_repository.ingest_minute_batch(
         _minute_batch("multiple-events-per-minute", bars),
         key="multiple-events-per-minute",
     )
@@ -3106,10 +3105,13 @@ def test_minute_completeness_counts_unique_trading_minutes(realtime_repository):
         source_id="licensed-feed",
     )
 
-    assert len(result.items) == 5
-    assert result.completeness.status == "complete"
+    assert ingest.status == "incomplete"
+    assert ingest.reason == "stream_gap"
+    assert len(result.items) == 4
+    assert result.completeness.status == "incomplete"
     assert result.completeness.expected_count == 4
-    assert result.completeness.received_count == 4
+    assert result.completeness.received_count == 3
+    assert result.completeness.reason == ingest.reason
 
 
 def test_point_in_time_minutes_do_not_leak_rows_from_future_atomic_batch(
@@ -3216,7 +3218,10 @@ def test_minute_session_windows_exclude_lunch_and_expect_240(
         "trading-day-complete",
         include_lunch=True,
     )
-    realtime_repository.ingest_minute_batch(batch, key="trading-day-complete")
+    ingest = realtime_repository.ingest_minute_batch(
+        batch,
+        key="trading-day-complete",
+    )
     windows = (
         (T0, T0 + timedelta(minutes=120)),
         (T0 + timedelta(minutes=210), T0 + timedelta(minutes=330)),
@@ -3236,6 +3241,8 @@ def test_minute_session_windows_exclude_lunch_and_expect_240(
     assert T0 + timedelta(minutes=150) not in {
         item.bar.event_at for item in result.items
     }
+    assert ingest.status == "accepted"
+    assert ingest.reason is None
     assert result.completeness.status == "complete"
     assert result.completeness.expected_count == 240
     assert result.completeness.received_count == 240

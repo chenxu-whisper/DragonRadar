@@ -5,11 +5,12 @@ import json
 import os
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from datetime import date as Date
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -58,6 +59,7 @@ from dragon_radar.topics.repository import _decode_cursor, _encode_cursor
 
 ANOMALY_CURSOR_TTL = timedelta(minutes=15)
 REALTIME_CURSOR_ORDER_LOCK = "dragon-radar:realtime:cursor-order:v1"
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CURSOR_FIELDS = {
     "version",
     "sort_version",
@@ -214,6 +216,19 @@ def _expected_minutes(session_start: datetime, session_end: datetime) -> int:
     return int(seconds // 60)
 
 
+def _trading_day_windows(day: Date) -> tuple[tuple[datetime, datetime], ...]:
+    return tuple(
+        (
+            datetime.combine(day, start, tzinfo=_SHANGHAI).astimezone(UTC),
+            datetime.combine(day, end, tzinfo=_SHANGHAI).astimezone(UTC),
+        )
+        for start, end in (
+            (time(9, 30), time(11, 30)),
+            (time(13), time(15)),
+        )
+    )
+
+
 def _session_window_filter(column, windows):
     return or_(
         *(
@@ -232,6 +247,9 @@ def _session_windows(
     session_end = _utc(session_end, "session_end")
     if windows is None:
         _expected_minutes(session_start, session_end)
+        trading_day = _trading_day_windows(session_start.astimezone(_SHANGHAI).date())
+        if session_start == trading_day[0][0] and session_end == trading_day[-1][1]:
+            return trading_day
         return ((session_start, session_end),)
     if not isinstance(windows, tuple) or not windows:
         raise ValueError("session_windows must be a nonempty tuple")
@@ -285,6 +303,32 @@ def _completeness(
         expected_count=expected,
         received_count=received,
     )
+
+
+def _trading_minute_completeness(
+    records: Sequence[tuple[str, str, datetime]],
+    windows: tuple[tuple[datetime, datetime], ...],
+) -> SourceCompleteness:
+    identities = {(source_id, security_id) for source_id, security_id, _ in records}
+    expected = len(identities) * sum(
+        _expected_minutes(window_start, window_end)
+        for window_start, window_end in windows
+    )
+    received = len(
+        {
+            (
+                source_id,
+                security_id,
+                event_at.replace(second=0, microsecond=0),
+            )
+            for source_id, security_id, event_at in records
+            if any(
+                window_start <= event_at < window_end
+                for window_start, window_end in windows
+            )
+        }
+    )
+    return _completeness(expected=expected, received=received)
 
 
 def _validate_batch_selection(
@@ -813,14 +857,18 @@ class RealtimeRepository(Repository):
                 ),
             )
         )
-        expected_per_security = _expected_minutes(
+        windows = _session_windows(
             batch.session_start,
             batch.session_end,
+            None,
         )
-        securities = {bar.security_id for bar in batch.bars}
-        expected = expected_per_security * len(securities)
-        received = len({(bar.security_id, bar.event_at) for bar in batch.bars})
-        incomplete = received < expected
+        completeness = _trading_minute_completeness(
+            tuple(
+                (batch.source_id, bar.security_id, bar.event_at) for bar in batch.bars
+            ),
+            windows,
+        )
+        incomplete = completeness.status == "incomplete"
         anomaly_rows = self._anomaly_rows(
             batch,
             validated_rules,
@@ -898,8 +946,8 @@ class RealtimeRepository(Repository):
                         reason="stream_gap" if incomplete else None,
                         details={
                             "kind": "minute",
-                            "expected_count": expected,
-                            "received_count": received,
+                            "expected_count": completeness.expected_count,
+                            "received_count": completeness.received_count,
                             "event_count": len(anomaly_rows),
                         },
                     )
@@ -1268,7 +1316,6 @@ class RealtimeRepository(Repository):
                     ),
                 )
             authorized_sources = {parent["source_id"] for parent in parents}
-            expected = expected_per_source * len(authorized_sources)
             query = (
                 select(realtime_minute_bars)
                 .join(
@@ -1309,14 +1356,11 @@ class RealtimeRepository(Repository):
                 .mappings()
                 .all()
             )
-        received_minutes = len(
-            {
-                (
-                    row["source_id"],
-                    row["event_at"].replace(second=0, microsecond=0),
-                )
-                for row in rows
-            }
+        completeness = _trading_minute_completeness(
+            tuple(
+                (row["source_id"], row["security_id"], row["event_at"]) for row in rows
+            ),
+            windows,
         )
         return MinuteReadResult(
             as_of=as_of,
@@ -1330,7 +1374,7 @@ class RealtimeRepository(Repository):
                 )
                 for row in rows
             ),
-            completeness=_completeness(expected=expected, received=received_minutes),
+            completeness=completeness,
         )
 
     def list_sector_flow(
