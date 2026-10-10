@@ -2897,7 +2897,7 @@
         "unavailable_reason"
       ],
       "deferrable": false,
-      "expression": "(((net_inflow IS NOT NULL) AND (net_inflow > '-Infinity'::numeric) AND (net_inflow < 'Infinity'::numeric) AND (unavailable_reason IS NULL)) OR ((net_inflow IS NULL) AND (unavailable_reason IS NOT NULL) AND (btrim(unavailable_reason) <> ''::text)))",
+      "expression": "(((net_inflow IS NOT NULL) AND (net_inflow > '-Infinity'::numeric) AND (net_inflow < 'Infinity'::numeric) AND (unavailable_reason IS NULL)) OR ((net_inflow IS NULL) AND (unavailable_reason IS NOT NULL) AND (unavailable_reason !~ '^[[:space:]]*$'::text)))",
       "initially_deferred": false,
       "key_expressions": [],
       "kind": "check",
@@ -3027,7 +3027,7 @@
         "order_book_unavailable_reason"
       ],
       "deferrable": false,
-      "expression": "((((order_book_status)::text = 'available'::text) AND (bid IS NOT NULL) AND (ask IS NOT NULL) AND (bid_size IS NOT NULL) AND (ask_size IS NOT NULL) AND (order_book_unavailable_reason IS NULL)) OR (((order_book_status)::text = ANY ((ARRAY['disabled'::character varying, 'unavailable'::character varying])::text[])) AND (bid IS NULL) AND (ask IS NULL) AND (bid_size IS NULL) AND (ask_size IS NULL) AND (order_book_unavailable_reason IS NOT NULL) AND (btrim(order_book_unavailable_reason) <> ''::text)))",
+      "expression": "((((order_book_status)::text = 'available'::text) AND (bid IS NOT NULL) AND (ask IS NOT NULL) AND (bid_size IS NOT NULL) AND (ask_size IS NOT NULL) AND (order_book_unavailable_reason IS NULL)) OR (((order_book_status)::text = ANY ((ARRAY['disabled'::character varying, 'unavailable'::character varying])::text[])) AND (bid IS NULL) AND (ask IS NULL) AND (bid_size IS NULL) AND (ask_size IS NULL) AND (order_book_unavailable_reason IS NOT NULL) AND (order_book_unavailable_reason !~ '^[[:space:]]*$'::text)))",
       "initially_deferred": false,
       "key_expressions": [],
       "kind": "check",
@@ -7005,7 +7005,7 @@
         "reason"
       ],
       "deferrable": false,
-      "expression": "(((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'incomplete'::character varying])::text[])) AND ((((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying])::text[])) AND (reason IS NULL)) OR (((status)::text = ANY ((ARRAY['rejected'::character varying, 'incomplete'::character varying])::text[])) AND (reason IS NOT NULL) AND (btrim(reason) <> ''::text))))",
+      "expression": "(((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'incomplete'::character varying])::text[])) AND ((((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying])::text[])) AND (reason IS NULL)) OR (((status)::text = ANY ((ARRAY['rejected'::character varying, 'incomplete'::character varying])::text[])) AND (reason IS NOT NULL) AND (reason !~ '^[[:space:]]*$'::text))))",
       "initially_deferred": false,
       "key_expressions": [],
       "kind": "check",

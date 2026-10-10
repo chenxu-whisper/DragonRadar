@@ -1333,7 +1333,7 @@ def test_minute_bar_rejects_parent_source_version_mismatch(database_url):
             id, source_id, batch_id, security_id, order_book_status,
             order_book_unavailable_reason
         ) VALUES (
-            :id, :source_id, :batch_id, '600000.SH', 'disabled', ''
+            :id, :source_id, :batch_id, '600000.SH', 'disabled', :reason
         )
         """,
         """
@@ -1341,7 +1341,7 @@ def test_minute_bar_rejects_parent_source_version_mismatch(database_url):
             id, source_id, batch_id, sector_id, event_at, net_inflow, unit,
             unavailable_reason
         ) VALUES (
-            :id, :source_id, :batch_id, 'sector-1', :now, NULL, 'CNY', ''
+            :id, :source_id, :batch_id, 'sector-1', :now, NULL, 'CNY', :reason
         )
         """,
         """
@@ -1350,13 +1350,20 @@ def test_minute_bar_rejects_parent_source_version_mismatch(database_url):
             reason, details, created_at
         ) VALUES (
             :id, :source_id, :batch_id, 'empty-reason', :payload_hash,
-            'rejected', '', '{}', :now
+            'rejected', :reason, '{}', :now
         )
         """,
     ],
     ids=("order-book", "sector-flow", "import-attempt"),
 )
-def test_realtime_required_reasons_reject_empty_strings(database_url, statement):
+@pytest.mark.parametrize(
+    "reason",
+    ["", " ", "\t", "\n", " \t\n "],
+    ids=("empty", "space", "tab", "newline", "mixed-whitespace"),
+)
+def test_realtime_required_reasons_reject_blank_strings(
+    database_url, statement, reason
+):
     from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
 
@@ -1405,8 +1412,119 @@ def test_realtime_required_reasons_reject_empty_strings(database_url, statement)
                     "batch_id": batch_id,
                     "payload_hash": "e" * 64,
                     "now": T0,
+                    "reason": reason,
                 },
             )
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize(
+    ("statement", "select_reason"),
+    [
+        (
+            """
+            INSERT INTO realtime_quotes (
+                id, source_id, batch_id, security_id, order_book_status,
+                order_book_unavailable_reason
+            ) VALUES (
+                :id, :source_id, :batch_id, '600000.SH', 'disabled', :reason
+            )
+            """,
+            """
+            SELECT order_book_unavailable_reason
+            FROM realtime_quotes
+            WHERE id = :id
+            """,
+        ),
+        (
+            """
+            INSERT INTO realtime_sector_flow_points (
+                id, source_id, batch_id, sector_id, event_at, net_inflow, unit,
+                unavailable_reason
+            ) VALUES (
+                :id, :source_id, :batch_id, 'sector-1', :now, NULL, 'CNY', :reason
+            )
+            """,
+            """
+            SELECT unavailable_reason
+            FROM realtime_sector_flow_points
+            WHERE id = :id
+            """,
+        ),
+        (
+            """
+            INSERT INTO realtime_import_attempts (
+                id, source_id, batch_id, idempotency_key, payload_hash, status,
+                reason, details, created_at
+            ) VALUES (
+                :id, :source_id, :batch_id, 'valid-reason', :payload_hash,
+                'rejected', :reason, '{}', :now
+            )
+            """,
+            """
+            SELECT reason
+            FROM realtime_import_attempts
+            WHERE id = :id
+            """,
+        ),
+    ],
+    ids=("order-book", "sector-flow", "import-attempt"),
+)
+def test_realtime_required_reasons_accept_nonblank_string(
+    database_url, statement, select_reason
+):
+    from sqlalchemy import text
+
+    database = _upgrade_realtime(database_url)
+    source_id = "reason-feed"
+    batch_id = "reason-batch"
+    row_id = uuid4()
+    reason = "source unavailable"
+    try:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO source_grants (source_id, "grant", updated_at)
+                    VALUES (:source_id, '{}', :now)
+                    """
+                ),
+                {"source_id": source_id, "now": T0},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO realtime_quote_batches (
+                        id, quote_batch_id, source_id, source_version,
+                        source_event_at, received_at, available_at,
+                        permission_snapshot, payload_hash, imported_at
+                    ) VALUES (
+                        :id, :batch_id, :source_id, 'v1', :now, :now, :now,
+                        '{}', :payload_hash, :now
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "batch_id": batch_id,
+                    "source_id": source_id,
+                    "payload_hash": "d" * 64,
+                    "now": T0,
+                },
+            )
+            parameters = {
+                "id": row_id,
+                "source_id": source_id,
+                "batch_id": batch_id,
+                "payload_hash": "e" * 64,
+                "now": T0,
+                "reason": reason,
+            }
+            connection.execute(text(statement), parameters)
+            stored_reason = connection.scalar(text(select_reason), {"id": row_id})
+
+        assert stored_reason == reason
     finally:
         database.close()
 

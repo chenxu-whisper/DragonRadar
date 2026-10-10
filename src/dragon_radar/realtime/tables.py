@@ -141,7 +141,7 @@ realtime_quotes = Table(
         "AND bid IS NULL AND ask IS NULL "
         "AND bid_size IS NULL AND ask_size IS NULL "
         "AND order_book_unavailable_reason IS NOT NULL "
-        "AND btrim(order_book_unavailable_reason) <> ''"
+        "AND order_book_unavailable_reason !~ '^[[:space:]]*$'"
         ")",
         name="realtime_quotes_order_book_availability",
     ),
@@ -331,7 +331,7 @@ realtime_sector_flow_points = Table(
         "AND unavailable_reason IS NULL"
         ") OR ("
         "net_inflow IS NULL AND unavailable_reason IS NOT NULL "
-        "AND btrim(unavailable_reason) <> ''"
+        "AND unavailable_reason !~ '^[[:space:]]*$'"
         ")",
         name="realtime_sector_flow_points_availability",
     ),
@@ -373,7 +373,7 @@ realtime_import_attempts = Table(
         "status IN ('accepted', 'duplicate', 'rejected', 'incomplete') "
         "AND ((status IN ('accepted', 'duplicate') AND reason IS NULL) "
         "OR (status IN ('rejected', 'incomplete') "
-        "AND reason IS NOT NULL AND btrim(reason) <> ''))",
+        "AND reason IS NOT NULL AND reason !~ '^[[:space:]]*$'))",
         name="realtime_import_attempts_status",
     ),
     CheckConstraint(
