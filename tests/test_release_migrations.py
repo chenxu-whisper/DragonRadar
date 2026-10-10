@@ -5,6 +5,7 @@ import json
 import os
 import re
 import runpy
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1260,6 +1261,66 @@ def test_ci_runs_installed_wheel_migration_gate_after_build():
     assert "--output .temp/acceptance/task21-migrations.json" in verify_job
     assert "--audited-commit '${{ github.sha }}'" in verify_job
     assert "dragon_radar-0.1.0-py3-none-any.whl" not in verify_job
+
+
+def test_ci_runs_focused_realtime_release_gates_without_weakening_existing_gates():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    def job(name):
+        match = re.search(
+            rf"(?ms)^  {re.escape(name)}:\s*$.*?(?=^  [a-zA-Z0-9_]+:\s*$|\Z)",
+            workflow,
+        )
+        assert match is not None, f"missing CI job: {name}"
+        return match.group()
+
+    def commands(job_text):
+        return [
+            shlex.split(match.group(1), posix=True)
+            for match in re.finditer(r"(?m)^      - run:\s+([^\r\n]+)$", job_text)
+        ]
+
+    verify = job("verify")
+    assert re.search(r"(?m)^\s+image:\s+postgres:17-alpine@sha256:", verify)
+    assert [
+        "uv",
+        "run",
+        "pytest",
+        "tests/test_reset_realtime.py",
+        "-q",
+    ] in commands(verify)
+    assert [
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "-W",
+        "error",
+        "--cov=dragon_radar",
+        "--cov-report=term-missing",
+        "--cov-report=xml:.temp/coverage.xml",
+    ] in commands(verify)
+
+    web_quality = commands(job("web_quality"))
+    assert [
+        "npm",
+        "test",
+        "--",
+        "--run",
+        "tests/unit/reset-realtime.test.ts",
+    ] in web_quality
+    assert ["npm", "test"] in web_quality
+    assert ["npm", "run", "build"] in web_quality
+    assert ["npm", "run", "check:bundle"] in web_quality
+
+    web_e2e_reset = commands(job("web_e2e_reset"))
+    assert [
+        "npx",
+        "playwright",
+        "test",
+        "tests/e2e/reset-realtime.spec.ts",
+    ] in web_e2e_reset
+    assert ["npm", "run", "test:e2e:reset"] in web_e2e_reset
 
 
 def test_wheel_cli_never_reveals_database_password(
