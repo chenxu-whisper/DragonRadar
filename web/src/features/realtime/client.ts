@@ -54,6 +54,7 @@ const STATUSES = new Set<RealtimeStatus>(['complete', 'delayed', 'incomplete', '
 const METRICS = new Set(['window_return', 'relative_volume', 'order_book_imbalance']);
 const ORDER_BOOK_STATUSES = new Set(['available', 'disabled', 'unavailable']);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const UNIT = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 const SHANGHAI_DATE = new Intl.DateTimeFormat('en', {
@@ -89,6 +90,15 @@ function identifier(value: unknown, field: string): string {
 
 function nullableIdentifier(value: unknown, field: string): string | null {
   return value === null ? null : identifier(value, field);
+}
+
+function unit(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !UNIT.test(value)) fail(field);
+  return value;
+}
+
+function nullableUnit(value: unknown, field: string): string | null {
+  return value === null ? null : unit(value, field);
 }
 
 function finite(value: unknown, field: string, nullable = false): string | null {
@@ -183,7 +193,7 @@ function realtimeBasis(value: unknown): RealtimeBasis {
   exact(item, BASIS_KEYS, 'basis');
   if (item.price_type !== 'raw') fail('basis price_type');
   return {
-    unit: nullableIdentifier(item.unit, 'basis unit'),
+    unit: nullableUnit(item.unit, 'basis unit'),
     currency: nullableIdentifier(item.currency, 'basis currency'),
     price_type: 'raw',
     benchmark: nullableIdentifier(item.benchmark, 'basis benchmark'),
@@ -531,7 +541,7 @@ function validateFlowPoint(value: unknown): SectorFlowPoint {
     event_at: eventAt,
     available_at: availableAt,
     net_inflow: netInflow,
-    unit: identifier(item.unit, 'sector flow unit'),
+    unit: unit(item.unit, 'sector flow unit'),
     unavailable_reason: reason,
   };
 }
@@ -549,6 +559,16 @@ export function validateSectorFlowResponse(
   exact(data, FLOW_DATA_KEYS, 'sector flow data');
   if (!Array.isArray(data.points)) fail('sector flow points');
   const points = data.points.map(validateFlowPoint);
+  const flowStatus = validateCompleteness(status(data.status), base);
+  const unavailablePoint = points.find(point => point.net_inflow === null);
+  if (unavailablePoint) {
+    if (flowStatus !== 'unavailable'
+      || base.quality_flags[0] !== unavailablePoint.unavailable_reason) {
+      fail('sector flow availability');
+    }
+  } else if (flowStatus === 'unavailable') {
+    fail('sector flow availability');
+  }
   for (const point of points) {
     if (point.sector !== selection.sectorId) fail('sector flow sector selection');
     if (selection.sourceId && point.source_id !== selection.sourceId) fail('sector flow source');
@@ -561,6 +581,6 @@ export function validateSectorFlowResponse(
   }
   return {
     ...base,
-    data: { status: validateCompleteness(status(data.status), base), points },
+    data: { status: flowStatus, points },
   };
 }

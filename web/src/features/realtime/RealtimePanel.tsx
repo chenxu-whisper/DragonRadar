@@ -76,6 +76,29 @@ function CoverageText({ value }: { value: RealtimeCoverage | null }) {
   </span>;
 }
 
+export function RealtimeResourceState({
+  name,
+  response,
+}: {
+  name: string;
+  response: {
+    coverage: RealtimeCoverage | null;
+    quality_flags: string[];
+    data: { status: RealtimeStatus } | null;
+  };
+}) {
+  const unavailable = response.data === null;
+  return <div className="leader-state realtime-resource-state" aria-label={`${name}状态`}>
+    <StatusToken status={response.data?.status ?? 'unavailable'} />
+    <strong>{name}</strong>
+    <CoverageText value={response.coverage} />
+    <span>质量标记：{response.quality_flags.length
+      ? response.quality_flags.join('、')
+      : '无'}</span>
+    {unavailable && <span>无可用数据</span>}
+  </div>;
+}
+
 function number(value: string | null): string {
   return value === null ? '—' : formatDecimal(value);
 }
@@ -315,6 +338,11 @@ export default function RealtimePanel({
     <ResourceStatus resource={minutes} name="分钟记录" />
     <ResourceStatus resource={anomalies} name="异动证据" />
     <ResourceStatus resource={flow} name="分时资金流" />
+
+    {quotes.data && <RealtimeResourceState name="实时报价" response={quotes.data} />}
+    {minutes.data && <RealtimeResourceState name="分钟记录" response={minutes.data} />}
+    {anomalies.data && <RealtimeResourceState name="异动证据" response={anomalies.data} />}
+    {flow.data && <RealtimeResourceState name="分时资金流" response={flow.data} />}
 
     {quoteData && <>
       <div className="leader-state" aria-label="报价批次状态">

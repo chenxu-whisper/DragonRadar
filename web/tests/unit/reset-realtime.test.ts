@@ -140,8 +140,9 @@ function flowResponse(
   netInflow: number | null = null,
   unavailableReason: string | null = 'field_not_supplied',
 ) {
+  const unavailable = netInflow === null;
   return envelope({
-    status: 'complete',
+    status: unavailable ? 'unavailable' : 'complete',
     points: [{
       batch_id: batch,
       source_id: source,
@@ -156,6 +157,7 @@ function flowResponse(
   }, {
     basis: { ...basis, unit: 'CNY', currency: 'CNY' },
     coverage: { expected: 1, valid: 1, excluded: 0, missing: 0 },
+    quality_flags: unavailable && unavailableReason ? [unavailableReason] : [],
   });
 }
 
@@ -376,7 +378,7 @@ describe('realtime strict response validation', () => {
       threshold: '0.02000000000000000001',
     });
 
-    const flow = flowResponse();
+    const flow = flowResponse(0, null);
     (flow.data as { points: Record<string, unknown>[] }).points[0] = {
       ...(flow.data as { points: Record<string, unknown>[] }).points[0],
       net_inflow: exact,
@@ -622,6 +624,69 @@ describe('realtime strict response validation', () => {
     expect(unavailable.data?.points[0].unavailable_reason).toBe('field_not_supplied');
     expect(zero.data?.points[0].net_inflow).toBe('0');
     expect(zero.data?.points[0].unavailable_reason).toBeNull();
+  });
+
+  it('rejects complete flow containing an unavailable null point', () => {
+    const response = flowResponse();
+    (response.data as Record<string, unknown>).status = 'complete';
+    response.quality_flags = [];
+
+    expect(() => validateSectorFlowResponse(response, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/availability/i);
+  });
+
+  it('requires unavailable flow flag to match the null point reason', () => {
+    const response = flowResponse();
+    Object.assign(response, { quality_flags: ['source_unavailable'] });
+
+    expect(() => validateSectorFlowResponse(response, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/availability/i);
+  });
+
+  it('accepts the source-defined slash unit without relaxing identifiers', () => {
+    const response = flowResponse(0, null);
+    Object.assign(response.basis, {
+      unit: 'currency/share',
+      currency: null,
+    });
+    const point = (response.data as { points: Record<string, unknown>[] }).points[0];
+    point.unit = 'currency/share';
+
+    expect(validateSectorFlowResponse(response, {
+      sectorId: 'sector-1',
+      date,
+      sourceId: source,
+      batchId: batch,
+    })).toMatchObject({
+      basis: { unit: 'currency/share' },
+      data: { points: [{ unit: 'currency/share' }] },
+    });
+
+    point.source_id = 'licensed/feed';
+    expect(() => validateSectorFlowResponse(response, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/source/i);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['markup', '<script>'],
+    ['control character', 'currency/\nshare'],
+    ['overlong', `currency/${'s'.repeat(193)}`],
+  ])('rejects %s source-defined flow unit', (_name, unit) => {
+    const response = flowResponse(0, null);
+    Object.assign(response.basis, { unit, currency: null });
+    (response.data as { points: Record<string, unknown>[] }).points[0].unit = unit;
+
+    expect(() => validateSectorFlowResponse(response, {
+      sectorId: 'sector-1',
+      date,
+    })).toThrow(/unit/i);
   });
 
   it('rejects unavailable flow without a reason and observed flow with a reason', () => {

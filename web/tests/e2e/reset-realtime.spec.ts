@@ -8,11 +8,13 @@ const SECURITY = 'TEST001';
 const SECTOR = 'SEC001';
 const SOURCE = 'licensed-feed';
 const BATCH = 'batch-1';
+type RealtimeResourceName = 'quotes' | 'minutes' | 'anomalies' | 'flow';
 
 type MockOptions = {
   failFirstQuote?: boolean;
   revokeFirstQuote?: boolean;
   flowGap?: boolean;
+  nullResources?: RealtimeResourceName[];
 };
 
 function envelope(
@@ -42,6 +44,7 @@ function envelope(
 async function mockRealtime(page: Page, options: MockOptions = {}) {
   let quoteAttempts = 0;
   const requests: { method: string; path: string }[] = [];
+  const isNull = (name: RealtimeResourceName) => options.nullResources?.includes(name);
   await page.route('**/api/realtime/**', route => respond(route));
   await page.route('**/api/market/sector-flow/intraday?**', route => respond(route));
 
@@ -59,6 +62,15 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
       }
       if (options.revokeFirstQuote && quoteAttempts === 1) {
         return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
+      }
+      if (isNull('quotes')) {
+        return route.fulfill({ json: envelope(null, {
+          trade_date: null,
+          source: null,
+          source_version: null,
+          coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
+          quality_flags: ['no_data'],
+        }) });
       }
       return route.fulfill({ json: envelope({
         quote_batch_id: BATCH,
@@ -84,6 +96,14 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
       }) });
     }
     if (url.pathname === '/api/realtime/minutes') {
+      if (isNull('minutes')) {
+        return route.fulfill({ json: envelope(null, {
+          source: null,
+          source_version: null,
+          coverage: { expected: 3, valid: 0, excluded: 0, missing: 3 },
+          quality_flags: ['no_data'],
+        }) });
+      }
       return route.fulfill({ json: envelope({
         status: 'incomplete',
         bars: [
@@ -96,6 +116,14 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
       }) });
     }
     if (url.pathname === '/api/realtime/anomalies') {
+      if (isNull('anomalies')) {
+        return route.fulfill({ json: envelope(null, {
+          source: null,
+          source_version: null,
+          coverage: null,
+          quality_flags: ['no_data'],
+        }) });
+      }
       return route.fulfill({ json: envelope({
         status: 'complete',
         events: [{
@@ -117,6 +145,14 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
       }) });
     }
     if (url.pathname === '/api/market/sector-flow/intraday') {
+      if (isNull('flow')) {
+        return route.fulfill({ json: envelope(null, {
+          source: null,
+          source_version: null,
+          coverage: { expected: 1, valid: 0, excluded: 0, missing: 1 },
+          quality_flags: ['no_data'],
+        }) });
+      }
       const points = options.flowGap
         ? [
           flowPoint('2026-09-10T01:30:00Z', 1, null),
@@ -128,10 +164,13 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
           null,
           'field_not_authorized',
         )];
+      const unavailableReason = points.find(point => point.net_inflow === null)
+        ?.unavailable_reason;
       return route.fulfill({ json: envelope({
-        status: 'complete',
+        status: unavailableReason ? 'unavailable' : 'complete',
         points,
       }, {
+        quality_flags: unavailableReason ? [unavailableReason] : [],
         basis: {
           unit: 'CNY',
           currency: 'CNY',
@@ -229,6 +268,10 @@ test('shows delayed source time, stream gap, unavailable flow, and auditable ano
   await expect(minuteTable.getByRole('row', { name: /09:30/ })).toBeVisible();
   await expect(minuteTable.getByRole('row', { name: /09:32/ })).toBeVisible();
   await expect(minuteTable.getByRole('row', { name: /09:31/ })).toHaveCount(0);
+  const flowSection = panel.getByRole('heading', {
+    name: `题材分时资金流 · ${SECTOR}`,
+  }).locator('..').locator('..');
+  await expect(flowSection.getByText('不可用', { exact: true }).first()).toBeVisible();
   await expect(panel.getByText('资金流不可用：field_not_authorized')).toBeVisible();
   await expect(panel.getByRole('img', { name: /资金流/ })).toHaveCount(0);
   await expect(panel.getByRole('row', {
@@ -261,6 +304,40 @@ test('keeps an unavailable funding point as a disconnected chart gap', async ({ 
     data: [1, null, 2],
     labels: ['09:30', '09:31', '09:32'],
   });
+});
+
+test('keeps per-resource unavailable evidence when another resource has data', async ({ page }) => {
+  await mockRealtime(page, { nullResources: ['flow'] });
+  await openSelected(page);
+
+  const panel = page.getByRole('region', { name: '实时证据账本' });
+  await expect(panel.getByRole('table', { name: '实时报价' })).toBeVisible();
+  const flowState = panel.getByLabel('分时资金流状态');
+  await expect(flowState.getByText('不可用', { exact: true })).toBeVisible();
+  await expect(flowState.getByText(/有效 0\/1.*缺失 1/)).toBeVisible();
+  await expect(flowState.getByText('质量标记：no_data')).toBeVisible();
+  await expect(flowState.getByText('无可用数据')).toBeVisible();
+  await expect(panel.getByText('当前选择没有可审计的实时证据', {
+    exact: false,
+  })).toHaveCount(0);
+});
+
+test('shows all resource evidence and the global empty state when all data is null', async ({ page }) => {
+  await mockRealtime(page, {
+    nullResources: ['quotes', 'minutes', 'anomalies', 'flow'],
+  });
+  await openSelected(page);
+
+  const panel = page.getByRole('region', { name: '实时证据账本' });
+  for (const name of ['实时报价', '分钟记录', '异动证据', '分时资金流']) {
+    const state = panel.getByLabel(`${name}状态`);
+    await expect(state.getByText('不可用', { exact: true })).toBeVisible();
+    await expect(state.getByText('质量标记：no_data')).toBeVisible();
+    await expect(state.getByText('无可用数据')).toBeVisible();
+  }
+  await expect(panel.getByText(
+    '当前选择没有可审计的实时证据；不会用日线或其他批次替代。',
+  )).toBeVisible();
 });
 
 test('retry is keyboard reachable and restores the quote ledger without layout shift', async ({ page }) => {
