@@ -104,15 +104,22 @@ class QuoteInput(RealtimeModel):
     ask_size: NonNegativeDecimal | None = None
     volume: NonNegativeDecimal | None = None
     amount: NonNegativeDecimal | None = None
-    status: Literal["available", "delayed", "unavailable"]
-    unavailable_reason: Identifier | None = None
+    order_book_status: Literal["available", "disabled", "unavailable"]
+    order_book_unavailable_reason: Identifier | None = None
 
     @model_validator(mode="after")
-    def validate_availability(self) -> Self:
-        if self.status == "unavailable" and self.unavailable_reason is None:
-            raise ValueError("unavailable quotes require unavailable_reason")
-        if self.status != "unavailable" and self.unavailable_reason is not None:
-            raise ValueError("available quotes must not have unavailable_reason")
+    def validate_order_book_availability(self) -> Self:
+        order_book = (self.bid, self.ask, self.bid_size, self.ask_size)
+        if self.order_book_status == "available":
+            if any(value is None for value in order_book):
+                raise ValueError("available order book requires bid, ask, and sizes")
+            if self.order_book_unavailable_reason is not None:
+                raise ValueError("available order book must not have a reason")
+            return self
+        if any(value is not None for value in order_book):
+            raise ValueError("nonavailable order book must not contain book values")
+        if self.order_book_unavailable_reason is None:
+            raise ValueError("nonavailable order book requires a reason")
         return self
 
 
@@ -254,6 +261,14 @@ class QuoteRecord(RealtimeModel):
     received_at: UTCDateTime
     available_at: UTCDateTime
     quote: QuoteInput
+
+    @model_validator(mode="after")
+    def validate_timestamp_order(self) -> Self:
+        if self.received_at < self.source_event_at:
+            raise ValueError("received_at must be at or after source_event_at")
+        if self.available_at < self.received_at:
+            raise ValueError("available_at must be at or after received_at")
+        return self
 
 
 class MinuteBarRecord(RealtimeModel):

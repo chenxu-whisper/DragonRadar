@@ -12,6 +12,7 @@ from dragon_radar.realtime.models import (
     PermissionSnapshot,
     QuoteBatchInput,
     QuoteInput,
+    QuoteRecord,
     SectorFlowBatchInput,
     SectorFlowPoint,
 )
@@ -134,6 +135,53 @@ def test_model_timestamps_are_canonical_utc_and_ordered():
         )
 
 
+def test_quote_record_accepts_ordered_timestamps():
+    record = QuoteRecord(
+        batch_id="batch-1",
+        source_id="licensed-feed",
+        source_version="v1",
+        source_event_at=T0,
+        received_at=T0 + timedelta(seconds=1),
+        available_at=T0 + timedelta(seconds=2),
+        quote=QuoteInput(
+            security_id="600000.SH",
+            last=Decimal("10"),
+            order_book_status="disabled",
+            order_book_unavailable_reason="order_book_not_authorized",
+        ),
+    )
+
+    assert record.source_event_at <= record.received_at <= record.available_at
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"received_at": T0 - timedelta(seconds=1)},
+        {"available_at": T0 - timedelta(seconds=1)},
+    ],
+)
+def test_quote_record_rejects_reversed_timestamps(changes):
+    values = {
+        "batch_id": "batch-1",
+        "source_id": "licensed-feed",
+        "source_version": "v1",
+        "source_event_at": T0,
+        "received_at": T0,
+        "available_at": T0,
+        "quote": QuoteInput(
+            security_id="600000.SH",
+            last=Decimal("10"),
+            order_book_status="disabled",
+            order_book_unavailable_reason="order_book_not_authorized",
+        ),
+    }
+    values.update(changes)
+
+    with pytest.raises(ValidationError, match="received_at|available_at"):
+        QuoteRecord(**values)
+
+
 @pytest.mark.parametrize("field", ["source_event_at", "received_at", "available_at"])
 def test_model_rejects_naive_timestamps(field):
     values = {
@@ -156,29 +204,152 @@ def test_model_trims_stable_security_id_and_rejects_blank_ids():
     quote = QuoteInput(
         security_id=" 600000.SH ",
         last=Decimal("10"),
-        status="available",
+        order_book_status="disabled",
+        order_book_unavailable_reason="order_book_not_authorized",
     )
 
     assert quote.security_id == "600000.SH"
     with pytest.raises(ValidationError):
-        QuoteInput(security_id="  ", last=None, status="unavailable")
+        QuoteInput(
+            security_id="  ",
+            last=None,
+            order_book_status="unavailable",
+            order_book_unavailable_reason="source_unavailable",
+        )
 
 
-def test_model_preserves_missing_order_book_as_unavailable_not_zero():
+def test_quote_models_keep_last_independent_from_disabled_order_book():
     quote = QuoteInput(
         security_id="600000.SH",
         last=Decimal("10"),
-        bid=None,
-        ask=None,
-        bid_size=None,
-        ask_size=None,
-        status="unavailable",
-        unavailable_reason="order_book_not_authorized",
+        order_book_status="disabled",
+        order_book_unavailable_reason="order_book_not_authorized",
+    )
+    record = QuoteRecord(
+        batch_id="batch-1",
+        source_id="licensed-feed",
+        source_version="v1",
+        source_event_at=T0,
+        received_at=T0,
+        available_at=T0,
+        quote=quote,
     )
 
+    assert quote.last == Decimal("10")
     assert quote.bid is None
     assert quote.bid_size is None
-    assert quote.unavailable_reason == "order_book_not_authorized"
+    assert quote.order_book_status == "disabled"
+    assert quote.order_book_unavailable_reason == "order_book_not_authorized"
+    assert record.quote == quote
+
+
+def test_quote_model_accepts_complete_order_book_without_last():
+    quote = QuoteInput(
+        security_id="600000.SH",
+        last=None,
+        bid=Decimal("9.99"),
+        ask=Decimal("10.01"),
+        bid_size=Decimal("100"),
+        ask_size=Decimal("200"),
+        order_book_status="available",
+        order_book_unavailable_reason=None,
+    )
+
+    assert quote.last is None
+    assert (quote.bid, quote.ask, quote.bid_size, quote.ask_size) == (
+        Decimal("9.99"),
+        Decimal("10.01"),
+        Decimal("100"),
+        Decimal("200"),
+    )
+
+
+@pytest.mark.parametrize("missing_field", ["bid", "ask", "bid_size", "ask_size"])
+def test_available_order_book_requires_every_bid_ask_pair_field(missing_field):
+    values = {
+        "security_id": "600000.SH",
+        "last": None,
+        "bid": Decimal("9.99"),
+        "ask": Decimal("10.01"),
+        "bid_size": Decimal("100"),
+        "ask_size": Decimal("200"),
+        "order_book_status": "available",
+        "order_book_unavailable_reason": None,
+    }
+    values[missing_field] = None
+
+    with pytest.raises(ValidationError, match="available order book"):
+        QuoteInput(**values)
+
+
+def test_available_order_book_rejects_unavailable_reason():
+    with pytest.raises(ValidationError, match="available order book"):
+        QuoteInput(
+            security_id="600000.SH",
+            bid=Decimal("9.99"),
+            ask=Decimal("10.01"),
+            bid_size=Decimal("100"),
+            ask_size=Decimal("200"),
+            order_book_status="available",
+            order_book_unavailable_reason="not_really_available",
+        )
+
+
+@pytest.mark.parametrize("order_book_status", ["disabled", "unavailable"])
+@pytest.mark.parametrize("field", ["bid", "ask", "bid_size", "ask_size"])
+def test_nonavailable_order_book_rejects_any_book_value(order_book_status, field):
+    values = {
+        "security_id": "600000.SH",
+        "last": Decimal("10"),
+        "order_book_status": order_book_status,
+        "order_book_unavailable_reason": "order_book_not_authorized",
+        field: Decimal("1"),
+    }
+
+    with pytest.raises(ValidationError, match="must not contain"):
+        QuoteInput(**values)
+
+
+@pytest.mark.parametrize("order_book_status", ["disabled", "unavailable"])
+def test_nonavailable_order_book_requires_reason(order_book_status):
+    with pytest.raises(ValidationError, match="reason"):
+        QuoteInput(
+            security_id="600000.SH",
+            last=Decimal("10"),
+            order_book_status=order_book_status,
+            order_book_unavailable_reason=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"status": "available"},
+        {"unavailable_reason": "legacy"},
+        {"daily_close": Decimal("10")},
+    ],
+)
+def test_quote_model_forbids_legacy_and_daily_order_book_fallback_fields(extra):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        QuoteInput(
+            security_id="600000.SH",
+            last=Decimal("10"),
+            order_book_status="disabled",
+            order_book_unavailable_reason="order_book_not_authorized",
+            **extra,
+        )
+
+
+def test_quote_model_remains_frozen():
+    quote = QuoteInput(
+        security_id="600000.SH",
+        last=Decimal("10"),
+        order_book_status="disabled",
+        order_book_unavailable_reason="order_book_not_authorized",
+    )
+
+    with pytest.raises(ValidationError, match="frozen"):
+        quote.order_book_status = "available"
 
 
 @pytest.mark.parametrize(
