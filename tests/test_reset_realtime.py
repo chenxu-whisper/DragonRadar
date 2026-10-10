@@ -1,11 +1,13 @@
 from datetime import UTC, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 from pydantic import ValidationError
 
 from dragon_radar.realtime.anomalies import detect_anomalies
 from dragon_radar.realtime.models import (
+    AnomalyEvent,
+    AnomalyResult,
     AnomalyRule,
     MinuteBarInput,
     MinuteBatchInput,
@@ -15,6 +17,7 @@ from dragon_radar.realtime.models import (
     QuoteRecord,
     SectorFlowBatchInput,
     SectorFlowPoint,
+    SourceCompleteness,
 )
 
 T0 = datetime(2026, 10, 9, 1, 30, tzinfo=UTC)
@@ -428,6 +431,107 @@ def test_session_model_keeps_intraday_batch_separate_from_daily_snapshot():
     assert not hasattr(batch, "market_snapshot_id")
 
 
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"status": "complete", "expected_count": None, "received_count": 0},
+        {"status": "complete", "expected_count": 2, "received_count": 1},
+        {
+            "status": "incomplete",
+            "expected_count": 2,
+            "received_count": 2,
+            "reason": "stream_gap",
+        },
+    ],
+)
+def test_source_completeness_rejects_status_count_contradictions(values):
+    with pytest.raises(ValidationError, match="complete|expected_count"):
+        SourceCompleteness(**values)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"status": "complete", "expected_count": 2, "received_count": 2},
+        {
+            "status": "delayed",
+            "expected_count": 2,
+            "received_count": 2,
+            "reason": "stale_stream",
+        },
+        {
+            "status": "incomplete",
+            "expected_count": 2,
+            "received_count": 1,
+            "reason": "stream_gap",
+        },
+        {
+            "status": "unavailable",
+            "expected_count": None,
+            "received_count": 0,
+            "reason": "source_unavailable",
+        },
+    ],
+)
+def test_source_completeness_accepts_consistent_enum_states(values):
+    completeness = SourceCompleteness(**values)
+
+    assert completeness.status == values["status"]
+
+
+def test_source_completeness_rejects_partial_outside_canonical_enum():
+    with pytest.raises(ValidationError, match="literal_error"):
+        SourceCompleteness(
+            status="partial",
+            expected_count=2,
+            received_count=1,
+            reason="stream_gap",
+        )
+
+
+def test_anomaly_event_rejects_availability_before_event_time():
+    with pytest.raises(ValidationError, match="available_at"):
+        AnomalyEvent(
+            event_id="event-1",
+            batch_id="batch-1",
+            security_id="600000.SH",
+            rule_version="return-v1",
+            event_at=T0,
+            available_at=T0 - timedelta(microseconds=1),
+            result=AnomalyResult(
+                triggered=True,
+                metric="window_return",
+                window=3,
+                value=Decimal("0.03"),
+                threshold=Decimal("0.02"),
+                reason=None,
+            ),
+            quality="complete",
+        )
+
+
+def test_anomaly_event_accepts_equal_event_and_availability_times():
+    event = AnomalyEvent(
+        event_id="event-1",
+        batch_id="batch-1",
+        security_id="600000.SH",
+        rule_version="return-v1",
+        event_at=T0,
+        available_at=T0,
+        result=AnomalyResult(
+            triggered=True,
+            metric="window_return",
+            window=3,
+            value=Decimal("0.03"),
+            threshold=Decimal("0.02"),
+            reason=None,
+        ),
+        quality="complete",
+    )
+
+    assert event.event_at == event.available_at
+
+
 def test_three_minute_return_triggers_at_two_percent():
     result = detect_anomalies(
         bars=minute_bars(["100", "101", "103"]),
@@ -437,6 +541,49 @@ def test_three_minute_return_triggers_at_two_percent():
     assert result.value == Decimal("0.03")
     assert result.triggered is True
     assert result.reason is None
+
+
+def test_anomaly_decimal34_result_is_independent_of_global_precision():
+    results = []
+    for precision in (6, 28):
+        with localcontext() as context:
+            context.prec = precision
+            results.append(
+                detect_anomalies(
+                    bars=minute_bars(["3", "10"]),
+                    rule=return_rule(window=2),
+                ).value
+            )
+
+    assert results == [
+        Decimal("2.333333333333333333333333333333333"),
+        Decimal("2.333333333333333333333333333333333"),
+    ]
+
+
+def test_relative_volume_decimal34_result_is_independent_of_global_precision():
+    rule = AnomalyRule(
+        rule_version="volume-v1",
+        metric="relative_volume",
+        window=2,
+        threshold=Decimal("3"),
+        cooldown_seconds=300,
+    )
+    results = []
+    for precision in (6, 28):
+        with localcontext() as context:
+            context.prec = precision
+            results.append(
+                detect_anomalies(
+                    bars=minute_bars(["100", "101"], volumes=["3", "10"]),
+                    rule=rule,
+                ).value
+            )
+
+    assert results == [
+        Decimal("3.333333333333333333333333333333333"),
+        Decimal("3.333333333333333333333333333333333"),
+    ]
 
 
 def test_insufficient_window_returns_reason_without_event():
@@ -460,7 +607,43 @@ def test_window_return_uses_stable_event_time_revision_order():
 
     result = detect_anomalies(bars=bars, rule=return_rule(window=2))
 
-    assert result.value == Decimal("103") / Decimal("101") - Decimal(1)
+    assert result.value == Decimal("0.019801980198019801980198019801980")
+
+
+def test_old_revision_cannot_fill_anomaly_window():
+    bars = (
+        minute_bar("100", minute=0),
+        minute_bar("101", minute=1, revision=1),
+        minute_bar("102", minute=1, revision=2),
+    )
+
+    result = detect_anomalies(bars=bars, rule=return_rule(window=3))
+
+    assert result.value is None
+    assert result.reason == "insufficient_window"
+
+
+def test_anomaly_window_rejects_tied_revisions_for_same_event():
+    bars = (
+        minute_bar("100", minute=0),
+        minute_bar("101", minute=1, revision=1),
+        minute_bar("102", minute=1, revision=1),
+    )
+
+    with pytest.raises(ValueError, match="duplicate minute bar revision"):
+        detect_anomalies(bars=bars, rule=return_rule(window=2))
+
+
+def test_anomaly_window_rejects_mixed_security_ids():
+    other_security = minute_bar("101", minute=1).model_copy(
+        update={"security_id": "600001.SH"}
+    )
+
+    with pytest.raises(ValueError, match="same security_id"):
+        detect_anomalies(
+            bars=(minute_bar("100", minute=0), other_security),
+            rule=return_rule(window=2),
+        )
 
 
 def test_window_return_zero_denominator_has_explicit_reason():

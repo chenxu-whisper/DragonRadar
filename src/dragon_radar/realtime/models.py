@@ -246,6 +246,18 @@ class SourceCompleteness(RealtimeModel):
             and self.received_count > self.expected_count
         ):
             raise ValueError("received_count cannot exceed expected_count")
+        if self.status == "complete" and (
+            self.expected_count is None or self.received_count != self.expected_count
+        ):
+            raise ValueError(
+                "complete evidence requires received_count to equal expected_count"
+            )
+        if self.status == "incomplete" and (
+            self.expected_count is None or self.received_count >= self.expected_count
+        ):
+            raise ValueError(
+                "incomplete evidence requires received_count below expected_count"
+            )
         if self.status == "complete" and self.reason is not None:
             raise ValueError("complete evidence must not have a reason")
         if self.status != "complete" and self.reason is None:
@@ -287,6 +299,12 @@ class AnomalyEvent(RealtimeModel):
     available_at: UTCDateTime
     result: AnomalyResult
     quality: Literal["complete", "delayed", "incomplete"]
+
+    @model_validator(mode="after")
+    def validate_timestamp_order(self) -> Self:
+        if self.available_at < self.event_at:
+            raise ValueError("available_at must be at or after event_at")
+        return self
 
 
 class SectorFlowRecord(RealtimeModel):

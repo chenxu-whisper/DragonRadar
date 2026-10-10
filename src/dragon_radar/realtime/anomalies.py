@@ -1,13 +1,35 @@
 """Deterministic, side-effect-free realtime anomaly calculations."""
 
 from collections.abc import Sequence
-from decimal import Decimal
+from datetime import datetime
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 
 from dragon_radar.realtime.models import (
     AnomalyResult,
     AnomalyRule,
     MinuteBarInput,
 )
+
+
+def _decimal_context() -> Context:
+    return Context(
+        prec=34,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow],
+    )
 
 
 def _unavailable(rule: AnomalyRule, reason: str) -> AnomalyResult:
@@ -27,10 +49,21 @@ def detect_anomalies(
 ) -> AnomalyResult:
     """Evaluate one rule over the latest deterministically ordered window."""
 
+    if len({bar.security_id for bar in bars}) > 1:
+        raise ValueError("anomaly bars must have the same security_id")
+
     if rule.metric == "order_book_imbalance":
         return _unavailable(rule, "order_book_unavailable")
 
-    ordered = tuple(sorted(bars, key=lambda bar: (bar.event_at, bar.revision)))
+    latest: dict[tuple[str, datetime], MinuteBarInput] = {}
+    for bar in bars:
+        key = (bar.security_id, bar.event_at)
+        previous = latest.get(key)
+        if previous is not None and previous.revision == bar.revision:
+            raise ValueError("duplicate minute bar revision")
+        if previous is None or bar.revision > previous.revision:
+            latest[key] = bar
+    ordered = tuple(sorted(latest.values(), key=lambda bar: bar.event_at))
     if len(ordered) < rule.window:
         return _unavailable(rule, "insufficient_window")
 
@@ -39,7 +72,13 @@ def detect_anomalies(
         denominator = window[0].close
         if denominator == 0:
             return _unavailable(rule, "zero_denominator")
-        value = window[-1].close / denominator - Decimal(1)
+        with localcontext(_decimal_context()):
+            current, denominator, one = (
+                +window[-1].close,
+                +denominator,
+                +Decimal(1),
+            )
+            value = current / denominator - one
     else:
         reference = window[0].volume
         current = window[-1].volume
@@ -47,7 +86,8 @@ def detect_anomalies(
             return _unavailable(rule, "volume_unavailable")
         if reference == 0:
             return _unavailable(rule, "zero_denominator")
-        value = current / reference
+        with localcontext(_decimal_context()):
+            value = +current / +reference
 
     return AnomalyResult(
         triggered=value >= rule.threshold,
