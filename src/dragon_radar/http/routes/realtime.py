@@ -18,6 +18,10 @@ _DATETIME = re.compile(
     r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?"
     r"(?:Z|[+-][0-9]{2}:[0-9]{2})"
 )
+_SIGNED_CURSOR = re.compile(
+    r"(?P<payload>[A-Za-z0-9_-]+)\.(?P<signature>[A-Za-z0-9_-]{43})"
+)
+_MAX_CURSOR_LENGTH = 4096
 
 
 def _repository(request: Request):
@@ -30,6 +34,19 @@ def _repository(request: Request):
 def _identifier(value: str | None, name: str) -> str:
     if value is None or not value or value.strip() != value or len(value) > 200:
         raise ValueError(f"Invalid {name}")
+    return value
+
+
+def _cursor(value: str) -> str:
+    match = _SIGNED_CURSOR.fullmatch(value)
+    if (
+        not value
+        or len(value) > _MAX_CURSOR_LENGTH
+        or not value.isascii()
+        or match is None
+        or len(match["payload"]) % 4 == 1
+    ):
+        raise ValueError("Invalid cursor")
     return value
 
 
@@ -279,7 +296,7 @@ def realtime_anomalies(request: Request):
         security_id = _identifier(security_id, "security_id")
     cursor = query.get("cursor")
     if cursor is not None:
-        cursor = _identifier(cursor, "cursor")
+        cursor = _cursor(cursor)
     repository = _repository(request)
     result = repository.list_anomalies(
         date=trade_date,
@@ -289,7 +306,7 @@ def realtime_anomalies(request: Request):
         source_id=source_id,
         security_id=security_id,
     )
-    if not result.items:
+    if not result.items and result.completeness.status != "complete":
         return DecimalJSONResponse(
             _envelope(
                 result,

@@ -2333,6 +2333,47 @@ def test_task21r_anomalies_require_visible_parent_batch(realtime_repository):
     assert len(at_parent.items) == 1
 
 
+def test_anomalies_without_visible_parent_batch_are_unavailable(realtime_repository):
+    result = realtime_repository.list_anomalies(
+        date=T0.date(),
+        as_of=T0 + timedelta(minutes=10),
+        limit=100,
+    )
+
+    assert result.items == ()
+    assert result.next_cursor is None
+    assert result.completeness.status == "unavailable"
+    assert result.completeness.expected_count is None
+    assert result.completeness.received_count == 0
+    assert result.completeness.reason == "no_data"
+
+
+def test_anomalies_with_visible_batch_and_zero_events_are_complete(
+    realtime_repository,
+):
+    realtime_repository.ingest_minute_batch(
+        _minute_batch(
+            "zero-anomaly-events",
+            (minute_bar("100", minute=0), minute_bar("101", minute=1)),
+        ),
+        key="zero-anomaly-events",
+        rules=(return_rule(window=2),),
+    )
+
+    result = realtime_repository.list_anomalies(
+        date=T0.date(),
+        as_of=T0 + timedelta(hours=1),
+        limit=100,
+    )
+
+    assert result.items == ()
+    assert result.next_cursor is None
+    assert result.completeness.status == "complete"
+    assert result.completeness.expected_count == 0
+    assert result.completeness.received_count == 0
+    assert result.completeness.reason is None
+
+
 def test_task21r_cursor_uses_database_ingest_order_watermark(database):
     from factories import grant
     from sqlalchemy import insert
@@ -4280,6 +4321,110 @@ async def test_ex06_anomalies_has_transparent_rule_input_quality_and_cursor():
 
 
 @pytest.mark.anyio
+async def test_ex06_accepts_repository_signed_cursor_longer_than_identifier_limit(
+    realtime_repository,
+):
+    for revision, close in ((1, "103"), (2, "104")):
+        realtime_repository.ingest_minute_batch(
+            _minute_batch(
+                f"http-cursor-{revision}",
+                (
+                    minute_bar("100", minute=0, revision=revision),
+                    minute_bar(close, minute=1, revision=revision),
+                ),
+            ),
+            key=f"http-cursor-{revision}",
+            rules=(
+                return_rule(window=2).model_copy(
+                    update={"rule_version": f"http-return-v{revision}"}
+                ),
+            ),
+        )
+
+    async with await _http_client(realtime_repository) as client:
+        first = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09", "limit": "1"},
+        )
+        cursor = first.json()["data"]["next_cursor"]
+        second = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09", "limit": "1", "cursor": cursor},
+        )
+
+    assert first.status_code == 200
+    assert 400 <= len(cursor) <= 8192
+    assert second.status_code == 200
+    assert len(second.json()["data"]["events"]) == 1
+
+
+@pytest.mark.anyio
+async def test_ex06_visible_batch_with_zero_events_returns_complete_empty_data():
+    from dragon_radar.realtime.models import AnomalyReadResult
+
+    repository = _HTTPRealtimeRepository()
+    repository.anomalies = AnomalyReadResult(
+        as_of=T0 + timedelta(hours=1),
+        items=(),
+        next_cursor=None,
+        completeness=SourceCompleteness(
+            status="complete",
+            expected_count=0,
+            received_count=0,
+        ),
+    )
+
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "complete",
+        "events": [],
+        "next_cursor": None,
+    }
+    assert response.json()["coverage"] == {
+        "expected": 0,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 0,
+    }
+    assert response.json()["quality_flags"] == []
+
+
+@pytest.mark.anyio
+async def test_ex06_without_visible_batch_returns_null_data_with_no_data_flag():
+    from dragon_radar.realtime.models import AnomalyReadResult
+
+    repository = _HTTPRealtimeRepository()
+    repository.anomalies = AnomalyReadResult(
+        as_of=T0 + timedelta(hours=1),
+        items=(),
+        next_cursor=None,
+        completeness=SourceCompleteness(
+            status="unavailable",
+            expected_count=None,
+            received_count=0,
+            reason="no_data",
+        ),
+    )
+
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert response.json()["coverage"] is None
+    assert response.json()["quality_flags"] == ["no_data"]
+
+
+@pytest.mark.anyio
 async def test_ex07_sector_flow_preserves_source_value_unit_and_null_reason():
     repository = _HTTPRealtimeRepository()
     unavailable = repository.flow.items[0].model_copy(
@@ -4495,6 +4640,49 @@ async def test_realtime_invalid_cursor_is_structured_400():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "cursor",
+    (
+        "",
+        " ",
+        "abc\n.def",
+        "\u00e9.def",
+        "abc",
+        "abc.def",
+        "abc..def",
+        "abc.def=",
+        f"{'a' * 4053}.{'b' * 43}",
+    ),
+)
+async def test_realtime_cursor_parser_rejects_invalid_wire_values(cursor):
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09", "cursor": cursor},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_PARAM"
+    assert repository.calls == []
+
+
+@pytest.mark.anyio
+async def test_realtime_cursor_parser_accepts_large_base64url_shape():
+    repository = _HTTPRealtimeRepository()
+    cursor = f"{'a' * 443}.{'b' * 43}"
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09", "cursor": cursor},
+        )
+
+    assert len(cursor) == 487
+    assert response.status_code == 200
+    assert repository.calls[-1][1]["cursor"] == cursor
+
+
+@pytest.mark.anyio
 async def test_realtime_public_get_never_starts_ingestion_or_writes():
     repository = _HTTPRealtimeRepository()
     async with await _http_client(repository) as client:
@@ -4634,6 +4822,39 @@ async def test_realtime_explicit_unknown_batch_is_404_without_latest_fallback(
     assert response.status_code == 404
     assert response.json()["code"] == "NOT_FOUND"
     assert b"available-http-batch" not in response.content
+
+
+@pytest.mark.anyio
+async def test_realtime_anomalies_revoked_permission_is_403_without_payload(
+    realtime_repository,
+):
+    from dragon_radar.storage.repository import Repository
+
+    realtime_repository.ingest_minute_batch(
+        _minute_batch(
+            "revoked-http-anomaly",
+            (minute_bar("100", minute=0), minute_bar("103", minute=1)),
+        ),
+        key="revoked-http-anomaly",
+        rules=(return_rule(window=2),),
+    )
+    Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    ).revoke_source("licensed-feed")
+
+    async with await _http_client(realtime_repository) as client:
+        response = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09"},
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "code": "FORBIDDEN",
+        "message": "Source access denied",
+    }
+    assert b"revoked-http-anomaly" not in response.content
 
 
 @pytest.mark.anyio

@@ -216,7 +216,7 @@ def _expected_minutes(session_start: datetime, session_end: datetime) -> int:
 
 def _completeness(
     *,
-    expected: int,
+    expected: int | None,
     received: int,
     unavailable_reason: str | None = None,
 ) -> SourceCompleteness:
@@ -227,6 +227,8 @@ def _completeness(
             received_count=received,
             reason=unavailable_reason,
         )
+    if expected is None:
+        raise ValueError("Available completeness requires an expected count")
     if received < expected:
         return SourceCompleteness(
             status="incomplete",
@@ -1464,37 +1466,36 @@ class RealtimeRepository(Repository):
                         )
                     )
                 )
-            source_query = (
-                select(
-                    realtime_quote_batches.c.quote_batch_id,
-                    realtime_quote_batches.c.source_id,
-                    realtime_quote_batches.c.source_version,
-                    realtime_quote_batches.c.permission_snapshot,
-                )
-                .join(
-                    realtime_anomaly_events,
-                    and_(
-                        realtime_anomaly_events.c.source_id
-                        == realtime_quote_batches.c.source_id,
-                        realtime_anomaly_events.c.batch_id
-                        == realtime_quote_batches.c.quote_batch_id,
-                    ),
-                )
+            visible_minutes = (
+                select(1)
+                .select_from(realtime_minute_bars)
                 .where(
-                    realtime_anomaly_events.c.event_at >= day_start,
-                    realtime_anomaly_events.c.event_at < day_end,
-                    realtime_anomaly_events.c.available_at <= as_of,
-                    realtime_quote_batches.c.available_at <= as_of,
-                    realtime_quote_batches.c.ingest_order <= watermark,
+                    realtime_minute_bars.c.source_id
+                    == realtime_quote_batches.c.source_id,
+                    realtime_minute_bars.c.batch_id
+                    == realtime_quote_batches.c.quote_batch_id,
+                    realtime_minute_bars.c.event_at >= day_start,
+                    realtime_minute_bars.c.event_at < day_end,
+                    realtime_minute_bars.c.available_at <= as_of,
                 )
+            )
+            if security_id is not None:
+                visible_minutes = visible_minutes.where(
+                    realtime_minute_bars.c.security_id == security_id
+                )
+            source_query = select(
+                realtime_quote_batches.c.quote_batch_id,
+                realtime_quote_batches.c.source_id,
+                realtime_quote_batches.c.source_version,
+                realtime_quote_batches.c.permission_snapshot,
+            ).where(
+                visible_minutes.offset(0).exists(),
+                realtime_quote_batches.c.available_at <= as_of,
+                realtime_quote_batches.c.ingest_order <= watermark,
             )
             if source_id is not None:
                 source_query = source_query.where(
-                    realtime_anomaly_events.c.source_id == source_id
-                )
-            if security_id is not None:
-                source_query = source_query.where(
-                    realtime_anomaly_events.c.security_id == security_id
+                    realtime_quote_batches.c.source_id == source_id
                 )
             parents = connection.execute(source_query.distinct()).mappings().all()
             self._authorize_reads(
@@ -1508,7 +1509,11 @@ class RealtimeRepository(Repository):
                     as_of=as_of,
                     items=(),
                     next_cursor=None,
-                    completeness=_completeness(expected=0, received=0),
+                    completeness=_completeness(
+                        expected=None,
+                        received=0,
+                        unavailable_reason="no_data",
+                    ),
                 )
             query = (
                 select(realtime_anomaly_events)
