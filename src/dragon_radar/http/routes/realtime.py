@@ -68,12 +68,12 @@ def _required_date(value: str | None) -> date:
     parsed = query_date(value)
     if parsed is None:
         raise ValueError("Date is required")
+    if parsed == date.max:
+        raise ValueError("Date is outside the supported realtime range")
     return parsed
 
 
 def _trading_windows(day: date) -> tuple[tuple[datetime, datetime], ...]:
-    if day == date.max:
-        raise ValueError("Date is outside the supported trading range")
     local_windows = (
         (time(9, 30), time(11, 30)),
         (time(13), time(15)),

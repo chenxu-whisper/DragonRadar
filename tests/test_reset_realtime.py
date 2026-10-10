@@ -5023,10 +5023,11 @@ def test_realtime_cursor_accepts_exact_length_boundary():
     "path",
     (
         "/api/realtime/minutes?security_id=600000.SH&date=9999-12-31",
+        "/api/realtime/anomalies?date=9999-12-31",
         "/api/market/sector-flow/intraday?sector=sector-1&date=9999-12-31",
     ),
 )
-async def test_realtime_trading_window_overflow_is_invalid_request(path):
+async def test_realtime_date_range_overflow_is_invalid_request(path):
     repository = _HTTPRealtimeRepository()
     async with await _http_client(repository) as client:
         response = await client.get(path)
