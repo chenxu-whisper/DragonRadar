@@ -3266,5 +3266,5 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0010_ai_tasks"
+            == SCHEMA_REVISION
         )
