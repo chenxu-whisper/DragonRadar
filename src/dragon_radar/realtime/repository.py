@@ -1309,6 +1309,15 @@ class RealtimeRepository(Repository):
                 .mappings()
                 .all()
             )
+        received_minutes = len(
+            {
+                (
+                    row["source_id"],
+                    row["event_at"].replace(second=0, microsecond=0),
+                )
+                for row in rows
+            }
+        )
         return MinuteReadResult(
             as_of=as_of,
             batch_id=batch_id,
@@ -1321,7 +1330,7 @@ class RealtimeRepository(Repository):
                 )
                 for row in rows
             ),
-            completeness=_completeness(expected=expected, received=len(rows)),
+            completeness=_completeness(expected=expected, received=received_minutes),
         )
 
     def list_sector_flow(

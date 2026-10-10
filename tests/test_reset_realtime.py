@@ -3076,6 +3076,42 @@ def test_minute_completeness_counts_each_authorized_source(realtime_repository):
     assert result.completeness.received_count == 8
 
 
+def test_minute_completeness_counts_unique_trading_minutes(realtime_repository):
+    second_event = MinuteBarInput.model_validate(
+        {
+            **minute_bar("10.5").model_dump(),
+            "event_at": T0 + timedelta(seconds=30),
+            "received_at": T0 + timedelta(seconds=31),
+            "available_at": T0 + timedelta(seconds=32),
+        }
+    )
+    bars = (
+        minute_bar("10", minute=0),
+        second_event,
+        minute_bar("11", minute=1),
+        minute_bar("12", minute=2),
+        minute_bar("13", minute=3),
+    )
+    realtime_repository.ingest_minute_batch(
+        _minute_batch("multiple-events-per-minute", bars),
+        key="multiple-events-per-minute",
+    )
+
+    result = realtime_repository.list_minutes(
+        security_id="600000.SH",
+        session_start=T0,
+        session_end=T0 + timedelta(minutes=4),
+        as_of=T0 + timedelta(hours=1),
+        batch_id="multiple-events-per-minute",
+        source_id="licensed-feed",
+    )
+
+    assert len(result.items) == 5
+    assert result.completeness.status == "complete"
+    assert result.completeness.expected_count == 4
+    assert result.completeness.received_count == 4
+
+
 def test_point_in_time_minutes_do_not_leak_rows_from_future_atomic_batch(
     realtime_repository,
 ):
