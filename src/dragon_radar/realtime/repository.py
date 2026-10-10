@@ -1079,9 +1079,18 @@ class RealtimeRepository(Repository):
                 child_filter=(realtime_quotes.c.security_id.in_(security_ids),),
             )
             if batch is None:
+                kind_batch = self._select_authorized_batch(
+                    connection,
+                    as_of=as_of,
+                    batch_id=batch_id,
+                    source_id=source_id,
+                    child_table=realtime_quotes,
+                )
                 return QuoteReadResult(
                     as_of=as_of,
-                    batch_id=None,
+                    batch_id=(
+                        kind_batch["quote_batch_id"] if kind_batch is not None else None
+                    ),
                     items=(),
                     completeness=_completeness(
                         expected=len(security_ids),
@@ -1181,9 +1190,25 @@ class RealtimeRepository(Repository):
                 _utc(self.clock(), "operation time"),
             )
             if not parents:
-                return MinuteReadResult(
+                kind_batch = self._select_authorized_batch(
+                    connection,
                     as_of=as_of,
                     batch_id=batch_id,
+                    source_id=source_id,
+                    child_table=realtime_minute_bars,
+                    child_filter=(
+                        realtime_minute_bars.c.event_at >= session_start,
+                        realtime_minute_bars.c.event_at < session_end,
+                        realtime_minute_bars.c.available_at <= as_of,
+                    ),
+                )
+                return MinuteReadResult(
+                    as_of=as_of,
+                    batch_id=(
+                        kind_batch["quote_batch_id"]
+                        if kind_batch is not None
+                        else batch_id
+                    ),
                     items=(),
                     completeness=_completeness(
                         expected=expected_per_source,
@@ -1280,9 +1305,22 @@ class RealtimeRepository(Repository):
                 ),
             )
             if batch is None:
+                kind_batch = self._select_authorized_batch(
+                    connection,
+                    as_of=as_of,
+                    batch_id=batch_id,
+                    source_id=source_id,
+                    child_table=realtime_sector_flow_points,
+                    child_filter=(
+                        realtime_sector_flow_points.c.event_at >= session_start,
+                        realtime_sector_flow_points.c.event_at < session_end,
+                    ),
+                )
                 return SectorFlowReadResult(
                     as_of=as_of,
-                    batch_id=None,
+                    batch_id=(
+                        kind_batch["quote_batch_id"] if kind_batch is not None else None
+                    ),
                     items=(),
                     completeness=_completeness(
                         expected=0,

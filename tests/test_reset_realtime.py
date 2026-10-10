@@ -1,3 +1,4 @@
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
@@ -5,6 +6,7 @@ from threading import Event, current_thread
 from uuid import uuid4
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from dragon_radar.realtime.anomalies import detect_anomalies
@@ -4034,3 +4036,643 @@ def test_permission_readers_share_locks_and_permission_update_times_out(
             "after_cursor_execute",
             hold_permission_readers,
         )
+
+
+class _HTTPRealtimeRepository:
+    def __init__(self):
+        from dragon_radar.realtime.models import (
+            AnomalyReadResult,
+            MinuteBarRecord,
+            MinuteReadResult,
+            QuoteReadResult,
+            SectorFlowReadResult,
+            SectorFlowRecord,
+        )
+
+        completeness = SourceCompleteness(
+            status="complete",
+            expected_count=1,
+            received_count=1,
+        )
+        self.clock = lambda: T0 + timedelta(hours=1)
+        self.ingestion_calls = 0
+        self.calls = []
+        self.quotes = QuoteReadResult(
+            as_of=T0 + timedelta(minutes=1),
+            batch_id="quote-http",
+            items=(
+                QuoteRecord(
+                    batch_id="quote-http",
+                    source_id="licensed-feed",
+                    source_version="v1",
+                    source_event_at=T0,
+                    received_at=T0 + timedelta(milliseconds=1250),
+                    available_at=T0 + timedelta(seconds=2),
+                    quote=QuoteInput(
+                        security_id="600000.SH",
+                        last=Decimal("9007199254740993.01"),
+                        order_book_status="disabled",
+                        order_book_unavailable_reason="not_authorized",
+                    ),
+                ),
+            ),
+            completeness=completeness,
+        )
+        self.minutes = MinuteReadResult(
+            as_of=T0 + timedelta(hours=1),
+            batch_id="minute-http",
+            items=(
+                MinuteBarRecord(
+                    batch_id="minute-http",
+                    source_id="licensed-feed",
+                    source_version="v1",
+                    bar=minute_bar("10", minute=0),
+                ),
+            ),
+            completeness=completeness,
+        )
+        self.anomalies = AnomalyReadResult(
+            as_of=T0 + timedelta(hours=1),
+            items=(
+                AnomalyEvent(
+                    event_id="event-http",
+                    batch_id="minute-http",
+                    security_id="600000.SH",
+                    rule_version="return-v1",
+                    event_at=T0,
+                    available_at=T0 + timedelta(seconds=2),
+                    result=AnomalyResult(
+                        triggered=True,
+                        metric="window_return",
+                        window=2,
+                        value=Decimal("0.03"),
+                        threshold=Decimal("0.02"),
+                        reason=None,
+                    ),
+                    quality="complete",
+                ),
+            ),
+            next_cursor="next-http",
+            completeness=completeness,
+        )
+        self.flow = SectorFlowReadResult(
+            as_of=T0 + timedelta(hours=1),
+            batch_id="flow-http",
+            items=(
+                SectorFlowRecord(
+                    batch_id="flow-http",
+                    source_id="licensed-feed",
+                    source_version="v1",
+                    available_at=T0 + timedelta(seconds=2),
+                    point=SectorFlowPoint(
+                        sector_id="sector-1",
+                        event_at=T0,
+                        net_inflow=Decimal("12.5"),
+                        unit="CNY",
+                    ),
+                ),
+            ),
+            completeness=completeness,
+        )
+
+    def list_quotes(self, **values):
+        self.calls.append(("quotes", values))
+        return self.quotes
+
+    def list_minutes(self, **values):
+        self.calls.append(("minutes", values))
+        return self.minutes
+
+    def list_anomalies(self, **values):
+        self.calls.append(("anomalies", values))
+        if values.get("cursor") == "bad":
+            raise ValueError("Invalid realtime anomaly cursor")
+        return self.anomalies
+
+    def list_sector_flow(self, **values):
+        self.calls.append(("flow", values))
+        return self.flow
+
+
+class _HTTPWorkbenchRepository:
+    database = None
+
+
+async def _http_client(realtime_repository):
+    from dragon_radar.http.app import create_workbench_app
+
+    app = create_workbench_app(
+        repository=_HTTPWorkbenchRepository(),
+        realtime_repository=realtime_repository,
+    )
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+
+
+@pytest.mark.anyio
+async def test_ex04_quotes_has_exact_decimal_timestamp_and_delay_contract():
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/quotes",
+            params={
+                "security_ids": "600000.SH",
+                "as_of": "2026-10-09T09:31:00+08:00",
+            },
+        )
+
+    assert response.status_code == 200
+    assert b'"last":9007199254740993.01' in response.content
+    payload = json.loads(response.content, parse_float=Decimal)
+    assert set(payload) == {
+        "trade_date",
+        "as_of",
+        "snapshot_id",
+        "source",
+        "source_version",
+        "coverage",
+        "quality_flags",
+        "rule_version",
+        "basis",
+        "data",
+    }
+    assert set(payload["data"]) == {
+        "quote_batch_id",
+        "source_event_at",
+        "received_at",
+        "delay_ms",
+        "status",
+        "quotes",
+    }
+    assert payload["data"]["delay_ms"] == 1250
+    assert payload["data"]["status"] == "complete"
+    assert payload["data"]["quotes"][0]["last"] == Decimal("9007199254740993.01")
+    assert repository.calls == [
+        (
+            "quotes",
+            {
+                "security_ids": ("600000.SH",),
+                "as_of": T0 + timedelta(minutes=1),
+                "source_id": None,
+                "batch_id": None,
+            },
+        )
+    ]
+
+
+@pytest.mark.anyio
+async def test_ex05_minutes_has_exact_bar_contract_without_gap_fill():
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/minutes",
+            params={"security_id": "600000.SH", "date": "2026-10-09"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload["data"]) == {"status", "bars"}
+    assert len(payload["data"]["bars"]) == 1
+    assert set(payload["data"]["bars"][0]) == {
+        "batch_id",
+        "source_id",
+        "source_version",
+        "security_id",
+        "event_at",
+        "received_at",
+        "available_at",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "revision",
+        "final",
+    }
+
+
+@pytest.mark.anyio
+async def test_ex06_anomalies_has_transparent_rule_input_quality_and_cursor():
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09", "limit": "1"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload["data"]) == {"status", "events", "next_cursor"}
+    assert payload["data"]["next_cursor"] == "next-http"
+    assert set(payload["data"]["events"][0]) == {
+        "event_id",
+        "batch_id",
+        "security_id",
+        "rule_version",
+        "event_at",
+        "available_at",
+        "metric",
+        "window",
+        "value",
+        "threshold",
+        "quality",
+    }
+
+
+@pytest.mark.anyio
+async def test_ex07_sector_flow_preserves_source_value_unit_and_null_reason():
+    repository = _HTTPRealtimeRepository()
+    unavailable = repository.flow.items[0].model_copy(
+        update={
+            "point": repository.flow.items[0].point.model_copy(
+                update={
+                    "net_inflow": None,
+                    "unavailable_reason": "field_not_authorized",
+                }
+            )
+        }
+    )
+    repository.flow = repository.flow.model_copy(update={"items": (unavailable,)})
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/market/sector-flow/intraday",
+            params={"sector": "sector-1", "date": "2026-10-09"},
+        )
+
+    assert response.status_code == 200
+    point = response.json()["data"]["points"][0]
+    assert set(point) == {
+        "batch_id",
+        "source_id",
+        "source_version",
+        "sector",
+        "event_at",
+        "available_at",
+        "net_inflow",
+        "unit",
+        "unavailable_reason",
+    }
+    assert point["net_inflow"] is None
+    assert point["unavailable_reason"] == "field_not_authorized"
+    assert "turnover" not in point
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("path", "query"),
+    [
+        ("/api/realtime/quotes", "security_ids=600000.SH&unknown=1"),
+        (
+            "/api/realtime/quotes",
+            "security_ids=600000.SH&security_ids=000001.SZ",
+        ),
+        ("/api/realtime/quotes", "security_ids=600000.SH,600000.SH"),
+        ("/api/realtime/quotes", "security_ids=600000.SH,%20000001.SZ"),
+        ("/api/realtime/minutes", "security_id=600000.SH"),
+        ("/api/realtime/minutes", "security_id=600000.SH&date=2026-02-30"),
+        ("/api/realtime/anomalies", "date=2026-10-09&limit=0"),
+        ("/api/realtime/anomalies", "date=2026-10-09&limit=101"),
+        (
+            "/api/market/sector-flow/intraday",
+            "sector=sector-1&date=2026-10-09&date=2026-10-10",
+        ),
+    ],
+)
+async def test_realtime_routes_reject_invalid_queries_before_repository(path, query):
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(f"{path}?{query}")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "INVALID_PARAM",
+        "message": "Invalid request",
+    }
+    assert repository.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("path", "batch_name"),
+    [
+        ("/api/realtime/quotes?security_ids=600000.SH", "quote_batch_id"),
+        (
+            "/api/realtime/minutes?security_id=600000.SH&date=2026-10-09",
+            "batch_id",
+        ),
+        (
+            "/api/market/sector-flow/intraday?sector=sector-1&date=2026-10-09",
+            "batch_id",
+        ),
+    ],
+)
+async def test_realtime_explicit_batch_requires_source(path, batch_name):
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(f"{path}&{batch_name}=batch-1")
+
+    assert response.status_code == 400
+    assert repository.calls == []
+
+
+@pytest.mark.anyio
+async def test_realtime_no_authorized_batch_is_200_null_data_with_flags():
+    from dragon_radar.realtime.models import QuoteReadResult
+
+    repository = _HTTPRealtimeRepository()
+    repository.quotes = QuoteReadResult(
+        as_of=T0,
+        batch_id=None,
+        items=(),
+        completeness=SourceCompleteness(
+            status="unavailable",
+            expected_count=1,
+            received_count=0,
+            reason="no_data",
+        ),
+    )
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/quotes",
+            params={"security_ids": "600000.SH"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert response.json()["quality_flags"] == ["no_data"]
+
+
+@pytest.mark.anyio
+async def test_realtime_explicit_missing_batch_is_404_without_fallback():
+    from dragon_radar.realtime.models import QuoteReadResult
+
+    repository = _HTTPRealtimeRepository()
+    repository.quotes = QuoteReadResult(
+        as_of=T0,
+        batch_id=None,
+        items=(),
+        completeness=SourceCompleteness(
+            status="unavailable",
+            expected_count=1,
+            received_count=0,
+            reason="no_data",
+        ),
+    )
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/quotes",
+            params={
+                "security_ids": "600000.SH",
+                "source_id": "licensed-feed",
+                "quote_batch_id": "missing-batch",
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "NOT_FOUND"
+
+
+@pytest.mark.anyio
+async def test_realtime_revoked_permission_returns_403_without_payload():
+    from dragon_radar.storage.repository import Forbidden
+
+    repository = _HTTPRealtimeRepository()
+
+    def denied(**_values):
+        raise Forbidden("protected source and token must not leak")
+
+    repository.list_quotes = denied
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/quotes",
+            params={"security_ids": "600000.SH"},
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "code": "FORBIDDEN",
+        "message": "Source access denied",
+    }
+    assert b"protected source" not in response.content
+    assert b"token" not in response.content
+
+
+@pytest.mark.anyio
+async def test_realtime_unknown_entity_is_structured_404():
+    from dragon_radar.storage.repository import NotFound
+
+    repository = _HTTPRealtimeRepository()
+
+    def missing(**_values):
+        raise NotFound("protected entity name")
+
+    repository.list_sector_flow = missing
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/market/sector-flow/intraday",
+            params={"sector": "unknown", "date": "2026-10-09"},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
+    assert b"protected entity" not in response.content
+
+
+@pytest.mark.anyio
+async def test_realtime_invalid_cursor_is_structured_400():
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        response = await client.get(
+            "/api/realtime/anomalies",
+            params={"date": "2026-10-09", "cursor": "bad"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_PARAM"
+
+
+@pytest.mark.anyio
+async def test_realtime_public_get_never_starts_ingestion_or_writes():
+    repository = _HTTPRealtimeRepository()
+    async with await _http_client(repository) as client:
+        responses = (
+            await client.get(
+                "/api/realtime/quotes",
+                params={"security_ids": "600000.SH"},
+            ),
+            await client.get(
+                "/api/realtime/minutes",
+                params={"security_id": "600000.SH", "date": "2026-10-09"},
+            ),
+            await client.get(
+                "/api/realtime/anomalies",
+                params={"date": "2026-10-09"},
+            ),
+            await client.get(
+                "/api/market/sector-flow/intraday",
+                params={"sector": "sector-1", "date": "2026-10-09"},
+            ),
+        )
+
+    assert {response.status_code for response in responses} == {200}
+    assert repository.ingestion_calls == 0
+
+
+@pytest.mark.anyio
+async def test_realtime_routes_without_repository_return_storage_unavailable():
+    from dragon_radar.http.app import create_workbench_app
+
+    app = create_workbench_app(repository=_HTTPWorkbenchRepository())
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/realtime/quotes",
+            params={"security_ids": "600000.SH"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "STORAGE_UNAVAILABLE"
+
+
+@pytest.mark.anyio
+async def test_realtime_http_gets_execute_no_dml(
+    realtime_repository,
+):
+    from sqlalchemy import event
+
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("http-read-only-quote"),
+        key="http-read-only-quote",
+    )
+    realtime_repository.ingest_minute_batch(
+        _minute_batch(
+            "http-read-only-minute",
+            (minute_bar("100", minute=0), minute_bar("103", minute=1)),
+        ),
+        key="http-read-only-minute",
+        rules=(return_rule(window=2),),
+    )
+    realtime_repository.ingest_sector_flow_batch(
+        _flow_batch("http-read-only-flow"),
+        key="http-read-only-flow",
+    )
+    statements = []
+
+    def reject_write(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        statements.append(statement)
+        assert statement.lstrip().split(maxsplit=1)[0].upper() not in {
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+        }
+
+    event.listen(
+        realtime_repository.database.engine,
+        "before_cursor_execute",
+        reject_write,
+    )
+    try:
+        async with await _http_client(realtime_repository) as client:
+            responses = (
+                await client.get(
+                    "/api/realtime/quotes",
+                    params={"security_ids": "600000.SH"},
+                ),
+                await client.get(
+                    "/api/realtime/minutes",
+                    params={"security_id": "600000.SH", "date": "2026-10-09"},
+                ),
+                await client.get(
+                    "/api/realtime/anomalies",
+                    params={"date": "2026-10-09"},
+                ),
+                await client.get(
+                    "/api/market/sector-flow/intraday",
+                    params={"sector": "sector-1", "date": "2026-10-09"},
+                ),
+            )
+    finally:
+        event.remove(
+            realtime_repository.database.engine,
+            "before_cursor_execute",
+            reject_write,
+        )
+
+    assert {response.status_code for response in responses} == {200}
+    assert statements
+
+
+@pytest.mark.anyio
+async def test_realtime_explicit_unknown_batch_is_404_without_latest_fallback(
+    realtime_repository,
+):
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("available-http-batch"),
+        key="available-http-batch",
+    )
+    async with await _http_client(realtime_repository) as client:
+        response = await client.get(
+            "/api/realtime/quotes",
+            params={
+                "security_ids": "600000.SH",
+                "source_id": "licensed-feed",
+                "quote_batch_id": "missing-http-batch",
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "NOT_FOUND"
+    assert b"available-http-batch" not in response.content
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        (
+            "/api/realtime/quotes",
+            {"security_ids": "000001.SZ"},
+        ),
+        (
+            "/api/realtime/minutes",
+            {"security_id": "000001.SZ", "date": "2026-10-09"},
+        ),
+        (
+            "/api/market/sector-flow/intraday",
+            {"sector": "unknown-sector", "date": "2026-10-09"},
+        ),
+    ],
+)
+async def test_realtime_unknown_entity_in_available_store_is_404(
+    realtime_repository,
+    path,
+    params,
+):
+    realtime_repository.ingest_quote_batch(
+        _quote_batch("known-http-quote"),
+        key="known-http-quote",
+    )
+    realtime_repository.ingest_minute_batch(
+        _minute_batch("known-http-minute", (minute_bar(),)),
+        key="known-http-minute",
+    )
+    realtime_repository.ingest_sector_flow_batch(
+        _flow_batch("known-http-flow"),
+        key="known-http-flow",
+    )
+    async with await _http_client(realtime_repository) as client:
+        response = await client.get(path, params=params)
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "NOT_FOUND"
