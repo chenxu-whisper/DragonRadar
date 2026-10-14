@@ -32,6 +32,8 @@ class _SeatAccumulator:
     source_seat_name: str
     currency: str
     unit: str
+    header_revision: int
+    header_available_at: datetime
     buy_amounts: list[Decimal] = field(default_factory=list)
     sell_amounts: list[Decimal] = field(default_factory=list)
     contributions: list[SeatContribution] = field(default_factory=list)
@@ -53,7 +55,9 @@ def aggregate_seats(
 
     Rows with ``available_at > as_of`` are hidden. Later revisions replace older
     ones for the same ``disclosure_id``; ties on ``(revision, available_at)``
-    keep the first-seen row so duplicate rows never double-count.
+    keep the first-seen row so duplicate rows never double-count. Seat rows are
+    grouped by the composite, source-scoped key ``(source_id, seat_id)`` so two
+    sources that reuse the same seat identifier never merge.
     """
     visible = [row for row in disclosures if row.available_at <= as_of]
     selected: dict[str, DisclosureRevisionInput] = {}
@@ -87,11 +91,23 @@ def _aggregate_selected(
     total_disclosures: int,
     visible_disclosures: int,
 ) -> SeatAggregation:
-    accumulators: dict[str, _SeatAccumulator] = {}
-    seat_order: list[str] = []
+    """Group selected revisions into source-scoped seats.
+
+    Groups use the composite key ``(source_id, seat_id)``, never the display
+    name. Each contribution keeps its own source seat name, mapping version,
+    and permission state; branch renames and mapping changes are historical
+    facts and never raise. Only currency/unit conflicts raise ``ValueError``.
+    The header's ``source_seat_name`` and ``mapping_version`` come from the
+    contributing row of the latest selected revision in the group, ordered by
+    ``(revision, available_at)`` with first-seen winning an exact tie.
+    """
+    accumulators: dict[tuple[str, str], _SeatAccumulator] = {}
+    seat_order: list[tuple[str, str]] = []
     for revision in disclosures:
         for row in revision.seats:
-            accumulator = accumulators.get(row.seat_id)
+            key = (revision.source_id, row.seat_id)
+            accumulator = accumulators.get(key)
+            revision_key = (revision.revision, revision.available_at)
             if accumulator is None:
                 accumulator = _SeatAccumulator(
                     seat_id=row.seat_id,
@@ -101,15 +117,27 @@ def _aggregate_selected(
                     source_seat_name=row.source_seat_name,
                     currency=row.currency,
                     unit=row.unit,
+                    header_revision=revision.revision,
+                    header_available_at=revision.available_at,
                 )
-                accumulators[row.seat_id] = accumulator
-                seat_order.append(row.seat_id)
+                accumulators[key] = accumulator
+                seat_order.append(key)
             elif row.currency != accumulator.currency:
                 raise ValueError(
                     f"seat {row.seat_id} mixes incompatible currency values"
                 )
             elif row.unit != accumulator.unit:
                 raise ValueError(f"seat {row.seat_id} mixes incompatible unit values")
+            elif revision_key > (
+                accumulator.header_revision,
+                accumulator.header_available_at,
+            ):
+                # Renames and remaps never raise: the header tracks the latest
+                # contributing revision while every row keeps its own values.
+                accumulator.source_seat_name = row.source_seat_name
+                accumulator.mapping_version = row.mapping_version
+                accumulator.header_revision = revision.revision
+                accumulator.header_available_at = revision.available_at
             accumulator.row_count += 1
             if row.buy_amount is not None:
                 accumulator.buy_amounts.append(row.buy_amount)
@@ -123,13 +151,16 @@ def _aggregate_selected(
                     disclosure_date=revision.disclosure_date,
                     reason=revision.reason,
                     source_row_id=row.source_row_id,
+                    source_seat_name=row.source_seat_name,
+                    mapping_version=row.mapping_version,
+                    permission_state=revision.permission.state,
                 )
             )
 
     seats: list[AggregatedSeat] = []
     complete_seats = 0
-    for seat_id in seat_order:
-        accumulator = accumulators[seat_id]
+    for key in seat_order:
+        accumulator = accumulators[key]
         buy_total = (
             _sum_decimals(accumulator.buy_amounts)
             if len(accumulator.buy_amounts) == accumulator.row_count

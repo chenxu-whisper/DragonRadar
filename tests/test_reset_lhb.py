@@ -21,6 +21,7 @@ from dragon_radar.lhb import (
     SeatAggregation,
     SeatHistorySelection,
     aggregate_seats,
+    validate_import_batch,
 )
 
 T0 = datetime(2026, 9, 18, 8, 0, tzinfo=UTC)
@@ -359,7 +360,18 @@ def test_aggregate_retains_source_and_contributing_disclosure_identities():
     assert contribution.disclosure_date == DISCLOSED_ON
     assert contribution.reason == "日涨幅偏离值达7%"
     assert contribution.source_row_id == "ROW-1"
+    assert contribution.permission_state == "authorized"
     assert result.as_of == AS_OF
+
+
+def test_aggregate_contribution_retains_revision_permission_state():
+    result = aggregate_seats(
+        disclosures=[disclosure(permission=permission("authorized"))],
+        as_of=AS_OF,
+    )
+
+    contribution = result.seats[0].contributions[0]
+    assert contribution.permission_state == "authorized"
 
 
 def test_late_disclosure_hidden_until_available_at():
@@ -409,6 +421,227 @@ def test_aggregate_conflicting_currency_or_unit_raises():
 
     with pytest.raises(ValueError, match="currency|unit"):
         aggregate_seats(disclosures=[first, second], as_of=AS_OF)
+
+
+def test_aggregate_conflicting_unit_raises_value_error():
+    first = disclosure(
+        disclosure_id="D1",
+        unit="yuan",
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+    second = disclosure(
+        disclosure_id="D2",
+        source_row_id="ROW-2",
+        unit="shares",
+        available_at=utc("2026-09-18T09:00:00Z"),
+    )
+
+    with pytest.raises(ValueError, match="unit"):
+        aggregate_seats(disclosures=[first, second], as_of=AS_OF)
+
+
+def test_aggregate_separates_same_seat_id_from_different_sources():
+    first = disclosure(
+        disclosure_id="D1",
+        source_id="SRC-1",
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(seat(seat_id="SEAT-X"),),
+    )
+    second = disclosure(
+        disclosure_id="D2",
+        source_id="SRC-2",
+        available_at=utc("2026-09-18T09:00:00Z"),
+        seats=(seat(seat_id="SEAT-X", source_row_id="ROW-2"),),
+    )
+
+    result = aggregate_seats(disclosures=[first, second], as_of=AS_OF)
+
+    assert len(result.seats) == 2
+    assert {
+        (aggregated.source_id, aggregated.seat_id) for aggregated in result.seats
+    } == {("SRC-1", "SEAT-X"), ("SRC-2", "SEAT-X")}
+    assert {aggregated.net_amount for aggregated in result.seats} == {Decimal("70")}
+    assert [len(aggregated.contributions) for aggregated in result.seats] == [1, 1]
+
+
+def test_aggregate_same_source_seat_id_still_merges_across_disclosures():
+    result = aggregate_seats(
+        disclosures=[
+            disclosure(
+                disclosure_id="D1",
+                available_at=utc("2026-09-18T08:00:00Z"),
+            ),
+            disclosure(
+                disclosure_id="D2",
+                source_row_id="ROW-2",
+                available_at=utc("2026-09-18T09:00:00Z"),
+            ),
+        ],
+        as_of=AS_OF,
+    )
+
+    assert len(result.seats) == 1
+    assert result.seats[0].net_amount == Decimal("140")
+    assert len(result.seats[0].contributions) == 2
+
+
+@pytest.mark.parametrize(
+    ("first_buy", "first_sell", "second_buy", "second_sell", "completeness"),
+    [
+        (None, Decimal("10"), Decimal("50"), Decimal("20"), "buy_unknown"),
+        (Decimal("50"), None, Decimal("50"), Decimal("20"), "sell_unknown"),
+        (None, Decimal("10"), Decimal("50"), None, "both_unknown"),
+    ],
+)
+def test_aggregate_unknown_amount_in_one_row_blanks_the_whole_total(
+    first_buy, first_sell, second_buy, second_sell, completeness
+):
+    result = aggregate_seats(
+        disclosures=[
+            disclosure(
+                disclosure_id="D1",
+                buy_amount=first_buy,
+                sell_amount=first_sell,
+                available_at=utc("2026-09-18T08:00:00Z"),
+            ),
+            disclosure(
+                disclosure_id="D2",
+                source_row_id="ROW-2",
+                buy_amount=second_buy,
+                sell_amount=second_sell,
+                available_at=utc("2026-09-18T09:00:00Z"),
+            ),
+        ],
+        as_of=AS_OF,
+    )
+
+    aggregated = result.seats[0]
+    assert aggregated.net_amount is None
+    assert aggregated.completeness == completeness
+    if completeness == "buy_unknown":
+        assert aggregated.buy_amount is None
+        assert aggregated.sell_amount == Decimal("30")
+    elif completeness == "sell_unknown":
+        assert aggregated.buy_amount == Decimal("100")
+        assert aggregated.sell_amount is None
+    else:
+        assert aggregated.buy_amount is None
+        assert aggregated.sell_amount is None
+
+
+def test_aggregate_exact_tie_distinct_identical_payloads_collapse_once():
+    first = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        buy_amount=Decimal("100"),
+        sell_amount=Decimal("30"),
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+    second = DisclosureRevisionInput.model_validate(first.model_dump())
+    assert first is not second
+    assert first == second
+
+    result = aggregate_seats(disclosures=[first, second], as_of=AS_OF)
+
+    assert len(result.seats) == 1
+    assert result.seats[0].buy_amount == Decimal("100")
+    assert result.seats[0].sell_amount == Decimal("30")
+    assert result.seats[0].net_amount == Decimal("70")
+    assert len(result.seats[0].contributions) == 1
+    assert result.coverage.total_disclosures == 2
+    assert result.coverage.visible_disclosures == 2
+    assert result.coverage.selected_disclosures == 1
+
+
+def test_aggregate_header_uses_latest_revision_name_and_mapping_per_row():
+    older = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(
+            seat(
+                source_seat_name="Old branch",
+                mapping_version="seat-map-v1",
+            ),
+        ),
+    )
+    newer = disclosure(
+        disclosure_id="D2",
+        revision=1,
+        source_row_id="ROW-2",
+        available_at=utc("2026-09-18T09:00:00Z"),
+        seats=(
+            seat(
+                source_row_id="ROW-2",
+                source_seat_name="New branch",
+                mapping_version="seat-map-v2",
+            ),
+        ),
+    )
+
+    result = aggregate_seats(disclosures=[older, newer], as_of=AS_OF)
+
+    aggregated = result.seats[0]
+    assert aggregated.source_seat_name == "New branch"
+    assert aggregated.mapping_version == "seat-map-v2"
+    assert [
+        contribution.source_seat_name for contribution in aggregated.contributions
+    ] == ["Old branch", "New branch"]
+    assert [
+        contribution.mapping_version for contribution in aggregated.contributions
+    ] == ["seat-map-v1", "seat-map-v2"]
+
+
+def test_aggregate_header_prefers_higher_revision_even_when_available_earlier():
+    higher_revision = disclosure(
+        disclosure_id="D1",
+        revision=2,
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(seat(source_seat_name="Higher revision branch"),),
+    )
+    lower_revision = disclosure(
+        disclosure_id="D2",
+        revision=1,
+        source_row_id="ROW-2",
+        available_at=utc("2026-09-18T09:00:00Z"),
+        seats=(
+            seat(
+                source_row_id="ROW-2",
+                source_seat_name="Lower revision branch",
+            ),
+        ),
+    )
+
+    result = aggregate_seats(
+        disclosures=[higher_revision, lower_revision],
+        as_of=AS_OF,
+    )
+
+    assert result.seats[0].source_seat_name == "Higher revision branch"
+
+
+def test_aggregate_name_or_mapping_divergence_does_not_raise():
+    renamed = disclosure(
+        disclosure_id="D1",
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(seat(source_seat_name="Old branch", mapping_version="seat-map-v1"),),
+    )
+    remapped = disclosure(
+        disclosure_id="D2",
+        source_row_id="ROW-2",
+        available_at=utc("2026-09-18T09:00:00Z"),
+        seats=(
+            seat(
+                source_row_id="ROW-2",
+                source_seat_name="New branch",
+                mapping_version="seat-map-v2",
+            ),
+        ),
+    )
+
+    result = aggregate_seats(disclosures=[renamed, remapped], as_of=AS_OF)
+
+    assert len(result.seats) == 1
 
 
 @pytest.mark.parametrize(
@@ -540,6 +773,55 @@ def test_model_import_batch_accepts_authorized_disclosures():
 
     assert batch.batch_id == "batch-1"
     assert batch.disclosures[0].disclosure_id == "D1"
+
+
+def import_batch() -> LHBImportBatch:
+    return LHBImportBatch(
+        batch_id="batch-1",
+        source_id="lhb-source",
+        source_version="v1",
+        source_event_at=T0,
+        received_at=T0 + timedelta(seconds=1),
+        available_at=T0 + timedelta(seconds=2),
+        permission=permission(),
+        disclosures=(disclosure(),),
+    )
+
+
+def test_validate_import_batch_round_trips_valid_batch():
+    batch = import_batch()
+
+    validated = validate_import_batch(batch)
+
+    assert validated == batch
+    assert validated is not batch
+
+
+def test_validate_import_batch_rejects_revoked_permission_in_constructed_input():
+    tampered_permission = PermissionSnapshot.model_construct(
+        permission_id="lhb-permission-1",
+        state="revoked",
+        captured_at=T0,
+    )
+    tampered = import_batch().model_copy(update={"permission": tampered_permission})
+    assert tampered.permission.state == "revoked"
+
+    with pytest.raises(ValidationError, match="authorized"):
+        validate_import_batch(tampered)
+
+
+def test_validate_import_batch_rejects_tampered_negative_amount():
+    batch = import_batch()
+    tampered_seat = (
+        batch.disclosures[0].seats[0].model_copy(update={"buy_amount": Decimal("-5")})
+    )
+    tampered_revision = batch.disclosures[0].model_copy(
+        update={"seats": (tampered_seat,)}
+    )
+    tampered = batch.model_copy(update={"disclosures": (tampered_revision,)})
+
+    with pytest.raises(ValidationError, match="nonnegative|finite"):
+        validate_import_batch(tampered)
 
 
 @pytest.mark.parametrize("name", ["Zhang San", "张三", "John Smith Jr.", "  李四  "])

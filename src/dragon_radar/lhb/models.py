@@ -175,7 +175,11 @@ class SeatIdentity(LHBModel):
 
 
 class SeatContribution(LHBModel):
-    """The disclosure revision row that contributed amounts to one seat."""
+    """The disclosure revision row that contributed amounts to one seat.
+
+    Per-row source name, mapping version, and permission state stay traceable
+    even when the seat was renamed, remapped, or revoked after the fact.
+    """
 
     disclosure_id: SafeIdentifier
     security_id: SafeIdentifier
@@ -183,6 +187,9 @@ class SeatContribution(LHBModel):
     disclosure_date: date
     reason: NonBlankText
     source_row_id: SafeIdentifier
+    source_seat_name: NonBlankText
+    mapping_version: SafeIdentifier
+    permission_state: PermissionState
 
 
 class AggregatedSeat(LHBModel):
@@ -274,20 +281,13 @@ __all__ = [
     "DisclosureRevisionInput",
     "DisclosureSeatInput",
     "DisclosureSelection",
-    "FiniteDecimal",
     "LHBImportBatch",
     "LHBImportResult",
-    "LHBModel",
-    "NonBlankText",
-    "NonNegativeDecimal",
     "PermissionSnapshot",
-    "SafeIdentifier",
     "SeatAggregation",
-    "SeatCompleteness",
     "SeatContribution",
     "SeatHistory",
     "SeatHistorySelection",
     "SeatIdentity",
-    "SeatSide",
     "SelectedDisclosure",
 ]
