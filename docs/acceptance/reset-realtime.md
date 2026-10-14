@@ -151,4 +151,83 @@ and are not green evidence. Final green evidence is limited to the logs and
 JSON named in the table.
 
 No merge, tag, version bump, image publication, release, or deployment
-occurred. Task 21R.7 was not started.
+occurred at the Task 21R.6 gate.
+
+## Task 21R.7 Review Closure (Recorded 2026-10-14)
+
+This addendum records the independent Task 7 reviews without rewriting the
+historical Task 21R.6 evidence above. The migration chain stayed at
+`0011_realtime`; no migration, schema contract, or release manifest entry
+changed during review closure.
+
+### Post-Evidence Commits (in order)
+
+| Commit | Date | Purpose |
+| --- | --- | --- |
+| `47d179a` | 2026-10-11 | Task 21R.6 CI integration and release contract verification |
+| `53cf0e2` | 2026-10-11 | Make realtime evidence traceable |
+| `a7fa0dc` | 2026-10-11 | Close realtime backend review findings |
+| `50a9590` | 2026-10-11 | Close realtime frontend review findings |
+| `64c4a4d` | 2026-10-11 | Filter revoked realtime source reads |
+| `ba171a1` | 2026-10-11 | Preserve realtime source distinctions |
+| `f94c74e` | 2026-10-14 | Bound authorization source probes (constant statement/row budget) |
+| `51cb20d` | 2026-10-14 | Keep authorization probes bounded on filter misses (final head) |
+
+### Review Findings Closed On 2026-10-14
+
+The final independent specification compliance review of `f94c74e` passed
+(five scenario groups equivalent to the pre-refactor authorization semantics,
+including revoked snapshot, revoked grant, future `captured_at`, pinned
+`batch_id`, and multi-source filtering).
+
+The independent code quality review initially returned "with fixes":
+
+- **Important I1 (closed by `f94c74e` + `51cb20d`):** the first refactor still
+  scanned the whole batch/child history in some plan shapes. The final
+  authorization statement uses a non-correlated child-window `visible_horizon`
+  existence check (promoted to an InitPlan/One-Time Filter) plus per-source
+  `JOIN LATERAL (...) LIMIT 1` probes whose `(source_id, batch_id)` correlation
+  enters the child index condition. Independent `EXPLAIN (ANALYZE, BUFFERS)`
+  measurements against zero-statistics schemas: full filter misses touch 0
+  rows (minutes) or one linear pass over the child table (unscoped anomalies:
+  4/128/400 rows for 2/64/200 batches per source), versus about 80,000 child
+  rows for two sources with 200 batches under the previous shape; homogeneous
+  hits stay at 2 rows per history node, inside the <=8 budget.
+- **Important I2 (closed by `51cb20d`):** the previous plan-budget test only
+  covered homogeneous hits. `test_minutes_and_anomalies_authorization_reads_stay_linear_on_filter_misses`
+  now asserts the two-scale miss budget, including a slope check that fails for
+  an O(sources x batches^2) plan while accepting the linear plan, with explicit
+  allowance comments and failure diagnostics.
+
+Re-review verdict: **approved (Yes)**, no Critical or Important issues open.
+Two Minor observations remain explicitly accepted: the unscoped anomalies
+horizon is an intentional one-pass linear scan (documented in code; a future
+covering index may be evaluated outside Task 21R), and a redundant `LIMIT 1`
+inside an `EXISTS` scalar is harmless.
+
+### Re-Verified Evidence At Head `51cb20d`
+
+| Check | Result |
+| --- | --- |
+| `tests/test_reset_realtime.py` | 224 passed, 0 skipped |
+| Focused closure suite (realtime + release migrations + storage) | 442 passed, 4 skipped; skips are the pre-existing platform-conditional cases |
+| Full backend `pytest -q -W error` | Not re-run for this review-only change under the scoped-rerun rule; the 3034 passed/15 skipped full run remains the Task 21R.6 result at `b2b2045`, and the next full run is scheduled at the Task 22 release gate |
+| Ruff check / scoped format / compileall / `git diff --check` | passed |
+| Wheel | `dragon_radar-0.1.0-py3-none-any.whl`, SHA-256 `20afb8f3cef09fad009efa59446222416cdfaf3cc81ab10a24d8bd47c4f4046c` |
+| Installed-wheel verification | fresh install plus all 11 supported starting revisions upgraded to `0011_realtime` with sentinels preserved and `ready=true`; imported from an isolated installed environment; audited commit `51cb20d` |
+
+The wheel and migration evidence above supersedes the Task 21R.6 wheel hash for
+the current branch head; the Task 21R.6 row remains the historical audit of
+commit `b2b2045`.
+
+### Gate Decision And Handoff
+
+Automated engineering acceptance remains **GO** for Task 21R. Production
+enablement, branch cut, release, and deployment remain **NO_GO** for the same
+external reasons listed above (all five external gates stay BLOCKED; inputs
+remain synthetic fixtures only).
+
+The Task 22 entry gate is met: migration head `0011_realtime`, backend and
+installed-wheel verification green, independent specification review approved,
+independent code quality review approved, and a clean committed head. No
+merge, tag, version bump, image publication, release, or deployment occurred.
