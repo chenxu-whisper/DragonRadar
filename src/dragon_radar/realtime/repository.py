@@ -470,14 +470,39 @@ class RealtimeRepository(Repository):
         batch_filter=(),
         source_id: str | None = None,
     ) -> tuple[str, ...]:
-        # Each existence check is a LATERAL ... LIMIT 1 probe in the join
-        # tree: limited lateral subqueries are evaluated per source grant and
-        # cannot be flattened into a hash semi join or hoisted into an
-        # initplan, so the plan stays a bounded nested-loop index probe
-        # regardless of how many historical batches exist (and without
-        # relying on table statistics). The authorized probe is an outer
-        # join so a candidate source whose latest permission snapshot is not
-        # displayable still surfaces for the Forbidden check below.
+        # Two structural bounds keep this authorization read independent of
+        # the number of historical batches:
+        #
+        # 1. ``visible_horizon`` is an uncorrelated EXISTS carrying exactly the
+        #    read-window predicates of the child history table. The planner
+        #    evaluates it once per statement as an InitPlan behind a One-Time
+        #    Filter: when no row anywhere matches the requested window, every
+        #    per-source probe below is skipped before a grant or batch is
+        #    touched. With a security predicate (minute reads, security-scoped
+        #    anomaly reads) the probe is served from the point-in-time
+        #    ``..._as_of`` index; without one (unscoped anomaly reads) the
+        #    worst case is one scan of the child table per statement -- linear
+        #    in stored rows, never in their square.
+        #
+        # 2. Each source check is a ``LATERAL ... LIMIT 1`` probe in the join
+        #    tree, so the executor runs one bounded nested-loop probe per
+        #    source grant: at most one matching batch joined to at most one
+        #    child row. The child is an explicit lateral join on
+        #    (source_id, batch_id), so both correlation columns enter its
+        #    Index Cond and a source with no visible row costs one index
+        #    lookup per candidate batch instead of rescanning all of that
+        #    source's child rows per batch.
+        #
+        # The concrete access paths (index nestloop vs hash join) remain the
+        # planner's cost-based choice and change with table statistics; the
+        # two bounds above are structural, not statistics-dependent. The
+        # authorized probe is an outer join so a candidate source whose latest
+        # permission snapshot is not displayable still surfaces for the
+        # Forbidden check below.
+        visible_horizon = (
+            select(1).select_from(child_table).where(*child_filter).limit(1).exists()
+        )
+
         def visible_child():
             return (
                 select(1)
@@ -488,40 +513,35 @@ class RealtimeRepository(Repository):
                     *child_filter,
                 )
                 .limit(1)
-                .exists()
+                .subquery()
+                .lateral("visible_child")
             )
 
-        candidate_probe = (
-            select(1)
-            .select_from(realtime_quote_batches)
-            .where(
-                realtime_quote_batches.c.source_id == source_grants.c.source_id,
-                realtime_quote_batches.c.available_at <= as_of,
-                *batch_filter,
-                visible_child(),
+        def source_probe(columns, extra_filters, alias):
+            return (
+                select(*columns)
+                .select_from(realtime_quote_batches)
+                .join(visible_child(), true())
+                .where(
+                    realtime_quote_batches.c.source_id == source_grants.c.source_id,
+                    realtime_quote_batches.c.available_at <= as_of,
+                    *batch_filter,
+                    *extra_filters,
+                )
+                .limit(1)
+                .correlate(source_grants)
+                .subquery()
+                .lateral(alias)
             )
-            .limit(1)
-            .correlate(source_grants)
-            .subquery()
-            .lateral("visible_candidate")
-        )
-        authorized_probe = (
-            select(true().label("permission_authorized"))
-            .select_from(realtime_quote_batches)
-            .where(
-                realtime_quote_batches.c.source_id == source_grants.c.source_id,
-                realtime_quote_batches.c.available_at <= as_of,
-                *batch_filter,
-                visible_child(),
-                *self._permission_allows_display(
-                    realtime_quote_batches.c.permission_snapshot,
-                    operation_now,
-                ),
-            )
-            .limit(1)
-            .correlate(source_grants)
-            .subquery()
-            .lateral("authorized_candidate")
+
+        candidate_probe = source_probe((1,), (), "visible_candidate")
+        authorized_probe = source_probe(
+            (true().label("permission_authorized"),),
+            self._permission_allows_display(
+                realtime_quote_batches.c.permission_snapshot,
+                operation_now,
+            ),
+            "authorized_candidate",
         )
         query = (
             select(
@@ -532,6 +552,7 @@ class RealtimeRepository(Repository):
             .select_from(source_grants)
             .join(candidate_probe, true())
             .outerjoin(authorized_probe, true())
+            .where(visible_horizon)
         )
         if source_id is not None:
             query = query.where(source_grants.c.source_id == source_id)
@@ -1232,12 +1253,7 @@ class RealtimeRepository(Repository):
                 cast(grant["expires_at"].as_string(), DateTime(timezone=True))
                 > operation_now,
                 grant["local_display"].as_boolean().is_(True),
-                permission["state"].as_string() == "authorized",
-                cast(
-                    permission["captured_at"].as_string(),
-                    DateTime(timezone=True),
-                )
-                <= operation_now,
+                *self._permission_allows_display(permission, operation_now),
             )
         if child_table is not None:
             query = query.where(

@@ -4326,7 +4326,18 @@ def test_minutes_and_anomalies_authorization_reads_are_bounded_by_sources(
     finally:
         raw_connection.close()
 
-    assert [plan["Actual Rows"] for plan in plans] == [2, 2]
+    # Each 64-batch read emits exactly one row per granted source (2
+    # sources): the LIMIT 1 probes return at most one candidate per source,
+    # so any plan that duplicated or rescanned grant rows would change the
+    # top-level shape. Expose both plan tops on failure for diagnosis.
+    assert [plan["Actual Rows"] for plan in plans] == [2, 2], [
+        {
+            "node_type": plan["Node Type"],
+            "actual_rows": plan["Actual Rows"],
+            "actual_loops": plan.get("Actual Loops"),
+        }
+        for plan in plans
+    ]
     history_relations = {
         "realtime_quote_batches",
         "realtime_minute_bars",
@@ -4344,6 +4355,15 @@ def test_minutes_and_anomalies_authorization_reads_are_bounded_by_sources(
                 + node.get("Rows Removed by Filter", 0)
                 + node.get("Rows Removed by Index Recheck", 0)
             )
+            # Per-source constant budget: on a hit the plan performs, per
+            # source, at most two LIMIT 1 index probes into
+            # realtime_quote_batches (candidate + authorized) and the bounded
+            # child lookup -- a handful of row touches independent of history
+            # depth (measured <= 5 per node at 64 batches/source). Allowing 4
+            # touches per granted source (= 8 for 2 sources) keeps headroom
+            # for those probes, while a per-batch child rescan -- O(sources *
+            # batches^2) -- exceeds the budget by orders of magnitude at
+            # 64 batches.
             assert rows_per_loop * node["Actual Loops"] <= len(source_ids) * 4, {
                 key: node.get(key)
                 for key in (
@@ -4357,6 +4377,256 @@ def test_minutes_and_anomalies_authorization_reads_are_bounded_by_sources(
                     "Filter",
                 )
             }
+
+
+def test_minutes_and_anomalies_authorization_reads_stay_linear_on_filter_misses(
+    realtime_repository,
+):
+    from factories import grant
+    from sqlalchemy import event, insert
+
+    from dragon_radar.realtime.tables import (
+        realtime_anomaly_events,
+        realtime_minute_bars,
+        realtime_quote_batches,
+    )
+    from dragon_radar.storage.repository import Repository
+
+    sources = Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    )
+    sources.register_source(grant(source_id="bounded-backup-feed"))
+    source_ids = ("licensed-feed", "bounded-backup-feed")
+
+    # Every stored child row misses BOTH read windows: a different security id
+    # and an event time one day before the requested minute session and anomaly
+    # day. Such a window-wide miss must return empty reads instead of Forbidden,
+    # and authorization work must stay bounded while history accumulates from 2
+    # to 64 batches per source.
+    miss_security = "000001.SZ"
+    miss_event_at = T0 - timedelta(days=1)
+    miss_received_at = miss_event_at + timedelta(seconds=1)
+    miss_bucket = datetime.combine(
+        miss_event_at.date(), datetime.min.time(), tzinfo=UTC
+    )
+
+    def insert_miss_history(start: int, stop: int) -> None:
+        parent_rows = []
+        minute_rows = []
+        anomaly_rows = []
+        for source_id in source_ids:
+            for revision in range(start, stop):
+                batch_id = f"{source_id}-miss-{revision}"
+                available_at = T0 + timedelta(seconds=2, microseconds=revision)
+                parent_rows.append(
+                    {
+                        "id": uuid4(),
+                        "quote_batch_id": batch_id,
+                        "source_id": source_id,
+                        "source_version": "v1",
+                        "source_event_at": miss_event_at,
+                        "received_at": miss_received_at,
+                        "available_at": available_at,
+                        "permission_snapshot": permission().model_dump(mode="json"),
+                        "payload_hash": f"{revision:064x}",
+                        "imported_at": available_at,
+                    }
+                )
+                minute_rows.append(
+                    {
+                        "id": uuid4(),
+                        "source_id": source_id,
+                        "batch_id": batch_id,
+                        "source_version": "v1",
+                        "security_id": miss_security,
+                        "event_at": miss_event_at,
+                        "revision": revision,
+                        "open": Decimal(revision),
+                        "high": Decimal(revision),
+                        "low": Decimal(revision),
+                        "close": Decimal(revision),
+                        "volume": Decimal("100"),
+                        "amount": None,
+                        "final": True,
+                        "source_event_at": miss_event_at,
+                        "received_at": miss_received_at,
+                        "available_at": available_at,
+                    }
+                )
+                anomaly_rows.append(
+                    {
+                        "event_id": f"{source_id}-miss-event-{revision:03}",
+                        "source_id": source_id,
+                        "batch_id": batch_id,
+                        "security_id": miss_security,
+                        "rule_version": f"miss-rule-{revision}",
+                        "metric": "window_return",
+                        "window": 2,
+                        "value": Decimal("0.03"),
+                        "threshold": Decimal("0.02"),
+                        "event_at": miss_event_at,
+                        "available_at": available_at,
+                        "quality": "complete",
+                        "cooldown_bucket": miss_bucket,
+                    }
+                )
+        with realtime_repository.database.engine.begin() as connection:
+            connection.execute(insert(realtime_quote_batches), parent_rows)
+            connection.execute(insert(realtime_minute_bars), minute_rows)
+            connection.execute(insert(realtime_anomaly_events), anomaly_rows)
+
+    authorization_reads = []
+
+    def record_authorization_read(
+        _connection,
+        cursor,
+        statement,
+        parameters,
+        _context,
+        _executemany,
+    ):
+        if "realtime_source_authorization" in statement:
+            authorization_reads.append((statement, parameters, cursor.rowcount))
+
+    event.listen(
+        realtime_repository.database.engine,
+        "after_cursor_execute",
+        record_authorization_read,
+    )
+
+    def plan_nodes(node):
+        yield node
+        for child in node.get("Plans", ()):
+            yield from plan_nodes(child)
+
+    history_relations = {
+        "realtime_quote_batches",
+        "realtime_minute_bars",
+    }
+
+    def summarize_history_nodes(plan):
+        summary = []
+        for node in plan_nodes(plan):
+            if node.get("Relation Name") not in history_relations:
+                continue
+            touches = (
+                node.get("Actual Rows", 0)
+                + node.get("Rows Removed by Filter", 0)
+                + node.get("Rows Removed by Index Recheck", 0)
+            ) * node.get("Actual Loops", 0)
+            summary.append(
+                {
+                    "node": node["Node Type"],
+                    "relation": node["Relation Name"],
+                    "index": node.get("Index Name"),
+                    "actual_rows": node.get("Actual Rows"),
+                    "loops": node.get("Actual Loops"),
+                    "removed_by_filter": node.get("Rows Removed by Filter", 0),
+                    "touches": touches,
+                    "parent_relationship": node.get("Parent Relationship"),
+                }
+            )
+        return summary
+
+    round_summaries = []
+    raw_connection = realtime_repository.database.engine.raw_connection()
+    try:
+        inserted = 0
+        for batches_per_source in (2, 64):
+            insert_miss_history(inserted + 1, batches_per_source + 1)
+            inserted = batches_per_source
+            reads_before = len(authorization_reads)
+            minutes = realtime_repository.list_minutes(
+                security_id="600000.SH",
+                session_start=T0,
+                session_end=T0 + timedelta(minutes=1),
+                as_of=T0 + timedelta(hours=1),
+            )
+            anomalies = realtime_repository.list_anomalies(
+                date=T0.date(),
+                as_of=T0 + timedelta(hours=1),
+                limit=1,
+            )
+            assert len(minutes.items) == 0
+            assert len(anomalies.items) == 0
+            # A window-wide miss is "no data", never an authorization failure.
+            assert minutes.completeness.status == "unavailable"
+            assert minutes.completeness.reason == "no_data"
+            assert anomalies.completeness.status == "unavailable"
+            assert anomalies.completeness.reason == "no_data"
+            cursor = raw_connection.cursor()
+            summaries = []
+            for statement, parameters, _ in authorization_reads[reads_before:]:
+                cursor.execute(
+                    f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {statement}",
+                    parameters,
+                )
+                plan = cursor.fetchone()[0][0]["Plan"]
+                summaries.append(summarize_history_nodes(plan))
+            round_summaries.append(
+                {
+                    "batches_per_source": batches_per_source,
+                    "child_rows": len(source_ids) * batches_per_source,
+                    "summaries": summaries,
+                }
+            )
+    finally:
+        raw_connection.rollback()
+        raw_connection.close()
+        event.remove(
+            realtime_repository.database.engine,
+            "after_cursor_execute",
+            record_authorization_read,
+        )
+
+    # All four authorization reads (minute + anomaly, two scales) match zero
+    # sources: a window-wide miss yields an empty grant set, not Forbidden.
+    assert [read[2] for read in authorization_reads] == [0, 0, 0, 0]
+    for statement, _, _ in authorization_reads:
+        assert "FROM source_grants" in statement
+        assert "EXISTS (SELECT" in statement
+        assert "FOR SHARE OF source_grants" in statement
+
+    # Node-touch budgets, measured on the per-test zero-statistics schema
+    # (freshly migrated, never ANALYZE'd -- the same premise as the hit-path
+    # bounded test) and aggregated over every plan node on either history
+    # table:
+    #
+    # * Minute reads carry security + session-window predicates, so the
+    #   uncorrelated horizon gate is an InitPlan Index Only Scan on
+    #   realtime_minute_bars_as_of that visits zero rows on a full miss; the
+    #   One-Time Filter then leaves the whole grant/LATERAL probe tree "never
+    #   executed" (Actual Loops == 0) at both scales: constant work, 0 -> 0.
+    # * Unscoped anomaly reads carry only the day-window predicate and the
+    #   as-of index leads with security_id, so the gate is exactly one Seq
+    #   Scan of realtime_minute_bars per statement -- every stored child row
+    #   is visited once (4 -> 128 as child rows grow 4 -> 128) and the
+    #   per-source probes stay "never executed". That 32x growth equals the
+    #   row-count ratio: linear in stored rows. Before the InitPlan gate plus
+    #   per-source LATERAL probes, the miss plan rescanned each source's child
+    #   rows per candidate batch -- O(sources * batches^2), ~= 8192 child
+    #   touches at 64 batches/source on this fixture -- which the per-row
+    #   budget and the linear-slope check below both reject.
+    for round_info in round_summaries:
+        minutes_summary, anomalies_summary = round_info["summaries"]
+        assert all(
+            node["loops"] <= 1 for node in minutes_summary + anomalies_summary
+        ), round_info
+        assert sum(node["touches"] for node in minutes_summary) == 0, round_info
+        assert (
+            sum(node["touches"] for node in anomalies_summary)
+            <= round_info["child_rows"]
+        ), round_info
+
+    small, large = round_summaries
+    small_touches = sum(node["touches"] for node in small["summaries"][1])
+    large_touches = sum(node["touches"] for node in large["summaries"][1])
+    row_growth = large["child_rows"] // small["child_rows"]
+    # Linear-slope budget with 3/2 slack around the measured slope
+    # (128 vs 4 = the 32x row-count growth): any per-batch rescan grows with
+    # the square of batches and fails this.
+    assert 2 * large_touches <= 3 * small_touches * row_growth, round_summaries
 
 
 def test_latest_quote_and_flow_batch_selection_is_limited_and_child_filtered(
