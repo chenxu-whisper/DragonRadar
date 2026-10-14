@@ -19,6 +19,7 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -45,7 +46,7 @@ MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
 AUDIT_SCHEMA = "dragon-radar.release-migration-verification"
 AUDIT_SCHEMA_VERSION = 1
-RELEASE_HEAD = "0011_realtime"
+RELEASE_HEAD = "0012_lhb"
 ROLLBACK_MODE = "backup_restore_only"
 SUPPORTED_FROM = [
     "0001_foundation",
@@ -59,6 +60,7 @@ SUPPORTED_FROM = [
     "0009d_reg_event_complete_set",
     "0010_ai_tasks",
     "0011_realtime",
+    "0012_lhb",
 ]
 MANIFEST_FIELDS = {
     "schema",
@@ -672,6 +674,17 @@ def _sentinel_values() -> dict[str, object]:
         "realtime_batch_id": f"B{token[:12]}",
         "realtime_minute_id": uuid4(),
         "realtime_event_id": f"RT{token[:12]}",
+        "lhb_batch_record_id": uuid4(),
+        "lhb_batch_id": f"LHB{token[:12]}",
+        "lhb_disclosure_record_id": uuid4(),
+        "lhb_disclosure_id": f"LD{token[:12]}",
+        "lhb_revision_record_id": uuid4(),
+        "lhb_seat_record_a": uuid4(),
+        "lhb_seat_record_b": uuid4(),
+        "lhb_seat_id_a": f"LA{token[:12]}",
+        "lhb_seat_id_b": f"LB{token[:12]}",
+        "lhb_row_record_a": uuid4(),
+        "lhb_row_record_b": uuid4(),
         "hash": hashlib.sha256(token.encode("ascii")).hexdigest(),
     }
 
@@ -1215,6 +1228,110 @@ def _insert_sentinel(
                 "event_id": values["realtime_event_id"],
             },
         )
+    if revision == "0012_lhb":
+        _insert_source(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO lhb_import_batches (
+                    id, batch_id, source_id, source_version, source_event_at,
+                    received_at, available_at, permission_snapshot, payload_hash,
+                    status, reason, imported_at
+                ) VALUES (
+                    :lhb_batch_record_id, :lhb_batch_id, :source_id, 'v1', :now,
+                    :now, :now,
+                    '{"permission_id":"task21","state":"authorized"}',
+                    :hash, 'accepted', NULL, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO lhb_disclosures (
+                    id, source_id, disclosure_id, security_id, disclosure_date,
+                    reason, permission_id
+                ) VALUES (
+                    :lhb_disclosure_record_id, :source_id, :lhb_disclosure_id,
+                    :security_id, DATE '2026-01-02', 'daily price movement',
+                    'task21'
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO lhb_seats (
+                    id, source_id, seat_id, mapping_version, source_seat_name,
+                    provenance
+                ) VALUES
+                    (:lhb_seat_record_a, :source_id, :lhb_seat_id_a,
+                     'seat-map-v1', 'task21 branch A', '{}'::jsonb),
+                    (:lhb_seat_record_b, :source_id, :lhb_seat_id_b,
+                     'seat-map-v1', 'task21 branch B', '{}'::jsonb)
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO lhb_disclosure_revisions (
+                    id, source_id, disclosure_id, batch_id, revision,
+                    source_event_at, received_at, available_at,
+                    permission_snapshot, completeness, payload_hash
+                ) VALUES (
+                    :lhb_revision_record_id, :source_id, :lhb_disclosure_id,
+                    :lhb_batch_id, 1, :now, :now, :now,
+                    '{"permission_id":"task21","state":"authorized"}',
+                    'incomplete', :hash
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO lhb_disclosure_seats (
+                    id, source_id, disclosure_id, disclosure_date, revision,
+                    source_row_id, seat_id, mapping_version, side, "rank",
+                    buy_amount, sell_amount, currency, unit, completeness
+                ) VALUES
+                    (:lhb_row_record_a, :source_id, :lhb_disclosure_id,
+                     DATE '2026-01-02', 1, :token || '.lhb-row-a',
+                     :lhb_seat_id_a, 'seat-map-v1', 'net', 1,
+                     100, 30, 'CNY', 'yuan', 'complete'),
+                    (:lhb_row_record_b, :source_id, :lhb_disclosure_id,
+                     DATE '2026-01-02', 1, :token || '.lhb-row-b',
+                     :lhb_seat_id_b, 'seat-map-v1', NULL, NULL,
+                     NULL, 20, 'CNY', 'yuan', 'buy_unknown')
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "lhb_evidence",
+            {
+                "batch_id": values["lhb_batch_id"],
+                "disclosure_id": values["lhb_disclosure_id"],
+                "lhb_seat_id_a": values["lhb_seat_id_a"],
+                "lhb_seat_id_b": values["lhb_seat_id_b"],
+                "revision": 1,
+                "revision_completeness": "incomplete",
+                "mapping_version": "seat-map-v1",
+                "buy_amount": Decimal("100"),
+                "sell_amount": Decimal("30"),
+                "row_a_completeness": "complete",
+                "unknown_buy": None,
+                "row_b_sell": Decimal("20"),
+                "row_b_completeness": "buy_unknown",
+            },
+        )
     raise ValueError(f"unsupported upgrade baseline: {revision}")
 
 
@@ -1323,6 +1440,43 @@ def _sentinel_preserved(
             WHERE batch.quote_batch_id = :batch_id
               AND minute.id = :minute_id
               AND event.event_id = :event_id
+            """,
+            expected,
+        ),
+        "lhb_evidence": (
+            """
+            SELECT batch.batch_id AS batch_id,
+                   disclosure.disclosure_id AS disclosure_id,
+                   complete_seat.seat_id AS lhb_seat_id_a,
+                   unknown_seat.seat_id AS lhb_seat_id_b,
+                   revision.revision AS revision,
+                   revision.completeness AS revision_completeness,
+                   complete_seat.mapping_version AS mapping_version,
+                   complete_seat.buy_amount AS buy_amount,
+                   complete_seat.sell_amount AS sell_amount,
+                   complete_seat.completeness AS row_a_completeness,
+                   unknown_seat.buy_amount AS unknown_buy,
+                   unknown_seat.sell_amount AS row_b_sell,
+                   unknown_seat.completeness AS row_b_completeness
+            FROM lhb_import_batches batch
+            JOIN lhb_disclosures disclosure
+              ON disclosure.source_id = batch.source_id
+            JOIN lhb_disclosure_revisions revision
+              ON revision.source_id = batch.source_id
+             AND revision.batch_id = batch.batch_id
+             AND revision.disclosure_id = disclosure.disclosure_id
+            JOIN lhb_disclosure_seats complete_seat
+              ON complete_seat.source_id = revision.source_id
+             AND complete_seat.disclosure_id = revision.disclosure_id
+             AND complete_seat.revision = revision.revision
+             AND complete_seat.seat_id = :lhb_seat_id_a
+            JOIN lhb_disclosure_seats unknown_seat
+              ON unknown_seat.source_id = revision.source_id
+             AND unknown_seat.disclosure_id = revision.disclosure_id
+             AND unknown_seat.revision = revision.revision
+             AND unknown_seat.seat_id = :lhb_seat_id_b
+            WHERE batch.batch_id = :batch_id
+              AND disclosure.disclosure_id = :disclosure_id
             """,
             expected,
         ),
@@ -2154,6 +2308,7 @@ def _restore_schema_metadata():
         "dragon_radar.regulation.tables",
         "dragon_radar.ai.tables",
         "dragon_radar.realtime.tables",
+        "dragon_radar.lhb.tables",
     )
     for module in modules:
         importlib.import_module(module)

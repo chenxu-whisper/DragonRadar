@@ -35,6 +35,7 @@ SUPPORTED_FROM = [
     "0009d_reg_event_complete_set",
     "0010_ai_tasks",
     "0011_realtime",
+    "0012_lhb",
 ]
 
 
@@ -140,11 +141,11 @@ def test_release_manifest_matches_single_linear_graph(verifier):
     assert manifest["rollback_mode"] == "backup_restore_only"
     assert manifest["supported_from"] == SUPPORTED_FROM
     assert graph["bases"] == ["0001_foundation"]
-    assert graph["heads"] == ["0011_realtime"]
-    assert graph["revision_count"] == 19
+    assert graph["heads"] == ["0012_lhb"]
+    assert graph["revision_count"] == 20
     assert result == {
-        "head": "0011_realtime",
-        "revision_count": 19,
+        "head": "0012_lhb",
+        "revision_count": 20,
         "errors": [],
     }
 
@@ -522,8 +523,8 @@ def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "0011_realtime" in result.stdout
-    assert "19 revisions" in result.stdout
+    assert "0012_lhb" in result.stdout
+    assert "20 revisions" in result.stdout
 
 
 def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
@@ -725,7 +726,7 @@ def test_supported_revision_upgrades_with_sentinel(
     result = verifier["exercise_upgrade"](database_url, revision)
 
     assert result["from_revision"] == revision
-    assert result["to_revision"] == "0011_realtime"
+    assert result["to_revision"] == "0012_lhb"
     assert result["sentinel_preserved"] is True
     assert result["ready"] is True
 
@@ -777,7 +778,7 @@ def test_built_wheel_contains_all_release_migration_resources(built_wheel):
         f"dragon_radar/migrations/versions/{path.name}"
         for path in (MIGRATIONS / "versions").glob("*.py")
     }
-    assert len(migration_files) == 19
+    assert len(migration_files) == 20
     assert "dragon_radar/migrations/release_manifest.json" in names
     assert "dragon_radar/storage/schema_contract.json" in names
 
@@ -1234,7 +1235,7 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
     assert f"dragon_radar imported from {imported_from}" in result.stdout
     assert not imported_from.is_relative_to(ROOT)
     assert evidence["fresh"] == {
-        "to_revision": "0011_realtime",
+        "to_revision": "0012_lhb",
         "ready": True,
     }
     assert [item["from_revision"] for item in evidence["supported_upgrades"]] == (
@@ -1455,6 +1456,76 @@ def test_fresh_head_schema_contract_is_strict_sorted_and_ready(database):
         "((status)::text = ANY "
         "((ARRAY['accepted'::character varying, "
         "'incomplete'::character varying])::text[]))"
+    )
+    lhb_table_names = {
+        "lhb_import_batches",
+        "lhb_import_attempts",
+        "lhb_disclosures",
+        "lhb_disclosure_revisions",
+        "lhb_seats",
+        "lhb_disclosure_seats",
+    }
+    assert {table["name"] for table in expected["tables"]} >= lhb_table_names
+    lhb_bound_attempt = next(
+        index
+        for index in expected["indexes"]
+        if index["name"] == "lhb_import_attempts_bound_idempotency_key"
+    )
+    assert lhb_bound_attempt == {
+        "access_method": "btree",
+        "key_expressions": ["source_id", "idempotency_key"],
+        "name": "lhb_import_attempts_bound_idempotency_key",
+        "predicate": (
+            "((status)::text = ANY "
+            "((ARRAY['accepted'::character varying, "
+            "'incomplete'::character varying])::text[]))"
+        ),
+        "table": "lhb_import_attempts",
+        "unique": True,
+        "valid": True,
+    }
+    seat_fk = next(
+        constraint
+        for constraint in expected["constraints"]
+        if constraint["name"] == "lhb_disclosure_seats_seat_fkey"
+    )
+    assert seat_fk["kind"] == "foreign_key"
+    assert seat_fk["columns"] == ["source_id", "seat_id", "mapping_version"]
+    assert seat_fk["referenced_schema"] == "current_schema"
+    assert seat_fk["referenced_table"] == "lhb_seats"
+    assert seat_fk["referenced_columns"] == [
+        "source_id",
+        "seat_id",
+        "mapping_version",
+    ]
+    assert seat_fk["on_delete"] == "restrict"
+    lhb_triggers = {
+        (trigger["table"], trigger["name"]): trigger
+        for trigger in expected["triggers"]
+        if trigger["table"] in lhb_table_names
+    }
+    assert set(lhb_triggers) == {
+        (table, trigger_name)
+        for table in lhb_table_names
+        for trigger_name in ("immutable_rows", "immutable_truncate")
+    }
+    for trigger in lhb_triggers.values():
+        assert trigger["function_name"] == "reject_immutable_mutation"
+        assert trigger["function_schema"] == "current_schema"
+        assert re.fullmatch(r"[0-9a-f]{64}", trigger["function_definition_sha256"])
+        assert trigger["enabled"] == "origin"
+        assert trigger["constraint"] is None
+    assert lhb_triggers[("lhb_import_batches", "immutable_rows")]["events"] == [
+        "UPDATE",
+        "DELETE",
+    ]
+    assert lhb_triggers[("lhb_import_batches", "immutable_rows")]["level"] == "ROW"
+    assert lhb_triggers[("lhb_import_batches", "immutable_truncate")]["events"] == [
+        "TRUNCATE"
+    ]
+    assert (
+        lhb_triggers[("lhb_import_batches", "immutable_truncate")]["level"]
+        == "STATEMENT"
     )
     trigger = next(
         trigger
@@ -1983,6 +2054,146 @@ def test_readiness_rejects_required_schema_drift(
     ),
 )
 def test_readiness_rejects_realtime_schema_drift(database, catalog_query, ddl):
+    assert database.ready()
+    with database.engine.begin() as connection:
+        assert connection.scalar(text(catalog_query)) == 1
+        connection.execute(text(ddl))
+    assert not database.ready()
+
+
+def test_readiness_rejects_lhb_attempt_index_without_bound_predicate(database):
+    assert database.ready()
+    index_name = "lhb_import_attempts_bound_idempotency_key"
+    with database.engine.begin() as connection:
+        index_definition = connection.scalar(
+            text(
+                """
+                SELECT pg_get_indexdef(index_record.indexrelid)
+                FROM pg_index index_record
+                JOIN pg_class relation ON relation.oid = index_record.indrelid
+                JOIN pg_namespace namespace
+                  ON namespace.oid = relation.relnamespace
+                JOIN pg_class index_relation
+                  ON index_relation.oid = index_record.indexrelid
+                WHERE namespace.nspname = current_schema()
+                  AND relation.relname = 'lhb_import_attempts'
+                  AND index_relation.relname = :index_name
+                """
+            ),
+            {"index_name": index_name},
+        )
+        assert index_definition is not None
+        create_without_predicate, separator, predicate = index_definition.partition(
+            " WHERE "
+        )
+        assert separator
+        assert "accepted" in predicate and "incomplete" in predicate
+        connection.execute(text(f"DROP INDEX {index_name}"))
+        connection.execute(text(create_without_predicate))
+
+    assert not database.ready()
+
+
+@pytest.mark.parametrize(
+    ("catalog_query", "ddl"),
+    [
+        (
+            """
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'lhb_disclosure_seats'
+              AND column_name = 'currency'
+            """,
+            "ALTER TABLE lhb_disclosure_seats DROP COLUMN currency",
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_constraint constraint_record
+            JOIN pg_class relation ON relation.oid = constraint_record.conrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'lhb_disclosure_seats'
+              AND constraint_record.conname =
+                  'lhb_disclosure_seats_nonnegative_amounts'
+              AND constraint_record.contype = 'c'
+            """,
+            (
+                "ALTER TABLE lhb_disclosure_seats DROP CONSTRAINT "
+                "lhb_disclosure_seats_nonnegative_amounts"
+            ),
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_constraint constraint_record
+            JOIN pg_class relation ON relation.oid = constraint_record.conrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'lhb_disclosure_seats'
+              AND constraint_record.conname =
+                  'lhb_disclosure_seats_revision_fkey'
+              AND constraint_record.contype = 'f'
+            """,
+            (
+                "ALTER TABLE lhb_disclosure_seats DROP CONSTRAINT "
+                "lhb_disclosure_seats_revision_fkey"
+            ),
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_class index_record
+            JOIN pg_namespace namespace ON namespace.oid = index_record.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND index_record.relname = 'lhb_disclosure_seats_seat_history'
+              AND index_record.relkind = 'i'
+            """,
+            "DROP INDEX lhb_disclosure_seats_seat_history",
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_trigger trigger
+            JOIN pg_class relation ON relation.oid = trigger.tgrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'lhb_import_batches'
+              AND trigger.tgname = 'immutable_rows'
+              AND NOT trigger.tgisinternal
+            """,
+            "DROP TRIGGER immutable_rows ON lhb_import_batches",
+        ),
+        (
+            """
+            SELECT count(*)
+            FROM pg_trigger trigger
+            JOIN pg_class relation ON relation.oid = trigger.tgrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            JOIN pg_proc function_record ON function_record.oid = trigger.tgfoid
+            WHERE namespace.nspname = current_schema()
+              AND relation.relname = 'lhb_disclosures'
+              AND trigger.tgname = 'immutable_truncate'
+              AND function_record.proname = 'reject_immutable_mutation'
+              AND NOT trigger.tgisinternal
+            """,
+            (
+                "CREATE OR REPLACE FUNCTION reject_immutable_mutation() "
+                "RETURNS trigger LANGUAGE plpgsql AS $$ "
+                "BEGIN RETURN NEW; END $$"
+            ),
+        ),
+    ],
+    ids=[
+        "column",
+        "check-constraint",
+        "foreign-key",
+        "index",
+        "trigger",
+        "trigger-function",
+    ],
+)
+def test_readiness_rejects_lhb_schema_drift(database, catalog_query, ddl):
     assert database.ready()
     with database.engine.begin() as connection:
         assert connection.scalar(text(catalog_query)) == 1
@@ -2574,7 +2785,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 
         def scalar(self, statement):
             events.append(str(statement))
-            return "0011_realtime"
+            return "0012_lhb"
 
     class FakeEngine:
         @contextmanager
@@ -2635,7 +2846,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 @pytest.mark.parametrize(
     ("revision", "close_fails", "expected_error"),
     [
-        ("0011_realtime", False, "capture failed"),
+        ("0012_lhb", False, "capture failed"),
         ("wrong_revision", False, "generated database revision"),
     ],
     ids=["capture", "revision"],
@@ -2773,7 +2984,7 @@ def _configure_generation_failures(
                 raise RuntimeError("drop failed")
 
         def scalar(self, _statement):
-            return "0011_realtime"
+            return "0012_lhb"
 
     class FakeEngine:
         @contextmanager
@@ -2882,8 +3093,8 @@ def test_write_cli_never_reveals_database_password(
         verifier_globals,
         "verify_manifest",
         lambda root: {
-            "head": "0011_realtime",
-            "revision_count": 19,
+            "head": "0012_lhb",
+            "revision_count": 20,
             "errors": [],
         },
     )
@@ -3078,7 +3289,7 @@ def _configure_fake_restore_drill(
         if failure == "verify":
             raise RuntimeError("verify failed")
         return {
-            "revision": "0011_realtime",
+            "revision": "0012_lhb",
             "restored_ready": True,
             "sentinel_preserved": True,
             "permissions_preserved": True,

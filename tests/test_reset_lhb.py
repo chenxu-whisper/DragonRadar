@@ -1,7 +1,9 @@
-"""Pure unit tests for strict LHB disclosure models and null-safe aggregation.
+"""Unit and schema tests for strict LHB disclosure models.
 
-These tests never touch PostgreSQL: all evidence is built from the strict
-``dragon_radar.lhb`` models and aggregated with pure functions.
+The pure tests above the migration section never touch PostgreSQL: evidence is
+built from the strict ``dragon_radar.lhb`` models and aggregated with pure
+functions. The ``0012_lhb`` migration section below exercises PostgreSQL and
+skips cleanly when ``DRAGON_TEST_DATABASE_URL`` is not provided.
 """
 
 from datetime import UTC, date, datetime, timedelta
@@ -1250,3 +1252,1088 @@ def test_model_import_result_requires_sha256_payload_hash():
         imported_at=T0,
     )
     assert result.status == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# 0012_lhb immutable PostgreSQL schema (Task 22-2)
+#
+# Every test in this section uses the disposable ``database_url`` schema and
+# therefore skips without ``DRAGON_TEST_DATABASE_URL``.
+# ---------------------------------------------------------------------------
+
+EXPECTED_LHB_TABLES = {
+    "lhb_import_batches",
+    "lhb_import_attempts",
+    "lhb_disclosures",
+    "lhb_disclosure_revisions",
+    "lhb_seats",
+    "lhb_disclosure_seats",
+}
+
+EXPECTED_LHB_COLUMNS = {
+    "lhb_import_batches": [
+        ("id", "UUID"),
+        ("batch_id", "TEXT"),
+        ("source_id", "TEXT"),
+        ("source_version", "TEXT"),
+        ("source_event_at", "TIMESTAMP"),
+        ("received_at", "TIMESTAMP"),
+        ("available_at", "TIMESTAMP"),
+        ("permission_snapshot", "JSONB"),
+        ("payload_hash", "VARCHAR(64)"),
+        ("status", "VARCHAR(20)"),
+        ("reason", "TEXT"),
+        ("imported_at", "TIMESTAMP"),
+    ],
+    "lhb_import_attempts": [
+        ("id", "UUID"),
+        ("source_id", "TEXT"),
+        ("batch_id", "TEXT"),
+        ("idempotency_key", "VARCHAR(200)"),
+        ("payload_hash", "VARCHAR(64)"),
+        ("status", "VARCHAR(20)"),
+        ("reason", "TEXT"),
+        ("details", "JSONB"),
+        ("created_at", "TIMESTAMP"),
+    ],
+    "lhb_disclosures": [
+        ("id", "UUID"),
+        ("source_id", "TEXT"),
+        ("disclosure_id", "TEXT"),
+        ("security_id", "TEXT"),
+        ("disclosure_date", "DATE"),
+        ("reason", "TEXT"),
+        ("permission_id", "TEXT"),
+    ],
+    "lhb_disclosure_revisions": [
+        ("id", "UUID"),
+        ("source_id", "TEXT"),
+        ("disclosure_id", "TEXT"),
+        ("batch_id", "TEXT"),
+        ("revision", "INTEGER"),
+        ("source_event_at", "TIMESTAMP"),
+        ("received_at", "TIMESTAMP"),
+        ("available_at", "TIMESTAMP"),
+        ("permission_snapshot", "JSONB"),
+        ("completeness", "VARCHAR(20)"),
+        ("payload_hash", "VARCHAR(64)"),
+    ],
+    "lhb_seats": [
+        ("id", "UUID"),
+        ("source_id", "TEXT"),
+        ("seat_id", "TEXT"),
+        ("mapping_version", "TEXT"),
+        ("source_seat_name", "TEXT"),
+        ("provenance", "JSONB"),
+    ],
+    "lhb_disclosure_seats": [
+        ("id", "UUID"),
+        ("source_id", "TEXT"),
+        ("disclosure_id", "TEXT"),
+        ("disclosure_date", "DATE"),
+        ("revision", "INTEGER"),
+        ("source_row_id", "TEXT"),
+        ("seat_id", "TEXT"),
+        ("mapping_version", "TEXT"),
+        ("side", "VARCHAR(4)"),
+        ("rank", "INTEGER"),
+        ("buy_amount", "NUMERIC"),
+        ("sell_amount", "NUMERIC"),
+        ("currency", "TEXT"),
+        ("unit", "TEXT"),
+        ("completeness", "VARCHAR(20)"),
+    ],
+}
+
+EXPECTED_LHB_CONSTRAINTS = {
+    "lhb_import_batches": {
+        "lhb_import_batches_pkey",
+        "lhb_import_batches_source_batch_key",
+        "lhb_import_batches_source_batch_version_key",
+        "lhb_import_batches_source_id_fkey",
+        "lhb_import_batches_timestamp_order",
+        "lhb_import_batches_payload_hash",
+        "lhb_import_batches_status",
+    },
+    "lhb_import_attempts": {
+        "lhb_import_attempts_pkey",
+        "lhb_import_attempts_source_id_fkey",
+        "lhb_import_attempts_status",
+        "lhb_import_attempts_payload_hash",
+    },
+    "lhb_disclosures": {
+        "lhb_disclosures_pkey",
+        "lhb_disclosures_identity_key",
+        "lhb_disclosures_identity_date_key",
+        "lhb_disclosures_source_id_fkey",
+        "lhb_disclosures_required_text",
+    },
+    "lhb_disclosure_revisions": {
+        "lhb_disclosure_revisions_pkey",
+        "lhb_disclosure_revisions_revision_key",
+        "lhb_disclosure_revisions_batch_fkey",
+        "lhb_disclosure_revisions_disclosure_fkey",
+        "lhb_disclosure_revisions_positive_revision",
+        "lhb_disclosure_revisions_timestamp_order",
+        "lhb_disclosure_revisions_payload_hash",
+        "lhb_disclosure_revisions_completeness",
+    },
+    "lhb_seats": {
+        "lhb_seats_pkey",
+        "lhb_seats_identity_key",
+        "lhb_seats_source_id_fkey",
+        "lhb_seats_required_text",
+    },
+    "lhb_disclosure_seats": {
+        "lhb_disclosure_seats_pkey",
+        "lhb_disclosure_seats_revision_row_key",
+        "lhb_disclosure_seats_revision_seat_key",
+        "lhb_disclosure_seats_revision_fkey",
+        "lhb_disclosure_seats_seat_fkey",
+        "lhb_disclosure_seats_disclosure_fkey",
+        "lhb_disclosure_seats_side",
+        "lhb_disclosure_seats_rank",
+        "lhb_disclosure_seats_nonnegative_amounts",
+        "lhb_disclosure_seats_currency_unit",
+        "lhb_disclosure_seats_completeness",
+    },
+}
+
+EXPECTED_LHB_INDEXES = {
+    "lhb_import_batches_as_of",
+    "lhb_import_batches_source_as_of",
+    "lhb_import_attempts_listing",
+    "lhb_disclosures_listing",
+    "lhb_disclosure_revisions_visible",
+    "lhb_disclosure_revisions_batch",
+    "lhb_seats_catalog",
+    "lhb_disclosure_seats_seat_history",
+}
+
+LHB_PAYLOAD_HASH = "c" * 64
+LHB_PERMISSION_SNAPSHOT = (
+    '{"permission_id":"lhb-permission-1","state":"authorized",'
+    '"captured_at":"2026-09-18T08:00:00+00:00"}'
+)
+
+
+def _upgrade_to_lhb(database_url):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    with database.engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "0011_realtime")
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0011_realtime"
+        )
+        command.upgrade(config, "0012_lhb")
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0012_lhb"
+        )
+    return database
+
+
+def _seed_lhb_chain(connection, *, suffix: str = "seed"):
+    """Insert one authorized batch, disclosure, two seats, revision, and rows."""
+    from uuid import uuid4
+
+    from sqlalchemy import text
+
+    ids = {
+        "source_id": f"lhb-{suffix}-source",
+        "batch_id": f"lhb-{suffix}-batch",
+        "disclosure_id": f"lhb-{suffix}-disclosure",
+        "security_id": f"lhb-{suffix}-security",
+        "seat_a": f"lhb-{suffix}-seat-a",
+        "seat_b": f"lhb-{suffix}-seat-b",
+        "batch_record_id": uuid4(),
+        "disclosure_record_id": uuid4(),
+        "revision_record_id": uuid4(),
+        "seat_record_a": uuid4(),
+        "seat_record_b": uuid4(),
+        "row_record_a": uuid4(),
+        "row_record_b": uuid4(),
+    }
+    connection.execute(
+        text(
+            """
+            INSERT INTO source_grants (source_id, "grant", updated_at)
+            VALUES (:source_id, '{}', :t0)
+            """
+        ),
+        {"source_id": ids["source_id"], "t0": T0},
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO lhb_import_batches (
+                id, batch_id, source_id, source_version, source_event_at,
+                received_at, available_at, permission_snapshot, payload_hash,
+                status, reason, imported_at
+            ) VALUES (
+                :batch_record_id, :batch_id, :source_id, 'v1', :t0,
+                :t1, :t2, CAST(:permission AS jsonb), :hash,
+                'accepted', NULL, :t3
+            )
+            """
+        ),
+        {
+            **ids,
+            "permission": LHB_PERMISSION_SNAPSHOT,
+            "hash": LHB_PAYLOAD_HASH,
+            "t0": T0,
+            "t1": T0 + timedelta(seconds=1),
+            "t2": T0 + timedelta(seconds=2),
+            "t3": T0 + timedelta(seconds=3),
+        },
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO lhb_disclosures (
+                id, source_id, disclosure_id, security_id, disclosure_date,
+                reason, permission_id
+            ) VALUES (
+                :disclosure_record_id, :source_id, :disclosure_id,
+                :security_id, DATE '2026-09-18', 'daily price movement',
+                'lhb-permission-1'
+            )
+            """
+        ),
+        ids,
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO lhb_seats (
+                id, source_id, seat_id, mapping_version, source_seat_name,
+                provenance
+            ) VALUES
+                (:seat_record_a, :source_id, :seat_a, 'seat-map-v1',
+                 'Example branch A', '{}'::jsonb),
+                (:seat_record_b, :source_id, :seat_b, 'seat-map-v1',
+                 'Example branch B', '{}'::jsonb)
+            """
+        ),
+        ids,
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO lhb_disclosure_revisions (
+                id, source_id, disclosure_id, batch_id, revision,
+                source_event_at, received_at, available_at,
+                permission_snapshot, completeness, payload_hash
+            ) VALUES (
+                :revision_record_id, :source_id, :disclosure_id, :batch_id, 1,
+                :t0, :t1, :t2, CAST(:permission AS jsonb), 'incomplete', :hash
+            )
+            """
+        ),
+        {
+            **ids,
+            "permission": LHB_PERMISSION_SNAPSHOT,
+            "hash": LHB_PAYLOAD_HASH,
+            "t0": T0,
+            "t1": T0 + timedelta(seconds=1),
+            "t2": T0 + timedelta(seconds=2),
+        },
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO lhb_disclosure_seats (
+                id, source_id, disclosure_id, disclosure_date, revision,
+                source_row_id, seat_id, mapping_version, side, "rank",
+                buy_amount, sell_amount, currency, unit, completeness
+            ) VALUES
+                (:row_record_a, :source_id, :disclosure_id, DATE '2026-09-18',
+                 1, :row_a, :seat_a, 'seat-map-v1', 'net', 1,
+                 100, 30, 'CNY', 'yuan', 'complete'),
+                (:row_record_b, :source_id, :disclosure_id, DATE '2026-09-18',
+                 1, :row_b, :seat_b, 'seat-map-v1', NULL, NULL,
+                 NULL, 20, 'CNY', 'yuan', 'buy_unknown')
+            """
+        ),
+        {
+            **ids,
+            "row_a": f"{ids['batch_id']}-row-a",
+            "row_b": f"{ids['batch_id']}-row-b",
+        },
+    )
+    return ids
+
+
+def test_0012_lhb_extends_0011_as_linear_head_with_exact_six_tables(database_url):
+    from sqlalchemy import inspect
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        inspector = inspect(database.engine)
+        lhb_tables = {
+            table for table in inspector.get_table_names() if table.startswith("lhb_")
+        }
+        assert lhb_tables == EXPECTED_LHB_TABLES
+        for table, expected_columns in EXPECTED_LHB_COLUMNS.items():
+            columns = inspector.get_columns(table)
+            assert [(column["name"], str(column["type"])) for column in columns] == (
+                expected_columns
+            )
+            assert all(column["nullable"] is False for column in columns[:1])
+        nullable_columns = {
+            table: {
+                column["name"]
+                for column in inspector.get_columns(table)
+                if column["nullable"]
+            }
+            for table in EXPECTED_LHB_TABLES
+        }
+        assert nullable_columns == {
+            "lhb_import_batches": {"reason"},
+            "lhb_import_attempts": {"reason"},
+            "lhb_disclosures": set(),
+            "lhb_disclosure_revisions": set(),
+            "lhb_seats": set(),
+            "lhb_disclosure_seats": {"side", "rank", "buy_amount", "sell_amount"},
+        }
+    finally:
+        database.close()
+
+
+def test_lhb_schema_has_exact_named_constraints_indexes_and_triggers(database_url):
+    from sqlalchemy import text
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        with database.engine.connect() as connection:
+            constraints = connection.execute(
+                text(
+                    """
+                    SELECT relation.relname, constraint_record.conname
+                    FROM pg_constraint constraint_record
+                    JOIN pg_class relation
+                      ON relation.oid = constraint_record.conrelid
+                    JOIN pg_namespace namespace
+                      ON namespace.oid = relation.relnamespace
+                    WHERE namespace.nspname = current_schema()
+                      AND relation.relname = ANY(:tables)
+                    """
+                ),
+                {"tables": sorted(EXPECTED_LHB_TABLES)},
+            )
+            actual_constraints = {table: set() for table in EXPECTED_LHB_TABLES}
+            for table, name in constraints:
+                actual_constraints[table].add(name)
+            assert actual_constraints == EXPECTED_LHB_CONSTRAINTS
+
+            indexes = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT index_relation.relname
+                        FROM pg_index index_record
+                        JOIN pg_class relation
+                          ON relation.oid = index_record.indrelid
+                        JOIN pg_namespace namespace
+                          ON namespace.oid = relation.relnamespace
+                        JOIN pg_class index_relation
+                          ON index_relation.oid = index_record.indexrelid
+                        WHERE namespace.nspname = current_schema()
+                          AND relation.relname = ANY(:tables)
+                          AND NOT index_record.indisunique
+                        """
+                    ),
+                    {"tables": sorted(EXPECTED_LHB_TABLES)},
+                ).scalars()
+            )
+            assert indexes == EXPECTED_LHB_INDEXES
+            index_definitions = dict(
+                connection.execute(
+                    text(
+                        """
+                        SELECT index_relation.relname,
+                               pg_get_indexdef(index_relation.oid)
+                        FROM pg_class index_relation
+                        JOIN pg_namespace namespace
+                          ON namespace.oid = index_relation.relnamespace
+                        WHERE namespace.nspname = current_schema()
+                          AND index_relation.relname = ANY(:indexes)
+                        """
+                    ),
+                    {
+                        "indexes": [
+                            "lhb_disclosures_listing",
+                            "lhb_disclosure_revisions_visible",
+                            "lhb_disclosure_seats_seat_history",
+                        ]
+                    },
+                ).all()
+            )
+            assert index_definitions["lhb_disclosures_listing"].endswith(
+                "USING btree (disclosure_date, security_id, source_id, disclosure_id)"
+            )
+            assert index_definitions["lhb_disclosure_revisions_visible"].endswith(
+                "USING btree (source_id, disclosure_id, available_at DESC, "
+                "revision DESC, id DESC)"
+            )
+            assert index_definitions["lhb_disclosure_seats_seat_history"].endswith(
+                "USING btree (source_id, seat_id, disclosure_date DESC, "
+                "disclosure_id, revision DESC)"
+            )
+
+            triggers = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT relation.relname, trigger.tgname,
+                               function.proname,
+                               pg_get_triggerdef(trigger.oid, false)
+                        FROM pg_trigger trigger
+                        JOIN pg_class relation ON relation.oid = trigger.tgrelid
+                        JOIN pg_namespace namespace
+                          ON namespace.oid = relation.relnamespace
+                        JOIN pg_proc function ON function.oid = trigger.tgfoid
+                        WHERE namespace.nspname = current_schema()
+                          AND relation.relname = ANY(:tables)
+                          AND NOT trigger.tgisinternal
+                        """
+                    ),
+                    {"tables": sorted(EXPECTED_LHB_TABLES)},
+                )
+            )
+        assert len(triggers) == 12
+        for table in EXPECTED_LHB_TABLES:
+            table_triggers = {
+                (name, function, definition)
+                for trigger_table, name, function, definition in triggers
+                if trigger_table == table
+            }
+            assert {
+                (name, function) for name, function, _definition in table_triggers
+            } == {
+                ("immutable_rows", "reject_immutable_mutation"),
+                ("immutable_truncate", "reject_immutable_mutation"),
+            }
+            definitions = " ".join(
+                definition for _name, _function, definition in table_triggers
+            )
+            assert "UPDATE" in definitions
+            assert "DELETE" in definitions
+            assert "TRUNCATE" in definitions
+    finally:
+        database.close()
+
+
+def test_lhb_bound_attempt_index_is_partial_and_unique(database_url):
+    from sqlalchemy import inspect, text
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        attempt_index = next(
+            index
+            for index in inspect(database.engine).get_indexes("lhb_import_attempts")
+            if index["name"] == "lhb_import_attempts_bound_idempotency_key"
+        )
+        assert attempt_index["unique"] is True
+        assert attempt_index["column_names"] == ["source_id", "idempotency_key"]
+        predicate = str(attempt_index["dialect_options"]["postgresql_where"])
+        assert "accepted" in predicate and "incomplete" in predicate
+        with database.engine.connect() as connection:
+            definition = connection.execute(
+                text(
+                    """
+                    SELECT pg_get_indexdef(index_relation.oid)
+                    FROM pg_class index_relation
+                    JOIN pg_namespace namespace
+                      ON namespace.oid = index_relation.relnamespace
+                    WHERE namespace.nspname = current_schema()
+                      AND index_relation.relname
+                        = 'lhb_import_attempts_bound_idempotency_key'
+                    """
+                )
+            ).scalar_one()
+        assert " WHERE " in definition
+        assert "accepted" in definition and "incomplete" in definition
+    finally:
+        database.close()
+
+
+def test_lhb_immutable_tables_reject_update_delete_and_truncate(database_url):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        with database.engine.begin() as connection:
+            ids = _seed_lhb_chain(connection)
+        statements = (
+            (
+                "lhb_import_batches",
+                "UPDATE lhb_import_batches SET status = 'rejected' "
+                "WHERE batch_id = :batch_id",
+            ),
+            (
+                "lhb_import_batches",
+                "DELETE FROM lhb_import_batches WHERE batch_id = :batch_id",
+            ),
+            (
+                "lhb_import_batches",
+                "TRUNCATE TABLE lhb_import_batches, lhb_import_attempts, "
+                "lhb_disclosures, lhb_disclosure_revisions, lhb_seats, "
+                "lhb_disclosure_seats",
+            ),
+            (
+                "lhb_disclosures",
+                "UPDATE lhb_disclosures SET reason = 'changed' "
+                "WHERE disclosure_id = :disclosure_id",
+            ),
+            (
+                "lhb_disclosures",
+                "DELETE FROM lhb_disclosures WHERE disclosure_id = :disclosure_id",
+            ),
+            (
+                "lhb_disclosures",
+                "TRUNCATE TABLE lhb_disclosures, lhb_import_batches, "
+                "lhb_import_attempts, lhb_disclosure_revisions, lhb_seats, "
+                "lhb_disclosure_seats",
+            ),
+            (
+                "lhb_disclosure_revisions",
+                "UPDATE lhb_disclosure_revisions SET completeness = 'complete' "
+                "WHERE disclosure_id = :disclosure_id",
+            ),
+            (
+                "lhb_disclosure_revisions",
+                "DELETE FROM lhb_disclosure_revisions "
+                "WHERE disclosure_id = :disclosure_id",
+            ),
+            (
+                "lhb_disclosure_revisions",
+                "TRUNCATE TABLE lhb_disclosure_revisions, lhb_import_batches, "
+                "lhb_import_attempts, lhb_disclosures, lhb_seats, "
+                "lhb_disclosure_seats",
+            ),
+            (
+                "lhb_seats",
+                "UPDATE lhb_seats SET source_seat_name = 'renamed' "
+                "WHERE seat_id = :seat_a",
+            ),
+            ("lhb_seats", "DELETE FROM lhb_seats WHERE seat_id = :seat_a"),
+            (
+                "lhb_seats",
+                "TRUNCATE TABLE lhb_seats, lhb_import_batches, "
+                "lhb_import_attempts, lhb_disclosures, lhb_disclosure_revisions, "
+                "lhb_disclosure_seats",
+            ),
+            (
+                "lhb_disclosure_seats",
+                "UPDATE lhb_disclosure_seats SET side = 'buy' "
+                "WHERE source_row_id LIKE :row_prefix",
+            ),
+            (
+                "lhb_disclosure_seats",
+                "DELETE FROM lhb_disclosure_seats WHERE source_row_id LIKE :row_prefix",
+            ),
+            ("lhb_disclosure_seats", "TRUNCATE TABLE lhb_disclosure_seats"),
+        )
+        parameters = {
+            "batch_id": ids["batch_id"],
+            "disclosure_id": ids["disclosure_id"],
+            "seat_a": ids["seat_a"],
+            "row_prefix": f"{ids['batch_id']}-row-%",
+        }
+        for table_name, statement in statements:
+            with pytest.raises(DBAPIError) as exc_info:
+                with database.engine.begin() as connection:
+                    connection.execute(text(statement), parameters)
+            assert "immutable records cannot be changed" in str(exc_info.value), (
+                table_name,
+                statement,
+            )
+    finally:
+        database.close()
+
+
+def test_lhb_import_attempts_are_immutable(database_url):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        with database.engine.begin() as connection:
+            ids = _seed_lhb_chain(connection)
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO lhb_import_attempts (
+                        id, source_id, batch_id, idempotency_key, payload_hash,
+                        status, reason, details, created_at
+                    ) VALUES (
+                        gen_random_uuid(), :source_id, :batch_id, :key, :hash,
+                        'accepted', NULL, '{}'::jsonb, :now
+                    )
+                    """
+                ),
+                {
+                    "source_id": ids["source_id"],
+                    "batch_id": ids["batch_id"],
+                    "key": f"{ids['batch_id']}-key",
+                    "hash": LHB_PAYLOAD_HASH,
+                    "now": T0,
+                },
+            )
+        for statement in (
+            "UPDATE lhb_import_attempts SET status = 'rejected' "
+            "WHERE idempotency_key = :key",
+            "DELETE FROM lhb_import_attempts WHERE idempotency_key = :key",
+            "TRUNCATE TABLE lhb_import_attempts",
+        ):
+            with pytest.raises(DBAPIError) as exc_info:
+                with database.engine.begin() as connection:
+                    connection.execute(
+                        text(statement), {"key": f"{ids['batch_id']}-key"}
+                    )
+            assert "immutable records cannot be changed" in str(exc_info.value)
+    finally:
+        database.close()
+
+
+def test_lhb_check_and_not_null_constraints_enforced(database_url):
+    from uuid import uuid4
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_to_lhb(database_url)
+    timestamps = {
+        "t0": T0,
+        "t1": T0 + timedelta(seconds=1),
+        "t2": T0 + timedelta(seconds=2),
+    }
+    try:
+        with database.engine.begin() as connection:
+            ids = _seed_lhb_chain(connection, suffix="checks")
+
+        def expect_violation(label, sql, parameters, fragment):
+            with pytest.raises(DBAPIError) as exc_info:
+                with database.engine.begin() as connection:
+                    connection.execute(text(sql), parameters)
+            assert fragment in str(exc_info.value), label
+
+        expect_violation(
+            "revision zero",
+            """
+            INSERT INTO lhb_disclosure_revisions (
+                id, source_id, disclosure_id, batch_id, revision,
+                source_event_at, received_at, available_at,
+                permission_snapshot, completeness, payload_hash
+            ) VALUES (
+                :id, :source_id, :disclosure_id, :batch_id, 0,
+                :t0, :t1, :t2, CAST(:permission AS jsonb), 'incomplete', :hash
+            )
+            """,
+            {
+                **ids,
+                "id": uuid4(),
+                "permission": LHB_PERMISSION_SNAPSHOT,
+                "hash": LHB_PAYLOAD_HASH,
+                **timestamps,
+            },
+            "lhb_disclosure_revisions_positive_revision",
+        )
+        expect_violation(
+            "negative buy amount",
+            """
+            INSERT INTO lhb_disclosure_seats (
+                id, source_id, disclosure_id, disclosure_date, revision,
+                source_row_id, seat_id, mapping_version, side, "rank",
+                buy_amount, sell_amount, currency, unit, completeness
+            ) VALUES (
+                :id, :source_id, :disclosure_id, DATE '2026-09-18', 1,
+                :row_id, :seat_b, 'seat-map-v1', NULL, NULL,
+                -1, NULL, 'CNY', 'yuan', 'sell_unknown'
+            )
+            """,
+            {**ids, "id": uuid4(), "row_id": "negative-row"},
+            "lhb_disclosure_seats_nonnegative_amounts",
+        )
+        expect_violation(
+            "revision received before source event",
+            """
+            INSERT INTO lhb_disclosure_revisions (
+                id, source_id, disclosure_id, batch_id, revision,
+                source_event_at, received_at, available_at,
+                permission_snapshot, completeness, payload_hash
+            ) VALUES (
+                :id, :source_id, :disclosure_id, :batch_id, 2,
+                :t1, :t0, :t2, CAST(:permission AS jsonb), 'incomplete', :hash
+            )
+            """,
+            {
+                **ids,
+                "id": uuid4(),
+                "permission": LHB_PERMISSION_SNAPSHOT,
+                "hash": LHB_PAYLOAD_HASH,
+                **timestamps,
+            },
+            "lhb_disclosure_revisions_timestamp_order",
+        )
+        expect_violation(
+            "batch available before received",
+            """
+            INSERT INTO lhb_import_batches (
+                id, batch_id, source_id, source_version, source_event_at,
+                received_at, available_at, permission_snapshot, payload_hash,
+                status, reason, imported_at
+            ) VALUES (
+                :id, :batch_id, :source_id, 'v1', :t0, :t2, :t1,
+                CAST(:permission AS jsonb), :hash, 'accepted', NULL, :t2
+            )
+            """,
+            {
+                **ids,
+                "id": uuid4(),
+                "batch_id": "reversed-batch",
+                "permission": LHB_PERMISSION_SNAPSHOT,
+                "hash": LHB_PAYLOAD_HASH,
+                **timestamps,
+            },
+            "lhb_import_batches_timestamp_order",
+        )
+        expect_violation(
+            "null currency",
+            """
+            INSERT INTO lhb_disclosure_seats (
+                id, source_id, disclosure_id, disclosure_date, revision,
+                source_row_id, seat_id, mapping_version, side, "rank",
+                buy_amount, sell_amount, currency, unit, completeness
+            ) VALUES (
+                :id, :source_id, :disclosure_id, DATE '2026-09-18', 1,
+                :row_id, :seat_b, 'seat-map-v1', NULL, NULL,
+                1, NULL, NULL, 'yuan', 'complete'
+            )
+            """,
+            {**ids, "id": uuid4(), "row_id": "null-currency-row"},
+            'null value in column "currency"',
+        )
+        expect_violation(
+            "null unit",
+            """
+            INSERT INTO lhb_disclosure_seats (
+                id, source_id, disclosure_id, disclosure_date, revision,
+                source_row_id, seat_id, mapping_version, side, "rank",
+                buy_amount, sell_amount, currency, unit, completeness
+            ) VALUES (
+                :id, :source_id, :disclosure_id, DATE '2026-09-18', 1,
+                :row_id, :seat_b, 'seat-map-v1', NULL, NULL,
+                1, NULL, 'CNY', NULL, 'complete'
+            )
+            """,
+            {**ids, "id": uuid4(), "row_id": "null-unit-row"},
+            'null value in column "unit"',
+        )
+    finally:
+        database.close()
+
+
+def test_lhb_foreign_keys_enforced(database_url):
+    from uuid import uuid4
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_to_lhb(database_url)
+    timestamps = {
+        "t0": T0,
+        "t1": T0 + timedelta(seconds=1),
+        "t2": T0 + timedelta(seconds=2),
+    }
+    try:
+        with database.engine.begin() as connection:
+            ids = _seed_lhb_chain(connection, suffix="fk")
+
+        def expect_fk(label, sql, parameters, fragment):
+            with pytest.raises(DBAPIError) as exc_info:
+                with database.engine.begin() as connection:
+                    connection.execute(text(sql), parameters)
+            assert fragment in str(exc_info.value), label
+
+        expect_fk(
+            "revision without disclosure",
+            """
+            INSERT INTO lhb_disclosure_revisions (
+                id, source_id, disclosure_id, batch_id, revision,
+                source_event_at, received_at, available_at,
+                permission_snapshot, completeness, payload_hash
+            ) VALUES (
+                :id, :source_id, 'missing-disclosure', :batch_id, 1,
+                :t0, :t1, :t2, CAST(:permission AS jsonb), 'incomplete', :hash
+            )
+            """,
+            {
+                **ids,
+                "id": uuid4(),
+                "permission": LHB_PERMISSION_SNAPSHOT,
+                "hash": LHB_PAYLOAD_HASH,
+                **timestamps,
+            },
+            "lhb_disclosure_revisions_disclosure_fkey",
+        )
+        expect_fk(
+            "revision without batch",
+            """
+            INSERT INTO lhb_disclosure_revisions (
+                id, source_id, disclosure_id, batch_id, revision,
+                source_event_at, received_at, available_at,
+                permission_snapshot, completeness, payload_hash
+            ) VALUES (
+                :id, :source_id, :disclosure_id, 'missing-batch', 2,
+                :t0, :t1, :t2, CAST(:permission AS jsonb), 'incomplete', :hash
+            )
+            """,
+            {
+                **ids,
+                "id": uuid4(),
+                "permission": LHB_PERMISSION_SNAPSHOT,
+                "hash": LHB_PAYLOAD_HASH,
+                **timestamps,
+            },
+            "lhb_disclosure_revisions_batch_fkey",
+        )
+        expect_fk(
+            "seat row without seat catalog entry",
+            """
+            INSERT INTO lhb_disclosure_seats (
+                id, source_id, disclosure_id, disclosure_date, revision,
+                source_row_id, seat_id, mapping_version, side, "rank",
+                buy_amount, sell_amount, currency, unit, completeness
+            ) VALUES (
+                :id, :source_id, :disclosure_id, DATE '2026-09-18', 1,
+                :row_id, 'missing-seat', 'seat-map-v9', NULL, NULL,
+                1, 2, 'CNY', 'yuan', 'complete'
+            )
+            """,
+            {**ids, "id": uuid4(), "row_id": "orphan-seat-row"},
+            "lhb_disclosure_seats_seat_fkey",
+        )
+        expect_fk(
+            "attempt without authorized source",
+            """
+            INSERT INTO lhb_import_attempts (
+                id, source_id, batch_id, idempotency_key, payload_hash,
+                status, reason, details, created_at
+            ) VALUES (
+                :id, 'missing-source', 'batch-x', 'key-x', :hash,
+                'rejected', 'not authorized', '{}'::jsonb, :t0
+            )
+            """,
+            {"id": uuid4(), "hash": LHB_PAYLOAD_HASH, "t0": T0},
+            "lhb_import_attempts_source_id_fkey",
+        )
+    finally:
+        database.close()
+
+
+def test_lhb_source_scoped_natural_keys_reject_duplicates(database_url):
+    from uuid import uuid4
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _upgrade_to_lhb(database_url)
+    timestamps = {
+        "t0": T0,
+        "t1": T0 + timedelta(seconds=1),
+        "t2": T0 + timedelta(seconds=2),
+    }
+    try:
+        with database.engine.begin() as connection:
+            ids = _seed_lhb_chain(connection, suffix="unique")
+
+        def expect_unique(label, sql, parameters, fragment):
+            with pytest.raises(DBAPIError) as exc_info:
+                with database.engine.begin() as connection:
+                    connection.execute(text(sql), parameters)
+            assert fragment in str(exc_info.value), label
+
+        expect_unique(
+            "duplicate disclosure",
+            """
+            INSERT INTO lhb_disclosures (
+                id, source_id, disclosure_id, security_id, disclosure_date,
+                reason, permission_id
+            ) VALUES (
+                :id, :source_id, :disclosure_id, 'other-security',
+                DATE '2026-09-19', 'other reason', 'lhb-permission-1'
+            )
+            """,
+            {**ids, "id": uuid4()},
+            "lhb_disclosures_identity_key",
+        )
+        expect_unique(
+            "duplicate revision number",
+            """
+            INSERT INTO lhb_disclosure_revisions (
+                id, source_id, disclosure_id, batch_id, revision,
+                source_event_at, received_at, available_at,
+                permission_snapshot, completeness, payload_hash
+            ) VALUES (
+                :id, :source_id, :disclosure_id, :batch_id, 1,
+                :t0, :t1, :t2, CAST(:permission AS jsonb), 'incomplete', :hash
+            )
+            """,
+            {
+                **ids,
+                "id": uuid4(),
+                "permission": LHB_PERMISSION_SNAPSHOT,
+                "hash": LHB_PAYLOAD_HASH,
+                **timestamps,
+            },
+            "lhb_disclosure_revisions_revision_key",
+        )
+        expect_unique(
+            "duplicate seat mapping version",
+            """
+            INSERT INTO lhb_seats (
+                id, source_id, seat_id, mapping_version, source_seat_name,
+                provenance
+            ) VALUES (
+                :id, :source_id, :seat_a, 'seat-map-v1', 'renamed branch',
+                '{}'::jsonb
+            )
+            """,
+            {**ids, "id": uuid4()},
+            "lhb_seats_identity_key",
+        )
+        expect_unique(
+            "duplicate source row in revision",
+            """
+            INSERT INTO lhb_disclosure_seats (
+                id, source_id, disclosure_id, disclosure_date, revision,
+                source_row_id, seat_id, mapping_version, side, "rank",
+                buy_amount, sell_amount, currency, unit, completeness
+            ) VALUES (
+                :id, :source_id, :disclosure_id, DATE '2026-09-18', 1,
+                :row_a, :seat_b, 'seat-map-v1', NULL, NULL,
+                1, 2, 'CNY', 'yuan', 'complete'
+            )
+            """,
+            {**ids, "id": uuid4(), "row_a": f"{ids['batch_id']}-row-a"},
+            "lhb_disclosure_seats_revision_row_key",
+        )
+    finally:
+        database.close()
+
+
+def test_lhb_schema_preserves_null_zero_and_decimal_precision(database_url):
+    from uuid import uuid4
+
+    from sqlalchemy import text
+
+    database = _upgrade_to_lhb(database_url)
+    precise = Decimal("12345678901234567890.123456789012345678")
+    try:
+        with database.engine.begin() as connection:
+            ids = _seed_lhb_chain(connection, suffix="precision")
+            row_id = uuid4()
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO lhb_seats (
+                        id, source_id, seat_id, mapping_version,
+                        source_seat_name, provenance
+                    ) VALUES (
+                        :seat_record_c, :source_id, :seat_c, 'seat-map-v1',
+                        'Example branch C', '{}'::jsonb
+                    )
+                    """
+                ),
+                {
+                    **ids,
+                    "seat_record_c": uuid4(),
+                    "seat_c": f"{ids['source_id']}-seat-c",
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO lhb_disclosure_seats (
+                        id, source_id, disclosure_id, disclosure_date, revision,
+                        source_row_id, seat_id, mapping_version, side, "rank",
+                        buy_amount, sell_amount, currency, unit, completeness
+                    ) VALUES (
+                        :id, :source_id, :disclosure_id, DATE '2026-09-18', 1,
+                        'precision-row', :seat_c, 'seat-map-v1', NULL, NULL,
+                        :precise, 0, 'CNY', 'yuan', 'complete'
+                    )
+                    """
+                ),
+                {
+                    **ids,
+                    "id": row_id,
+                    "seat_c": f"{ids['source_id']}-seat-c",
+                    "precise": precise,
+                },
+            )
+        with database.engine.connect() as connection:
+            precise_buy, zero_sell, unknown_buy, unknown_sell = connection.execute(
+                text(
+                    """
+                    SELECT precise_row.buy_amount, precise_row.sell_amount,
+                           unknown_row.buy_amount, unknown_row.sell_amount
+                    FROM lhb_disclosure_seats precise_row
+                    JOIN lhb_disclosure_seats unknown_row
+                      ON unknown_row.seat_id = :seat_b
+                     AND unknown_row.source_row_id = :row_b
+                    WHERE precise_row.id = :id
+                    """
+                ),
+                {
+                    "id": row_id,
+                    "seat_b": ids["seat_b"],
+                    "row_b": f"{ids['batch_id']}-row-b",
+                },
+            ).one()
+        assert precise_buy == precise
+        assert zero_sell == Decimal("0")
+        assert unknown_buy is None
+        assert unknown_sell == Decimal("20")
+    finally:
+        database.close()
+
+
+def test_lhb_schema_is_ready_at_0012_head(database):
+    from dragon_radar.storage.database import SCHEMA_REVISION
+
+    assert SCHEMA_REVISION == "0012_lhb"
+    assert database.ready()
+
+
+def test_0012_lhb_downgrade_is_forbidden(database_url):
+    from alembic import command
+    from alembic.config import Config
+
+    database = _upgrade_to_lhb(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with (
+            pytest.raises(
+                RuntimeError,
+                match="LHB disclosure history cannot be downgraded",
+            ),
+            database.engine.begin() as connection,
+        ):
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0011_realtime")
+    finally:
+        database.close()

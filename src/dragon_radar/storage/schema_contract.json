@@ -605,6 +605,26 @@
     },
     {
       "columns": [
+        "buy_amount",
+        "sell_amount"
+      ],
+      "deferrable": false,
+      "expression": "(((buy_amount IS NULL) OR ((buy_amount >= (0)::numeric) AND (buy_amount < 'Infinity'::numeric))) AND ((sell_amount IS NULL) OR ((sell_amount >= (0)::numeric) AND (sell_amount < 'Infinity'::numeric))))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_nonnegative_amounts",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
         "cache_key"
       ],
       "deferrable": false,
@@ -681,6 +701,44 @@
     },
     {
       "columns": [
+        "completeness"
+      ],
+      "deferrable": false,
+      "expression": "((completeness)::text = ANY ((ARRAY['complete'::character varying, 'buy_unknown'::character varying, 'sell_unknown'::character varying, 'both_unknown'::character varying])::text[]))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_completeness",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        "completeness"
+      ],
+      "deferrable": false,
+      "expression": "((completeness)::text = ANY ((ARRAY['complete'::character varying, 'incomplete'::character varying])::text[]))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosure_revisions_completeness",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
         "content_scope"
       ],
       "deferrable": false,
@@ -735,6 +793,26 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_tasks"
+    },
+    {
+      "columns": [
+        "currency",
+        "unit"
+      ],
+      "deferrable": false,
+      "expression": "((currency !~ '^[[:space:]]*$'::text) AND (unit !~ '^[[:space:]]*$'::text))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_currency_unit",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
     },
     {
       "columns": [
@@ -1524,6 +1602,120 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "import_batches"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "lhb_disclosure_revisions_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "lhb_disclosures_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosures"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "lhb_import_attempts_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_attempts"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "lhb_import_batches_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_batches"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "lhb_seats_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_seats"
     },
     {
       "columns": [
@@ -3867,6 +4059,63 @@
       "key_expressions": [],
       "kind": "check",
       "match_type": null,
+      "name": "lhb_disclosure_revisions_payload_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "payload_hash"
+      ],
+      "deferrable": false,
+      "expression": "((payload_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_import_attempts_payload_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_attempts"
+    },
+    {
+      "columns": [
+        "payload_hash"
+      ],
+      "deferrable": false,
+      "expression": "((payload_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_import_batches_payload_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_batches"
+    },
+    {
+      "columns": [
+        "payload_hash"
+      ],
+      "deferrable": false,
+      "expression": "((payload_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
       "name": "realtime_import_attempts_payload_hash",
       "on_delete": null,
       "on_update": null,
@@ -4282,6 +4531,25 @@
     },
     {
       "columns": [
+        "rank"
+      ],
+      "deferrable": false,
+      "expression": "((rank IS NULL) OR (rank > 0))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_rank",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
         "regulation_input_id"
       ],
       "deferrable": false,
@@ -4378,6 +4646,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "ai_task_drafts"
+    },
+    {
+      "columns": [
+        "revision"
+      ],
+      "deferrable": false,
+      "expression": "(revision > 0)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosure_revisions_positive_revision",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_revisions"
     },
     {
       "columns": [
@@ -5216,6 +5503,48 @@
     },
     {
       "columns": [
+        "seat_id",
+        "mapping_version",
+        "source_seat_name"
+      ],
+      "deferrable": false,
+      "expression": "((seat_id !~ '^[[:space:]]*$'::text) AND (mapping_version !~ '^[[:space:]]*$'::text) AND (source_seat_name !~ '^[[:space:]]*$'::text))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_seats_required_text",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_seats"
+    },
+    {
+      "columns": [
+        "security_id",
+        "reason",
+        "permission_id"
+      ],
+      "deferrable": false,
+      "expression": "((security_id !~ '^[[:space:]]*$'::text) AND (reason !~ '^[[:space:]]*$'::text) AND (permission_id !~ '^[[:space:]]*$'::text))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosures_required_text",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosures"
+    },
+    {
+      "columns": [
         "security_id",
         "state_type",
         "valid_from"
@@ -5460,6 +5789,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "withdrawal_records"
+    },
+    {
+      "columns": [
+        "side"
+      ],
+      "deferrable": false,
+      "expression": "((side IS NULL) OR ((side)::text = ANY ((ARRAY['buy'::character varying, 'sell'::character varying, 'net'::character varying])::text[])))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_side",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
     },
     {
       "columns": [
@@ -6080,6 +6428,48 @@
       "key_expressions": [],
       "kind": "check",
       "match_type": null,
+      "name": "lhb_disclosure_revisions_timestamp_order",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "source_event_at",
+        "received_at",
+        "available_at"
+      ],
+      "deferrable": false,
+      "expression": "((source_event_at <= received_at) AND (received_at <= available_at))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_import_batches_timestamp_order",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_batches"
+    },
+    {
+      "columns": [
+        "source_event_at",
+        "received_at",
+        "available_at"
+      ],
+      "deferrable": false,
+      "expression": "((source_event_at <= received_at) AND (received_at <= available_at))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
       "name": "realtime_quote_batches_timestamp_order",
       "on_delete": null,
       "on_update": null,
@@ -6230,6 +6620,50 @@
     {
       "columns": [
         "source_id",
+        "batch_id",
+        "source_version"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_import_batches_source_batch_version_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_batches"
+    },
+    {
+      "columns": [
+        "source_id",
+        "batch_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_disclosure_revisions_batch_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "batch_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "lhb_import_batches",
+      "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "source_id",
         "batch_id"
       ],
       "deferrable": false,
@@ -6299,6 +6733,205 @@
     {
       "columns": [
         "source_id",
+        "batch_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_import_batches_source_batch_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_batches"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id",
+        "disclosure_date"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_disclosure_seats_disclosure_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "disclosure_id",
+        "disclosure_date"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "lhb_disclosures",
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id",
+        "disclosure_date"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_disclosures_identity_date_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosures"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id",
+        "revision",
+        "seat_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_revision_seat_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id",
+        "revision",
+        "source_row_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_disclosure_seats_revision_row_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id",
+        "revision"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_disclosure_seats_revision_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "disclosure_id",
+        "revision"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "lhb_disclosure_revisions",
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id",
+        "revision"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_disclosure_revisions_revision_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_disclosure_revisions_disclosure_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "disclosure_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "lhb_disclosures",
+      "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "source_id",
+        "disclosure_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_disclosures_identity_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_disclosures"
+    },
+    {
+      "columns": [
+        "source_id",
         "module"
       ],
       "deferrable": false,
@@ -6356,6 +6989,52 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "realtime_quote_batches"
+    },
+    {
+      "columns": [
+        "source_id",
+        "seat_id",
+        "mapping_version"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_disclosure_seats_seat_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id",
+        "seat_id",
+        "mapping_version"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "lhb_seats",
+      "table": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        "source_id",
+        "seat_id",
+        "mapping_version"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "lhb_seats_identity_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_seats"
     },
     {
       "columns": [
@@ -6522,6 +7201,90 @@
       "referenced_schema": "current_schema",
       "referenced_table": "source_grants",
       "table": "import_batches"
+    },
+    {
+      "columns": [
+        "source_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_disclosures_source_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "source_grants",
+      "table": "lhb_disclosures"
+    },
+    {
+      "columns": [
+        "source_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_import_attempts_source_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "source_grants",
+      "table": "lhb_import_attempts"
+    },
+    {
+      "columns": [
+        "source_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_import_batches_source_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "source_grants",
+      "table": "lhb_import_batches"
+    },
+    {
+      "columns": [
+        "source_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "lhb_seats_source_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "source_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "source_grants",
+      "table": "lhb_seats"
     },
     {
       "columns": [
@@ -6997,6 +7760,46 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "publications"
+    },
+    {
+      "columns": [
+        "status",
+        "reason"
+      ],
+      "deferrable": false,
+      "expression": "(((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'incomplete'::character varying])::text[])) AND ((((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying])::text[])) AND (reason IS NULL)) OR (((status)::text = ANY ((ARRAY['rejected'::character varying, 'incomplete'::character varying])::text[])) AND (reason IS NOT NULL) AND (reason !~ '^[[:space:]]*$'::text))))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_import_attempts_status",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_attempts"
+    },
+    {
+      "columns": [
+        "status",
+        "reason"
+      ],
+      "deferrable": false,
+      "expression": "(((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying, 'rejected'::character varying, 'incomplete'::character varying])::text[])) AND ((((status)::text = ANY ((ARRAY['accepted'::character varying, 'duplicate'::character varying])::text[])) AND (reason IS NULL)) OR (((status)::text = ANY ((ARRAY['rejected'::character varying, 'incomplete'::character varying])::text[])) AND (reason IS NOT NULL) AND (reason !~ '^[[:space:]]*$'::text))))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "lhb_import_batches_status",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "lhb_import_batches"
     },
     {
       "columns": [
@@ -8276,6 +9079,18 @@
       "access_method": "btree",
       "key_expressions": [
         "available_at",
+        "id"
+      ],
+      "name": "lhb_import_batches_as_of",
+      "predicate": null,
+      "table": "lhb_import_batches",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "available_at",
         "ingest_order",
         "id"
       ],
@@ -8350,6 +9165,20 @@
       "predicate": null,
       "table": "source_dependencies",
       "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "disclosure_date",
+        "security_id",
+        "source_id",
+        "disclosure_id"
+      ],
+      "name": "lhb_disclosures_listing",
+      "predicate": null,
+      "table": "lhb_disclosures",
+      "unique": false,
       "valid": true
     },
     {
@@ -8557,6 +9386,72 @@
       "name": "import_batches_pkey",
       "predicate": null,
       "table": "import_batches",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "lhb_disclosure_revisions_pkey",
+      "predicate": null,
+      "table": "lhb_disclosure_revisions",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "lhb_disclosure_seats_pkey",
+      "predicate": null,
+      "table": "lhb_disclosure_seats",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "lhb_disclosures_pkey",
+      "predicate": null,
+      "table": "lhb_disclosures",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "lhb_import_attempts_pkey",
+      "predicate": null,
+      "table": "lhb_import_attempts",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "lhb_import_batches_pkey",
+      "predicate": null,
+      "table": "lhb_import_batches",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "lhb_seats_pkey",
+      "predicate": null,
+      "table": "lhb_seats",
       "unique": true,
       "valid": true
     },
@@ -9993,6 +10888,19 @@
       "key_expressions": [
         "source_id",
         "available_at",
+        "id"
+      ],
+      "name": "lhb_import_batches_source_as_of",
+      "predicate": null,
+      "table": "lhb_import_batches",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "available_at",
         "ingest_order",
         "id"
       ],
@@ -10050,11 +10958,61 @@
       "access_method": "btree",
       "key_expressions": [
         "source_id",
+        "batch_id",
+        "source_version"
+      ],
+      "name": "lhb_import_batches_source_batch_version_key",
+      "predicate": null,
+      "table": "lhb_import_batches",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "batch_id"
+      ],
+      "name": "lhb_disclosure_revisions_batch",
+      "predicate": null,
+      "table": "lhb_disclosure_revisions",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "batch_id"
+      ],
+      "name": "lhb_import_batches_source_batch_key",
+      "predicate": null,
+      "table": "lhb_import_batches",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
         "batch_id"
       ],
       "name": "realtime_minute_bars_batch",
       "predicate": null,
       "table": "realtime_minute_bars",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "created_at",
+        "id"
+      ],
+      "name": "lhb_import_attempts_listing",
+      "predicate": null,
+      "table": "lhb_import_attempts",
       "unique": false,
       "valid": true
     },
@@ -10081,6 +11039,99 @@
       "predicate": null,
       "table": "source_dependencies",
       "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "disclosure_id",
+        "available_at",
+        "revision",
+        "id"
+      ],
+      "name": "lhb_disclosure_revisions_visible",
+      "predicate": null,
+      "table": "lhb_disclosure_revisions",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "disclosure_id",
+        "disclosure_date"
+      ],
+      "name": "lhb_disclosures_identity_date_key",
+      "predicate": null,
+      "table": "lhb_disclosures",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "disclosure_id",
+        "revision",
+        "seat_id"
+      ],
+      "name": "lhb_disclosure_seats_revision_seat_key",
+      "predicate": null,
+      "table": "lhb_disclosure_seats",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "disclosure_id",
+        "revision",
+        "source_row_id"
+      ],
+      "name": "lhb_disclosure_seats_revision_row_key",
+      "predicate": null,
+      "table": "lhb_disclosure_seats",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "disclosure_id",
+        "revision"
+      ],
+      "name": "lhb_disclosure_revisions_revision_key",
+      "predicate": null,
+      "table": "lhb_disclosure_revisions",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "disclosure_id"
+      ],
+      "name": "lhb_disclosures_identity_key",
+      "predicate": null,
+      "table": "lhb_disclosures",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "idempotency_key"
+      ],
+      "name": "lhb_import_attempts_bound_idempotency_key",
+      "predicate": "((status)::text = ANY ((ARRAY['accepted'::character varying, 'incomplete'::character varying])::text[]))",
+      "table": "lhb_import_attempts",
+      "unique": true,
       "valid": true
     },
     {
@@ -10142,6 +11193,46 @@
       "predicate": null,
       "table": "realtime_quote_batches",
       "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "seat_id",
+        "disclosure_date",
+        "disclosure_id",
+        "revision"
+      ],
+      "name": "lhb_disclosure_seats_seat_history",
+      "predicate": null,
+      "table": "lhb_disclosure_seats",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "seat_id",
+        "mapping_version"
+      ],
+      "name": "lhb_seats_identity_key",
+      "predicate": null,
+      "table": "lhb_seats",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "seat_id"
+      ],
+      "name": "lhb_seats_catalog",
+      "predicate": null,
+      "table": "lhb_seats",
+      "unique": false,
       "valid": true
     },
     {
@@ -11628,6 +12719,95 @@
         }
       ],
       "name": "news_association_reviews"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_version",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "received_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "available_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "permission_snapshot",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "payload_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "status",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reason",
+          "nullable": true,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "imported_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "lhb_import_batches"
     },
     {
       "columns": [
@@ -14245,6 +15425,74 @@
           "type": "timestamp with time zone"
         }
       ],
+      "name": "lhb_import_attempts"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "payload_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "status",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reason",
+          "nullable": true,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "details",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
       "name": "realtime_import_attempts"
     },
     {
@@ -14527,6 +15775,299 @@
         }
       ],
       "name": "realtime_minute_bars"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "disclosure_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "batch_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_event_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "received_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "available_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "permission_snapshot",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "completeness",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "payload_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        }
+      ],
+      "name": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "disclosure_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "disclosure_date",
+          "nullable": false,
+          "type": "date"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_row_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "seat_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "mapping_version",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "side",
+          "nullable": true,
+          "type": "character varying(4)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "rank",
+          "nullable": true,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "buy_amount",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "sell_amount",
+          "nullable": true,
+          "type": "numeric"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "currency",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "unit",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "completeness",
+          "nullable": false,
+          "type": "character varying(20)"
+        }
+      ],
+      "name": "lhb_disclosure_seats"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "disclosure_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "security_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "disclosure_date",
+          "nullable": false,
+          "type": "date"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reason",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "permission_id",
+          "nullable": false,
+          "type": "text"
+        }
+      ],
+      "name": "lhb_disclosures"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "seat_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "mapping_version",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_seat_name",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "provenance",
+          "nullable": false,
+          "type": "jsonb"
+        }
+      ],
+      "name": "lhb_seats"
     },
     {
       "columns": [
@@ -16765,6 +18306,120 @@
       "initially_deferred": false,
       "level": "STATEMENT",
       "name": "immutable_truncate",
+      "table": "lhb_disclosure_revisions",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "lhb_disclosure_seats",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "lhb_disclosures",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "lhb_import_attempts",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "lhb_import_batches",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
+      "table": "lhb_seats",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
       "table": "realtime_anomaly_events",
       "timing": "BEFORE",
       "update_of_columns": [],
@@ -17908,6 +19563,126 @@
       "level": "ROW",
       "name": "immutable_rows",
       "table": "import_batches",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "lhb_disclosure_revisions",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "lhb_disclosure_seats",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "lhb_disclosures",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "lhb_import_attempts",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "lhb_import_batches",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "lhb_seats",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null
