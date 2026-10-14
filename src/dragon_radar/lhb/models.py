@@ -1,11 +1,10 @@
 """Strict immutable contracts for 龙虎榜 (LHB) disclosure evidence.
 
 LHB owns its permission and seat contracts: nothing here is imported from the
-realtime package. Identifiers, UTC normalization, and the frozen base follow the
-shared domain primitives used by the news, regulation, and AI packages; the
-canonical identifier, text, and Decimal annotated types are LHB-owned copies of
-the realtime trust-boundary pattern. Unknown amounts stay ``None`` and are never
-coerced to zero.
+realtime package. ``FrozenModel`` and ``UTCDateTime`` are reused from
+``dragon_radar.domain.models``; the identifier, text, and Decimal annotated
+helpers below are LHB-owned copies of the realtime trust-boundary pattern.
+Unknown amounts stay ``None`` and are never coerced to zero.
 """
 
 from datetime import date
@@ -108,7 +107,13 @@ class PermissionSnapshot(LHBModel):
 
 
 class DisclosureSeatInput(LHBModel):
-    """One source row within a disclosure revision.
+    """One merged seat row within a disclosure revision.
+
+    The canonical input adapter merges the source's separate buy/sell top-5
+    lists upstream, so one ``seat_id`` appears exactly once per revision with
+    both amounts (either of which may still be unknown). ``side`` is display-only
+    metadata for that merged row: it never changes null semantics, and a missing
+    amount stays unknown regardless of ``side``.
 
     ``source_seat_name`` is an arbitrary non-blank display string. It is never a
     natural-person or fund attribution, and no such extra keys are accepted.
@@ -127,7 +132,10 @@ class DisclosureSeatInput(LHBModel):
 
 
 class DisclosureRevisionInput(_TimestampOrdered):
-    """An immutable, point-in-time revision of one LHB disclosure."""
+    """An immutable, point-in-time revision of one LHB disclosure.
+
+    A revision always carries at least one seat row.
+    """
 
     disclosure_id: SafeIdentifier
     revision: Annotated[int, Field(ge=1)]
@@ -140,7 +148,7 @@ class DisclosureRevisionInput(_TimestampOrdered):
     received_at: UTCDateTime
     available_at: UTCDateTime
     permission: PermissionSnapshot
-    seats: tuple[DisclosureSeatInput, ...]
+    seats: tuple[DisclosureSeatInput, ...] = Field(min_length=1)
 
 
 class LHBImportBatch(_TimestampOrdered):
@@ -153,7 +161,7 @@ class LHBImportBatch(_TimestampOrdered):
     received_at: UTCDateTime
     available_at: UTCDateTime
     permission: PermissionSnapshot
-    disclosures: tuple[DisclosureRevisionInput, ...]
+    disclosures: tuple[DisclosureRevisionInput, ...] = Field(min_length=1)
 
 
 class LHBImportResult(LHBModel):
@@ -178,7 +186,13 @@ class SeatContribution(LHBModel):
     """The disclosure revision row that contributed amounts to one seat.
 
     Per-row source name, mapping version, and permission state stay traceable
-    even when the seat was renamed, remapped, or revoked after the fact.
+    even when the seat was renamed or remapped after the fact.
+
+    ``permission_state`` is the *captured* state copied verbatim from that
+    revision's permission snapshot at import time. Aggregation only records
+    evidence: it cannot evaluate read-time revocation (which the read-side
+    repository enforces separately), so a captured non-authorized state is
+    propagated rather than filtered or raised on here.
     """
 
     disclosure_id: SafeIdentifier

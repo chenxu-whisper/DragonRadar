@@ -3,7 +3,15 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 
 from dragon_radar.lhb.models import (
     AggregatedSeat,
@@ -15,12 +23,18 @@ from dragon_radar.lhb.models import (
     SeatContribution,
 )
 
-_DECIMAL_CONTEXT = Context(
-    prec=34,
-    rounding=ROUND_HALF_EVEN,
-    Emin=-999999,
-    Emax=999999,
-)
+
+def _decimal_context() -> Context:
+    return Context(
+        prec=34,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow],
+    )
 
 
 @dataclass(slots=True)
@@ -41,10 +55,46 @@ class _SeatAccumulator:
 
 
 def validate_import_batch(batch: LHBImportBatch) -> LHBImportBatch:
-    """Re-validate a typed batch at the trust boundary before storage."""
+    """Re-validate a typed batch at the trust boundary before storage.
+
+    Pydantic construction enforces field-level and per-row contracts; this
+    boundary adds the cross-row invariants of one import envelope:
+    every revision belongs to the envelope's source/version, ``source_row_id``
+    is unique across the whole batch (a row can never be double-counted), and
+    ``seat_id`` is unique within each revision (the canonical adapter supplies
+    one merged buy/sell row per seat per revision).
+    """
     if not isinstance(batch, LHBImportBatch):
         raise TypeError("batch must be an LHBImportBatch")
-    return LHBImportBatch.model_validate(batch.model_dump())
+    validated = LHBImportBatch.model_validate(batch.model_dump())
+    seen_source_rows: set[str] = set()
+    for revision in validated.disclosures:
+        if revision.source_id != validated.source_id:
+            raise ValueError(
+                f"revision {revision.disclosure_id} source_id "
+                f"{revision.source_id!r} does not match batch source_id "
+                f"{validated.source_id!r}"
+            )
+        if revision.source_version != validated.source_version:
+            raise ValueError(
+                f"revision {revision.disclosure_id} source_version "
+                f"{revision.source_version!r} does not match batch "
+                f"source_version {validated.source_version!r}"
+            )
+        seat_ids: set[str] = set()
+        for row in revision.seats:
+            if row.source_row_id in seen_source_rows:
+                raise ValueError(
+                    f"duplicate source_row_id {row.source_row_id!r} in batch"
+                )
+            seen_source_rows.add(row.source_row_id)
+            if row.seat_id in seat_ids:
+                raise ValueError(
+                    f"duplicate seat_id {row.seat_id!r} within revision "
+                    f"{revision.disclosure_id}"
+                )
+            seat_ids.add(row.seat_id)
+    return validated
 
 
 def aggregate_seats(
@@ -54,20 +104,26 @@ def aggregate_seats(
     """Aggregate the latest visible revision of each disclosure as of ``as_of``.
 
     Rows with ``available_at > as_of`` are hidden. Later revisions replace older
-    ones for the same ``disclosure_id``; ties on ``(revision, available_at)``
-    keep the first-seen row so duplicate rows never double-count. Seat rows are
-    grouped by the composite, source-scoped key ``(source_id, seat_id)`` so two
-    sources that reuse the same seat identifier never merge.
+    ones for the source-scoped key ``(source_id, disclosure_id)``; two sources
+    that reuse the same disclosure identifier never replace each other. Within
+    one source chain, selection orders by ``(revision, available_at)``; an exact
+    tie keeps the first-seen row so duplicate rows never double-count. Callers
+    must ensure same-key payloads on an exact tie are consistent (the
+    repository enforces payload-hash identity); conflicting tied payloads also
+    collapse to the first-seen row rather than being reconciled here. Seat rows
+    are grouped by the composite, source-scoped key ``(source_id, seat_id)`` so
+    two sources that reuse the same seat identifier never merge.
     """
     visible = [row for row in disclosures if row.available_at <= as_of]
-    selected: dict[str, DisclosureRevisionInput] = {}
+    selected: dict[tuple[str, str], DisclosureRevisionInput] = {}
     for row in visible:
-        current = selected.get(row.disclosure_id)
+        key = (row.source_id, row.disclosure_id)
+        current = selected.get(key)
         if current is None or (row.revision, row.available_at) > (
             current.revision,
             current.available_at,
         ):
-            selected[row.disclosure_id] = row
+            selected[key] = row
     return _aggregate_selected(
         tuple(selected.values()),
         as_of=as_of,
@@ -77,7 +133,7 @@ def aggregate_seats(
 
 
 def _sum_decimals(values: Sequence[Decimal]) -> Decimal:
-    with localcontext(_DECIMAL_CONTEXT):
+    with localcontext(_decimal_context()):
         total = Decimal("0")
         for value in values:
             total += value
@@ -95,11 +151,16 @@ def _aggregate_selected(
 
     Groups use the composite key ``(source_id, seat_id)``, never the display
     name. Each contribution keeps its own source seat name, mapping version,
-    and permission state; branch renames and mapping changes are historical
-    facts and never raise. Only currency/unit conflicts raise ``ValueError``.
-    The header's ``source_seat_name`` and ``mapping_version`` come from the
-    contributing row of the latest selected revision in the group, ordered by
-    ``(revision, available_at)`` with first-seen winning an exact tie.
+    and captured permission state; branch renames and mapping changes are
+    historical facts and never raise. Only currency/unit conflicts raise
+    ``ValueError``.
+
+    The header's ``source_seat_name``, ``mapping_version``, and
+    ``source_version`` follow wall-clock availability: they come from the
+    contributing row of the revision with the greatest ``available_at`` in the
+    group (revision numbers across different disclosures belong to independent
+    chains and are not comparable), with ``revision`` used only as an exact
+    ``available_at`` tiebreak; an exact tie on both keeps the first-seen row.
     """
     accumulators: dict[tuple[str, str], _SeatAccumulator] = {}
     seat_order: list[tuple[str, str]] = []
@@ -107,7 +168,7 @@ def _aggregate_selected(
         for row in revision.seats:
             key = (revision.source_id, row.seat_id)
             accumulator = accumulators.get(key)
-            revision_key = (revision.revision, revision.available_at)
+            wall_clock_key = (revision.available_at, revision.revision)
             if accumulator is None:
                 accumulator = _SeatAccumulator(
                     seat_id=row.seat_id,
@@ -124,18 +185,25 @@ def _aggregate_selected(
                 seat_order.append(key)
             elif row.currency != accumulator.currency:
                 raise ValueError(
-                    f"seat {row.seat_id} mixes incompatible currency values"
+                    f"seat {row.seat_id} from source {revision.source_id} "
+                    "mixes incompatible currency values"
                 )
             elif row.unit != accumulator.unit:
-                raise ValueError(f"seat {row.seat_id} mixes incompatible unit values")
-            elif revision_key > (
-                accumulator.header_revision,
+                raise ValueError(
+                    f"seat {row.seat_id} from source {revision.source_id} "
+                    "mixes incompatible unit values"
+                )
+            elif wall_clock_key > (
                 accumulator.header_available_at,
+                accumulator.header_revision,
             ):
-                # Renames and remaps never raise: the header tracks the latest
-                # contributing revision while every row keeps its own values.
+                # Renames and remaps never raise: the header follows the latest
+                # available contributing revision (revision numbers of distinct
+                # disclosures are not comparable) while every contribution keeps
+                # its own values.
                 accumulator.source_seat_name = row.source_seat_name
                 accumulator.mapping_version = row.mapping_version
+                accumulator.source_version = revision.source_version
                 accumulator.header_revision = revision.revision
                 accumulator.header_available_at = revision.available_at
             accumulator.row_count += 1
@@ -172,7 +240,7 @@ def _aggregate_selected(
             else None
         )
         completeness = _completeness(buy_total, sell_total)
-        with localcontext(_DECIMAL_CONTEXT):
+        with localcontext(_decimal_context()):
             net_amount = (
                 buy_total - sell_total
                 if buy_total is not None and sell_total is not None

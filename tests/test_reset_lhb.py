@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from dragon_radar.lhb import (
     AggregatedSeat,
+    AggregationCoverage,
     DisclosureRevisionInput,
     DisclosureSeatInput,
     DisclosureSelection,
@@ -189,6 +190,36 @@ def test_amount_zero_remains_a_distinct_value():
     assert result.seats[0].completeness == "complete"
 
 
+def test_aggregate_empty_disclosures_returns_zeroed_coverage():
+    result = aggregate_seats(disclosures=(), as_of=AS_OF)
+
+    assert isinstance(result, SeatAggregation)
+    assert result.seats == ()
+    assert result.as_of == AS_OF
+    assert result.coverage == AggregationCoverage(
+        total_disclosures=0,
+        visible_disclosures=0,
+        late_disclosures=0,
+        selected_disclosures=0,
+        seat_count=0,
+        complete_seats=0,
+        unknown_seats=0,
+    )
+
+
+def test_aggregate_accepts_negative_net_when_sell_exceeds_buy():
+    result = aggregate_seats(
+        disclosures=[disclosure(buy_amount=Decimal("10"), sell_amount=Decimal("30"))],
+        as_of=AS_OF,
+    )
+
+    aggregated = result.seats[0]
+    assert aggregated.buy_amount == Decimal("10")
+    assert aggregated.sell_amount == Decimal("30")
+    assert aggregated.net_amount == Decimal("-20")
+    assert aggregated.completeness == "complete"
+
+
 @pytest.mark.parametrize(
     ("buy_amount", "sell_amount", "completeness"),
     [
@@ -364,14 +395,29 @@ def test_aggregate_retains_source_and_contributing_disclosure_identities():
     assert result.as_of == AS_OF
 
 
-def test_aggregate_contribution_retains_revision_permission_state():
-    result = aggregate_seats(
-        disclosures=[disclosure(permission=permission("authorized"))],
-        as_of=AS_OF,
+def test_aggregate_propagates_captured_permission_state_without_revalidation():
+    valid = disclosure()
+    revoked_permission = PermissionSnapshot.model_construct(
+        permission_id="lhb-permission-1",
+        state="revoked",
+        captured_at=T0,
     )
+    # model_construct bypasses validators on purpose: aggregation consumes
+    # captured import-time evidence and must copy the snapshot's state
+    # verbatim rather than assume "authorized" or re-run import validation.
+    captured_revision = DisclosureRevisionInput.model_construct(
+        **{
+            **valid.model_dump(),
+            "permission": revoked_permission,
+            "seats": valid.seats,
+        }
+    )
+    assert captured_revision.permission.state == "revoked"
+
+    result = aggregate_seats(disclosures=[captured_revision], as_of=AS_OF)
 
     contribution = result.seats[0].contributions[0]
-    assert contribution.permission_state == "authorized"
+    assert contribution.permission_state == "revoked"
 
 
 def test_late_disclosure_hidden_until_available_at():
@@ -419,7 +465,7 @@ def test_aggregate_conflicting_currency_or_unit_raises():
         available_at=utc("2026-09-18T09:00:00Z"),
     )
 
-    with pytest.raises(ValueError, match="currency|unit"):
+    with pytest.raises(ValueError, match=r"SEAT-A.*lhb-source.*currency"):
         aggregate_seats(disclosures=[first, second], as_of=AS_OF)
 
 
@@ -436,7 +482,7 @@ def test_aggregate_conflicting_unit_raises_value_error():
         available_at=utc("2026-09-18T09:00:00Z"),
     )
 
-    with pytest.raises(ValueError, match="unit"):
+    with pytest.raises(ValueError, match=r"SEAT-A.*lhb-source.*unit"):
         aggregate_seats(disclosures=[first, second], as_of=AS_OF)
 
 
@@ -462,6 +508,80 @@ def test_aggregate_separates_same_seat_id_from_different_sources():
     } == {("SRC-1", "SEAT-X"), ("SRC-2", "SEAT-X")}
     assert {aggregated.net_amount for aggregated in result.seats} == {Decimal("70")}
     assert [len(aggregated.contributions) for aggregated in result.seats] == [1, 1]
+
+
+def test_aggregate_revision_selection_is_scoped_to_source_and_disclosure():
+    first_source = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        source_id="SRC-1",
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(
+            seat(
+                seat_id="SEAT-A",
+                source_row_id="ROW-1",
+                buy_amount=Decimal("100"),
+                sell_amount=Decimal("30"),
+            ),
+        ),
+    )
+    second_source = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        source_id="SRC-2",
+        available_at=utc("2026-09-18T09:00:00Z"),
+        seats=(
+            seat(
+                seat_id="SEAT-A",
+                source_row_id="ROW-2",
+                buy_amount=Decimal("50"),
+                sell_amount=Decimal("20"),
+            ),
+        ),
+    )
+
+    result = aggregate_seats(
+        disclosures=[first_source, second_source],
+        as_of=AS_OF,
+    )
+
+    assert result.coverage.total_disclosures == 2
+    assert result.coverage.visible_disclosures == 2
+    assert result.coverage.selected_disclosures == 2
+    assert len(result.seats) == 2
+    totals = {
+        (aggregated.source_id, aggregated.buy_amount, aggregated.sell_amount)
+        for aggregated in result.seats
+    }
+    assert totals == {
+        ("SRC-1", Decimal("100"), Decimal("30")),
+        ("SRC-2", Decimal("50"), Decimal("20")),
+    }
+
+
+def test_aggregate_same_source_revision_chain_still_replaces_earlier_revision():
+    first = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        source_id="SRC-1",
+        buy_amount=Decimal("100"),
+        sell_amount=Decimal("30"),
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+    second = disclosure(
+        disclosure_id="D1",
+        revision=2,
+        source_id="SRC-1",
+        buy_amount=Decimal("110"),
+        sell_amount=Decimal("35"),
+        available_at=utc("2026-09-18T09:00:00Z"),
+    )
+
+    result = aggregate_seats(disclosures=[first, second], as_of=AS_OF)
+
+    assert result.coverage.selected_disclosures == 1
+    assert result.seats[0].buy_amount == Decimal("110")
+    assert result.seats[0].sell_amount == Decimal("35")
 
 
 def test_aggregate_same_source_seat_id_still_merges_across_disclosures():
@@ -592,32 +712,103 @@ def test_aggregate_header_uses_latest_revision_name_and_mapping_per_row():
     ] == ["seat-map-v1", "seat-map-v2"]
 
 
-def test_aggregate_header_prefers_higher_revision_even_when_available_earlier():
-    higher_revision = disclosure(
+def test_aggregate_header_follows_wall_clock_availability_across_chain_revisions():
+    monday = disclosure(
         disclosure_id="D1",
-        revision=2,
-        available_at=utc("2026-09-18T08:00:00Z"),
-        seats=(seat(source_seat_name="Higher revision branch"),),
+        revision=5,
+        source_version="v1",
+        disclosure_date=date(2026, 9, 14),
+        available_at=utc("2026-09-14T18:00:00Z"),
+        seats=(seat(source_seat_name="Old branch", mapping_version="seat-map-v1"),),
     )
-    lower_revision = disclosure(
+    tuesday = disclosure(
         disclosure_id="D2",
         revision=1,
         source_row_id="ROW-2",
-        available_at=utc("2026-09-18T09:00:00Z"),
+        source_version="v2",
+        disclosure_date=date(2026, 9, 15),
+        available_at=utc("2026-09-15T18:00:00Z"),
         seats=(
             seat(
                 source_row_id="ROW-2",
-                source_seat_name="Lower revision branch",
+                source_seat_name="New branch",
+                mapping_version="seat-map-v2",
+            ),
+        ),
+    )
+
+    result = aggregate_seats(disclosures=[monday, tuesday], as_of=AS_OF)
+
+    aggregated = result.seats[0]
+    assert aggregated.source_seat_name == "New branch"
+    assert aggregated.mapping_version == "seat-map-v2"
+    assert aggregated.source_version == "v2"
+    assert [
+        contribution.source_seat_name for contribution in aggregated.contributions
+    ] == ["Old branch", "New branch"]
+    assert [
+        contribution.mapping_version for contribution in aggregated.contributions
+    ] == ["seat-map-v1", "seat-map-v2"]
+
+
+def test_aggregate_header_exact_availability_tie_keeps_first_seen():
+    earlier_in_input = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(seat(source_seat_name="First seen branch", mapping_version="map-v1"),),
+    )
+    later_in_input = disclosure(
+        disclosure_id="D2",
+        revision=1,
+        source_row_id="ROW-2",
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(
+            seat(
+                source_row_id="ROW-2",
+                source_seat_name="Tied branch",
+                mapping_version="map-v2",
             ),
         ),
     )
 
     result = aggregate_seats(
-        disclosures=[higher_revision, lower_revision],
+        disclosures=[earlier_in_input, later_in_input],
         as_of=AS_OF,
     )
 
-    assert result.seats[0].source_seat_name == "Higher revision branch"
+    aggregated = result.seats[0]
+    assert aggregated.source_seat_name == "First seen branch"
+    assert aggregated.mapping_version == "map-v1"
+    assert [
+        contribution.source_seat_name for contribution in aggregated.contributions
+    ] == ["First seen branch", "Tied branch"]
+
+
+def test_aggregate_selection_exact_tie_with_conflicting_payload_keeps_first_seen():
+    first = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        buy_amount=Decimal("100"),
+        sell_amount=Decimal("30"),
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+    conflicting = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        source_row_id="ROW-2",
+        buy_amount=Decimal("999"),
+        sell_amount=Decimal("1"),
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+
+    result = aggregate_seats(disclosures=[first, conflicting], as_of=AS_OF)
+
+    assert result.coverage.selected_disclosures == 1
+    assert result.seats[0].buy_amount == Decimal("100")
+    assert result.seats[0].sell_amount == Decimal("30")
+    assert result.seats[0].net_amount == Decimal("70")
+    assert len(result.seats[0].contributions) == 1
 
 
 def test_aggregate_name_or_mapping_divergence_does_not_raise():
@@ -652,6 +843,8 @@ def test_aggregate_name_or_mapping_divergence_does_not_raise():
         ("sell_amount", Decimal("-Infinity")),
         ("buy_amount", Decimal("-1")),
         ("sell_amount", Decimal("-0.01")),
+        ("buy_amount", True),
+        ("sell_amount", False),
     ],
 )
 def test_model_rejects_non_finite_or_negative_amount(field, value):
@@ -746,6 +939,10 @@ def test_model_rejects_revoked_and_unavailable_permission(state):
 
 @pytest.mark.parametrize("state", ["revoked", "unavailable"])
 def test_model_import_batch_requires_authorized_permission(state):
+    # The revision bypasses its own constructor via model_copy so the batch
+    # validator itself is what must reject a revoked/unavailable envelope.
+    revoked_revision = disclosure().model_copy(update={"permission": permission(state)})
+
     with pytest.raises(ValidationError, match="authorized"):
         LHBImportBatch(
             batch_id="batch-1",
@@ -755,6 +952,28 @@ def test_model_import_batch_requires_authorized_permission(state):
             received_at=T0,
             available_at=T0,
             permission=permission(state),
+            disclosures=(revoked_revision,),
+        )
+
+
+def test_model_rejects_revision_without_seat_rows():
+    payload = disclosure().model_dump()
+    payload["seats"] = ()
+
+    with pytest.raises(ValidationError, match="seats"):
+        DisclosureRevisionInput.model_validate(payload)
+
+
+def test_model_rejects_batch_without_disclosures():
+    with pytest.raises(ValidationError, match="disclosures"):
+        LHBImportBatch(
+            batch_id="batch-1",
+            source_id="lhb-source",
+            source_version="v1",
+            source_event_at=T0,
+            received_at=T0,
+            available_at=T0,
+            permission=permission(),
             disclosures=(),
         )
 
@@ -822,6 +1041,75 @@ def test_validate_import_batch_rejects_tampered_negative_amount():
 
     with pytest.raises(ValidationError, match="nonnegative|finite"):
         validate_import_batch(tampered)
+
+
+def test_validate_import_batch_rejects_revision_from_another_source():
+    foreign_revision = disclosure(disclosure_id="D2", source_id="other-source")
+    batch = import_batch().model_copy(update={"disclosures": (foreign_revision,)})
+
+    with pytest.raises(ValueError, match="source_id"):
+        validate_import_batch(batch)
+
+
+def test_validate_import_batch_rejects_revision_with_other_source_version():
+    foreign_revision = disclosure(disclosure_id="D2", source_version="v9")
+    batch = import_batch().model_copy(update={"disclosures": (foreign_revision,)})
+
+    with pytest.raises(ValueError, match="source_version"):
+        validate_import_batch(batch)
+
+
+def test_validate_import_batch_rejects_duplicate_source_row_across_batch():
+    first = disclosure(
+        disclosure_id="D1",
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(seat(source_row_id="ROW-1"),),
+    )
+    second = disclosure(
+        disclosure_id="D2",
+        available_at=utc("2026-09-18T09:00:00Z"),
+        seats=(seat(source_row_id="ROW-1"),),
+    )
+    batch = import_batch().model_copy(update={"disclosures": (first, second)})
+
+    with pytest.raises(ValueError, match="source_row_id"):
+        validate_import_batch(batch)
+
+
+def test_validate_import_batch_rejects_duplicate_seat_within_revision():
+    merged_violation = disclosure(
+        seats=(
+            seat(seat_id="SEAT-A", source_row_id="ROW-1"),
+            seat(
+                seat_id="SEAT-A",
+                source_row_id="ROW-2",
+                buy_amount=Decimal("5"),
+                sell_amount=Decimal("1"),
+            ),
+        )
+    )
+    batch = import_batch().model_copy(update={"disclosures": (merged_violation,)})
+
+    with pytest.raises(ValueError, match="seat_id"):
+        validate_import_batch(batch)
+
+
+def test_validate_import_batch_accepts_two_disclosures_with_distinct_rows():
+    first = disclosure(
+        disclosure_id="D1",
+        available_at=utc("2026-09-18T08:00:00Z"),
+        seats=(seat(source_row_id="ROW-1"),),
+    )
+    second = disclosure(
+        disclosure_id="D2",
+        available_at=utc("2026-09-18T09:00:00Z"),
+        seats=(seat(source_row_id="ROW-2"),),
+    )
+    batch = import_batch().model_copy(update={"disclosures": (first, second)})
+
+    validated = validate_import_batch(batch)
+
+    assert [item.disclosure_id for item in validated.disclosures] == ["D1", "D2"]
 
 
 @pytest.mark.parametrize("name", ["Zhang San", "张三", "John Smith Jr.", "  李四  "])
