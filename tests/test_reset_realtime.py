@@ -4158,8 +4158,8 @@ def test_realtime_multibatch_permission_checks_have_constant_query_counts(
 
     assert query_counts == {
         "quotes": 3,
-        "minutes": 3,
-        "anomalies": 4,
+        "minutes": 2,
+        "anomalies": 3,
         "flow": 3,
     }
     assert grant_query_counts == {
@@ -4168,6 +4168,195 @@ def test_realtime_multibatch_permission_checks_have_constant_query_counts(
         "anomalies": 1,
         "flow": 1,
     }
+
+
+def test_minutes_and_anomalies_authorization_reads_are_bounded_by_sources(
+    realtime_repository,
+):
+    from factories import grant
+    from sqlalchemy import event, insert
+
+    from dragon_radar.realtime.tables import (
+        realtime_anomaly_events,
+        realtime_minute_bars,
+        realtime_quote_batches,
+    )
+    from dragon_radar.storage.repository import Repository
+
+    sources = Repository(
+        realtime_repository.database,
+        clock=realtime_repository.clock,
+    )
+    sources.register_source(grant(source_id="bounded-backup-feed"))
+    source_ids = ("licensed-feed", "bounded-backup-feed")
+
+    def insert_history(start: int, stop: int) -> None:
+        parent_rows = []
+        minute_rows = []
+        anomaly_rows = []
+        for source_id in source_ids:
+            for revision in range(start, stop):
+                batch_id = f"{source_id}-history-{revision}"
+                available_at = T0 + timedelta(
+                    seconds=2,
+                    microseconds=revision,
+                )
+                parent_rows.append(
+                    {
+                        "id": uuid4(),
+                        "quote_batch_id": batch_id,
+                        "source_id": source_id,
+                        "source_version": "v1",
+                        "source_event_at": T0,
+                        "received_at": T0 + timedelta(seconds=1),
+                        "available_at": available_at,
+                        "permission_snapshot": permission().model_dump(mode="json"),
+                        "payload_hash": f"{revision:064x}",
+                        "imported_at": available_at,
+                    }
+                )
+                minute_rows.append(
+                    {
+                        "id": uuid4(),
+                        "source_id": source_id,
+                        "batch_id": batch_id,
+                        "source_version": "v1",
+                        "security_id": "600000.SH",
+                        "event_at": T0,
+                        "revision": revision,
+                        "open": Decimal(revision),
+                        "high": Decimal(revision),
+                        "low": Decimal(revision),
+                        "close": Decimal(revision),
+                        "volume": Decimal("100"),
+                        "amount": None,
+                        "final": True,
+                        "source_event_at": T0,
+                        "received_at": T0 + timedelta(seconds=1),
+                        "available_at": available_at,
+                    }
+                )
+                anomaly_rows.append(
+                    {
+                        "event_id": f"{source_id}-event-{revision:03}",
+                        "source_id": source_id,
+                        "batch_id": batch_id,
+                        "security_id": "600000.SH",
+                        "rule_version": f"bounded-rule-{revision}",
+                        "metric": "window_return",
+                        "window": 2,
+                        "value": Decimal("0.03"),
+                        "threshold": Decimal("0.02"),
+                        "event_at": T0,
+                        "available_at": available_at,
+                        "quality": "complete",
+                        "cooldown_bucket": T0,
+                    }
+                )
+        with realtime_repository.database.engine.begin() as connection:
+            connection.execute(insert(realtime_quote_batches), parent_rows)
+            connection.execute(insert(realtime_minute_bars), minute_rows)
+            connection.execute(insert(realtime_anomaly_events), anomaly_rows)
+
+    authorization_reads = []
+
+    def record_authorization_read(
+        _connection,
+        cursor,
+        statement,
+        parameters,
+        _context,
+        _executemany,
+    ):
+        if "realtime_source_authorization" in statement:
+            authorization_reads.append((statement, parameters, cursor.rowcount))
+
+    event.listen(
+        realtime_repository.database.engine,
+        "after_cursor_execute",
+        record_authorization_read,
+    )
+    try:
+        observed_sizes = []
+        for start, stop in ((1, 2), (2, 65)):
+            insert_history(start, stop)
+            minutes = realtime_repository.list_minutes(
+                security_id="600000.SH",
+                session_start=T0,
+                session_end=T0 + timedelta(minutes=1),
+                as_of=T0 + timedelta(hours=1),
+            )
+            anomalies = realtime_repository.list_anomalies(
+                date=T0.date(),
+                as_of=T0 + timedelta(hours=1),
+                limit=1,
+            )
+            observed_sizes.append((len(minutes.items), len(anomalies.items)))
+    finally:
+        event.remove(
+            realtime_repository.database.engine,
+            "after_cursor_execute",
+            record_authorization_read,
+        )
+
+    assert observed_sizes == [(2, 1), (2, 1)]
+    assert len(authorization_reads) == 4
+    assert [row_count for _, _, row_count in authorization_reads] == [2, 2, 2, 2]
+    for statement, _, _ in authorization_reads:
+        assert "FROM source_grants" in statement
+        assert "EXISTS (SELECT" in statement
+        assert "FOR SHARE OF source_grants" in statement
+
+    def plan_nodes(node):
+        yield node
+        for child in node.get("Plans", ()):
+            yield from plan_nodes(child)
+
+    raw_connection = realtime_repository.database.engine.raw_connection()
+    try:
+        cursor = raw_connection.cursor()
+        plans = []
+        for statement, parameters, _ in authorization_reads[-2:]:
+            cursor.execute(
+                f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {statement}",
+                parameters,
+            )
+            plans.append(cursor.fetchone()[0][0]["Plan"])
+        raw_connection.rollback()
+    finally:
+        raw_connection.close()
+
+    assert [plan["Actual Rows"] for plan in plans] == [2, 2]
+    history_relations = {
+        "realtime_quote_batches",
+        "realtime_minute_bars",
+    }
+    for plan in plans:
+        history_nodes = [
+            node
+            for node in plan_nodes(plan)
+            if node.get("Relation Name") in history_relations
+        ]
+        assert history_nodes
+        for node in history_nodes:
+            rows_per_loop = (
+                node["Actual Rows"]
+                + node.get("Rows Removed by Filter", 0)
+                + node.get("Rows Removed by Index Recheck", 0)
+            )
+            assert rows_per_loop * node["Actual Loops"] <= len(source_ids) * 4, {
+                key: node.get(key)
+                for key in (
+                    "Node Type",
+                    "Relation Name",
+                    "Index Name",
+                    "Actual Rows",
+                    "Actual Loops",
+                    "Rows Removed by Filter",
+                    "Recheck Cond",
+                    "Filter",
+                )
+            }
 
 
 def test_latest_quote_and_flow_batch_selection_is_limited_and_child_filtered(

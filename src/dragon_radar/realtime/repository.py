@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import DateTime, and_, cast, func, insert, or_, select
+from sqlalchemy import DateTime, and_, cast, func, insert, or_, select, true
 from sqlalchemy.exc import IntegrityError
 
 from dragon_radar.domain.models import SourceGrant
@@ -447,6 +447,116 @@ class RealtimeRepository(Repository):
         if batches and not authorized:
             raise Forbidden("Source is not authorized for realtime display")
         return tuple(authorized)
+
+    @staticmethod
+    def _permission_allows_display(permission, operation_now: datetime):
+        return (
+            permission["state"].as_string() == "authorized",
+            cast(
+                permission["captured_at"].as_string(),
+                DateTime(timezone=True),
+            )
+            <= operation_now,
+        )
+
+    def _authorized_read_sources(
+        self,
+        connection,
+        *,
+        as_of: datetime,
+        operation_now: datetime,
+        child_table,
+        child_filter=(),
+        batch_filter=(),
+        source_id: str | None = None,
+    ) -> tuple[str, ...]:
+        # Each existence check is a LATERAL ... LIMIT 1 probe in the join
+        # tree: limited lateral subqueries are evaluated per source grant and
+        # cannot be flattened into a hash semi join or hoisted into an
+        # initplan, so the plan stays a bounded nested-loop index probe
+        # regardless of how many historical batches exist (and without
+        # relying on table statistics). The authorized probe is an outer
+        # join so a candidate source whose latest permission snapshot is not
+        # displayable still surfaces for the Forbidden check below.
+        def visible_child():
+            return (
+                select(1)
+                .select_from(child_table)
+                .where(
+                    child_table.c.source_id == realtime_quote_batches.c.source_id,
+                    child_table.c.batch_id == realtime_quote_batches.c.quote_batch_id,
+                    *child_filter,
+                )
+                .limit(1)
+                .exists()
+            )
+
+        candidate_probe = (
+            select(1)
+            .select_from(realtime_quote_batches)
+            .where(
+                realtime_quote_batches.c.source_id == source_grants.c.source_id,
+                realtime_quote_batches.c.available_at <= as_of,
+                *batch_filter,
+                visible_child(),
+            )
+            .limit(1)
+            .correlate(source_grants)
+            .subquery()
+            .lateral("visible_candidate")
+        )
+        authorized_probe = (
+            select(true().label("permission_authorized"))
+            .select_from(realtime_quote_batches)
+            .where(
+                realtime_quote_batches.c.source_id == source_grants.c.source_id,
+                realtime_quote_batches.c.available_at <= as_of,
+                *batch_filter,
+                visible_child(),
+                *self._permission_allows_display(
+                    realtime_quote_batches.c.permission_snapshot,
+                    operation_now,
+                ),
+            )
+            .limit(1)
+            .correlate(source_grants)
+            .subquery()
+            .lateral("authorized_candidate")
+        )
+        query = (
+            select(
+                source_grants.c.source_id,
+                source_grants.c.grant,
+                authorized_probe.c.permission_authorized,
+            )
+            .select_from(source_grants)
+            .join(candidate_probe, true())
+            .outerjoin(authorized_probe, true())
+        )
+        if source_id is not None:
+            query = query.where(source_grants.c.source_id == source_id)
+        rows = (
+            connection.execute(
+                query.order_by(source_grants.c.source_id)
+                .with_for_update(of=source_grants, read=True)
+                .prefix_with("/* realtime_source_authorization */")
+            )
+            .mappings()
+            .all()
+        )
+        authorized_sources = tuple(
+            row["source_id"]
+            for row in rows
+            if row["permission_authorized"]
+            and grant_allows_display(
+                SourceGrant.model_validate(row["grant"]),
+                source_id=row["source_id"],
+                now=operation_now,
+            )
+        )
+        if rows and not authorized_sources:
+            raise Forbidden("Source is not authorized for realtime display")
+        return authorized_sources
 
     @staticmethod
     def _batch_values(batch, digest: str, imported_at: datetime) -> dict[str, Any]:
@@ -1293,47 +1403,24 @@ class RealtimeRepository(Repository):
         as_of = _utc(as_of, "as_of")
         batch_id, source_id = _validate_batch_selection(batch_id, source_id)
         with self.database.engine.begin() as connection:
-            parent_query = (
-                select(
-                    realtime_quote_batches.c.quote_batch_id,
-                    realtime_quote_batches.c.source_id,
-                    realtime_quote_batches.c.source_version,
-                    realtime_quote_batches.c.permission_snapshot,
-                )
-                .join(
-                    realtime_minute_bars,
-                    and_(
-                        realtime_minute_bars.c.source_id
-                        == realtime_quote_batches.c.source_id,
-                        realtime_minute_bars.c.batch_id
-                        == realtime_quote_batches.c.quote_batch_id,
-                        realtime_minute_bars.c.source_version
-                        == realtime_quote_batches.c.source_version,
-                    ),
-                )
-                .where(
+            operation_now = _utc(self.clock(), "operation time")
+            batch_filter = ()
+            if batch_id is not None:
+                batch_filter = (realtime_quote_batches.c.quote_batch_id == batch_id,)
+            authorized_sources = self._authorized_read_sources(
+                connection,
+                as_of=as_of,
+                operation_now=operation_now,
+                child_table=realtime_minute_bars,
+                child_filter=(
                     realtime_minute_bars.c.security_id == security_id,
                     window_filter,
                     realtime_minute_bars.c.available_at <= as_of,
-                    realtime_quote_batches.c.available_at <= as_of,
-                )
+                ),
+                batch_filter=batch_filter,
+                source_id=source_id,
             )
-            if batch_id is not None:
-                parent_query = parent_query.where(
-                    realtime_minute_bars.c.batch_id == batch_id
-                )
-            if source_id is not None:
-                parent_query = parent_query.where(
-                    realtime_minute_bars.c.source_id == source_id
-                )
-            parents = connection.execute(parent_query.distinct()).mappings().all()
-            parents = self._authorize_reads(
-                connection,
-                parents,
-                _utc(self.clock(), "operation time"),
-                filter_unauthorized=source_id is None,
-            )
-            if not parents:
+            if not authorized_sources:
                 kind_batch = self._select_authorized_batch(
                     connection,
                     as_of=as_of,
@@ -1359,7 +1446,6 @@ class RealtimeRepository(Repository):
                         unavailable_reason="no_data",
                     ),
                 )
-            authorized_sources = {parent["source_id"] for parent in parents}
             query = (
                 select(realtime_minute_bars)
                 .join(
@@ -1379,6 +1465,10 @@ class RealtimeRepository(Repository):
                     window_filter,
                     realtime_minute_bars.c.available_at <= as_of,
                     realtime_quote_batches.c.available_at <= as_of,
+                    *self._permission_allows_display(
+                        realtime_quote_batches.c.permission_snapshot,
+                        operation_now,
+                    ),
                 )
             )
             if batch_id is not None:
@@ -1608,45 +1698,24 @@ class RealtimeRepository(Repository):
                         )
                     )
                 )
-            visible_minutes = (
-                select(1)
-                .select_from(realtime_minute_bars)
-                .where(
-                    realtime_minute_bars.c.source_id
-                    == realtime_quote_batches.c.source_id,
-                    realtime_minute_bars.c.batch_id
-                    == realtime_quote_batches.c.quote_batch_id,
+            authorized_sources = self._authorized_read_sources(
+                connection,
+                as_of=as_of,
+                operation_now=operation_now,
+                child_table=realtime_minute_bars,
+                child_filter=(
                     realtime_minute_bars.c.event_at >= day_start,
                     realtime_minute_bars.c.event_at < day_end,
                     realtime_minute_bars.c.available_at <= as_of,
-                )
+                    *(
+                        (realtime_minute_bars.c.security_id == security_id,)
+                        if security_id is not None
+                        else ()
+                    ),
+                ),
+                batch_filter=(realtime_quote_batches.c.ingest_order <= watermark,),
+                source_id=source_id,
             )
-            if security_id is not None:
-                visible_minutes = visible_minutes.where(
-                    realtime_minute_bars.c.security_id == security_id
-                )
-            source_query = select(
-                realtime_quote_batches.c.quote_batch_id,
-                realtime_quote_batches.c.source_id,
-                realtime_quote_batches.c.source_version,
-                realtime_quote_batches.c.permission_snapshot,
-            ).where(
-                visible_minutes.offset(0).exists(),
-                realtime_quote_batches.c.available_at <= as_of,
-                realtime_quote_batches.c.ingest_order <= watermark,
-            )
-            if source_id is not None:
-                source_query = source_query.where(
-                    realtime_quote_batches.c.source_id == source_id
-                )
-            parents = connection.execute(source_query.distinct()).mappings().all()
-            parents = self._authorize_reads(
-                connection,
-                parents,
-                operation_now,
-                filter_unauthorized=source_id is None,
-            )
-            authorized_sources = {parent["source_id"] for parent in parents}
             if not authorized_sources:
                 return AnomalyReadResult(
                     as_of=as_of,
@@ -1676,6 +1745,10 @@ class RealtimeRepository(Repository):
                     realtime_anomaly_events.c.available_at <= as_of,
                     realtime_quote_batches.c.available_at <= as_of,
                     realtime_quote_batches.c.ingest_order <= watermark,
+                    *self._permission_allows_display(
+                        realtime_quote_batches.c.permission_snapshot,
+                        operation_now,
+                    ),
                 )
             )
             if security_id is not None:
