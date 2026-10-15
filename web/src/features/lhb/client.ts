@@ -190,6 +190,10 @@ const MAX_TEXT_CODEPOINTS = 4096;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2}):(\d{2}))$/;
 const JSON_DECIMAL = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+// Text-only sign check, matching the realtime client: Number() underflows
+// values like '-1e-400' to negative zero, so numeric conversion must not be
+// used to distinguish negative values from zero.
+const NEGATIVE_NONZERO_DECIMAL = /^-(?!0(?:\.0*)?(?:[eE][+-]?\d+)?$)/;
 
 type RecordValue = Record<string, unknown>;
 
@@ -247,7 +251,7 @@ function finite(value: unknown, field: string, nullable = false): string | null 
 
 function nonnegative(value: unknown, field: string, nullable = false): string | null {
   const result = finite(value, field, nullable);
-  if (result !== null && result.startsWith('-') && Number(result) !== 0) fail(field);
+  if (result !== null && NEGATIVE_NONZERO_DECIMAL.test(result)) fail(field);
   return result;
 }
 
@@ -520,10 +524,6 @@ export function validateDisclosureList(
     notAfter(item.source_event_at, base.as_of, 'item source timestamp');
     notAfter(item.received_at, base.as_of, 'item received timestamp');
     notAfter(item.available_at, base.as_of, 'item available timestamp');
-    for (const seat of item.seats) {
-      currencies.add(seat.currency);
-      units.add(seat.unit);
-    }
   }
 
   // Page-level seat aggregation mirrors the backend accumulation: a seat is
@@ -531,16 +531,20 @@ export function validateDisclosureList(
   // computed over ALL selected disclosures, while a response only carries the
   // current page, so bounds stay subset-safe until the page provably contains
   // every selected disclosure (items.length === total), at which point the
-  // page aggregation must equal the reported coverage exactly.
+  // page aggregation must equal the reported coverage exactly. The bucket key
+  // is the composite, source-scoped (source_id, seat_id), matching
+  // service.aggregate_seats: two authorized sources that reuse the same seat
+  // identifier on the same date/security never merge.
   const pageSeats = new Map<string, { rows: number; completeRows: number }>();
   let pageSeatRows = 0;
   for (const item of items) {
     for (const seat of item.seats) {
       pageSeatRows += 1;
-      const bucket = pageSeats.get(seat.seat_id) ?? { rows: 0, completeRows: 0 };
+      const seatKey = `${item.source_id}\u0000${seat.seat_id}`;
+      const bucket = pageSeats.get(seatKey) ?? { rows: 0, completeRows: 0 };
       bucket.rows += 1;
       if (seat.completeness === 'complete') bucket.completeRows += 1;
-      pageSeats.set(seat.seat_id, bucket);
+      pageSeats.set(seatKey, bucket);
       currencies.add(seat.currency);
       units.add(seat.unit);
     }

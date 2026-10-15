@@ -68,10 +68,6 @@ function amount(value: string | null): string {
   return formatLhbDecimal(value);
 }
 
-function mappingLabel(value: string): string {
-  return value === 'unknown' ? '未知' : value;
-}
-
 function CompletenessToken({ value }: { value: SeatCompleteness }) {
   return <span className={`status-token ${value === 'complete' ? 'state-complete' : 'state-partial'}`}>
     {completenessNames[value]}
@@ -100,7 +96,7 @@ function SeatRow({
   seat: DisclosureSeat;
   onHistory: (seat: DisclosureSeat, trigger: HTMLElement) => void;
 }) {
-  return <tr key={`${item.disclosure_id}-${seat.source_row_id}`}>
+  return <tr key={`${item.source_id}\u0000${seat.source_row_id}`}>
     <th data-label="席位">
       <strong>{seat.source_seat_name}</strong>
       <small>{seat.seat_id} · {seat.mapping_version} · 行 {seat.source_row_id}</small>
@@ -138,7 +134,7 @@ function ContributionTable({ contributions }: { contributions: SeatContribution[
           <td data-label="原因">{contribution.reason}</td>
           <td data-label="来源行">{contribution.source_row_id}</td>
           <td data-label="席位名">{contribution.source_seat_name}</td>
-          <td data-label="映射">{mappingLabel(contribution.mapping_version)}</td>
+          <td data-label="映射">{contribution.mapping_version}</td>
           <td data-label="权限状态（接口原值）">
             <span className="status-token state-partial">{contribution.permission_state}</span>
           </td>
@@ -222,12 +218,15 @@ function SeatHistoryDialog({
         : <dl className="analysis-context" aria-label="席位身份">
           <div><dt>来源标识</dt><dd>{data.seat.source_id}</dd></div>
           <div><dt>席位名称</dt><dd>{data.seat.source_seat_name}</dd></div>
-          <div><dt>映射版本</dt><dd>{mappingLabel(data.seat.mapping_version)}</dd></div>
+          <div><dt>映射版本</dt><dd>{data.seat.mapping_version}</dd></div>
         </dl>}
       {empty
         ? <p className="empty">该席位在当前研究时点之前没有可显示的上榜历史。</p>
         : <ol className="lhb-history-list">
-          {data.items.map(item => <AggregatedHistory key={`${item.source_id}-${item.source_version}-${item.seat_id}`} aggregated={item} />)}
+          {data.items.map((item, index) => <AggregatedHistory
+            key={`${item.source_id}\u0000${item.seat_id}\u0000${item.contributions[0]?.disclosure_date ?? index}`}
+            aggregated={item}
+          />)}
         </ol>}
     </>}
   </dialog>;
@@ -300,7 +299,7 @@ export function SeatsPanel({ date, securityId, asOf, refreshToken = 0 }: Props) 
     {data && data.items.map(item => (
       <section
         className="leaders-section"
-        key={`${item.disclosure_id}-${item.revision}`}
+        key={`${item.source_id}\u0000${item.disclosure_id}-${item.revision}`}
         aria-label={`披露 ${item.disclosure_id}`}
       >
       <div className="section-heading">
@@ -319,7 +318,7 @@ export function SeatsPanel({ date, securityId, asOf, refreshToken = 0 }: Props) 
             <th>净额</th><th>单位</th><th>完整度</th><th>席位历史</th>
           </tr></thead>
           <tbody>{item.seats.map(seat =>
-            <SeatRow key={seat.source_row_id} item={item} seat={seat} onHistory={(selected, trigger) =>
+            <SeatRow key={`${item.source_id}\u0000${seat.source_row_id}`} item={item} seat={seat} onHistory={(selected, trigger) =>
               setActive({ seatId: selected.seat_id, trigger })} />)}</tbody>
         </table>
       </TableScroll>

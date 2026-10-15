@@ -559,6 +559,28 @@ describe('EX08 disclosure list validation', () => {
     }
   });
 
+  it('rejects negative underflow tokens while accepting negative zero spellings', () => {
+    for (const negativeUnderflow of ['-1e-400', '-0.0001']) {
+      const response = listResponse();
+      Object.assign(
+        (response.data as { items: { seats: Record<string, unknown>[] }[] })
+          .items[0].seats[0],
+        { buy_amount: negativeUnderflow },
+      );
+      expect(() => validateDisclosureList(response, selection())).toThrow(/amount/i);
+    }
+    for (const negativeZero of ['-0', '-0.0', '-0e0']) {
+      const response = listResponse();
+      Object.assign(
+        (response.data as { items: { seats: Record<string, unknown>[] }[] })
+          .items[0].seats[0],
+        { buy_amount: negativeZero },
+      );
+      expect(validateDisclosureList(response, selection())
+        .data.items[0].seats[0].buy_amount).toBe(negativeZero);
+    }
+  });
+
   it('rejects unknown side, rank or revision values', () => {
     const response = listResponse();
     const seats = (response.data as { items: { seats: Record<string, unknown>[] }[] })
@@ -716,6 +738,113 @@ describe('EX08 disclosure list validation', () => {
     });
     expect(() => validateDisclosureList(tooFewComplete, selection()))
       .toThrow(/coverage/i);
+  });
+
+  it('keeps the same seat_id from two authorized sources apart in full-page coverage', () => {
+    // Backend coverage counts distinct (source_id, seat_id) pairs: two
+    // authorized feeds may reuse one seat identifier on the same date and
+    // security without merging (service.aggregate_seats).
+    const sharedSeat = (rowId: string, partial: boolean) => ({
+      source_row_id: rowId,
+      seat_id: 'SEAT-X',
+      source_seat_name: '同名席位演示',
+      mapping_version: 'map-v1',
+      side: partial ? null : 'buy',
+      rank: partial ? null : 1,
+      buy_amount: partial ? null : 100,
+      sell_amount: partial ? 0 : 40,
+      currency: 'CNY',
+      unit: '元',
+      completeness: partial ? 'buy_unknown' : 'complete',
+      net_amount: partial ? null : 60,
+    });
+    const response = listResponse({
+      source: null,
+      source_version: null,
+      coverage: {
+        total_disclosures: 2,
+        visible_disclosures: 2,
+        late_disclosures: 0,
+        selected_disclosures: 2,
+        seat_count: 2,
+        complete_seats: 1,
+        unknown_seats: 1,
+      },
+      data: {
+        items: [
+          disclosureItem({
+            disclosure_id: 'disc-a',
+            source_id: 'feed-a',
+            source_version: 'v1',
+            source_event_at: '2026-09-10T07:10:00Z',
+            received_at: '2026-09-10T07:20:00Z',
+            available_at: '2026-09-10T07:30:00Z',
+            seats: [sharedSeat('row-a1', false)],
+          }),
+          disclosureItem({
+            disclosure_id: 'disc-b',
+            source_id: 'feed-b',
+            source_version: 'v9',
+            source_event_at: '2026-09-10T07:11:00Z',
+            received_at: '2026-09-10T07:21:00Z',
+            available_at: '2026-09-10T07:31:00Z',
+            seats: [sharedSeat('row-b1', true)],
+          }),
+        ],
+        total: 2,
+        page: 1,
+        size: 20,
+      },
+    });
+
+    const result = validateDisclosureList(response, selection());
+    const seats = result.data.items.map(item => item.seats[0]);
+    expect(seats.map(item => `${item.source_row_id}`)).toEqual(['row-a1', 'row-b1']);
+    expect(seats.map(item => item.completeness)).toEqual(['complete', 'buy_unknown']);
+    expect(result.coverage.seat_count).toBe(2);
+  });
+
+  it('counts one composite (source, seat) key once across two disclosures', () => {
+    // Control case: the SAME source reusing the same seat_id across two of its
+    // own disclosures is still a single aggregated seat on the backend.
+    const response = listResponse({
+      source: null,
+      source_version: null,
+      coverage: {
+        total_disclosures: 2,
+        visible_disclosures: 2,
+        late_disclosures: 0,
+        selected_disclosures: 2,
+        seat_count: 1,
+        complete_seats: 1,
+        unknown_seats: 0,
+      },
+      data: {
+        items: [
+          disclosureItem({
+            disclosure_id: 'disc-a',
+            source_event_at: '2026-09-10T07:10:00Z',
+            received_at: '2026-09-10T07:20:00Z',
+            available_at: '2026-09-10T07:30:00Z',
+            seats: [seat({ source_row_id: 'row-a1', seat_id: 'SEAT-X' })],
+          }),
+          disclosureItem({
+            disclosure_id: 'disc-b',
+            source_event_at: '2026-09-10T07:11:00Z',
+            received_at: '2026-09-10T07:21:00Z',
+            available_at: '2026-09-10T07:31:00Z',
+            seats: [seat({ source_row_id: 'row-a2', seat_id: 'SEAT-X' })],
+          }),
+        ],
+        total: 2,
+        page: 1,
+        size: 20,
+      },
+    });
+
+    const result = validateDisclosureList(response, selection());
+    expect(result.coverage.seat_count).toBe(1);
+    expect(result.data.items).toHaveLength(2);
   });
 
   it('requires no_data and null source/basis exactly for an empty window', () => {
