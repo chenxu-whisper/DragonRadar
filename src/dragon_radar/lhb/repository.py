@@ -27,6 +27,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import DateTime, and_, cast, insert, select, true
+from sqlalchemy.exc import IntegrityError
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.domain.quality import grant_allows_display, grant_allows_storage
@@ -338,6 +339,28 @@ class LHBRepository(Repository):
 
         digest = _canonical_hash({"kind": "lhb", "batch": _batch_payload(validated)})
 
+        try:
+            return self._persist_validated(connection, validated, digest, now)
+        except IntegrityError:
+            # Last-resort backstop for any constraint race the pre-checks and
+            # advisory locks did not cover: never leak SQL text or constraint
+            # names; roll back and record one structured rejected attempt.
+            raise _RejectedImport(
+                Conflict("Conflicting LHB batch"),
+                reason="integrity_error",
+                details={"kind": "lhb", "error_type": "IntegrityError"},
+                digest=digest,
+            ) from None
+
+    def _persist_validated(
+        self,
+        connection,
+        validated: LHBImportBatch,
+        digest: str,
+        now: datetime,
+    ) -> LHBImportResult:
+        source_id = _identifier(validated.source_id)
+        batch_id = _identifier(validated.batch_id)
         existing = (
             connection.execute(
                 select(lhb_import_batches).where(
@@ -453,6 +476,7 @@ class LHBRepository(Repository):
 
         self._insert_disclosure_identities(connection, batch, digest)
         self._insert_seat_identities(connection, batch, digest)
+        self._reject_stored_currency_unit_conflicts(connection, batch, digest)
         self._insert_revisions(connection, batch, batch_digest=digest)
 
         seat_row_count = sum(len(revision.seats) for revision in batch.disclosures)
@@ -597,6 +621,59 @@ class LHBRepository(Repository):
             )
         if missing:
             connection.execute(insert(lhb_seats), missing)
+
+    @staticmethod
+    def _reject_stored_currency_unit_conflicts(
+        connection, batch: LHBImportBatch, digest: str
+    ) -> None:
+        # Fail closed at the import boundary: once a (source_id, seat_id) has
+        # stored amounts in one currency/unit, a later payload claiming another
+        # pair would make the pure aggregation raise and permanently break the
+        # day's reads. In-batch consistency is already guaranteed by
+        # validate_import_batch; this guards the new payload against history.
+        wanted: dict[str, tuple[str, str]] = {}
+        for revision in batch.disclosures:
+            for row in revision.seats:
+                wanted.setdefault(row.seat_id, (row.currency, row.unit))
+        if not wanted:
+            return
+        stored: dict[str, tuple[str, str]] = {}
+        rows = connection.execute(
+            select(
+                lhb_disclosure_seats.c.seat_id,
+                lhb_disclosure_seats.c.currency,
+                lhb_disclosure_seats.c.unit,
+            )
+            .distinct()
+            .where(
+                lhb_disclosure_seats.c.source_id == batch.source_id,
+                lhb_disclosure_seats.c.seat_id.in_(tuple(wanted)),
+            )
+        ).all()
+        for seat_id, currency, unit in rows:
+            previous = stored.get(seat_id)
+            if previous is not None and previous != (currency, unit):
+                raise _RejectedImport(
+                    Conflict(
+                        f"stored LHB seat {seat_id} already mixes currency/unit values"
+                    ),
+                    reason="currency_unit_conflict",
+                    details={"kind": "lhb"},
+                    digest=digest,
+                )
+            stored[seat_id] = (currency, unit)
+        for seat_id, money in wanted.items():
+            if seat_id in stored and stored[seat_id] != money:
+                raise _RejectedImport(
+                    Conflict(
+                        f"incompatible currency/unit for LHB seat {seat_id}: "
+                        f"payload {money[0]}/{money[1]} differs from stored "
+                        f"{stored[seat_id][0]}/{stored[seat_id][1]}"
+                    ),
+                    reason="currency_unit_conflict",
+                    details={"kind": "lhb"},
+                    digest=digest,
+                )
 
     @staticmethod
     def _insert_revisions(
@@ -854,7 +931,6 @@ class LHBRepository(Repository):
                 revision.c.available_at,
                 revision.c.permission_snapshot,
                 batch.c.source_version,
-                batch.c.available_at.label("batch_available_at"),
                 disclosure.c.security_id,
                 disclosure.c.disclosure_date,
                 disclosure.c.reason,
@@ -1122,8 +1198,21 @@ class LHBRepository(Repository):
         )
         return connection.execute(query).first() is not None
 
+    @staticmethod
+    def _synthetic_header(selection: SeatHistorySelection) -> SeatIdentity:
+        return SeatIdentity(
+            source_id=selection.seat_id,
+            seat_id=selection.seat_id,
+            source_seat_name=selection.seat_id,
+            mapping_version="unknown",
+        )
+
     def _seat_header(
-        self, connection, records, selection: SeatHistorySelection
+        self,
+        connection,
+        records,
+        selection: SeatHistorySelection,
+        authorized_sources: Sequence[str],
     ) -> SeatIdentity:
         if records:
             header_record = max(
@@ -1140,10 +1229,18 @@ class LHBRepository(Repository):
                 source_seat_name=header_record["seats"][0]["source_seat_name"],
                 mapping_version=header_record["seats"][0]["mapping_version"],
             )
+        # Empty-window fallback. The catalog lookup MUST stay scoped to the
+        # sources the caller is authorized for: a global seat_id hit would leak
+        # an unauthorized source's identity through the empty envelope.
+        if not authorized_sources:
+            return self._synthetic_header(selection)
         catalog = (
             connection.execute(
                 select(lhb_seats)
-                .where(lhb_seats.c.seat_id == selection.seat_id)
+                .where(
+                    lhb_seats.c.seat_id == selection.seat_id,
+                    lhb_seats.c.source_id.in_(tuple(authorized_sources)),
+                )
                 .order_by(lhb_seats.c.mapping_version.desc(), lhb_seats.c.source_id)
                 .limit(1)
             )
@@ -1157,12 +1254,7 @@ class LHBRepository(Repository):
                 source_seat_name=catalog["source_seat_name"],
                 mapping_version=catalog["mapping_version"],
             )
-        return SeatIdentity(
-            source_id=selection.seat_id,
-            seat_id=selection.seat_id,
-            source_seat_name=selection.seat_id,
-            mapping_version="unknown",
-        )
+        return self._synthetic_header(selection)
 
     def get_seat_history(self, selection: SeatHistorySelection) -> SeatHistory:
         if not isinstance(selection, SeatHistorySelection):
@@ -1208,9 +1300,12 @@ class LHBRepository(Repository):
                     operation_now=operation_now,
                     anchor_date=selection.date,
                 )
-                header = self._seat_header(connection, (), selection)
                 if anchor_exists:
                     raise NotFound("Seat has no history in the selected window")
+                # Build the header only after the NotFound short-circuit, and
+                # with no authorized sources so the catalog cannot leak an
+                # unauthorized source's identity.
+                header = self._seat_header(connection, (), selection, ())
                 return self._empty_history(selection, as_of, header)
 
             revisions = self._fetch_revisions(
@@ -1253,12 +1348,16 @@ class LHBRepository(Repository):
                     operation_now=operation_now,
                     anchor_date=selection.date,
                 )
-                header = self._seat_header(connection, (), selection)
                 if anchor_exists:
                     raise NotFound("Seat has no history in the selected window")
+                header = self._seat_header(
+                    connection, (), selection, authorized_sources
+                )
                 return self._empty_history(selection, as_of, header)
 
-            header = self._seat_header(connection, visible_records, selection)
+            header = self._seat_header(
+                connection, visible_records, selection, authorized_sources
+            )
 
         complete_seats = sum(item.completeness == "complete" for item in items)
         coverage = AggregationCoverage(

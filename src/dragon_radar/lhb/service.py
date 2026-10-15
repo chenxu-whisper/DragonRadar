@@ -60,14 +60,20 @@ def validate_import_batch(batch: LHBImportBatch) -> LHBImportBatch:
     Pydantic construction enforces field-level and per-row contracts; this
     boundary adds the cross-row invariants of one import envelope:
     every revision belongs to the envelope's source/version, ``source_row_id``
-    is unique across the whole batch (a row can never be double-counted), and
+    is unique across the whole batch (a row can never be double-counted),
     ``seat_id`` is unique within each revision (the canonical adapter supplies
-    one merged buy/sell row per seat per revision).
+    one merged buy/sell row per seat per revision), every revision chain that
+    shares one ``(source_id, disclosure_id)`` keeps the same disclosure
+    identity (security/date/reason/permission), and one source-scoped seat can
+    never mix currency/unit values (such a payload could permanently break the
+    day's aggregation).
     """
     if not isinstance(batch, LHBImportBatch):
         raise TypeError("batch must be an LHBImportBatch")
     validated = LHBImportBatch.model_validate(batch.model_dump())
     seen_source_rows: set[str] = set()
+    disclosure_identities: dict[tuple[str, str], tuple] = {}
+    seat_units: dict[tuple[str, str], tuple[str, str]] = {}
     for revision in validated.disclosures:
         if revision.source_id != validated.source_id:
             raise ValueError(
@@ -81,6 +87,21 @@ def validate_import_batch(batch: LHBImportBatch) -> LHBImportBatch:
                 f"{revision.source_version!r} does not match batch "
                 f"source_version {validated.source_version!r}"
             )
+        disclosure_key = (revision.source_id, revision.disclosure_id)
+        identity = (
+            revision.security_id,
+            revision.disclosure_date,
+            revision.reason,
+            revision.permission.permission_id,
+        )
+        previous_identity = disclosure_identities.get(disclosure_key)
+        if previous_identity is not None and previous_identity != identity:
+            raise ValueError(
+                f"revision chain {revision.disclosure_id!r} carries divergent "
+                "disclosure identity fields across revisions "
+                "(security_id/disclosure_date/reason/permission_id)"
+            )
+        disclosure_identities.setdefault(disclosure_key, identity)
         seat_ids: set[str] = set()
         for row in revision.seats:
             if row.source_row_id in seen_source_rows:
@@ -94,6 +115,16 @@ def validate_import_batch(batch: LHBImportBatch) -> LHBImportBatch:
                     f"{revision.disclosure_id}"
                 )
             seat_ids.add(row.seat_id)
+            seat_key = (revision.source_id, row.seat_id)
+            money = (row.currency, row.unit)
+            previous_money = seat_units.get(seat_key)
+            if previous_money is not None and previous_money != money:
+                raise ValueError(
+                    f"seat {row.seat_id!r} from source {revision.source_id!r} "
+                    "mixes incompatible currency/unit values across "
+                    "disclosures in the same batch"
+                )
+            seat_units.setdefault(seat_key, money)
     return validated
 
 

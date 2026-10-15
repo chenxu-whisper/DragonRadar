@@ -1116,6 +1116,114 @@ def test_validate_import_batch_accepts_two_disclosures_with_distinct_rows():
     assert [item.disclosure_id for item in validated.disclosures] == ["D1", "D2"]
 
 
+def _chain_revision(revision, **changes):
+    values = {
+        "disclosure_id": "D1",
+        "revision": revision,
+        "source_row_id": f"ROW-{revision}",
+        "source_event_at": utc(f"2026-09-18T0{revision + 7}:00:00Z"),
+        "received_at": utc(f"2026-09-18T0{revision + 7}:00:01Z"),
+        "available_at": utc(f"2026-09-18T0{revision + 7}:00:02Z"),
+        "buy_amount": Decimal(f"10{revision}"),
+        "sell_amount": Decimal("35"),
+    }
+    values.update(changes)
+    return disclosure(**values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("disclosure_date", date(2026, 9, 19)),
+        ("reason", "换手率达20%的证券"),
+        ("security_id", "000001.SZ"),
+        (
+            "permission",
+            PermissionSnapshot(
+                permission_id="lhb-permission-2",
+                state="authorized",
+                captured_at=T0,
+            ),
+        ),
+    ],
+)
+def test_validate_import_batch_rejects_divergent_identity_across_revisions(
+    field, value
+):
+    first = _chain_revision(1)
+    second = _chain_revision(2, **{field: value})
+    batch = import_batch().model_copy(update={"disclosures": (first, second)})
+
+    with pytest.raises(ValueError, match="disclosure identity"):
+        validate_import_batch(batch)
+
+
+def test_validate_import_batch_accepts_revision_chain_with_consistent_identity():
+    first = _chain_revision(1)
+    second = _chain_revision(2)
+    batch = import_batch().model_copy(update={"disclosures": (first, second)})
+
+    validated = validate_import_batch(batch)
+
+    assert [item.revision for item in validated.disclosures] == [1, 2]
+    assert {item.disclosure_date for item in validated.disclosures} == {DISCLOSED_ON}
+
+
+@pytest.mark.parametrize(
+    ("currency", "unit"),
+    [("USD", "yuan"), ("CNY", "dollar"), ("USD", "dollar")],
+)
+def test_validate_import_batch_rejects_mixed_currency_unit_for_same_seat(
+    currency, unit
+):
+    first = disclosure(
+        disclosure_id="D1",
+        source_row_id="ROW-1",
+        currency="CNY",
+        unit="yuan",
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+    second = disclosure(
+        disclosure_id="D2",
+        source_row_id="ROW-2",
+        currency=currency,
+        unit=unit,
+        available_at=utc("2026-09-18T09:00:00Z"),
+    )
+    batch = import_batch().model_copy(update={"disclosures": (first, second)})
+
+    with pytest.raises(ValueError, match="currency/unit"):
+        validate_import_batch(batch)
+
+
+def test_validate_import_batch_accepts_consistent_currency_unit_across_revisions():
+    first = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        source_row_id="ROW-1",
+        currency="CNY",
+        unit="yuan",
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+    second = disclosure(
+        disclosure_id="D1",
+        revision=2,
+        source_row_id="ROW-2",
+        currency="CNY",
+        unit="yuan",
+        buy_amount=Decimal("110"),
+        sell_amount=Decimal("35"),
+        source_event_at=utc("2026-09-18T09:00:00Z"),
+        received_at=utc("2026-09-18T09:00:01Z"),
+        available_at=utc("2026-09-18T09:00:02Z"),
+    )
+    batch = import_batch().model_copy(update={"disclosures": (first, second)})
+
+    validated = validate_import_batch(batch)
+
+    assert [item.revision for item in validated.disclosures] == [1, 2]
+
+
 @pytest.mark.parametrize("name", ["Zhang San", "张三", "John Smith Jr.", "  李四  "])
 def test_model_seat_name_accepts_person_like_plain_string(name):
     model = seat(source_seat_name=name)
@@ -2943,6 +3051,420 @@ def test_lhb_repo_null_side_with_known_amounts_is_accepted_and_complete(
     )
     assert replay.status == "duplicate"
     assert replay.payload_hash == result.payload_hash
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("disclosure_date", date(2026, 9, 19)),
+        ("reason", "换手率达20%的证券"),
+    ],
+)
+def test_lhb_repo_divergent_revision_chain_identity_is_rejected_with_zero_rows(
+    lhb_repository, field, value
+):
+    # A divergent same-batch revision chain must be rejected at the trust
+    # boundary: one rejected attempt, zero domain rows, no raw IntegrityError.
+    from dragon_radar.lhb.tables import lhb_import_attempts
+
+    first = _chain_revision(1)
+    second = _chain_revision(2, **{field: value})
+
+    result = lhb_repository.ingest_batch(
+        repo_batch("divergent-identity", disclosures=(first, second))
+    )
+
+    assert result.status == "rejected"
+    assert result.reason == "validation_failed"
+    counts = lhb_table_counts(lhb_repository.database.engine)
+    assert counts["lhb_import_batches"] == 0
+    assert counts["lhb_disclosures"] == 0
+    assert counts["lhb_disclosure_revisions"] == 0
+    assert counts["lhb_disclosure_seats"] == 0
+    assert counts["lhb_seats"] == 0
+    assert counts["lhb_import_attempts"] == 1
+    with lhb_repository.database.engine.connect() as connection:
+        attempt = connection.execute(select(lhb_import_attempts)).mappings().one()
+    assert attempt["status"] == "rejected"
+    assert attempt["reason"] == "validation_failed"
+
+
+def test_lhb_repo_currency_unit_conflict_with_stored_history_is_rejected(
+    lhb_repository,
+):
+    # A new payload that changes currency/unit for an already-stored
+    # (source_id, seat_id) must fail closed as a structured conflict without
+    # polluting the existing rows.
+    from dragon_radar.lhb.tables import lhb_import_attempts
+    from dragon_radar.storage.repository import Conflict
+
+    first = disclosure(
+        disclosure_id="D1",
+        source_row_id="ROW-1",
+        currency="CNY",
+        unit="yuan",
+    )
+    accepted = lhb_repository.ingest_batch(repo_batch("money-1", disclosures=(first,)))
+    assert accepted.status == "accepted"
+
+    changed = disclosure(
+        disclosure_id="D2",
+        source_row_id="ROW-2",
+        currency="USD",
+        unit="dollar",
+    )
+    with pytest.raises(Conflict, match="currency/unit") as conflict:
+        lhb_repository.ingest_batch(repo_batch("money-2", disclosures=(changed,)))
+    assert "lhb_disclosure_seats" not in str(conflict.value)
+
+    # The original rows stay untouched and the rejected attempt is audited.
+    counts = lhb_table_counts(lhb_repository.database.engine)
+    assert counts["lhb_import_batches"] == 1
+    assert counts["lhb_disclosure_revisions"] == 1
+    assert counts["lhb_disclosure_seats"] == 1
+    with lhb_repository.database.engine.connect() as connection:
+        attempts = (
+            connection.execute(
+                select(
+                    lhb_import_attempts.c.status,
+                    lhb_import_attempts.c.reason,
+                    lhb_import_attempts.c.details,
+                ).order_by(lhb_import_attempts.c.created_at, lhb_import_attempts.c.id)
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["status"] for row in attempts] == ["accepted", "rejected"]
+    assert attempts[1]["reason"] == "currency_unit_conflict"
+    assert attempts[1]["details"] == {"kind": "lhb"}
+
+    # Same currency/unit on a new revision still goes through.
+    consistent = disclosure(
+        disclosure_id="D3",
+        source_row_id="ROW-3",
+        currency="CNY",
+        unit="yuan",
+    )
+    follow_up = lhb_repository.ingest_batch(
+        repo_batch("money-3", disclosures=(consistent,))
+    )
+    assert follow_up.status == "accepted"
+
+
+def test_lhb_repo_integrity_error_becomes_structured_conflict(
+    lhb_repository, monkeypatch
+):
+    # Backstop: when a constraint violation escapes the pre-checks, the raw
+    # SQLAlchemy IntegrityError (SQL text / constraint name) must never reach
+    # the caller; it becomes a structured Conflict plus a rejected attempt.
+    from dragon_radar.lhb.repository import LHBRepository
+    from dragon_radar.lhb.tables import lhb_import_attempts
+    from dragon_radar.storage.repository import Conflict
+
+    monkeypatch.setattr(
+        LHBRepository,
+        "_insert_seat_identities",
+        staticmethod(lambda connection, batch, digest: None),
+    )
+
+    with pytest.raises(Conflict, match="Conflicting LHB batch") as conflict:
+        lhb_repository.ingest_batch(repo_batch("integrity-1"))
+    message = str(conflict.value)
+    assert conflict.value.__cause__ is None
+    for leaked in ("INSERT", "lhb_", "psycopg", "foreign key", "violat"):
+        assert leaked not in message
+
+    counts = lhb_table_counts(lhb_repository.database.engine)
+    assert counts["lhb_import_batches"] == 0
+    assert counts["lhb_disclosure_revisions"] == 0
+    assert counts["lhb_disclosure_seats"] == 0
+    assert counts["lhb_import_attempts"] == 1
+    with lhb_repository.database.engine.connect() as connection:
+        attempt = connection.execute(select(lhb_import_attempts)).mappings().one()
+    assert attempt["status"] == "rejected"
+    assert attempt["reason"] == "integrity_error"
+    assert attempt["details"] == {"kind": "lhb", "error_type": "IntegrityError"}
+
+    # The engine is still usable after the rollback.
+    monkeypatch.undo()
+    recovered = lhb_repository.ingest_batch(repo_batch("integrity-2"))
+    assert recovered.status == "accepted"
+
+
+@pytest.mark.parametrize("deauthorization", ["revoked", "expired"])
+def test_lhb_repo_empty_history_header_never_leaks_unauthorized_source(
+    database_url, deauthorization
+):
+    import json
+
+    from factories import grant as grant_factory
+
+    from dragon_radar.lhb.repository import LHBRepository
+    from dragon_radar.storage.repository import Forbidden, Repository
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        sources = Repository(database, clock=lambda: OPERATION_NOW)
+        sources.register_source(grant_factory(source_id="lhb-source"))
+        sources.register_source(grant_factory(source_id="lhb-other"))
+        repository = LHBRepository(database, clock=lambda: OPERATION_NOW)
+        # Only the unauthorized source carries this reused seat_id.
+        repository.ingest_batch(
+            repo_batch(
+                "leak-1",
+                source_id="lhb-other",
+                disclosures=(
+                    disclosure(
+                        source_id="lhb-other",
+                        source_seat_name="Other Hidden Branch",
+                        mapping_version="other-map-v1",
+                    ),
+                ),
+            )
+        )
+
+        if deauthorization == "revoked":
+            sources.revoke_source("lhb-other")
+        else:
+            sources.register_source(
+                grant_factory(
+                    source_id="lhb-other",
+                    expires_at=OPERATION_NOW - timedelta(hours=1),
+                )
+            )
+
+        # Before the revision becomes visible there is no anchor activity: the
+        # empty envelope's header must be the synthetic placeholder, never the
+        # unauthorized source's catalog identity.
+        empty = repository.get_seat_history(
+            SeatHistorySelection(seat_id="SEAT-A", date=DISCLOSED_ON, as_of=T0)
+        )
+        assert empty.items == ()
+        assert empty.total == 0
+        assert empty.seat.source_id == "SEAT-A"
+        assert empty.seat.source_seat_name == "SEAT-A"
+        assert empty.seat.mapping_version == "unknown"
+        rendered = empty.seat.model_dump_json()
+        assert "lhb-other" not in rendered
+        assert "Other Hidden Branch" not in rendered
+        assert "other-map-v1" not in rendered
+        assert json.loads(rendered)["seat_id"] == "SEAT-A"
+
+        # Once the revision is visible, the unauthorized source is a hard 403.
+        with pytest.raises(Forbidden):
+            repository.get_seat_history(
+                SeatHistorySelection(
+                    seat_id="SEAT-A", date=DISCLOSED_ON, as_of=OPERATION_NOW
+                )
+            )
+    finally:
+        database.close()
+
+
+def test_lhb_repo_concurrent_different_payloads_yield_one_accepted_one_conflict(
+    lhb_repository,
+):
+    import threading
+
+    from dragon_radar.storage.repository import Conflict
+
+    winner = disclosure(
+        disclosure_id="D1",
+        source_row_id="ROW-1",
+        buy_amount=Decimal("100"),
+        sell_amount=Decimal("30"),
+    )
+    loser = disclosure(
+        disclosure_id="D1",
+        source_row_id="ROW-1",
+        buy_amount=Decimal("200"),
+        sell_amount=Decimal("60"),
+    )
+    outcomes = []
+    barrier = threading.Barrier(2)
+
+    def worker(payload):
+        barrier.wait()
+        try:
+            result = lhb_repository.ingest_batch(
+                repo_batch("race-1", disclosures=(payload,))
+            )
+            outcomes.append(("result", result.status, result.reason))
+        except Conflict as error:
+            outcomes.append(("conflict", str(error)))
+
+    threads = [
+        threading.Thread(target=worker, args=(winner,)),
+        threading.Thread(target=worker, args=(loser,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(outcomes) == 2
+    statuses = sorted(outcome[0] for outcome in outcomes)
+    assert statuses == ["conflict", "result"]
+    result_outcome = next(outcome for outcome in outcomes if outcome[0] == "result")
+    assert result_outcome[1:] == ("accepted", None)
+
+    counts = lhb_table_counts(lhb_repository.database.engine)
+    assert counts["lhb_import_batches"] == 1
+    assert counts["lhb_disclosures"] == 1
+    assert counts["lhb_disclosure_revisions"] == 1
+    assert counts["lhb_disclosure_seats"] == 1
+    with lhb_repository.database.engine.connect() as connection:
+        status_counts = dict(
+            connection.execute(
+                text("SELECT status, count(*) FROM lhb_import_attempts GROUP BY status")
+            ).all()
+        )
+    assert status_counts == {"accepted": 1, "rejected": 1}
+
+
+def test_lhb_repo_list_forbids_when_grant_expires_after_ingest(lhb_repository):
+    from factories import grant as grant_factory
+
+    from dragon_radar.storage.repository import Forbidden, Repository
+
+    lhb_repository.ingest_batch(repo_batch("expiry-1"))
+
+    before = lhb_repository.list_disclosures(
+        DisclosureSelection(date=DISCLOSED_ON, as_of=OPERATION_NOW)
+    )
+    assert before.total == 1
+
+    Repository(lhb_repository.database, clock=lhb_repository.clock).register_source(
+        grant_factory(
+            source_id="lhb-source",
+            expires_at=OPERATION_NOW - timedelta(hours=1),
+        )
+    )
+    with pytest.raises(Forbidden):
+        lhb_repository.list_disclosures(
+            DisclosureSelection(date=DISCLOSED_ON, as_of=OPERATION_NOW)
+        )
+    # Before the data exists in the read horizon there is simply nothing to
+    # show, regardless of the expired grant.
+    empty = lhb_repository.list_disclosures(
+        DisclosureSelection(date=DISCLOSED_ON, as_of=T0)
+    )
+    assert empty.total == 0
+
+
+def test_lhb_repo_list_forbids_revision_with_future_captured_snapshot(database_url):
+    from uuid import uuid4
+
+    from factories import grant as grant_factory
+    from sqlalchemy import insert
+
+    from dragon_radar.lhb.repository import LHBRepository
+    from dragon_radar.lhb.tables import (
+        lhb_disclosure_revisions,
+        lhb_disclosure_seats,
+        lhb_disclosures,
+        lhb_import_batches,
+        lhb_seats,
+    )
+    from dragon_radar.storage.repository import Forbidden, Repository
+
+    # Revision rows are immutable, so a future captured_at snapshot is staged
+    # through a raw chain (the same shape a read-time late permission update
+    # would present to the read path).
+    future_snapshot = PermissionSnapshot(
+        permission_id="lhb-permission-future",
+        state="authorized",
+        captured_at=OPERATION_NOW + timedelta(hours=1),
+    ).model_dump(mode="json")
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        Repository(database, clock=lambda: OPERATION_NOW).register_source(
+            grant_factory(source_id="lhb-source")
+        )
+        repository = LHBRepository(database, clock=lambda: OPERATION_NOW)
+        with database.engine.begin() as connection:
+            connection.execute(
+                insert(lhb_import_batches).values(
+                    id=uuid4(),
+                    batch_id="snapshot-future",
+                    source_id="lhb-source",
+                    source_version="v1",
+                    source_event_at=T0,
+                    received_at=T0 + timedelta(seconds=1),
+                    available_at=T0 + timedelta(seconds=2),
+                    permission_snapshot=future_snapshot,
+                    payload_hash="c" * 64,
+                    status="accepted",
+                    reason=None,
+                    imported_at=OPERATION_NOW,
+                )
+            )
+            connection.execute(
+                insert(lhb_disclosures).values(
+                    id=uuid4(),
+                    source_id="lhb-source",
+                    disclosure_id="D-FUTURE",
+                    security_id="600000.SH",
+                    disclosure_date=DISCLOSED_ON,
+                    reason="future captured snapshot disclosure",
+                    permission_id="lhb-permission-future",
+                )
+            )
+            connection.execute(
+                insert(lhb_seats).values(
+                    id=uuid4(),
+                    source_id="lhb-source",
+                    seat_id="SEAT-FUTURE",
+                    mapping_version="seat-map-v1",
+                    source_seat_name="Future snapshot branch",
+                    provenance={
+                        "mapping_version": "seat-map-v1",
+                        "source_id": "lhb-source",
+                    },
+                )
+            )
+            connection.execute(
+                insert(lhb_disclosure_revisions).values(
+                    id=uuid4(),
+                    source_id="lhb-source",
+                    disclosure_id="D-FUTURE",
+                    batch_id="snapshot-future",
+                    revision=1,
+                    source_event_at=T0,
+                    received_at=T0 + timedelta(seconds=1),
+                    available_at=T0 + timedelta(seconds=2),
+                    permission_snapshot=future_snapshot,
+                    completeness="complete",
+                    payload_hash="d" * 64,
+                )
+            )
+            connection.execute(
+                insert(lhb_disclosure_seats).values(
+                    id=uuid4(),
+                    source_id="lhb-source",
+                    disclosure_id="D-FUTURE",
+                    disclosure_date=DISCLOSED_ON,
+                    revision=1,
+                    source_row_id="ROW-FUTURE",
+                    seat_id="SEAT-FUTURE",
+                    mapping_version="seat-map-v1",
+                    side="net",
+                    rank=None,
+                    buy_amount=Decimal("1"),
+                    sell_amount=Decimal("1"),
+                    currency="CNY",
+                    unit="yuan",
+                    completeness="complete",
+                )
+            )
+
+        with pytest.raises(Forbidden):
+            repository.list_disclosures(
+                DisclosureSelection(date=DISCLOSED_ON, as_of=OPERATION_NOW)
+            )
+    finally:
+        database.close()
 
 
 def test_lhb_repo_revision_append_keeps_immutable_history(lhb_repository):
