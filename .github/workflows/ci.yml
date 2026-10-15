@@ -38,6 +38,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest tests/test_reset_realtime.py -q
+      - run: uv run pytest tests/test_reset_lhb.py -q
       - run: uv run pytest -q -W error --cov=dragon_radar --cov-report=term-missing --cov-report=xml:.temp/coverage.xml
       - run: uv run python -m compileall -q src tests
       - run: uv build --out-dir .temp/dist
@@ -214,6 +215,7 @@ jobs:
           node-version: "22"
       - run: npm ci --ignore-scripts
       - run: npm test -- --run tests/unit/reset-realtime.test.ts
+      - run: npm test -- --run tests/unit/reset-lhb.test.ts
       - run: npm test
       - run: npm run build
       - run: npm run check:bundle
@@ -250,6 +252,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test tests/e2e/reset-realtime.spec.ts
+      - run: npx playwright test --config playwright.reset.config.ts tests/e2e/reset-lhb.spec.ts
       - run: npm run test:e2e:reset
 
   web_e2e_private:

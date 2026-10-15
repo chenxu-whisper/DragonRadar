@@ -1281,9 +1281,13 @@ class LHBRepository(Repository):
         readable candidate: it is independent of the read window and of
         revision availability, so an authorized source whose evidence landed
         outside the window (or is not yet visible) can still anchor a real
-        catalog identity and a late-candidate count. It never raises -- the
-        visibility-scoped authorization statement owns Forbidden semantics;
-        revoked grants and display-disallowed snapshots stay excluded.
+        catalog identity and a late-candidate count. It makes no visibility
+        verdict and never raises Forbidden or NotFound -- those semantics
+        belong to the visibility-scoped authorization statement; revoked
+        grants and display-disallowed snapshots stay excluded. This is not a
+        blanket guarantee: malformed grant JSON fails
+        ``SourceGrant.model_validate`` with a ValidationError, which surfaces
+        to the caller as HTTP 400 rather than as a visibility error.
         """
         revision, disclosure, batch = self._revision_chain()[:3]
         seat_row = lhb_disclosure_seats.alias("lhb_id_sr")

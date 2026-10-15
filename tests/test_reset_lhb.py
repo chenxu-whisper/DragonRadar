@@ -3136,14 +3136,22 @@ def test_lhb_repo_currency_unit_conflict_with_stored_history_is_rejected(
                     lhb_import_attempts.c.status,
                     lhb_import_attempts.c.reason,
                     lhb_import_attempts.c.details,
-                ).order_by(lhb_import_attempts.c.created_at, lhb_import_attempts.c.id)
+                )
             )
             .mappings()
             .all()
         )
-    assert [row["status"] for row in attempts] == ["accepted", "rejected"]
-    assert attempts[1]["reason"] == "currency_unit_conflict"
-    assert attempts[1]["details"] == {"kind": "lhb"}
+    # The fixed clock stamps both attempts with the same created_at and the
+    # tie-break id is a random uuid4(), so ordering by (created_at, id) cannot
+    # reproduce insertion order. Compare statuses as a multiset and locate the
+    # rejected row by its status instead of relying on a positional index.
+    assert sorted(row["status"] for row in attempts) == [
+        "accepted",
+        "rejected",
+    ]
+    rejected = next(row for row in attempts if row["status"] == "rejected")
+    assert rejected["reason"] == "currency_unit_conflict"
+    assert rejected["details"] == {"kind": "lhb"}
 
     # Same currency/unit on a new revision still goes through.
     consistent = disclosure(
