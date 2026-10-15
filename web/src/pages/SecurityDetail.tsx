@@ -17,6 +17,9 @@ const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const EvidencePanel = resetEnabled
   ? lazy(async () => ({ default: (await import('../features/roles/EvidencePanel')).EvidencePanel }))
   : null;
+const SeatsPanel = resetEnabled
+  ? lazy(async () => ({ default: (await import('../features/lhb/SeatsPanel')).SeatsPanel }))
+  : null;
 const SecurityAITools = import.meta.env.VITE_PRIVATE_AI === '1'
   ? lazy(() => import('../features/ai/SecurityAITools'))
   : null;
@@ -256,6 +259,14 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         date={state.date}
         sector={evidenceSector}
         security={id}
+        refreshToken={refreshToken}
+      />
+    </Suspense>}
+    {SeatsPanel && snapshot && <Suspense fallback={<p role="status" className="status">正在加载龙虎榜席位证据…</p>}>
+      <SeatsPanel
+        date={state.date}
+        securityId={id}
+        asOf={snapshot.result.published_at}
         refreshToken={refreshToken}
       />
     </Suspense>}
