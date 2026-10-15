@@ -1270,78 +1270,79 @@ EXPECTED_LHB_TABLES = {
     "lhb_disclosure_seats",
 }
 
+# (column name, reflected type string, nullable) in ordinal position.
 EXPECTED_LHB_COLUMNS = {
     "lhb_import_batches": [
-        ("id", "UUID"),
-        ("batch_id", "TEXT"),
-        ("source_id", "TEXT"),
-        ("source_version", "TEXT"),
-        ("source_event_at", "TIMESTAMP"),
-        ("received_at", "TIMESTAMP"),
-        ("available_at", "TIMESTAMP"),
-        ("permission_snapshot", "JSONB"),
-        ("payload_hash", "VARCHAR(64)"),
-        ("status", "VARCHAR(20)"),
-        ("reason", "TEXT"),
-        ("imported_at", "TIMESTAMP"),
+        ("id", "UUID", False),
+        ("batch_id", "TEXT", False),
+        ("source_id", "TEXT", False),
+        ("source_version", "TEXT", False),
+        ("source_event_at", "TIMESTAMP", False),
+        ("received_at", "TIMESTAMP", False),
+        ("available_at", "TIMESTAMP", False),
+        ("permission_snapshot", "JSONB", False),
+        ("payload_hash", "VARCHAR(64)", False),
+        ("status", "VARCHAR(20)", False),
+        ("reason", "TEXT", True),
+        ("imported_at", "TIMESTAMP", False),
     ],
     "lhb_import_attempts": [
-        ("id", "UUID"),
-        ("source_id", "TEXT"),
-        ("batch_id", "TEXT"),
-        ("idempotency_key", "VARCHAR(200)"),
-        ("payload_hash", "VARCHAR(64)"),
-        ("status", "VARCHAR(20)"),
-        ("reason", "TEXT"),
-        ("details", "JSONB"),
-        ("created_at", "TIMESTAMP"),
+        ("id", "UUID", False),
+        ("source_id", "TEXT", False),
+        ("batch_id", "TEXT", False),
+        ("idempotency_key", "VARCHAR(200)", False),
+        ("payload_hash", "VARCHAR(64)", False),
+        ("status", "VARCHAR(20)", False),
+        ("reason", "TEXT", True),
+        ("details", "JSONB", False),
+        ("created_at", "TIMESTAMP", False),
     ],
     "lhb_disclosures": [
-        ("id", "UUID"),
-        ("source_id", "TEXT"),
-        ("disclosure_id", "TEXT"),
-        ("security_id", "TEXT"),
-        ("disclosure_date", "DATE"),
-        ("reason", "TEXT"),
-        ("permission_id", "TEXT"),
+        ("id", "UUID", False),
+        ("source_id", "TEXT", False),
+        ("disclosure_id", "TEXT", False),
+        ("security_id", "TEXT", False),
+        ("disclosure_date", "DATE", False),
+        ("reason", "TEXT", False),
+        ("permission_id", "TEXT", False),
     ],
     "lhb_disclosure_revisions": [
-        ("id", "UUID"),
-        ("source_id", "TEXT"),
-        ("disclosure_id", "TEXT"),
-        ("batch_id", "TEXT"),
-        ("revision", "INTEGER"),
-        ("source_event_at", "TIMESTAMP"),
-        ("received_at", "TIMESTAMP"),
-        ("available_at", "TIMESTAMP"),
-        ("permission_snapshot", "JSONB"),
-        ("completeness", "VARCHAR(20)"),
-        ("payload_hash", "VARCHAR(64)"),
+        ("id", "UUID", False),
+        ("source_id", "TEXT", False),
+        ("disclosure_id", "TEXT", False),
+        ("batch_id", "TEXT", False),
+        ("revision", "INTEGER", False),
+        ("source_event_at", "TIMESTAMP", False),
+        ("received_at", "TIMESTAMP", False),
+        ("available_at", "TIMESTAMP", False),
+        ("permission_snapshot", "JSONB", False),
+        ("completeness", "VARCHAR(20)", False),
+        ("payload_hash", "VARCHAR(64)", False),
     ],
     "lhb_seats": [
-        ("id", "UUID"),
-        ("source_id", "TEXT"),
-        ("seat_id", "TEXT"),
-        ("mapping_version", "TEXT"),
-        ("source_seat_name", "TEXT"),
-        ("provenance", "JSONB"),
+        ("id", "UUID", False),
+        ("source_id", "TEXT", False),
+        ("seat_id", "TEXT", False),
+        ("mapping_version", "TEXT", False),
+        ("source_seat_name", "TEXT", False),
+        ("provenance", "JSONB", False),
     ],
     "lhb_disclosure_seats": [
-        ("id", "UUID"),
-        ("source_id", "TEXT"),
-        ("disclosure_id", "TEXT"),
-        ("disclosure_date", "DATE"),
-        ("revision", "INTEGER"),
-        ("source_row_id", "TEXT"),
-        ("seat_id", "TEXT"),
-        ("mapping_version", "TEXT"),
-        ("side", "VARCHAR(4)"),
-        ("rank", "INTEGER"),
-        ("buy_amount", "NUMERIC"),
-        ("sell_amount", "NUMERIC"),
-        ("currency", "TEXT"),
-        ("unit", "TEXT"),
-        ("completeness", "VARCHAR(20)"),
+        ("id", "UUID", False),
+        ("source_id", "TEXT", False),
+        ("disclosure_id", "TEXT", False),
+        ("disclosure_date", "DATE", False),
+        ("revision", "INTEGER", False),
+        ("source_row_id", "TEXT", False),
+        ("seat_id", "TEXT", False),
+        ("mapping_version", "TEXT", False),
+        ("side", "VARCHAR(4)", True),
+        ("rank", "INTEGER", True),
+        ("buy_amount", "NUMERIC", True),
+        ("sell_amount", "NUMERIC", True),
+        ("currency", "TEXT", False),
+        ("unit", "TEXT", False),
+        ("completeness", "VARCHAR(20)", False),
     ],
 }
 
@@ -1406,7 +1407,6 @@ EXPECTED_LHB_INDEXES = {
     "lhb_disclosures_listing",
     "lhb_disclosure_revisions_visible",
     "lhb_disclosure_revisions_batch",
-    "lhb_seats_catalog",
     "lhb_disclosure_seats_seat_history",
 }
 
@@ -1583,28 +1583,14 @@ def test_0012_lhb_extends_0011_as_linear_head_with_exact_six_tables(database_url
             table for table in inspector.get_table_names() if table.startswith("lhb_")
         }
         assert lhb_tables == EXPECTED_LHB_TABLES
+        # Every column position is pinned exactly: ordinal name, reflected
+        # type string and NOT NULL flag must match EXPECTED_LHB_COLUMNS.
         for table, expected_columns in EXPECTED_LHB_COLUMNS.items():
             columns = inspector.get_columns(table)
-            assert [(column["name"], str(column["type"])) for column in columns] == (
-                expected_columns
-            )
-            assert all(column["nullable"] is False for column in columns[:1])
-        nullable_columns = {
-            table: {
-                column["name"]
-                for column in inspector.get_columns(table)
-                if column["nullable"]
-            }
-            for table in EXPECTED_LHB_TABLES
-        }
-        assert nullable_columns == {
-            "lhb_import_batches": {"reason"},
-            "lhb_import_attempts": {"reason"},
-            "lhb_disclosures": set(),
-            "lhb_disclosure_revisions": set(),
-            "lhb_seats": set(),
-            "lhb_disclosure_seats": {"side", "rank", "buy_amount", "sell_amount"},
-        }
+            assert [
+                (column["name"], str(column["type"]), column["nullable"])
+                for column in columns
+            ] == expected_columns
     finally:
         database.close()
 

@@ -151,6 +151,8 @@ lhb_disclosures = Table(
         "disclosure_id",
         name="lhb_disclosures_identity_key",
     ),
+    # Unique target for lhb_disclosure_seats' (source, disclosure, date) FK;
+    # the denormalized disclosure_date is part of the key.
     UniqueConstraint(
         "source_id",
         "disclosure_id",
@@ -190,6 +192,10 @@ lhb_disclosure_revisions = Table(
     Column("received_at", DateTime(timezone=True), nullable=False),
     Column("available_at", DateTime(timezone=True), nullable=False),
     Column("permission_snapshot", JSONB, nullable=False),
+    # Revision-level import state for the whole payload ('complete' |
+    # 'incomplete'). The per-seat buy/sell null-state completeness
+    # ('complete' | 'buy_unknown' | 'sell_unknown' | 'both_unknown') lives on
+    # lhb_disclosure_seats and is derived by the aggregation/service layer.
     Column("completeness", String(20), nullable=False),
     Column("payload_hash", String(64), nullable=False),
     PrimaryKeyConstraint("id", name="lhb_disclosure_revisions_pkey"),
@@ -269,11 +275,6 @@ lhb_seats = Table(
         "AND mapping_version !~ '^[[:space:]]*$' "
         "AND source_seat_name !~ '^[[:space:]]*$'",
         name="lhb_seats_required_text",
-    ),
-    Index(
-        "lhb_seats_catalog",
-        "source_id",
-        "seat_id",
     ),
 )
 

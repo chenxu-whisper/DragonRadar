@@ -11227,18 +11227,6 @@
       "access_method": "btree",
       "key_expressions": [
         "source_id",
-        "seat_id"
-      ],
-      "name": "lhb_seats_catalog",
-      "predicate": null,
-      "table": "lhb_seats",
-      "unique": false,
-      "valid": true
-    },
-    {
-      "access_method": "btree",
-      "key_expressions": [
-        "source_id",
         "security_id",
         "event_at",
         "revision"
