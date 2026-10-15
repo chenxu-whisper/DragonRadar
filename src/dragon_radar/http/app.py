@@ -15,6 +15,7 @@ from dragon_radar.http.errors import (
     register_error_handlers,
 )
 from dragon_radar.http.routes.analysis import router as analysis_router
+from dragon_radar.http.routes.lhb import router as lhb_router
 from dragon_radar.http.routes.market import router as market_router
 from dragon_radar.http.routes.news import router as news_router
 from dragon_radar.http.routes.realtime import router as realtime_router
@@ -27,6 +28,7 @@ from dragon_radar.http.selection import (
     query_values,
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.lhb.repository import LHBRepository
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.realtime.repository import RealtimeRepository
 from dragon_radar.storage.database import Database
@@ -46,6 +48,7 @@ def create_workbench_app(
     repository: Repository | None = None,
     analysis_repository: AnalysisJobRepository | None = None,
     realtime_repository: RealtimeRepository | None = None,
+    lhb_repository: LHBRepository | None = None,
 ) -> FastAPI:
     """No implicit migrations, ingestion, environment files, or private routers."""
     owned = repository is None
@@ -76,6 +79,14 @@ def create_workbench_app(
         and hasattr(database.engine, "url")
     ):
         realtime_repository = RealtimeRepository(database)
+    if (
+        lhb_repository is None
+        and database is not None
+        and hasattr(database, "engine")
+        and hasattr(database.engine, "url")
+    ):
+        # Construction never migrates: "no implicit migrations" stays intact.
+        lhb_repository = LHBRepository(database)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -95,6 +106,7 @@ def create_workbench_app(
     app.state.repository = repository
     app.state.analysis_repository = analysis_repository
     app.state.realtime_repository = realtime_repository
+    app.state.lhb_repository = lhb_repository
     register_error_handlers(app)
 
     @app.middleware("http")
@@ -144,5 +156,6 @@ def create_workbench_app(
     app.include_router(stock_router)
     app.include_router(analysis_router)
     app.include_router(realtime_router)
+    app.include_router(lhb_router)
 
     return app

@@ -5191,3 +5191,771 @@ def test_lhb_repo_authorization_reads_stay_linear_on_filter_misses(
             )
     finally:
         database.close()
+
+
+# --- EX08/EX09: read-only HTTP contracts ----------------------------------
+#
+# The pure validation tests below run without PostgreSQL: parameter rejection
+# happens before any repository access. The history tests depend on the
+# ``lhb_repository`` fixture and skip cleanly without DRAGON_TEST_DATABASE_URL.
+
+_LHB_HTTP_DATE = "2026-09-18"
+_LHB_HTTP_EARLY = "2026-09-18T10:00:00Z"
+_LHB_HTTP_LATE = "2026-09-18T13:00:00Z"
+
+_LHB_TOP_KEYS = {
+    "date",
+    "as_of",
+    "source",
+    "source_version",
+    "quality_flags",
+    "basis",
+    "coverage",
+    "data",
+}
+_LHB_COVERAGE_KEYS = {
+    "total_disclosures",
+    "visible_disclosures",
+    "late_disclosures",
+    "selected_disclosures",
+    "seat_count",
+    "complete_seats",
+    "unknown_seats",
+}
+_LHB_DISCLOSURE_ITEM_KEYS = {
+    "disclosure_id",
+    "security_id",
+    "disclosure_date",
+    "reason",
+    "revision",
+    "source_id",
+    "source_version",
+    "source_event_at",
+    "received_at",
+    "available_at",
+    "seats",
+}
+_LHB_SEAT_ROW_KEYS = {
+    "source_row_id",
+    "seat_id",
+    "source_seat_name",
+    "mapping_version",
+    "side",
+    "rank",
+    "buy_amount",
+    "sell_amount",
+    "currency",
+    "unit",
+    "completeness",
+    "net_amount",
+}
+_LHB_SEAT_IDENTITY_KEYS = {
+    "source_id",
+    "seat_id",
+    "source_seat_name",
+    "mapping_version",
+}
+_LHB_AGGREGATED_SEAT_KEYS = {
+    "seat_id",
+    "source_id",
+    "source_version",
+    "mapping_version",
+    "source_seat_name",
+    "currency",
+    "unit",
+    "buy_amount",
+    "sell_amount",
+    "net_amount",
+    "completeness",
+    "contributions",
+}
+_LHB_CONTRIBUTION_KEYS = {
+    "disclosure_id",
+    "security_id",
+    "revision",
+    "disclosure_date",
+    "reason",
+    "source_row_id",
+    "source_seat_name",
+    "mapping_version",
+    "permission_state",
+}
+
+
+class _LHBHTTPWorkbenchRepository:
+    """Stand-in owner repository: LHB tests inject the repository explicitly."""
+
+    database = None
+
+
+async def _lhb_http_client(lhb_repository=None):
+    from httpx import ASGITransport, AsyncClient
+
+    from dragon_radar.http.app import create_workbench_app
+
+    app = create_workbench_app(
+        repository=_LHBHTTPWorkbenchRepository(),
+        lhb_repository=lhb_repository,
+    )
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+    return app, client
+
+
+def _assert_http_error(response, status: int, code: str) -> None:
+    assert response.status_code == status
+    assert response.json()["code"] == code
+
+
+def _collect_json_keys(value, found: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            found.add(key)
+            _collect_json_keys(nested, found)
+    elif isinstance(value, list):
+        for nested in value:
+            _collect_json_keys(nested, found)
+
+
+# --- pure parameter validation (no database) ------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"date": _LHB_HTTP_DATE, "size": "101"},
+        {"date": _LHB_HTTP_DATE, "size": "0"},
+        {"date": _LHB_HTTP_DATE, "size": "x"},
+        {"date": _LHB_HTTP_DATE, "page": "0"},
+        {"date": _LHB_HTTP_DATE, "page": "-1"},
+        {"date": _LHB_HTTP_DATE, "page": "x"},
+    ],
+)
+async def test_ex08_lhb_list_rejects_invalid_paging(params):
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.get("/api/lhb", params=params)
+    _assert_http_error(response, 400, "INVALID_PARAM")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("days", ["0", "251", "x", "-1"])
+async def test_ex09_lhb_seats_rejects_days_outside_bounds(days):
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={"date": _LHB_HTTP_DATE, "days": days},
+        )
+    _assert_http_error(response, 400, "INVALID_PARAM")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path,params",
+    [
+        ("/api/lhb", {"date": _LHB_HTTP_DATE, "unknown": "1"}),
+        (
+            "/api/lhb",
+            [("date", _LHB_HTTP_DATE), ("date", _LHB_HTTP_DATE)],
+        ),
+        (
+            "/api/lhb/seats/SEAT-A",
+            {"date": _LHB_HTTP_DATE, "unknown": "1"},
+        ),
+        (
+            "/api/lhb/seats/SEAT-A",
+            [("date", _LHB_HTTP_DATE), ("date", _LHB_HTTP_DATE)],
+        ),
+    ],
+)
+async def test_ex08_ex09_reject_unknown_and_duplicate_query_keys(path, params):
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.get(path, params=params)
+    _assert_http_error(response, 400, "INVALID_PARAM")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["/api/lhb", "/api/lhb/seats/SEAT-A"])
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"date": "2026-9-18"},
+        {"date": "not-a-date"},
+        {"date": "2026-09-31"},
+    ],
+)
+async def test_ex08_ex09_require_strict_iso_date(path, params):
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.get(path, params=params)
+    _assert_http_error(response, 400, "INVALID_PARAM")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["/api/lhb", "/api/lhb/seats/SEAT-A"])
+@pytest.mark.parametrize(
+    "as_of",
+    [
+        "2026-09-18T10:00:00",
+        "not-a-date",
+        "20260918T100000Z",
+        "2026-09-18 10:00:00+00:00",
+    ],
+)
+async def test_ex08_ex09_require_strict_timezone_aware_as_of(path, as_of):
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.get(
+            path, params={"date": _LHB_HTTP_DATE, "as_of": as_of}
+        )
+    _assert_http_error(response, 400, "INVALID_PARAM")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("security_id", ["BAD ID", "-LEAD", "bad$", ""])
+async def test_ex08_lhb_list_rejects_invalid_security_identifier(security_id):
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "security_id": security_id},
+        )
+    _assert_http_error(response, 400, "INVALID_PARAM")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seat_id", ["BAD ID", "-LEAD", "bad$"])
+async def test_ex09_lhb_seats_rejects_invalid_path_identifier(seat_id):
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.get(
+            f"/api/lhb/seats/{seat_id}",
+            params={"date": _LHB_HTTP_DATE},
+        )
+    _assert_http_error(response, 400, "INVALID_PARAM")
+
+
+@pytest.mark.anyio
+async def test_ex08_lhb_post_is_forbidden_by_read_only_middleware():
+    _, client = await _lhb_http_client()
+    async with client:
+        response = await client.post("/api/lhb", json={})
+    assert response.status_code == 403
+    body = response.json()
+    assert body["code"] == "FORBIDDEN"
+    assert body["message"] == "Read-only API"
+
+
+@pytest.mark.anyio
+async def test_ex08_ex09_without_repository_report_storage_unavailable():
+    app, client = await _lhb_http_client()
+    assert app.state.lhb_repository is None
+    async with client:
+        listing = await client.get("/api/lhb", params={"date": _LHB_HTTP_DATE})
+        history = await client.get(
+            "/api/lhb/seats/SEAT-A", params={"date": _LHB_HTTP_DATE}
+        )
+    _assert_http_error(listing, 503, "STORAGE_UNAVAILABLE")
+    _assert_http_error(history, 503, "STORAGE_UNAVAILABLE")
+
+
+def test_ex08_ex09_serializers_reject_plain_dict_instead_of_models():
+    from dragon_radar.http.routes.lhb import (
+        serialize_disclosure_page,
+        serialize_seat_history,
+    )
+
+    with pytest.raises(TypeError):
+        serialize_disclosure_page({}, date=DISCLOSED_ON)
+    with pytest.raises(TypeError):
+        serialize_seat_history({}, date=DISCLOSED_ON)
+
+
+# --- database-backed route behaviour --------------------------------------
+
+
+@pytest.mark.anyio
+async def test_ex08_lhb_list_point_in_time_visibility(lhb_repository):
+    on_time = disclosure(disclosure_id="D1", source_row_id="ROW-1", seat_id="SEAT-A")
+    late = disclosure(
+        disclosure_id="D2",
+        source_row_id="ROW-2",
+        seat_id="SEAT-B",
+        available_at=LIST_AS_OF + timedelta(minutes=1),
+    )
+    lhb_repository.ingest_batch(
+        repo_batch("http-visibility", disclosures=(on_time, late))
+    )
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        early = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+        late_response = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_LATE},
+        )
+
+    assert early.status_code == 200
+    early_payload = early.json()
+    assert [item["disclosure_id"] for item in early_payload["data"]["items"]] == ["D1"]
+    assert early_payload["data"]["total"] == 1
+    assert early_payload["as_of"] == "2026-09-18T10:00:00+00:00"
+
+    assert late_response.status_code == 200
+    late_payload = late_response.json()
+    assert [item["disclosure_id"] for item in late_payload["data"]["items"]] == [
+        "D1",
+        "D2",
+    ]
+    assert late_payload["data"]["total"] == 2
+
+
+@pytest.mark.anyio
+async def test_ex08_lhb_list_null_zero_and_net_amount_raw_bytes(lhb_repository):
+    import json
+
+    mixed = disclosure(
+        disclosure_id="D-null-zero",
+        seats=(
+            seat(
+                source_row_id="ROW-1",
+                seat_id="SEAT-A",
+                buy_amount=None,
+                sell_amount=Decimal("5"),
+            ),
+            seat(
+                source_row_id="ROW-2",
+                seat_id="SEAT-B",
+                buy_amount=Decimal("0"),
+                sell_amount=Decimal("0"),
+            ),
+        ),
+    )
+    lhb_repository.ingest_batch(repo_batch("http-null-zero", disclosures=(mixed,)))
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert response.status_code == 200
+    raw = response.content
+    assert b'"buy_amount":null' in raw
+    assert b'"net_amount":null' in raw
+    assert b'"completeness":"buy_unknown"' in raw
+    assert b'"buy_amount":0' in raw
+    assert b'"sell_amount":0' in raw
+    assert b'"net_amount":0' in raw
+    assert b'"completeness":"complete"' in raw
+
+    payload = json.loads(raw)
+    rows = {
+        row["seat_id"]: row
+        for item in payload["data"]["items"]
+        for row in item["seats"]
+    }
+    unknown = rows["SEAT-A"]
+    assert unknown["buy_amount"] is None
+    assert unknown["sell_amount"] == 5
+    assert unknown["net_amount"] is None
+    zero = rows["SEAT-B"]
+    assert zero["buy_amount"] == 0
+    assert zero["sell_amount"] == 0
+    assert zero["net_amount"] == 0
+
+
+@pytest.mark.anyio
+async def test_ex08_lhb_list_keeps_large_decimal_precision(lhb_repository):
+    import json
+
+    precise = disclosure(
+        disclosure_id="D-precision",
+        seats=(
+            seat(
+                source_row_id="ROW-P",
+                seat_id="SEAT-P",
+                side="net",
+                rank=3,
+                buy_amount=None,
+                sell_amount=Decimal("12345678901234567890.123456789012345678"),
+            ),
+        ),
+    )
+    lhb_repository.ingest_batch(repo_batch("http-precision", disclosures=(precise,)))
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert response.status_code == 200
+    assert b'"sell_amount":12345678901234567890.123456789012345678' in response.content
+    payload = json.loads(response.content, parse_float=Decimal)
+    row = payload["data"]["items"][0]["seats"][0]
+    assert row["sell_amount"] == Decimal("12345678901234567890.123456789012345678")
+    assert row["buy_amount"] is None
+    assert row["rank"] == 3
+    assert row["side"] == "net"
+
+
+@pytest.mark.anyio
+async def test_ex08_ex09_revoked_source_returns_403(lhb_repository):
+    from dragon_radar.storage.repository import Repository
+
+    lhb_repository.ingest_batch(repo_batch())
+    Repository(lhb_repository.database, clock=lhb_repository.clock).revoke_source(
+        "lhb-source"
+    )
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        listing = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+        history = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+    _assert_http_error(listing, 403, "FORBIDDEN")
+    _assert_http_error(history, 403, "FORBIDDEN")
+
+
+@pytest.mark.anyio
+async def test_ex09_lhb_unknown_seat_with_anchor_activity_returns_404(
+    lhb_repository,
+):
+    lhb_repository.ingest_batch(repo_batch())
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb/seats/SEAT-MISSING",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+    _assert_http_error(response, 404, "NOT_FOUND")
+
+
+@pytest.mark.anyio
+async def test_ex08_ex09_empty_window_returns_200_no_data_envelope(
+    lhb_repository,
+):
+    import json
+
+    lhb_repository.ingest_batch(repo_batch())
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        listing = await client.get(
+            "/api/lhb",
+            params={"date": "2026-09-01", "as_of": _LHB_HTTP_EARLY},
+        )
+        history = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={
+                "date": "2026-09-01",
+                "days": "30",
+                "as_of": _LHB_HTTP_EARLY,
+            },
+        )
+
+    assert listing.status_code == 200
+    page = json.loads(listing.content)
+    assert set(page) == _LHB_TOP_KEYS
+    assert page["date"] == "2026-09-01"
+    assert page["quality_flags"] == ["no_data"]
+    assert page["source"] is None
+    assert page["source_version"] is None
+    assert page["basis"] == {"unit": None, "currency": None}
+    assert page["coverage"] == {
+        "total_disclosures": 0,
+        "visible_disclosures": 0,
+        "late_disclosures": 0,
+        "selected_disclosures": 0,
+        "seat_count": 0,
+        "complete_seats": 0,
+        "unknown_seats": 0,
+    }
+    assert page["data"] == {
+        "items": [],
+        "total": 0,
+        "page": 1,
+        "size": 20,
+    }
+
+    assert history.status_code == 200
+    seat_page = json.loads(history.content)
+    assert set(seat_page) == _LHB_TOP_KEYS
+    assert seat_page["quality_flags"] == ["no_data"]
+    assert seat_page["source"] is None
+    assert seat_page["source_version"] is None
+    assert seat_page["basis"] == {"unit": None, "currency": None}
+    assert set(seat_page["data"]) == {"seat", "items", "total"}
+    assert seat_page["data"]["items"] == []
+    assert seat_page["data"]["total"] == 0
+    assert set(seat_page["data"]["seat"]) == _LHB_SEAT_IDENTITY_KEYS
+    assert seat_page["data"]["seat"]["seat_id"] == "SEAT-A"
+
+
+@pytest.mark.anyio
+async def test_ex08_lhb_list_fields_identity_basis_coverage_and_paging(
+    lhb_repository,
+):
+    disclosures = tuple(
+        disclosure(
+            disclosure_id=f"D{index}",
+            source_row_id=f"ROW-{index}",
+            seat_id=f"SEAT-{index}",
+            buy_amount=Decimal(index * 10),
+            sell_amount=Decimal(index),
+        )
+        for index in range(1, 4)
+    )
+    lhb_repository.ingest_batch(repo_batch("http-fields", disclosures=disclosures))
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        first = await client.get(
+            "/api/lhb",
+            params={
+                "date": _LHB_HTTP_DATE,
+                "as_of": _LHB_HTTP_EARLY,
+                "page": "1",
+                "size": "2",
+            },
+        )
+        second = await client.get(
+            "/api/lhb",
+            params={
+                "date": _LHB_HTTP_DATE,
+                "as_of": _LHB_HTTP_EARLY,
+                "page": "2",
+                "size": "2",
+            },
+        )
+        defaults = await client.get("/api/lhb", params={"date": _LHB_HTTP_DATE})
+
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["date"] == _LHB_HTTP_DATE
+    assert payload["source"] == "lhb-source"
+    assert payload["source_version"] == "v1"
+    assert payload["quality_flags"] == []
+    assert payload["basis"] == {"unit": "yuan", "currency": "CNY"}
+    assert payload["coverage"] == {
+        "total_disclosures": 3,
+        "visible_disclosures": 3,
+        "late_disclosures": 0,
+        "selected_disclosures": 3,
+        "seat_count": 3,
+        "complete_seats": 3,
+        "unknown_seats": 0,
+    }
+    assert payload["data"]["total"] == 3
+    assert payload["data"]["page"] == 1
+    assert payload["data"]["size"] == 2
+    assert [item["disclosure_id"] for item in payload["data"]["items"]] == ["D1", "D2"]
+    first_item = payload["data"]["items"][0]
+    assert first_item["security_id"] == "600000.SH"
+    assert first_item["disclosure_date"] == _LHB_HTTP_DATE
+    assert first_item["revision"] == 1
+    row = first_item["seats"][0]
+    assert row["mapping_version"] == "seat-map-v1"
+    assert row["source_row_id"] == "ROW-1"
+    assert row["rank"] is None
+    assert row["side"] is None
+    assert row["completeness"] == "complete"
+    assert row["net_amount"] == 9  # 10 - 1
+
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["data"]["page"] == 2
+    assert [item["disclosure_id"] for item in second_payload["data"]["items"]] == ["D3"]
+
+    assert defaults.status_code == 200
+    default_payload = defaults.json()
+    assert default_payload["data"]["page"] == 1
+    assert default_payload["data"]["size"] == 20
+    # Without as_of the repository clock fixes the point in time.
+    assert default_payload["as_of"] == "2026-09-18T13:00:00+00:00"
+    assert default_payload["data"]["total"] == 3
+
+
+@pytest.mark.anyio
+async def test_ex08_lhb_list_basis_blank_when_currency_or_unit_diverges(
+    lhb_repository,
+):
+    mixed = disclosure(
+        disclosure_id="D-mixed-basis",
+        seats=(
+            seat(
+                source_row_id="ROW-1",
+                seat_id="SEAT-A",
+                currency="CNY",
+                unit="yuan",
+            ),
+            seat(
+                source_row_id="ROW-2",
+                seat_id="SEAT-B",
+                currency="HKD",
+                unit="dollar",
+            ),
+        ),
+    )
+    lhb_repository.ingest_batch(repo_batch("http-basis", disclosures=(mixed,)))
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "lhb-source"
+    assert payload["basis"] == {"unit": None, "currency": None}
+
+
+@pytest.mark.anyio
+async def test_ex08_lhb_list_exact_key_sets_without_attribution_keys(
+    lhb_repository,
+):
+    lhb_repository.ingest_batch(
+        repo_batch(
+            "http-keys",
+            disclosures=(
+                disclosure(
+                    disclosure_id="D1",
+                    source_row_id="ROW-1",
+                    seat_id="SEAT-A",
+                    rank=1,
+                    side="buy",
+                ),
+                disclosure(
+                    disclosure_id="D2",
+                    source_row_id="ROW-2",
+                    seat_id="SEAT-B",
+                ),
+            ),
+        )
+    )
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb",
+            params={
+                "date": _LHB_HTTP_DATE,
+                "as_of": _LHB_HTTP_EARLY,
+                "size": "100",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == _LHB_TOP_KEYS
+    assert set(payload["data"]) == {"items", "total", "page", "size"}
+    assert set(payload["basis"]) == {"unit", "currency"}
+    assert set(payload["coverage"]) == _LHB_COVERAGE_KEYS
+    for item in payload["data"]["items"]:
+        assert set(item) == _LHB_DISCLOSURE_ITEM_KEYS
+        for row in item["seats"]:
+            assert set(row) == _LHB_SEAT_ROW_KEYS
+
+    found = set()
+    _collect_json_keys(payload, found)
+    assert not {
+        key for key in found if "person" in key or "fund" in key or "holding" in key
+    }
+    # The disclosure endpoint never exposes the permission snapshot or raw
+    # credential/upstream evidence.
+    assert "permission" not in found
+    assert "permission_id" not in found
+    assert "credential" not in found
+
+
+@pytest.mark.anyio
+async def test_ex09_lhb_seat_history_fields_and_exact_key_sets(
+    lhb_repository,
+):
+    import json
+
+    lhb_repository.ingest_batch(repo_batch())
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        explicit = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={
+                "date": _LHB_HTTP_DATE,
+                "days": "30",
+                "as_of": _LHB_HTTP_EARLY,
+            },
+        )
+        default_days = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert explicit.status_code == 200
+    payload = json.loads(explicit.content, parse_float=Decimal)
+    assert set(payload) == _LHB_TOP_KEYS
+    assert payload["date"] == _LHB_HTTP_DATE
+    assert payload["as_of"] == "2026-09-18T10:00:00+00:00"
+    assert payload["source"] == "lhb-source"
+    assert payload["source_version"] == "v1"
+    assert payload["quality_flags"] == []
+    assert payload["basis"] == {"unit": "yuan", "currency": "CNY"}
+    assert set(payload["coverage"]) == _LHB_COVERAGE_KEYS
+    assert payload["coverage"] == {
+        "total_disclosures": 1,
+        "visible_disclosures": 1,
+        "late_disclosures": 0,
+        "selected_disclosures": 1,
+        "seat_count": 1,
+        "complete_seats": 1,
+        "unknown_seats": 0,
+    }
+
+    data = payload["data"]
+    assert set(data) == {"seat", "items", "total"}
+    assert data["total"] == 1
+    assert set(data["seat"]) == _LHB_SEAT_IDENTITY_KEYS
+    assert data["seat"] == {
+        "source_id": "lhb-source",
+        "seat_id": "SEAT-A",
+        "source_seat_name": "Example branch",
+        "mapping_version": "seat-map-v1",
+    }
+
+    aggregated = data["items"][0]
+    assert set(aggregated) == _LHB_AGGREGATED_SEAT_KEYS
+    assert aggregated["buy_amount"] == Decimal("100")
+    assert aggregated["sell_amount"] == Decimal("30")
+    assert aggregated["net_amount"] == Decimal("70")
+    assert aggregated["completeness"] == "complete"
+    contribution = aggregated["contributions"][0]
+    assert set(contribution) == _LHB_CONTRIBUTION_KEYS
+    assert contribution["disclosure_id"] == "D1"
+    assert contribution["permission_state"] == "authorized"
+
+    assert default_days.status_code == 200
+    assert default_days.json()["data"]["total"] == 1
+
+    found = set()
+    _collect_json_keys(payload, found)
+    assert not {
+        key for key in found if "person" in key or "fund" in key or "holding" in key
+    }
+    assert "credential" not in found
