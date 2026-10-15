@@ -2,7 +2,7 @@
 
 import re
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
 from fastapi import APIRouter, Request
 
@@ -27,6 +27,16 @@ _DATETIME = re.compile(
 )
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 _MAX_PAGE = 10_000
+# Same point-in-time arithmetic contract as the pure aggregator: the route
+# computes row-level net amounts, so its subtraction must not round at the
+# process default (28 significant digits).
+_DECIMAL_CONTEXT = Context(
+    prec=34,
+    rounding=ROUND_HALF_EVEN,
+    Emin=-999999,
+    Emax=999999,
+    capitals=1,
+)
 
 
 def _repository(request: Request):
@@ -66,7 +76,8 @@ def _row_net(buy_amount: Decimal | None, sell_amount: Decimal | None) -> Decimal
     # Unknown amounts stay null: null never collapses into a numeric zero.
     if buy_amount is None or sell_amount is None:
         return None
-    return buy_amount - sell_amount
+    with localcontext(_DECIMAL_CONTEXT):
+        return buy_amount - sell_amount
 
 
 def _row_completeness(buy_amount: Decimal | None, sell_amount: Decimal | None) -> str:
@@ -141,6 +152,9 @@ def serialize_disclosure_page(page: DisclosurePage, *, date: date) -> dict:
         quality_flags = ["no_data"]
     else:
         revisions = tuple(selected.revision for selected in page.items)
+        # N-2: source/source_version/basis are merged over the CURRENT PAGE's
+        # rows only -- a uniform value inside the page yields a scalar, mixed
+        # values yield None; they are not page-set-wide aggregates.
         source = _single({revision.source_id for revision in revisions})
         source_version = _single({revision.source_version for revision in revisions})
         rows = [row for item in items for row in item["seats"]]
@@ -193,6 +207,7 @@ def serialize_seat_history(history: SeatHistory, *, date: date) -> dict:
         "coverage": history.coverage.model_dump(),
         "data": {
             "seat": history.seat.model_dump(),
+            "identity_state": history.identity_state,
             "items": [item.model_dump() for item in history.items],
             "total": history.total,
         },

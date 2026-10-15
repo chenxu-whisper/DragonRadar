@@ -70,6 +70,7 @@ NonNegativeDecimal = Annotated[
 SeatSide = Literal["buy", "sell", "net"]
 PermissionState = Literal["authorized", "revoked", "unavailable"]
 SeatCompleteness = Literal["complete", "buy_unknown", "sell_unknown", "both_unknown"]
+IdentityState = Literal["known", "unknown"]
 ImportStatus = Literal["accepted", "duplicate", "rejected", "incomplete"]
 
 
@@ -283,6 +284,7 @@ class SeatHistory(LHBModel):
 
     as_of: UTCDateTime
     seat: SeatIdentity
+    identity_state: IdentityState
     items: tuple[AggregatedSeat, ...]
     total: Annotated[int, Field(ge=0)]
     coverage: AggregationCoverage
@@ -295,6 +297,7 @@ __all__ = [
     "DisclosureRevisionInput",
     "DisclosureSeatInput",
     "DisclosureSelection",
+    "IdentityState",
     "LHBImportBatch",
     "LHBImportResult",
     "PermissionSnapshot",

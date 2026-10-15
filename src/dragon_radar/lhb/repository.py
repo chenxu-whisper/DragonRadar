@@ -38,6 +38,7 @@ from dragon_radar.lhb.models import (
     DisclosureRevisionInput,
     DisclosureSeatInput,
     DisclosureSelection,
+    IdentityState,
     LHBImportBatch,
     LHBImportResult,
     PermissionSnapshot,
@@ -1213,7 +1214,7 @@ class LHBRepository(Repository):
         records,
         selection: SeatHistorySelection,
         authorized_sources: Sequence[str],
-    ) -> SeatIdentity:
+    ) -> tuple[SeatIdentity, IdentityState]:
         if records:
             header_record = max(
                 records,
@@ -1223,38 +1224,162 @@ class LHBRepository(Repository):
                 ),
             )
             meta = header_record["meta"]
-            return SeatIdentity(
-                source_id=meta["source_id"],
-                seat_id=selection.seat_id,
-                source_seat_name=header_record["seats"][0]["source_seat_name"],
-                mapping_version=header_record["seats"][0]["mapping_version"],
+            return (
+                SeatIdentity(
+                    source_id=meta["source_id"],
+                    seat_id=selection.seat_id,
+                    source_seat_name=header_record["seats"][0]["source_seat_name"],
+                    mapping_version=header_record["seats"][0]["mapping_version"],
+                ),
+                "known",
             )
         # Empty-window fallback. The catalog lookup MUST stay scoped to the
         # sources the caller is authorized for: a global seat_id hit would leak
         # an unauthorized source's identity through the empty envelope.
         if not authorized_sources:
-            return self._synthetic_header(selection)
-        catalog = (
+            return self._synthetic_header(selection), "unknown"
+        # Distinct catalog identities only -- never ORDER BY ... LIMIT 1:
+        # "unknown" is itself a legal SafeIdentifier value, so provenance cannot
+        # be guessed from mapping_version. Exactly one distinct identity is
+        # "known"; zero rows (catalog gap) or more than one (several authorized
+        # sources reuse the same seat_id) fail closed to the placeholder.
+        identities = connection.execute(
+            select(
+                lhb_seats.c.source_id,
+                lhb_seats.c.source_seat_name,
+                lhb_seats.c.mapping_version,
+            )
+            .where(
+                lhb_seats.c.seat_id == selection.seat_id,
+                lhb_seats.c.source_id.in_(tuple(authorized_sources)),
+            )
+            .distinct()
+        ).all()
+        if len(identities) == 1:
+            source_id, source_seat_name, mapping_version = identities[0]
+            return (
+                SeatIdentity(
+                    source_id=source_id,
+                    seat_id=selection.seat_id,
+                    source_seat_name=source_seat_name,
+                    mapping_version=mapping_version,
+                ),
+                "known",
+            )
+        return self._synthetic_header(selection), "unknown"
+
+    def _seat_identity_sources(
+        self,
+        connection,
+        *,
+        operation_now: datetime,
+        seat_id: str,
+    ) -> tuple[str, ...]:
+        """Display-authorized sources that carry ``seat_id``.
+
+        Quiet fallback used only after the visibility-scoped probe found no
+        readable candidate: it is independent of the read window and of
+        revision availability, so an authorized source whose evidence landed
+        outside the window (or is not yet visible) can still anchor a real
+        catalog identity and a late-candidate count. It never raises -- the
+        visibility-scoped authorization statement owns Forbidden semantics;
+        revoked grants and display-disallowed snapshots stay excluded.
+        """
+        revision, disclosure, batch = self._revision_chain()[:3]
+        seat_row = lhb_disclosure_seats.alias("lhb_id_sr")
+        chain = (
+            revision.join(
+                disclosure,
+                and_(
+                    revision.c.source_id == disclosure.c.source_id,
+                    revision.c.disclosure_id == disclosure.c.disclosure_id,
+                ),
+            )
+            .join(
+                batch,
+                and_(
+                    revision.c.source_id == batch.c.source_id,
+                    revision.c.batch_id == batch.c.batch_id,
+                ),
+            )
+            .join(
+                seat_row,
+                and_(
+                    seat_row.c.source_id == revision.c.source_id,
+                    seat_row.c.disclosure_id == revision.c.disclosure_id,
+                    seat_row.c.revision == revision.c.revision,
+                ),
+            )
+        )
+        carries = (
+            select(1)
+            .select_from(chain)
+            .where(
+                seat_row.c.seat_id == seat_id,
+                revision.c.source_id == source_grants.c.source_id,
+                *self._snapshot_allows_display(
+                    revision.c.permission_snapshot, operation_now
+                ),
+            )
+            .limit(1)
+            .exists()
+        )
+        rows = (
             connection.execute(
-                select(lhb_seats)
-                .where(
-                    lhb_seats.c.seat_id == selection.seat_id,
-                    lhb_seats.c.source_id.in_(tuple(authorized_sources)),
-                )
-                .order_by(lhb_seats.c.mapping_version.desc(), lhb_seats.c.source_id)
-                .limit(1)
+                select(source_grants.c.source_id, source_grants.c.grant).where(carries)
             )
             .mappings()
-            .first()
+            .all()
         )
-        if catalog is not None:
-            return SeatIdentity(
-                source_id=catalog["source_id"],
-                seat_id=catalog["seat_id"],
-                source_seat_name=catalog["source_seat_name"],
-                mapping_version=catalog["mapping_version"],
+        return tuple(
+            row["source_id"]
+            for row in rows
+            if grant_allows_display(
+                SourceGrant.model_validate(row["grant"]),
+                source_id=row["source_id"],
+                now=operation_now,
             )
-        return self._synthetic_header(selection)
+        )
+
+    def _empty_window_coverage(
+        self,
+        connection,
+        authorized_sources: Sequence[str],
+        selection: SeatHistorySelection,
+        as_of: datetime,
+        operation_now: datetime,
+    ) -> AggregationCoverage:
+        """Coverage for an empty envelope, keeping late candidates visible."""
+        zero = AggregationCoverage(
+            total_disclosures=0,
+            visible_disclosures=0,
+            late_disclosures=0,
+            selected_disclosures=0,
+            seat_count=0,
+            complete_seats=0,
+            unknown_seats=0,
+        )
+        if not authorized_sources:
+            return zero
+        window_start = selection.date - timedelta(days=selection.days)
+        revisions = self._fetch_revisions(
+            connection,
+            authorized_sources=authorized_sources,
+            operation_now=operation_now,
+            seat_id=selection.seat_id,
+            window=(window_start, selection.date),
+        )
+        latest = self._select_latest(revisions)
+        visible = self._select_latest_visible(revisions, as_of)
+        return AggregationCoverage(
+            total_disclosures=len(latest),
+            visible_disclosures=len(visible),
+            late_disclosures=len(latest) - len(visible),
+            selected_disclosures=0,
+            seat_count=0,
+            complete_seats=0,
+            unknown_seats=0,
+        )
 
     def get_seat_history(self, selection: SeatHistorySelection) -> SeatHistory:
         if not isinstance(selection, SeatHistorySelection):
@@ -1302,11 +1427,30 @@ class LHBRepository(Repository):
                 )
                 if anchor_exists:
                     raise NotFound("Seat has no history in the selected window")
-                # Build the header only after the NotFound short-circuit, and
-                # with no authorized sources so the catalog cannot leak an
-                # unauthorized source's identity.
-                header = self._seat_header(connection, (), selection, ())
-                return self._empty_history(selection, as_of, header)
+                # Build the header only after the NotFound short-circuit. The
+                # visibility-scoped probe found nothing (everything may simply
+                # be late or outside the window), so resolve authorized
+                # carriers independently to anchor a real catalog identity and
+                # to keep late candidates visible in coverage; the header
+                # lookup itself stays scoped to those sources only.
+                identity_sources = self._seat_identity_sources(
+                    connection,
+                    operation_now=operation_now,
+                    seat_id=selection.seat_id,
+                )
+                header, identity_state = self._seat_header(
+                    connection, (), selection, identity_sources
+                )
+                coverage = self._empty_window_coverage(
+                    connection,
+                    identity_sources,
+                    selection,
+                    as_of,
+                    operation_now,
+                )
+                return self._empty_history(
+                    selection, as_of, header, identity_state, coverage
+                )
 
             revisions = self._fetch_revisions(
                 connection,
@@ -1350,12 +1494,25 @@ class LHBRepository(Repository):
                 )
                 if anchor_exists:
                     raise NotFound("Seat has no history in the selected window")
-                header = self._seat_header(
+                header, identity_state = self._seat_header(
                     connection, (), selection, authorized_sources
                 )
-                return self._empty_history(selection, as_of, header)
+                # Authorized candidates exist but nothing is visible at as_of:
+                # latest/visible delta keeps the late-only rows observable.
+                coverage = AggregationCoverage(
+                    total_disclosures=len(latest_overall),
+                    visible_disclosures=len(visible_records),
+                    late_disclosures=len(latest_overall) - len(visible_records),
+                    selected_disclosures=0,
+                    seat_count=0,
+                    complete_seats=0,
+                    unknown_seats=0,
+                )
+                return self._empty_history(
+                    selection, as_of, header, identity_state, coverage
+                )
 
-            header = self._seat_header(
+            header, identity_state = self._seat_header(
                 connection, visible_records, selection, authorized_sources
             )
 
@@ -1372,6 +1529,7 @@ class LHBRepository(Repository):
         return SeatHistory(
             as_of=as_of,
             seat=header,
+            identity_state=identity_state,
             items=tuple(items),
             total=len(items),
             coverage=coverage,
@@ -1379,14 +1537,14 @@ class LHBRepository(Repository):
 
     @staticmethod
     def _empty_history(
-        selection: SeatHistorySelection, as_of: datetime, header: SeatIdentity
+        selection: SeatHistorySelection,
+        as_of: datetime,
+        header: SeatIdentity,
+        identity_state: IdentityState,
+        coverage: AggregationCoverage | None = None,
     ) -> SeatHistory:
-        return SeatHistory(
-            as_of=as_of,
-            seat=header,
-            items=(),
-            total=0,
-            coverage=AggregationCoverage(
+        if coverage is None:
+            coverage = AggregationCoverage(
                 total_disclosures=0,
                 visible_disclosures=0,
                 late_disclosures=0,
@@ -1394,5 +1552,12 @@ class LHBRepository(Repository):
                 seat_count=0,
                 complete_seats=0,
                 unknown_seats=0,
-            ),
+            )
+        return SeatHistory(
+            as_of=as_of,
+            seat=header,
+            identity_state=identity_state,
+            items=(),
+            total=0,
+            coverage=coverage,
         )

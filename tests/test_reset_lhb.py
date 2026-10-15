@@ -34,6 +34,13 @@ AS_OF = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
 DISCLOSED_ON = date(2026, 9, 18)
 
 
+@pytest.fixture
+def anyio_backend():
+    # Pin anyio to asyncio: a CI image with trio installed must not silently
+    # double-parametrize the async HTTP route tests under two backends.
+    return "asyncio"
+
+
 def utc(value: str) -> datetime:
     """Parse an ISO-8601 timestamp ending in ``Z`` into an aware datetime."""
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -5700,11 +5707,17 @@ async def test_ex08_ex09_empty_window_returns_200_no_data_envelope(
     assert seat_page["source"] is None
     assert seat_page["source_version"] is None
     assert seat_page["basis"] == {"unit": None, "currency": None}
-    assert set(seat_page["data"]) == {"seat", "items", "total"}
+    assert set(seat_page["data"]) == {"seat", "identity_state", "items", "total"}
     assert seat_page["data"]["items"] == []
     assert seat_page["data"]["total"] == 0
     assert set(seat_page["data"]["seat"]) == _LHB_SEAT_IDENTITY_KEYS
     assert seat_page["data"]["seat"]["seat_id"] == "SEAT-A"
+    # The disclosure sits outside the read window, but its authorized source
+    # still owns a real catalog identity: the empty envelope names it
+    # explicitly instead of guessing from a synthetic placeholder.
+    assert seat_page["data"]["identity_state"] == "known"
+    assert seat_page["data"]["seat"]["source_id"] == "lhb-source"
+    assert seat_page["data"]["seat"]["mapping_version"] == "seat-map-v1"
 
 
 @pytest.mark.anyio
@@ -5929,7 +5942,8 @@ async def test_ex09_lhb_seat_history_fields_and_exact_key_sets(
     }
 
     data = payload["data"]
-    assert set(data) == {"seat", "items", "total"}
+    assert set(data) == {"seat", "identity_state", "items", "total"}
+    assert data["identity_state"] == "known"
     assert data["total"] == 1
     assert set(data["seat"]) == _LHB_SEAT_IDENTITY_KEYS
     assert data["seat"] == {
@@ -5959,3 +5973,282 @@ async def test_ex09_lhb_seat_history_fields_and_exact_key_sets(
         key for key in found if "person" in key or "fund" in key or "holding" in key
     }
     assert "credential" not in found
+
+
+# --- EX09 identity provenance (I-1), late coverage (N-4), paging (N-3) ----
+
+
+@pytest.mark.anyio
+async def test_ex09_identity_unknown_without_any_catalog_entry(lhb_repository):
+    # (a) Empty window and no authorized source carries the seat at all: the
+    # header is the synthetic placeholder with an explicit "unknown" state.
+    history = lhb_repository.get_seat_history(
+        SeatHistorySelection(seat_id="SEAT-A", date=DISCLOSED_ON, as_of=LIST_AS_OF)
+    )
+    assert history.identity_state == "unknown"
+    assert history.seat.source_id == "SEAT-A"
+    assert history.seat.source_seat_name == "SEAT-A"
+    assert history.seat.mapping_version == "unknown"
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["identity_state"] == "unknown"
+    assert data["seat"] == {
+        "source_id": "SEAT-A",
+        "seat_id": "SEAT-A",
+        "source_seat_name": "SEAT-A",
+        "mapping_version": "unknown",
+    }
+    assert data["items"] == []
+    assert data["total"] == 0
+
+
+@pytest.mark.anyio
+async def test_ex09_identity_known_from_catalog_when_data_outside_window(
+    lhb_repository,
+):
+    # (b) Nothing visible in the window, but the authorized source's catalog
+    # holds the real seat identity (evidence landed outside the window): the
+    # state is "known" and the header is the catalog identity, not a seat_id
+    # echo or a mapping_version=="unknown" guess.
+    lhb_repository.ingest_batch(repo_batch())
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={
+                "date": "2026-09-01",
+                "days": "30",
+                "as_of": _LHB_HTTP_EARLY,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    data = payload["data"]
+    assert data["identity_state"] == "known"
+    assert data["seat"] == {
+        "source_id": "lhb-source",
+        "seat_id": "SEAT-A",
+        "source_seat_name": "Example branch",
+        "mapping_version": "seat-map-v1",
+    }
+    assert data["items"] == []
+    assert payload["quality_flags"] == ["no_data"]
+    assert payload["coverage"] == {
+        "total_disclosures": 0,
+        "visible_disclosures": 0,
+        "late_disclosures": 0,
+        "selected_disclosures": 0,
+        "seat_count": 0,
+        "complete_seats": 0,
+        "unknown_seats": 0,
+    }
+
+
+@pytest.mark.anyio
+async def test_ex09_identity_unknown_when_two_authorized_sources_reuse_seat(
+    database_url,
+):
+    # (c) Two authorized sources reuse the same seat_id with distinct catalog
+    # identities and no record is visible in the window. The header must fail
+    # closed to the synthetic placeholder: never silently attribute the seat
+    # to either source via ORDER BY ... LIMIT 1.
+    from factories import grant as grant_factory
+
+    from dragon_radar.lhb.repository import LHBRepository
+    from dragon_radar.storage.repository import Repository
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        sources = Repository(database, clock=lambda: OPERATION_NOW)
+        sources.register_source(grant_factory(source_id="lhb-source"))
+        sources.register_source(grant_factory(source_id="lhb-other"))
+        repository = LHBRepository(database, clock=lambda: OPERATION_NOW)
+        repository.ingest_batch(repo_batch("prov-1"))
+        repository.ingest_batch(
+            repo_batch(
+                "prov-2",
+                source_id="lhb-other",
+                disclosures=(
+                    disclosure(
+                        source_id="lhb-other",
+                        source_seat_name="Other Hidden Branch",
+                        mapping_version="other-map-v1",
+                    ),
+                ),
+            )
+        )
+
+        _, client = await _lhb_http_client(repository)
+        async with client:
+            response = await client.get(
+                "/api/lhb/seats/SEAT-A",
+                params={
+                    "date": "2026-09-01",
+                    "days": "30",
+                    "as_of": _LHB_HTTP_LATE,
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        data = payload["data"]
+        assert data["identity_state"] == "unknown"
+        assert data["seat"] == {
+            "source_id": "SEAT-A",
+            "seat_id": "SEAT-A",
+            "source_seat_name": "SEAT-A",
+            "mapping_version": "unknown",
+        }
+        assert data["items"] == []
+        raw = response.text
+        assert "Example branch" not in raw
+        assert "Other Hidden Branch" not in raw
+        assert "seat-map-v1" not in raw
+        assert "other-map-v1" not in raw
+    finally:
+        database.close()
+
+
+@pytest.mark.anyio
+async def test_ex09_identity_known_on_normal_items_path(lhb_repository):
+    # (d) Visible aggregated rows always carry an explicit "known" identity.
+    lhb_repository.ingest_batch(repo_batch())
+
+    history = lhb_repository.get_seat_history(
+        SeatHistorySelection(seat_id="SEAT-A", date=DISCLOSED_ON, as_of=LIST_AS_OF)
+    )
+    assert history.identity_state == "known"
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["identity_state"] == "known"
+    assert data["seat"]["source_id"] == "lhb-source"
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+
+
+@pytest.mark.anyio
+async def test_ex09_all_late_candidates_count_in_coverage(lhb_repository):
+    # N-4: an authorized source whose only in-window revision is not yet
+    # available returns an empty envelope, but coverage still reports the
+    # late candidate -- consistent with the EX08 late counting.
+    late = disclosure(
+        disclosure_id="D-late-http",
+        source_row_id="ROW-late-http",
+        available_at=LIST_AS_OF + timedelta(minutes=1),
+    )
+    lhb_repository.ingest_batch(repo_batch("http-all-late", disclosures=(late,)))
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb/seats/SEAT-A",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["items"] == []
+    assert payload["data"]["total"] == 0
+    assert payload["quality_flags"] == ["no_data"]
+    assert payload["coverage"]["total_disclosures"] >= 1
+    assert payload["coverage"]["visible_disclosures"] == 0
+    assert payload["coverage"]["late_disclosures"] >= 1
+    assert payload["coverage"]["selected_disclosures"] == 0
+    assert payload["coverage"]["seat_count"] == 0
+    assert payload["data"]["identity_state"] == "known"
+
+
+@pytest.mark.anyio
+async def test_ex08_out_of_range_page_is_empty_page_without_no_data_flag(
+    lhb_repository,
+):
+    # N-3: a page past the last one is an empty slice of a non-empty result,
+    # not a "no_data" window: total stays the full count and no_data is absent.
+    disclosures = tuple(
+        disclosure(
+            disclosure_id=f"D{index}",
+            source_row_id=f"ROW-{index}",
+            seat_id=f"SEAT-{index}",
+        )
+        for index in range(1, 4)
+    )
+    lhb_repository.ingest_batch(
+        repo_batch("http-page-past-end", disclosures=disclosures)
+    )
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb",
+            params={
+                "date": _LHB_HTTP_DATE,
+                "as_of": _LHB_HTTP_EARLY,
+                "page": "3",
+                "size": "2",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["total"] == 3
+    assert payload["data"]["page"] == 3
+    assert payload["data"]["size"] == 2
+    assert payload["data"]["items"] == []
+    assert payload["quality_flags"] == []
+    assert "no_data" not in payload["quality_flags"]
+
+
+@pytest.mark.anyio
+async def test_ex08_row_net_uses_34_digit_decimal_context(lhb_repository):
+    # #3: the route-level difference must run in the same prec=34 context the
+    # pure aggregator uses; a 30-significant-digit difference must survive.
+    import json
+
+    big_buy = Decimal("9" * 30)
+    # Exact 999...998 (30 significant digits), built from a string so the
+    # test process's default 28-digit context cannot round the expectation.
+    exact_net = Decimal("9" * 29 + "8")
+    precise = disclosure(
+        disclosure_id="D-ctx-34",
+        seats=(
+            seat(
+                source_row_id="ROW-1",
+                seat_id="SEAT-A",
+                buy_amount=big_buy,
+                sell_amount=Decimal("1"),
+            ),
+        ),
+    )
+    lhb_repository.ingest_batch(repo_batch("http-ctx-34", disclosures=(precise,)))
+
+    _, client = await _lhb_http_client(lhb_repository)
+    async with client:
+        response = await client.get(
+            "/api/lhb",
+            params={"date": _LHB_HTTP_DATE, "as_of": _LHB_HTTP_EARLY},
+        )
+
+    assert response.status_code == 200
+    assert f'"net_amount":{exact_net}'.encode() in response.content
+    payload = json.loads(response.content, parse_float=Decimal)
+    row = payload["data"]["items"][0]["seats"][0]
+    assert row["buy_amount"] == big_buy
+    assert row["net_amount"] == exact_net
