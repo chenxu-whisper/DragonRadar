@@ -4,8 +4,9 @@ The repository owns the trust boundary around the six immutable LHB tables:
 
 * writes strictly re-validate typed batches, canonicalize their payload,
   serialize source/batch/idempotency identity with advisory locks, and persist
-  either a full accepted (or synthetic-incomplete) chain, a duplicate replay,
-  or a rejected attempt -- never a partial domain chain;
+  either a full accepted chain or an incomplete one (when the payload itself
+  carries a revision with unknown amounts), a duplicate replay, or a rejected
+  attempt -- never a partial domain chain;
 * reads resolve the point-in-time visibility of each revision, re-check the
   current grant and the captured permission snapshot in SQL (one bounded
   authorization statement per read), reconstruct strictly through the LHB
@@ -25,7 +26,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import DateTime, and_, cast, insert, or_, select, true
+from sqlalchemy import DateTime, and_, cast, insert, select, true
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.domain.quality import grant_allows_display, grant_allows_storage
@@ -134,6 +135,16 @@ def _row_completeness(buy_amount: Decimal | None, sell_amount: Decimal | None) -
     if sell_amount is None:
         return "sell_unknown"
     return "complete"
+
+
+def _revision_is_incomplete(revision: DisclosureRevisionInput) -> bool:
+    # Completeness is derived solely from the payload amounts: a revision is
+    # incomplete iff at least one seat row is missing a buy or sell amount.
+    # ``side`` is display-only metadata and never participates in this rule.
+    return any(
+        _row_completeness(row.buy_amount, row.sell_amount) != "complete"
+        for row in revision.seats
+    )
 
 
 class _RejectedImport(Exception):
@@ -411,7 +422,15 @@ class LHBRepository(Repository):
     ) -> LHBImportResult:
         source_id = batch.source_id
         batch_id = batch.batch_id
-        incomplete = batch.batch_id.startswith("incomplete-")
+        incomplete_revisions = [
+            f"{revision.disclosure_id}:{revision.revision}"
+            for revision in sorted(
+                batch.disclosures,
+                key=lambda revision: (revision.disclosure_id, revision.revision),
+            )
+            if _revision_is_incomplete(revision)
+        ]
+        incomplete = bool(incomplete_revisions)
         status = "incomplete" if incomplete else "accepted"
         reason = "incomplete_revision" if incomplete else None
 
@@ -434,12 +453,7 @@ class LHBRepository(Repository):
 
         self._insert_disclosure_identities(connection, batch, digest)
         self._insert_seat_identities(connection, batch, digest)
-        incomplete_revisions = self._insert_revisions(
-            connection,
-            batch,
-            incomplete=incomplete,
-            batch_digest=digest,
-        )
+        self._insert_revisions(connection, batch, batch_digest=digest)
 
         seat_row_count = sum(len(revision.seats) for revision in batch.disclosures)
         if incomplete:
@@ -589,11 +603,9 @@ class LHBRepository(Repository):
         connection,
         batch: LHBImportBatch,
         *,
-        incomplete: bool,
         batch_digest: str,
-    ) -> list[str]:
+    ) -> None:
         source_id = batch.source_id
-        incomplete_revisions: list[str] = []
         for revision in sorted(
             batch.disclosures,
             key=lambda revision: (revision.disclosure_id, revision.revision),
@@ -628,11 +640,7 @@ class LHBRepository(Repository):
                 # Identical revision carried by a new batch: idempotent.
                 continue
 
-            has_null_side = any(row.side is None for row in revision.seats)
-            if incomplete and has_null_side:
-                incomplete_revisions.append(
-                    f"{revision.disclosure_id}:{revision.revision}"
-                )
+            revision_incomplete = _revision_is_incomplete(revision)
             connection.execute(
                 insert(lhb_disclosure_revisions).values(
                     id=uuid4(),
@@ -644,7 +652,7 @@ class LHBRepository(Repository):
                     received_at=revision.received_at,
                     available_at=revision.available_at,
                     permission_snapshot=revision.permission.model_dump(mode="json"),
-                    completeness="incomplete" if incomplete else "complete",
+                    completeness="incomplete" if revision_incomplete else "complete",
                     payload_hash=digest,
                 )
             )
@@ -669,7 +677,6 @@ class LHBRepository(Repository):
                 for row in sorted(revision.seats, key=lambda row: row.source_row_id)
             ]
             connection.execute(insert(lhb_disclosure_seats), seat_rows)
-        return incomplete_revisions
 
     # -- reads -------------------------------------------------------------
 
@@ -923,22 +930,11 @@ class LHBRepository(Repository):
 
     @staticmethod
     def _is_visible(record, as_of: datetime) -> bool:
-        meta = record["meta"]
-        revision_available = meta["available_at"]
-        batch_available = meta["batch_available_at"]
-        if batch_available > as_of:
-            return False
-        if revision_available < batch_available:
-            # A revision carried by a later parent batch only becomes visible
-            # strictly after that batch is available; at the exact boundary the
-            # revision whose own availability equals the batch's wins.
-            return as_of > batch_available
-        if meta["disclosure_date"] > as_of.date():
-            # A disclosure dated after the as-of calendar day is returned once
-            # its parent batch has been imported, independent of the revision's
-            # own availability timestamp.
-            return True
-        return as_of >= revision_available
+        # Point-in-time visibility mirrors the pure aggregate exactly: only the
+        # revision's own availability decides. Historical reads cannot see late
+        # announcements, including same-day timestamps later than ``as_of``;
+        # parent-batch availability never widens the window.
+        return record["meta"]["available_at"] <= as_of
 
     def _select_latest(self, revisions) -> tuple[dict, ...]:
         latest: dict[tuple[str, str], dict] = {}
@@ -951,6 +947,25 @@ class LHBRepository(Repository):
             ):
                 latest[key] = record
         return tuple(latest.values())
+
+    def _select_latest_visible(self, revisions, as_of: datetime) -> tuple[dict, ...]:
+        # Pick the greatest-rank *visible* revision per (source_id,
+        # disclosure_id) from ALL candidates -- never by filtering the overall
+        # latest first, or a hidden newer revision would discard an otherwise
+        # visible older one. Rank is (revision DESC, available_at DESC, id DESC):
+        # the revision number is the authoritative correction sequence.
+        latest_visible: dict[tuple[str, str], dict] = {}
+        for record in revisions.values():
+            if not self._is_visible(record, as_of):
+                continue
+            meta = record["meta"]
+            key = (meta["source_id"], meta["disclosure_id"])
+            current = latest_visible.get(key)
+            if current is None or self._revision_rank(record) > self._revision_rank(
+                current
+            ):
+                latest_visible[key] = record
+        return tuple(latest_visible.values())
 
     def list_disclosures(self, selection: DisclosureSelection) -> DisclosurePage:
         if not isinstance(selection, DisclosureSelection):
@@ -965,7 +980,7 @@ class LHBRepository(Repository):
         revision, disclosure, batch, chain = self._revision_chain()
         filters = [
             disclosure.c.disclosure_date == selection.date,
-            batch.c.available_at <= as_of,
+            revision.c.available_at <= as_of,
         ]
         if selection.security_id is not None:
             filters.append(disclosure.c.security_id == selection.security_id)
@@ -991,21 +1006,8 @@ class LHBRepository(Repository):
             )
 
         latest_overall = self._select_latest(revisions)
-        visible_records = [
-            record for record in revisions.values() if self._is_visible(record, as_of)
-        ]
-        latest_visible: dict[tuple[str, str], dict] = {}
-        for record in visible_records:
-            meta = record["meta"]
-            key = (meta["source_id"], meta["disclosure_id"])
-            current = latest_visible.get(key)
-            if current is None or self._revision_rank(record) > self._revision_rank(
-                current
-            ):
-                latest_visible[key] = record
-
         selected_records = sorted(
-            latest_visible.values(),
+            self._select_latest_visible(revisions, as_of),
             key=lambda record: (
                 record["meta"]["source_id"],
                 record["meta"]["disclosure_id"],
@@ -1110,18 +1112,7 @@ class LHBRepository(Repository):
             .select_from(chain)
             .where(
                 disclosure.c.disclosure_date == anchor_date,
-                batch.c.available_at <= as_of,
-                or_(
-                    disclosure.c.disclosure_date > as_of.date(),
-                    and_(
-                        revision.c.available_at < batch.c.available_at,
-                        cast(as_of, DateTime(timezone=True)) > batch.c.available_at,
-                    ),
-                    and_(
-                        revision.c.available_at >= batch.c.available_at,
-                        cast(as_of, DateTime(timezone=True)) >= revision.c.available_at,
-                    ),
-                ),
+                revision.c.available_at <= as_of,
                 *self._grant_display_predicates(grant, operation_now),
                 *self._snapshot_allows_display(
                     revision.c.permission_snapshot, operation_now
@@ -1198,7 +1189,7 @@ class LHBRepository(Repository):
             seat_row.c.seat_id == selection.seat_id,
             disclosure.c.disclosure_date > window_start,
             disclosure.c.disclosure_date <= selection.date,
-            batch.c.available_at <= as_of,
+            revision.c.available_at <= as_of,
         ]
 
         with self.database.engine.begin() as connection:
@@ -1230,9 +1221,9 @@ class LHBRepository(Repository):
                 window=(window_start, selection.date),
             )
             latest_overall = self._select_latest(revisions)
-            visible_records = [
-                record for record in latest_overall if self._is_visible(record, as_of)
-            ]
+            # Same candidate selection as list_disclosures: greatest visible
+            # revision per (source_id, disclosure_id) across ALL candidates.
+            visible_records = self._select_latest_visible(revisions, as_of)
             grouped: dict[tuple[str, date], list] = {}
             for record in visible_records:
                 meta = record["meta"]
@@ -1241,8 +1232,10 @@ class LHBRepository(Repository):
                 ).append(record)
 
             items: list[AggregatedSeat] = []
+            # One item per (source, disclosure date): source ascending, then
+            # disclosure date descending within each source.
             for source_id, disclosure_date in sorted(
-                grouped, key=lambda key: (key[1], key[0]), reverse=True
+                grouped, key=lambda key: (key[0], -key[1].toordinal())
             ):
                 group_records = grouped[(source_id, disclosure_date)]
                 group_revisions = tuple(

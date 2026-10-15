@@ -24,6 +24,7 @@ from dragon_radar.lhb import (
     PermissionSnapshot,
     SeatAggregation,
     SeatHistorySelection,
+    SeatIdentity,
     aggregate_seats,
     validate_import_batch,
 )
@@ -2377,8 +2378,6 @@ def repo_batch(batch_id="batch-1", *, disclosures=None, **changes) -> LHBImportB
 
 
 def lhb_table_counts(engine):
-    from sqlalchemy import func, select
-
     from dragon_radar.lhb.tables import (
         lhb_disclosure_revisions,
         lhb_disclosure_seats,
@@ -2436,16 +2435,18 @@ def test_lhb_repo_ingest_accepts_new_batch_and_persists_the_whole_chain(
     assert len(result.payload_hash) == 64
     assert result.imported_at == OPERATION_NOW
     with lhb_repository.database.engine.connect() as connection:
-        batch = connection.execute(
-            select(lhb_import_batches).where(
-                lhb_import_batches.c.batch_id == "batch-1"
+        batch = (
+            connection.execute(
+                select(lhb_import_batches).where(
+                    lhb_import_batches.c.batch_id == "batch-1"
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         attempt = connection.execute(select(lhb_import_attempts)).mappings().one()
         disclosure = connection.execute(select(lhb_disclosures)).mappings().one()
-        revision = connection.execute(
-            select(lhb_disclosure_revisions)
-        ).mappings().one()
+        revision = connection.execute(select(lhb_disclosure_revisions)).mappings().one()
         seat = connection.execute(select(lhb_seats)).mappings().one()
         seat_row = connection.execute(select(lhb_disclosure_seats)).mappings().one()
     assert batch["status"] == "accepted"
@@ -2473,8 +2474,6 @@ def test_lhb_repo_ingest_accepts_new_batch_and_persists_the_whole_chain(
 def test_lhb_repo_identical_replay_is_duplicate_without_new_domain_rows(
     lhb_repository,
 ):
-    from sqlalchemy import func, select
-
     from dragon_radar.lhb.tables import (
         lhb_disclosure_revisions,
         lhb_disclosure_seats,
@@ -2500,20 +2499,21 @@ def test_lhb_repo_identical_replay_is_duplicate_without_new_domain_rows(
             "accepted",
             "duplicate",
         ]
-        duplicate = connection.execute(
-            select(lhb_import_attempts).where(
-                lhb_import_attempts.c.status == "duplicate"
+        duplicate = (
+            connection.execute(
+                select(lhb_import_attempts).where(
+                    lhb_import_attempts.c.status == "duplicate"
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert duplicate["reason"] is None
         assert duplicate["details"]["original_import_id"] == first.import_id
         assert (
-            connection.scalar(select(func.count()).select_from(lhb_import_batches))
-            == 1
+            connection.scalar(select(func.count()).select_from(lhb_import_batches)) == 1
         )
-        assert (
-            connection.scalar(select(func.count()).select_from(lhb_disclosures)) == 1
-        )
+        assert connection.scalar(select(func.count()).select_from(lhb_disclosures)) == 1
         assert (
             connection.scalar(
                 select(func.count()).select_from(lhb_disclosure_revisions)
@@ -2522,9 +2522,7 @@ def test_lhb_repo_identical_replay_is_duplicate_without_new_domain_rows(
         )
         assert connection.scalar(select(func.count()).select_from(lhb_seats)) == 1
         assert (
-            connection.scalar(
-                select(func.count()).select_from(lhb_disclosure_seats)
-            )
+            connection.scalar(select(func.count()).select_from(lhb_disclosure_seats))
             == 1
         )
 
@@ -2532,8 +2530,6 @@ def test_lhb_repo_identical_replay_is_duplicate_without_new_domain_rows(
 def test_lhb_repo_same_identity_different_payload_is_conflict_with_attempt(
     lhb_repository,
 ):
-    from sqlalchemy import func, select
-
     from dragon_radar.lhb.tables import (
         lhb_disclosure_revisions,
         lhb_disclosure_seats,
@@ -2557,20 +2553,21 @@ def test_lhb_repo_same_identity_different_payload_is_conflict_with_attempt(
         lhb_repository.ingest_batch(tampered)
 
     with lhb_repository.database.engine.connect() as connection:
-        rejected = connection.execute(
-            select(lhb_import_attempts).where(
-                lhb_import_attempts.c.status == "rejected"
+        rejected = (
+            connection.execute(
+                select(lhb_import_attempts).where(
+                    lhb_import_attempts.c.status == "rejected"
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert rejected["reason"] == "batch_identity_conflict"
         assert rejected["details"] == {"kind": "lhb"}
         assert (
-            connection.scalar(select(func.count()).select_from(lhb_import_batches))
-            == 1
+            connection.scalar(select(func.count()).select_from(lhb_import_batches)) == 1
         )
-        assert (
-            connection.scalar(select(func.count()).select_from(lhb_disclosures)) == 1
-        )
+        assert connection.scalar(select(func.count()).select_from(lhb_disclosures)) == 1
         assert (
             connection.scalar(
                 select(func.count()).select_from(lhb_disclosure_revisions)
@@ -2579,9 +2576,7 @@ def test_lhb_repo_same_identity_different_payload_is_conflict_with_attempt(
         )
         assert connection.scalar(select(func.count()).select_from(lhb_seats)) == 1
         assert (
-            connection.scalar(
-                select(func.count()).select_from(lhb_disclosure_seats)
-            )
+            connection.scalar(select(func.count()).select_from(lhb_disclosure_seats))
             == 1
         )
 
@@ -2589,8 +2584,6 @@ def test_lhb_repo_same_identity_different_payload_is_conflict_with_attempt(
 def test_lhb_repo_validation_failure_returns_rejected_result_without_domain_rows(
     lhb_repository,
 ):
-    from sqlalchemy import func, select
-
     from dragon_radar.lhb.tables import (
         lhb_disclosure_revisions,
         lhb_disclosure_seats,
@@ -2601,13 +2594,9 @@ def test_lhb_repo_validation_failure_returns_rejected_result_without_domain_rows
     )
 
     tampered_seat = (
-        disclosure()
-        .seats[0]
-        .model_copy(update={"buy_amount": Decimal("-5")})
+        disclosure().seats[0].model_copy(update={"buy_amount": Decimal("-5")})
     )
-    tampered_revision = disclosure().model_copy(
-        update={"seats": (tampered_seat,)}
-    )
+    tampered_revision = disclosure().model_copy(update={"seats": (tampered_seat,)})
     tampered = repo_batch(disclosures=(tampered_revision,))
 
     result = lhb_repository.ingest_batch(tampered)
@@ -2622,12 +2611,9 @@ def test_lhb_repo_validation_failure_returns_rejected_result_without_domain_rows
         assert attempt["details"]["kind"] == "lhb"
         assert attempt["details"]["error_type"] == "ValidationError"
         assert (
-            connection.scalar(select(func.count()).select_from(lhb_import_batches))
-            == 0
+            connection.scalar(select(func.count()).select_from(lhb_import_batches)) == 0
         )
-        assert (
-            connection.scalar(select(func.count()).select_from(lhb_disclosures)) == 0
-        )
+        assert connection.scalar(select(func.count()).select_from(lhb_disclosures)) == 0
         assert (
             connection.scalar(
                 select(func.count()).select_from(lhb_disclosure_revisions)
@@ -2636,9 +2622,7 @@ def test_lhb_repo_validation_failure_returns_rejected_result_without_domain_rows
         )
         assert connection.scalar(select(func.count()).select_from(lhb_seats)) == 0
         assert (
-            connection.scalar(
-                select(func.count()).select_from(lhb_disclosure_seats)
-            )
+            connection.scalar(select(func.count()).select_from(lhb_disclosure_seats))
             == 0
         )
 
@@ -2755,6 +2739,13 @@ def test_lhb_repo_ingest_rejects_future_captured_permission_without_attempt(
 def test_lhb_repo_payload_hash_is_canonical_order_insensitive_and_content_sensitive(
     lhb_repository,
 ):
+    from dragon_radar.lhb.repository import _batch_payload, _canonical_hash
+
+    def batch_hash(batch):
+        return _canonical_hash(
+            {"kind": "lhb", "batch": _batch_payload(validate_import_batch(batch))}
+        )
+
     first = disclosure(
         disclosure_id="D1",
         available_at=utc("2026-09-18T08:00:00Z"),
@@ -2834,64 +2825,127 @@ def test_lhb_repo_payload_hash_is_canonical_order_insensitive_and_content_sensit
 
     assert replay.status == "duplicate"
     assert replay.payload_hash == accepted.payload_hash
-    for changed in (changed_digit, changed_date, changed_null):
-        changed_batch = repo_batch(
-            f"canonical-{changed.disclosures[0].seats[0].sell_amount}-"
-            f"{changed.disclosures[0].available_at.microsecond}",
-            disclosures=(changed,),
-        )
+    # Changed content must hash differently. These variants are never ingested:
+    # D1:1 is already bound to the accepted payload, and revision identity is
+    # immutable (a real content change has to arrive as revision 2).
+    for batch_id, changed in (
+        ("canonical-digit", changed_digit),
+        ("canonical-date", changed_date),
+        ("canonical-null", changed_null),
+    ):
         assert (
-            lhb_repository.ingest_batch(changed_batch).payload_hash
+            batch_hash(repo_batch(batch_id, disclosures=(changed,)))
             != accepted.payload_hash
         )
 
 
-def test_lhb_repo_null_side_marks_revision_batch_and_attempt_incomplete(
-    lhb_repository,
+@pytest.mark.parametrize(
+    ("buy_amount", "sell_amount", "seat_completeness"),
+    [
+        (None, Decimal("30"), "buy_unknown"),
+        (Decimal("100"), None, "sell_unknown"),
+        (None, None, "both_unknown"),
+    ],
+)
+def test_lhb_repo_null_amount_marks_revision_batch_and_attempt_incomplete(
+    lhb_repository, buy_amount, sell_amount, seat_completeness
 ):
-    from dragon_radar.lhb.tables import lhb_import_attempts, lhb_import_batches
-    from sqlalchemy import select
-
-    incomplete_revision = disclosure(side="net")
-    incomplete_revision = incomplete_revision.model_copy(
-        update={
-            "seats": (
-                incomplete_revision.seats[0].model_copy(update={"side": None}),
-            )
-        }
+    # Completeness is derived from the payload amounts alone -- no batch-id
+    # prefix and no NULL ``side`` involvement.
+    from dragon_radar.lhb.tables import (
+        lhb_disclosure_revisions,
+        lhb_disclosure_seats,
+        lhb_import_attempts,
+        lhb_import_batches,
     )
+
+    incomplete_revision = disclosure(
+        side="net", buy_amount=buy_amount, sell_amount=sell_amount
+    )
+    batch_id = f"amount-incomplete-{seat_completeness}"
     result = lhb_repository.ingest_batch(
-        repo_batch("incomplete-1", disclosures=(incomplete_revision,))
+        repo_batch(batch_id, disclosures=(incomplete_revision,))
     )
 
     assert result.status == "incomplete"
     assert result.reason == "incomplete_revision"
     with lhb_repository.database.engine.connect() as connection:
-        batch = connection.execute(
-            select(lhb_import_batches).where(
-                lhb_import_batches.c.batch_id == "incomplete-1"
+        batch = (
+            connection.execute(
+                select(lhb_import_batches).where(
+                    lhb_import_batches.c.batch_id == batch_id
+                )
             )
-        ).mappings().one()
-        attempt = connection.execute(
-            select(lhb_import_attempts).where(
-                lhb_import_attempts.c.status == "incomplete"
+            .mappings()
+            .one()
+        )
+        attempt = (
+            connection.execute(
+                select(lhb_import_attempts).where(
+                    lhb_import_attempts.c.status == "incomplete"
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
+        revision = connection.execute(select(lhb_disclosure_revisions)).mappings().one()
+        seat_row = connection.execute(select(lhb_disclosure_seats)).mappings().one()
         assert batch["status"] == "incomplete"
         assert batch["reason"] == "incomplete_revision"
         assert attempt["reason"] == "incomplete_revision"
-        assert attempt["details"]["incomplete_revisions"] == ["D1:1"]
+        assert attempt["details"] == {"incomplete_revisions": ["D1:1"]}
+        assert revision["completeness"] == "incomplete"
+        assert seat_row["completeness"] == seat_completeness
 
     replay = lhb_repository.ingest_batch(
-        repo_batch("incomplete-1", disclosures=(incomplete_revision,))
+        repo_batch(batch_id, disclosures=(incomplete_revision,))
+    )
+    assert replay.status == "duplicate"
+    assert replay.reason is None
+    assert replay.payload_hash == result.payload_hash
+
+
+def test_lhb_repo_null_side_with_known_amounts_is_accepted_and_complete(
+    lhb_repository,
+):
+    # ``side`` is display-only metadata: a NULL side with both amounts known
+    # stays accepted and complete on both the revision and seat rows.
+    from dragon_radar.lhb.tables import (
+        lhb_disclosure_revisions,
+        lhb_disclosure_seats,
+        lhb_import_attempts,
+    )
+
+    side_null = disclosure(side=None)
+    result = lhb_repository.ingest_batch(
+        repo_batch("side-null-accepted-1", disclosures=(side_null,))
+    )
+
+    assert result.status == "accepted"
+    assert result.reason is None
+    with lhb_repository.database.engine.connect() as connection:
+        attempt = connection.execute(select(lhb_import_attempts)).mappings().one()
+        revision = connection.execute(select(lhb_disclosure_revisions)).mappings().one()
+        seat_row = connection.execute(select(lhb_disclosure_seats)).mappings().one()
+        assert attempt["status"] == "accepted"
+        assert attempt["reason"] is None
+        assert attempt["details"] == {
+            "kind": "lhb",
+            "disclosure_count": 1,
+            "seat_row_count": 1,
+        }
+        assert revision["completeness"] == "complete"
+        assert seat_row["side"] is None
+        assert seat_row["completeness"] == "complete"
+
+    replay = lhb_repository.ingest_batch(
+        repo_batch("side-null-accepted-1", disclosures=(side_null,))
     )
     assert replay.status == "duplicate"
     assert replay.payload_hash == result.payload_hash
 
 
 def test_lhb_repo_revision_append_keeps_immutable_history(lhb_repository):
-    from sqlalchemy import select
-
     from dragon_radar.lhb.tables import (
         lhb_disclosure_revisions,
         lhb_disclosure_seats,
@@ -2923,27 +2977,33 @@ def test_lhb_repo_revision_append_keeps_immutable_history(lhb_repository):
                 lhb_disclosure_revisions.c.payload_hash,
             ).order_by(lhb_disclosure_revisions.c.revision)
         ).all()
-        row_count = connection.execute(
-            select(lhb_disclosure_seats).where(
-                lhb_disclosure_seats.c.revision == 1
+        row_count = (
+            connection.execute(
+                select(lhb_disclosure_seats).where(lhb_disclosure_seats.c.revision == 1)
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     assert [revision for revision, _ in revisions] == [1, 2]
     assert len({digest for _, digest in revisions}) == 2
     assert len(row_count) == 1
     assert row_count[0]["buy_amount"] == Decimal("100")
 
+    # Visibility follows each revision's own available_at only; the carrying
+    # batch's availability never gates it. rev2 announces at T0+0.5s, so before
+    # that cut nothing is visible, at T0+1s only rev2 is visible and wins by
+    # revision number, and once rev1 appears later rev2 still stays selected.
     early = lhb_repository.list_disclosures(
-        DisclosureSelection(date=DISCLOSED_ON, as_of=T0 + timedelta(seconds=1))
+        DisclosureSelection(date=DISCLOSED_ON, as_of=T0 + timedelta(milliseconds=400))
     )
     assert early.items == ()
-    visible_first = lhb_repository.list_disclosures(
-        DisclosureSelection(
-            date=DISCLOSED_ON, as_of=utc("2026-09-18T08:00:02Z")
-        )
+    revision_two_announces_first = lhb_repository.list_disclosures(
+        DisclosureSelection(date=DISCLOSED_ON, as_of=T0 + timedelta(seconds=1))
     )
-    assert visible_first.items[0].revision.revision == 1
-    assert visible_first.items[0].revision.seats[0].buy_amount == Decimal("100")
+    assert revision_two_announces_first.items[0].revision.revision == 2
+    assert revision_two_announces_first.items[0].revision.seats[
+        0
+    ].buy_amount == Decimal("110")
     latest = lhb_repository.list_disclosures(
         DisclosureSelection(date=DISCLOSED_ON, as_of=LIST_AS_OF)
     )
@@ -2963,16 +3023,12 @@ def test_lhb_repo_latest_revision_number_wins_even_with_earlier_availability(
         buy_amount=Decimal("100"),
         available_at=utc("2026-09-18T08:00:02Z"),
     )
-    rev2 = revision_with_earlier_availability(
-        2, side="net", buy_amount=Decimal("110")
-    )
+    rev2 = revision_with_earlier_availability(2, side="net", buy_amount=Decimal("110"))
     lhb_repository.ingest_batch(repo_batch("order-1", disclosures=(rev1,)))
     lhb_repository.ingest_batch(repo_batch("order-2", disclosures=(rev2,)))
 
     hidden = lhb_repository.list_disclosures(
-        DisclosureSelection(
-            date=DISCLOSED_ON, as_of=utc("2026-09-18T08:00:00Z")
-        )
+        DisclosureSelection(date=DISCLOSED_ON, as_of=utc("2026-09-18T08:00:00Z"))
     )
     assert hidden.items == ()
     both_visible = lhb_repository.list_disclosures(
@@ -2986,7 +3042,6 @@ def test_lhb_repo_latest_revision_number_wins_even_with_earlier_availability(
 
 def test_lhb_repo_same_name_distinct_seat_ids_are_both_persisted(lhb_repository):
     from dragon_radar.lhb.tables import lhb_disclosure_seats
-    from sqlalchemy import select
 
     named = disclosure(
         seats=(
@@ -3019,9 +3074,7 @@ def test_lhb_repo_shared_disclosure_identity_conflict_is_fail_closed(
     lhb_repository.ingest_batch(repo_batch("identity-1"))
     divergent = disclosure(revision=2, reason="different reason text")
     with pytest.raises(Conflict, match="disclosure identity"):
-        lhb_repository.ingest_batch(
-            repo_batch("identity-2", disclosures=(divergent,))
-        )
+        lhb_repository.ingest_batch(repo_batch("identity-2", disclosures=(divergent,)))
     # The rejected batch leaves no revision rows behind.
     counts = lhb_table_counts(lhb_repository.database.engine)
     assert counts["lhb_import_batches"] == 1
@@ -3033,7 +3086,6 @@ def test_lhb_repo_shared_disclosure_identity_is_reused_when_identical(
     lhb_repository,
 ):
     from dragon_radar.lhb.tables import lhb_disclosures
-    from sqlalchemy import func, select
 
     another = disclosure(
         disclosure_id="D2",
@@ -3045,15 +3097,11 @@ def test_lhb_repo_shared_disclosure_identity_is_reused_when_identical(
     lhb_repository.ingest_batch(repo_batch("shared-2", disclosures=(another,)))
 
     with lhb_repository.database.engine.connect() as connection:
-        assert (
-            connection.scalar(select(func.count()).select_from(lhb_disclosures))
-            == 2
-        )
+        assert connection.scalar(select(func.count()).select_from(lhb_disclosures)) == 2
 
 
 def test_lhb_repo_seat_catalog_same_key_same_name_is_idempotent(lhb_repository):
     from dragon_radar.lhb.tables import lhb_seats
-    from sqlalchemy import func, select
 
     second_day = disclosure(
         disclosure_id="D2",
@@ -3081,9 +3129,7 @@ def test_lhb_repo_seat_catalog_same_key_different_name_conflicts(lhb_repository)
     lhb_repository.ingest_batch(repo_batch("seat-rename-1"))
 
     with pytest.raises(Conflict, match="seat identity"):
-        lhb_repository.ingest_batch(
-            repo_batch("seat-rename-2", disclosures=(renamed,))
-        )
+        lhb_repository.ingest_batch(repo_batch("seat-rename-2", disclosures=(renamed,)))
     counts = lhb_table_counts(lhb_repository.database.engine)
     assert counts["lhb_seats"] == 1
     assert counts["lhb_disclosure_seats"] == 1
@@ -3100,16 +3146,13 @@ def test_lhb_repo_same_revision_number_with_different_hash_conflicts(
     lhb_repository.ingest_batch(repo_batch("recarry-1"))
 
     with pytest.raises(Conflict, match="revision identity"):
-        lhb_repository.ingest_batch(
-            repo_batch("recarry-2", disclosures=(recarried,))
-        )
+        lhb_repository.ingest_batch(repo_batch("recarry-2", disclosures=(recarried,)))
 
 
 def test_lhb_repo_identical_recarried_revision_is_idempotent_and_adds_disclosure(
     lhb_repository,
 ):
     from dragon_radar.lhb.tables import lhb_disclosure_revisions
-    from sqlalchemy import func, select
 
     same_revision = disclosure()
     second = disclosure(
@@ -3120,9 +3163,7 @@ def test_lhb_repo_identical_recarried_revision_is_idempotent_and_adds_disclosure
     )
     lhb_repository.ingest_batch(repo_batch("recarry-ok-1"))
     lhb_repository.ingest_batch(
-        repo_batch(
-            "recarry-ok-2", disclosures=(same_revision, second)
-        )
+        repo_batch("recarry-ok-2", disclosures=(same_revision, second))
     )
 
     with lhb_repository.database.engine.connect() as connection:
@@ -3138,9 +3179,9 @@ def test_lhb_repo_revoked_grant_after_import_forbids_both_reads(lhb_repository):
     from dragon_radar.storage.repository import Forbidden, Repository
 
     lhb_repository.ingest_batch(repo_batch())
-    Repository(
-        lhb_repository.database, clock=lhb_repository.clock
-    ).revoke_source("lhb-source")
+    Repository(lhb_repository.database, clock=lhb_repository.clock).revoke_source(
+        "lhb-source"
+    )
 
     with pytest.raises(Forbidden):
         lhb_repository.list_disclosures(
@@ -3195,7 +3236,7 @@ def test_lhb_repo_zero_amount_stays_zero(lhb_repository):
     lhb_repository.ingest_batch(
         repo_batch(
             "zero-1",
-            disclosures=(disclosure(side="net", buy_amount=Decimal("0"))),
+            disclosures=(disclosure(side="net", buy_amount=Decimal("0")),),
         )
     )
 
@@ -3246,8 +3287,15 @@ def test_lhb_repo_list_disclosures_matches_date_and_security_with_order(
     assert scoped.total == 1
     assert scoped.items[0].revision.disclosure_id == "D2"
 
-    other_date = lhb_repository.list_disclosures(
+    # A disclosure dated on the 19th announced at 08:00 stays hidden to a read
+    # taken at 10:00 on the 18th, even when querying its own calendar date.
+    other_date_hidden = lhb_repository.list_disclosures(
         DisclosureSelection(date=date(2026, 9, 19), as_of=LIST_AS_OF)
+    )
+    assert other_date_hidden.total == 0
+    assert other_date_hidden.items == ()
+    other_date = lhb_repository.list_disclosures(
+        DisclosureSelection(date=date(2026, 9, 19), as_of=utc("2026-09-19T09:00:00Z"))
     )
     assert other_date.total == 1
     assert other_date.items[0].revision.disclosure_id == "D3"
@@ -3270,9 +3318,7 @@ def test_lhb_repo_list_disclosures_paginates_deterministically_with_stable_total
 
     pages = [
         lhb_repository.list_disclosures(
-            DisclosureSelection(
-                date=DISCLOSED_ON, page=page, size=2, as_of=LIST_AS_OF
-            )
+            DisclosureSelection(date=DISCLOSED_ON, page=page, size=2, as_of=LIST_AS_OF)
         )
         for page in (1, 2, 3)
     ]
@@ -3413,8 +3459,8 @@ def test_lhb_repo_list_disclosures_filters_revision_with_revoked_snapshot(
     from dragon_radar.lhb.repository import LHBRepository
     from dragon_radar.lhb.tables import (
         lhb_disclosure_revisions,
-        lhb_disclosures,
         lhb_disclosure_seats,
+        lhb_disclosures,
         lhb_import_batches,
         lhb_seats,
     )
@@ -3427,9 +3473,9 @@ def test_lhb_repo_list_disclosures_filters_revision_with_revoked_snapshot(
         )
         repository = LHBRepository(database, clock=lambda: OPERATION_NOW)
         repository.ingest_batch(repo_batch("snapshot-1"))
-        revoked_snapshot = permission().model_copy(
-            update={"state": "revoked"}
-        ).model_dump(mode="json")
+        revoked_snapshot = (
+            permission().model_copy(update={"state": "revoked"}).model_dump(mode="json")
+        )
         with database.engine.begin() as connection:
             connection.execute(
                 insert(lhb_import_batches).values(
@@ -3481,7 +3527,7 @@ def test_lhb_repo_list_disclosures_filters_revision_with_revoked_snapshot(
                     source_event_at=T0,
                     received_at=T0 + timedelta(seconds=1),
                     available_at=T0 + timedelta(seconds=2),
-                    permission_snapshot=revoked-snapshot,
+                    permission_snapshot=revoked_snapshot,
                     completeness="complete",
                     payload_hash="a" * 64,
                 )
@@ -3620,9 +3666,7 @@ def test_lhb_repo_seat_history_groups_per_source_and_day_with_pure_parity(
         Decimal("30"),
         Decimal("30"),
     ]
-    by_date = {
-        item.contributions[0].disclosure_date: item for item in history.items
-    }
+    by_date = {item.contributions[0].disclosure_date: item for item in history.items}
     for revision in (monday, tuesday, friday):
         expected = aggregate_seats([revision], as_of=LIST_AS_OF).seats[0]
         assert by_date[revision.disclosure_date] == expected
@@ -3639,6 +3683,264 @@ def test_lhb_repo_seat_history_groups_per_source_and_day_with_pure_parity(
     assert history.coverage.seat_count == 3
     assert history.coverage.complete_seats == 3
     assert history.coverage.unknown_seats == 0
+
+
+def test_lhb_repo_sql_matches_pure_aggregate_across_visibility_cuts(
+    lhb_repository,
+):
+    # SQL<->pure parity regression: the same fixture revisions are fed to the
+    # pure aggregate_seats and to the SQL-backed list/history reads. At every
+    # as_of cut both paths must select the same revision per (source_id,
+    # disclosure_id) and produce identical aggregated seats (buy/sell/net/
+    # completeness) and wall-clock headers (name/mapping/source_version).
+    thursday = date(2026, 9, 17)
+    d1r1 = disclosure(
+        disclosure_id="D1",
+        revision=1,
+        source_row_id="ROW-1",
+        side="net",
+        buy_amount=Decimal("100"),
+        sell_amount=Decimal("30"),
+        available_at=utc("2026-09-18T08:00:00Z"),
+    )
+    d1r2 = disclosure(
+        disclosure_id="D1",
+        revision=2,
+        source_version="v2",
+        source_row_id="ROW-1",
+        source_seat_name="Corrected branch",
+        mapping_version="seat-map-v2",
+        side="net",
+        buy_amount=Decimal("110"),
+        sell_amount=Decimal("35"),
+        available_at=utc("2026-09-18T12:00:00Z"),
+    )
+    d2r1 = disclosure(
+        disclosure_id="D2",
+        revision=1,
+        source_row_id="ROW-2",
+        side="net",
+        buy_amount=Decimal("50"),
+        sell_amount=Decimal("20"),
+        available_at=utc("2026-09-18T09:30:00Z"),
+    )
+    d3r1 = disclosure(
+        disclosure_id="D3",
+        revision=1,
+        disclosure_date=thursday,
+        source_row_id="ROW-3",
+        side="net",
+        buy_amount=Decimal("200"),
+        sell_amount=Decimal("80"),
+        source_event_at=utc("2026-09-17T08:59:58Z"),
+        received_at=utc("2026-09-17T08:59:59Z"),
+        available_at=utc("2026-09-17T09:00:00Z"),
+    )
+    d3r2 = disclosure(
+        disclosure_id="D3",
+        revision=2,
+        disclosure_date=thursday,
+        source_row_id="ROW-3",
+        side="net",
+        buy_amount=Decimal("210"),
+        sell_amount=Decimal("85"),
+        source_event_at=utc("2026-09-16T05:59:58Z"),
+        received_at=utc("2026-09-16T05:59:59Z"),
+        available_at=utc("2026-09-16T06:00:00Z"),
+    )
+    lhb_repository.ingest_batch(repo_batch("parity-1", disclosures=(d1r1, d2r1, d3r1)))
+    lhb_repository.ingest_batch(
+        repo_batch("parity-2", source_version="v2", disclosures=(d1r2,))
+    )
+    lhb_repository.ingest_batch(repo_batch("parity-3", disclosures=(d3r2,)))
+
+    friday_candidates = (d1r1, d1r2, d2r1)
+    thursday_candidates = (d3r1, d3r2)
+    all_candidates = (d1r1, d1r2, d2r1, d3r1, d3r2)
+
+    cut_before_anything = utc("2026-09-16T05:00:00Z")
+    cut_early = utc("2026-09-18T08:30:00Z")
+    cut_same_day_before = utc("2026-09-18T09:00:00Z")
+    cut_same_day_boundary = utc("2026-09-18T09:30:00Z")
+    cut_future_rev2 = utc("2026-09-18T10:00:00Z")
+    cut_latest = utc("2026-09-18T13:00:00Z")
+
+    empty_list = lhb_repository.list_disclosures(
+        DisclosureSelection(date=DISCLOSED_ON, as_of=cut_before_anything, size=100)
+    )
+    assert empty_list.items == ()
+    assert empty_list.total == 0
+    empty_history = lhb_repository.get_seat_history(
+        SeatHistorySelection(
+            seat_id="SEAT-A",
+            date=DISCLOSED_ON,
+            days=30,
+            as_of=cut_before_anything,
+        )
+    )
+    assert empty_history.items == ()
+    assert empty_history.total == 0
+
+    # as_of cut -> expected selected revision per Friday disclosure id.
+    list_expectations = {
+        cut_early: {"D1": 1},
+        cut_same_day_before: {"D1": 1},
+        cut_same_day_boundary: {"D1": 1, "D2": 1},
+        cut_future_rev2: {"D1": 1, "D2": 1},
+        cut_latest: {"D1": 2, "D2": 1},
+    }
+    for cut, expected_selection in list_expectations.items():
+        page = lhb_repository.list_disclosures(
+            DisclosureSelection(date=DISCLOSED_ON, as_of=cut, size=100)
+        )
+        sql_selection = {
+            item.revision.disclosure_id: item.revision.revision for item in page.items
+        }
+        assert sql_selection == expected_selection, cut
+        pure = aggregate_seats(friday_candidates, as_of=cut)
+        pure_selection = {
+            contribution.disclosure_id: contribution.revision
+            for contribution in pure.seats[0].contributions
+        }
+        assert pure_selection == expected_selection, cut
+        sql_aggregated = aggregate_seats(
+            tuple(item.revision for item in page.items), as_of=cut
+        )
+        assert sql_aggregated.seats == pure.seats, cut
+        assert page.coverage.total_disclosures == 2
+        assert page.coverage.visible_disclosures == len(expected_selection)
+        assert page.coverage.late_disclosures == 2 - len(expected_selection)
+
+    # (i) A future rev2 hides itself but must not discard the still-visible
+    # rev1 -- neither in list nor in history.
+    friday_page = lhb_repository.list_disclosures(
+        DisclosureSelection(date=DISCLOSED_ON, as_of=cut_future_rev2, size=100)
+    )
+    d1_selected = next(
+        item.revision
+        for item in friday_page.items
+        if item.revision.disclosure_id == "D1"
+    )
+    assert d1_selected.revision == 1
+    assert d1_selected.seats[0].buy_amount == Decimal("100")
+
+    # (ii) Same-day late announcement: hidden at 09:00, visible at the exact
+    # 09:30 boundary (<= as_of).
+    before = lhb_repository.get_seat_history(
+        SeatHistorySelection(
+            seat_id="SEAT-A", date=DISCLOSED_ON, days=30, as_of=cut_same_day_before
+        )
+    )
+    friday_item_before = next(
+        item
+        for item in before.items
+        if item.contributions[0].disclosure_date == DISCLOSED_ON
+    )
+    assert {
+        (entry.disclosure_id, entry.revision)
+        for entry in friday_item_before.contributions
+    } == {("D1", 1)}
+    at_boundary = lhb_repository.get_seat_history(
+        SeatHistorySelection(
+            seat_id="SEAT-A",
+            date=DISCLOSED_ON,
+            days=30,
+            as_of=cut_same_day_boundary,
+        )
+    )
+    friday_item_at_boundary = next(
+        item
+        for item in at_boundary.items
+        if item.contributions[0].disclosure_date == DISCLOSED_ON
+    )
+    assert {
+        (entry.disclosure_id, entry.revision)
+        for entry in friday_item_at_boundary.contributions
+    } == {("D1", 1), ("D2", 1)}
+
+    # History parity at every cut: one item per (source, date), source ascending
+    # then date descending (Friday group before Thursday group).
+    for cut in (
+        cut_early,
+        cut_same_day_before,
+        cut_same_day_boundary,
+        cut_future_rev2,
+        cut_latest,
+    ):
+        history = lhb_repository.get_seat_history(
+            SeatHistorySelection(
+                seat_id="SEAT-A", date=DISCLOSED_ON, days=30, as_of=cut
+            )
+        )
+        assert len(history.items) == 2, cut
+        assert [item.contributions[0].disclosure_date for item in history.items] == [
+            DISCLOSED_ON,
+            thursday,
+        ], cut
+        friday_pure = aggregate_seats(friday_candidates, as_of=cut)
+        thursday_pure = aggregate_seats(thursday_candidates, as_of=cut)
+        assert history.items[0] == friday_pure.seats[0], cut
+        assert history.items[1] == thursday_pure.seats[0], cut
+        header_pure = aggregate_seats(all_candidates, as_of=cut).seats[0]
+        assert history.seat.source_id == header_pure.source_id
+        assert history.seat.source_seat_name == header_pure.source_seat_name
+        assert history.seat.mapping_version == header_pure.mapping_version
+        assert history.total == 2, cut
+
+    # (i) continued: at the 10:00 cut the Friday history item still carries
+    # rev1's amounts while rev2 (12:00) is hidden.
+    future_cut_history = lhb_repository.get_seat_history(
+        SeatHistorySelection(
+            seat_id="SEAT-A", date=DISCLOSED_ON, days=30, as_of=cut_future_rev2
+        )
+    )
+    friday_visible = future_cut_history.items[0]
+    assert friday_visible.buy_amount == Decimal("150")
+    assert friday_visible.sell_amount == Decimal("50")
+    assert friday_visible.net_amount == Decimal("100")
+
+    # (iii) rev2 of D3 is available EARLIER than rev1; the revision number is
+    # authoritative and wins at every cut, so Thursday carries rev2's amounts.
+    early_history = lhb_repository.get_seat_history(
+        SeatHistorySelection(
+            seat_id="SEAT-A", date=DISCLOSED_ON, days=30, as_of=cut_early
+        )
+    )
+    thursday_item = early_history.items[1]
+    assert thursday_item.contributions[0].revision == 2
+    assert thursday_item.buy_amount == Decimal("210")
+    assert thursday_item.sell_amount == Decimal("85")
+    assert thursday_item.net_amount == Decimal("125")
+    assert thursday_item.completeness == "complete"
+
+    latest_history = lhb_repository.get_seat_history(
+        SeatHistorySelection(
+            seat_id="SEAT-A", date=DISCLOSED_ON, days=30, as_of=cut_latest
+        )
+    )
+    assert latest_history.items[0].buy_amount == Decimal("160")
+    assert latest_history.items[0].sell_amount == Decimal("55")
+    assert latest_history.items[0].net_amount == Decimal("105")
+    # Header follows wall-clock availability across every selected revision:
+    # rev2 of D1 (12:00, v2 rename) is newest at the latest cut; at the early
+    # cut rev1 of D1 (08:00, v1 name) owns it.
+    assert latest_history.seat == SeatIdentity(
+        source_id="lhb-source",
+        seat_id="SEAT-A",
+        source_seat_name="Corrected branch",
+        mapping_version="seat-map-v2",
+    )
+    assert early_history.seat == SeatIdentity(
+        source_id="lhb-source",
+        seat_id="SEAT-A",
+        source_seat_name="Example branch",
+        mapping_version="seat-map-v1",
+    )
+    assert latest_history.items[0].source_version == "v2"
+    assert latest_history.coverage.total_disclosures == 3
+    assert latest_history.coverage.visible_disclosures == 3
+    assert early_history.coverage.visible_disclosures == 2
+    assert early_history.coverage.late_disclosures == 1
 
 
 def test_lhb_repo_seat_history_window_excludes_old_and_late_rows(lhb_repository):
@@ -3669,9 +3971,9 @@ def test_lhb_repo_seat_history_window_excludes_old_and_late_rows(lhb_repository)
             seat_id="SEAT-A", date=DISCLOSED_ON, days=30, as_of=LIST_AS_OF
         )
     )
-    assert [
-        item.contributions[0].disclosure_date for item in history.items
-    ] == [date(2026, 9, 17)]
+    assert [item.contributions[0].disclosure_date for item in history.items] == [
+        date(2026, 9, 17)
+    ]
     assert history.total == 1
     assert history.coverage.total_disclosures == 2
     assert history.coverage.visible_disclosures == 1
@@ -3697,15 +3999,13 @@ def test_lhb_repo_seat_history_candidates_all_unauthorized_is_forbidden(
     from dragon_radar.storage.repository import Forbidden, Repository
 
     lhb_repository.ingest_batch(repo_batch())
-    Repository(
-        lhb_repository.database, clock=lhb_repository.clock
-    ).revoke_source("lhb-source")
+    Repository(lhb_repository.database, clock=lhb_repository.clock).revoke_source(
+        "lhb-source"
+    )
 
     with pytest.raises(Forbidden):
         lhb_repository.get_seat_history(
-            SeatHistorySelection(
-                seat_id="SEAT-A", date=DISCLOSED_ON, as_of=LIST_AS_OF
-            )
+            SeatHistorySelection(seat_id="SEAT-A", date=DISCLOSED_ON, as_of=LIST_AS_OF)
         )
 
 
@@ -3742,9 +4042,10 @@ def test_lhb_repo_seat_history_is_source_scoped_for_reused_seat_id(
             "lhb-other",
             "lhb-source",
         }
+        # One item per (source, date): source_id ascending primary key.
         assert [item.source_id for item in history.items] == [
-            "lhb-source",
             "lhb-other",
+            "lhb-source",
         ]
     finally:
         database.close()
@@ -3752,7 +4053,9 @@ def test_lhb_repo_seat_history_is_source_scoped_for_reused_seat_id(
 
 def test_lhb_repo_seat_history_merges_same_day_disclosures(lhb_repository):
     first = disclosure(
-        disclosure_id="D1", side="net", buy_amount=Decimal("100"),
+        disclosure_id="D1",
+        side="net",
+        buy_amount=Decimal("100"),
         sell_amount=Decimal("30"),
     )
     second = disclosure(
@@ -3772,9 +4075,10 @@ def test_lhb_repo_seat_history_merges_same_day_disclosures(lhb_repository):
     assert item.buy_amount == Decimal("150")
     assert item.sell_amount == Decimal("50")
     assert item.net_amount == Decimal("100")
-    assert {
-        contribution.disclosure_id for contribution in item.contributions
-    } == {"D1", "D2"}
+    assert {contribution.disclosure_id for contribution in item.contributions} == {
+        "D1",
+        "D2",
+    }
 
 
 # --- raw-SQL CHECK boundary and partial unique index ---------------------
@@ -3829,9 +4133,7 @@ def test_lhb_repo_attempt_and_batch_status_reason_matrix_enforced(database_url):
 
         raw_attempt(key="accepted-null", status="accepted", reason=None)
         raw_attempt(key="duplicate-null", status="duplicate", reason=None)
-        raw_attempt(
-            key="rejected-reason", status="rejected", reason="some reason"
-        )
+        raw_attempt(key="rejected-reason", status="rejected", reason="some reason")
         raw_attempt(
             key="incomplete-reason",
             status="incomplete",
@@ -3848,8 +4150,7 @@ def test_lhb_repo_attempt_and_batch_status_reason_matrix_enforced(database_url):
                 raw_attempt(key=key, status=status, reason=reason)
             assert exc_info.value.orig.sqlstate == "23514"
             assert (
-                exc_info.value.orig.diag.constraint_name
-                == "lhb_import_attempts_status"
+                exc_info.value.orig.diag.constraint_name == "lhb_import_attempts_status"
             )
     finally:
         database.close()
@@ -3939,7 +4240,7 @@ def test_lhb_repo_row_level_enums_rank_text_and_infinity_enforced(database_url):
                 buy_amount, sell_amount, currency, unit, completeness
             ) VALUES (
                 :id, :source_id, :disclosure_id, DATE '2026-09-18', 1,
-                'side-row', :seat_a, 'seat-map-v1', 'bogus', NULL,
+                'side-row', :seat_a, 'seat-map-v1', 'buyx', NULL,
                 1, 1, 'CNY', 'yuan', 'complete'
             )
             """,
@@ -4291,9 +4592,7 @@ def test_lhb_repo_authorization_reads_stay_linear_on_filter_misses(
                 # miss completely. Such a window-wide miss is "no data", never
                 # Forbidden, and must not rescanned per candidate batch.
                 page = repository.list_disclosures(
-                    DisclosureSelection(
-                        date=DISCLOSED_ON, as_of=OPERATION_NOW
-                    )
+                    DisclosureSelection(date=DISCLOSED_ON, as_of=OPERATION_NOW)
                 )
                 history = repository.get_seat_history(
                     SeatHistorySelection(
@@ -4351,12 +4650,10 @@ def test_lhb_repo_authorization_reads_stay_linear_on_filter_misses(
         # so no history relation node may loop per candidate batch.
         for round_info in round_summaries:
             for summary in round_info["summaries"]:
-                assert all(
-                    node["loops"] <= 1 for node in summary
+                assert all(node["loops"] <= 1 for node in summary), round_info
+                assert (
+                    sum(node["touches"] for node in summary) <= round_info["child_rows"]
                 ), round_info
-                assert sum(node["touches"] for node in summary) <= round_info[
-                    "child_rows"
-                ], round_info
 
         # Linear-slope budget with 3/2 slack around the row-count growth
         # (400 vs 16 chains = 25x): any per-batch rescan grows quadratically
@@ -4364,12 +4661,8 @@ def test_lhb_repo_authorization_reads_stay_linear_on_filter_misses(
         small, large = round_summaries
         growth = large["child_rows"] // small["child_rows"]
         for index in (0, 1):
-            small_touches = sum(
-                node["touches"] for node in small["summaries"][index]
-            )
-            large_touches = sum(
-                node["touches"] for node in large["summaries"][index]
-            )
+            small_touches = sum(node["touches"] for node in small["summaries"][index])
+            large_touches = sum(node["touches"] for node in large["summaries"][index])
             assert 2 * large_touches <= 3 * small_touches * growth + 1, (
                 small_touches,
                 large_touches,
