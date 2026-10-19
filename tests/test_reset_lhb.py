@@ -5746,6 +5746,7 @@ def _collect_json_keys(value, found: set[str]) -> None:
         {"date": _LHB_HTTP_DATE, "page": "0"},
         {"date": _LHB_HTTP_DATE, "page": "-1"},
         {"date": _LHB_HTTP_DATE, "page": "x"},
+        {"date": _LHB_HTTP_DATE, "page": "10001"},
     ],
 )
 async def test_ex08_lhb_list_rejects_invalid_paging(params):
