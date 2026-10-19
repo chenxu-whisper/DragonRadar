@@ -252,7 +252,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test tests/e2e/reset-realtime.spec.ts
-      - run: npx playwright test --config playwright.reset.config.ts tests/e2e/reset-lhb.spec.ts
+      - run: npx playwright test tests/e2e/reset-lhb.spec.ts
       - run: npm run test:e2e:reset
 
   web_e2e_private:

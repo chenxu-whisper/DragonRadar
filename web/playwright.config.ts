@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
-const explicitResetRealtime = process.argv.some(
-  value => /(?:^|[\\/])reset-realtime\.spec\.ts$/.test(value),
+const explicitResetSpec = process.argv.some(
+  value => /(?:^|[\\/])reset-(?:realtime|lhb)\.spec\.ts$/.test(value),
 );
 
 const defaultWebServer = {
@@ -33,10 +33,10 @@ const defaultConfig = defineConfig({
 
 export default defineConfig({
   ...defaultConfig,
-  ...(explicitResetRealtime ? { testIgnore: [] } : {}),
+  ...(explicitResetSpec ? { testIgnore: [] } : {}),
   webServer: {
     ...defaultWebServer,
-    ...(explicitResetRealtime
+    ...(explicitResetSpec
       ? { env: { VITE_RESET_WORKBENCH: '1', VITE_PRIVATE_REVIEW: '0' } }
       : {}),
   },
