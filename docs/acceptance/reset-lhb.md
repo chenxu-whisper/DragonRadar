@@ -127,7 +127,9 @@ post-change evidence:
   the default entry bundle stayed 314852 / 315500 bytes.
 
 No backend, wheel, migration, or restore evidence changed in this
-follow-up; the rows above remain the authoritative acceptance record.
+follow-up; the rows above remain the Task 22-5 acceptance record (the wheel
+and restore evidence were refreshed later the same day; see the Post-acceptance
+release-evidence refresh below).
 
 ### Task 22 Commit Chain
 
@@ -147,6 +149,11 @@ follow-up; the rows above remain the authoritative acceptance record.
 | `1aec04e` | 2026-10-16 | fix: scope LHB coverage and keys by source |
 | `efadac7` | 2026-10-16 | chore: verify LHB release contracts (frozen audited commit) |
 | `d84a3b7` | 2026-10-19 | fix: route focused LHB e2e gate through reset spec detection (post-evidence CI/web wiring only) |
+| `0ea1ee8` | 2026-10-19 | docs: record LHB release acceptance (Task 22-5 C2 acceptance) |
+| `52e1504` | 2026-10-19 | perf: merge LHB empty-window carrier and coverage reads (post-closure backlog; changes shipped Python) |
+| `b942ba5` | 2026-10-19 | test: cover rejected-grant in-window rows in LHB empty window (post-closure backlog; tests only) |
+| `e375eb0` | 2026-10-19 | perf: bound LHB seat identity lookup to batch keys (post-closure backlog; changes shipped Python) |
+| `4ad849c` | 2026-10-19 | ci: collect reset-lhb e2e once via the reset family command (post-closure backlog; CI/web/docs only) |
 
 The LHB e2e suite covers disclosure authorization and source scoping,
 batch and revision validation, immutable revision history, the authorized
@@ -162,10 +169,11 @@ amounts and unknown-identity presentation.
 - `0012_lhb.py` manifest digest:
   `sha256=e62922e105a816669277e0806ec4d5b74db2d060d240d627be26f58ffc765528`,
   1220 bytes (manifest bytes).
-- Wheel: `dragon_radar-0.1.0-py3-none-any.whl` (394696 bytes),
+- Wheel (Task 22-5 gate value; superseded by the 2026-10-19 refresh
+  documented below): `dragon_radar-0.1.0-py3-none-any.whl` (394696 bytes),
   SHA-256 `4cd1344a06f72e93643a220ee66a2dac7b84820068b1f526c9ec6da04a51ba10`.
-- Audited commit:
-  `efadac79bf117bb81f85d0d2c91b501bc0ab7505`.
+- Audited commit at the Task 22-5 gate (superseded by the 2026-10-19 refresh
+  documented below): `efadac79bf117bb81f85d0d2c91b501bc0ab7505`.
 - The verifier imported `dragon_radar` from an isolated installed-wheel
   virtual environment outside the source checkout.
 - A fresh database migrated to `0012_lhb` and reported ready.
@@ -227,8 +235,59 @@ A disposable PostgreSQL 17 container mirrored the release workflow:
   `dragon-radar-task22-test-db` container was not reused or touched. The local
   credential temp files were deleted; no secret is recorded here.
 
-Full machine-readable detail: `.temp/task22/restore-evidence.json`; console
-log: `.temp/task22/06-restore.log`.
+Full machine-readable detail at the Task 22-5 gate:
+`.temp/task22/restore-evidence.json` (regenerated in place by the 2026-10-19
+refresh, so it now holds the new drill record; the historical result line is
+preserved in `06-restore.log`); console log: `.temp/task22/06-restore.log`.
+
+### Post-acceptance release-evidence refresh (2026-10-19)
+
+The post-gate backlog commits `52e1504` and `e375eb0` changed shipped
+Python (`src/dragon_radar/lhb/repository.py`; `b942ba5` between them added
+tests only), so the `efadac7` wheel no longer represented branch HEAD. The
+wheel and the backup/restore drill were refreshed at HEAD `4ad849c` (the
+CI-dedup commit itself is CI/web/docs only and ships no Python); both evidence
+JSON files were regenerated in place, and the original gate rows above are
+retained as the historical Task 22-5 record.
+
+Wheel, rebuilt with `uv build --out-dir .temp/task22/dist`:
+
+- `dragon_radar-0.1.0-py3-none-any.whl`, 395371 bytes, SHA-256
+  `7c427cdfe08a03ab4b93d31ede1fab53497eaad13f1dfb5c962083d3515739f1`.
+- Content traceability: the wheel member `dragon_radar/lhb/repository.py` is
+  byte-identical to the working-tree file and identical (after CRLF/LF
+  normalization from `core.autocrlf=true`) to the `git show
+  HEAD:src/dragon_radar/lhb/repository.py` blob.
+- Installed-wheel verification (`--audited-commit
+  4ad849cf06d7de450e6a725bd2e63a14d0251761`): isolated import passed; a fresh
+  database migrated to `0012_lhb` ready; all 12 supported starting revisions
+  upgraded with `ready=true` and `sentinel_preserved=true`; machine detail in
+  `.temp/task22/wheel-evidence.json`, console log
+  `.temp/task22/09-refresh-wheel.log`.
+
+Backup/restore drill, re-run against a fresh one-off container:
+
+- Container `dragon-radar-task22-release`, image pinned to
+  `sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73`,
+  label `dragon-radar.task21-release=true`, ephemeral host port 58407 bound to
+  127.0.0.1, maintenance database `postgres`, a CI-only random password;
+  readiness confirmed with `pg_isready`.
+- Result line:
+  `backup restore verified: sha256=6eebac9aa46a4a6027f3801c983a3f722ce34f11cd13b439478d65510c63549a elapsed_seconds=9.578000 cleanup=complete`.
+- Post-restore: revision `0012_lhb`, `restored_ready=true`,
+  `sentinel_preserved=true`, `permissions_preserved=true`,
+  `app_semantics_verified=true`, 62 canonicalized schema objects; counts 1
+  each and unchanged; 0 lost rows / 0.0s loss window; source and restore
+  fingerprints both
+  `19bcda7f35c6eb5449da861fb51fc41dd39ed41913a2c92012e57513c4c710bc`;
+  rollback mode backup/restore only; 4.875s write freeze; RPO 3600s / RTO
+  14400s, `approval_status=suggested_unapproved`; non-superuser application
+  role enforced. Machine detail in `.temp/task22/restore-evidence.json`,
+  console log `.temp/task22/10-refresh-restore.log`.
+- The container was force-removed afterward and the local credential runtime
+  file deleted; the persistent `dragon-radar-task22-test-db` container was not
+  reused or touched. No merge, tag, version bump, image publication, release,
+  or deployment occurred.
 
 ## Synthetic-Only Limitation
 
@@ -284,9 +343,12 @@ records, not separately trusted attestations and not production input.
 | `npm run check:bundle` (web) | `04c-web-bundle.log` | entryBytes 314852 against 315500 |
 | `npx playwright test --config playwright.reset.config.ts tests/e2e/reset-lhb.spec.ts tests/e2e/reset-realtime.spec.ts` | `04d-web-playwright-reset.log` | 20 passed (7 LHB, 13 realtime) |
 | `npx playwright test tests/e2e/reset-lhb.spec.ts` | `04e-web-playwright-lhb-focused.log` | 7 passed; CI-form focused gate verified (historical; focused line superseded 2026-10-19) |
-| `uv build --out-dir .temp/task22/dist` | `05-wheel-build.log`, `dist/` | Rebuilt sdist and `dragon_radar-0.1.0-py3-none-any.whl` (SHA-256 `4cd1344a...`) |
-| Installed-wheel migration verification with `--audited-commit efadac79bf117bb81f85d0d2c91b501bc0ab7505` | `05-wheel.log`, `wheel-evidence.json` | Isolated import passed; fresh plus all 12 supported starts reached `0012_lhb`, sentinels preserved, ready; exit 0 |
-| Named-container backup/restore drill with the same audited commit | `06-restore.log`, `restore-evidence.json` | backup SHA-256 `17f1f8fa...`, 9.844s, cleanup complete |
+| `uv build --out-dir .temp/task22/dist` | `05-wheel-build.log`, `dist/` | Rebuilt sdist and `dragon_radar-0.1.0-py3-none-any.whl` (SHA-256 `4cd1344a...`; Task 22-5 gate value, superseded 2026-10-19) |
+| Installed-wheel migration verification with `--audited-commit efadac79bf117bb81f85d0d2c91b501bc0ab7505` | `05-wheel.log`, `wheel-evidence.json` | Isolated import passed; fresh plus all 12 supported starts reached `0012_lhb`, sentinels preserved, ready; exit 0 (Task 22-5 gate value; JSON regenerated 2026-10-19 at `4ad849c`) |
+| Named-container backup/restore drill with the same audited commit | `06-restore.log`, `restore-evidence.json` | backup SHA-256 `17f1f8fa...`, 9.844s, cleanup complete (Task 22-5 gate value; JSON regenerated 2026-10-19 at `4ad849c`) |
+| `uv build --out-dir .temp/task22/dist` (2026-10-19 refresh at HEAD `4ad849c`) | `08-refresh-wheel-build.log`, `dist/` | Rebuilt sdist and `dragon_radar-0.1.0-py3-none-any.whl` (395371 bytes, SHA-256 `7c427cdf...`) |
+| Installed-wheel migration verification with `--audited-commit 4ad849cf06d7de450e6a725bd2e63a14d0251761` | `09-refresh-wheel.log`, `wheel-evidence.json` | Isolated import passed; fresh plus all 12 supported starts reached `0012_lhb`, sentinels preserved, ready; exit 0 |
+| Named-container backup/restore drill at `4ad849c` (`dragon-radar-task22-release`) | `10-refresh-restore.log`, `restore-evidence.json` | backup SHA-256 `6eebac9a...`, 9.578s, fingerprints equal, 0 lost rows, cleanup complete, container removed |
 
 The database URL used a CI-only random password over an ephemeral local port;
 no secret is recorded in the logs or this document. No merge, tag, version
