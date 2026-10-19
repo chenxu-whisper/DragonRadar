@@ -4686,12 +4686,29 @@ def test_lhb_repo_empty_window_merged_read_applies_grant_gate_per_source(
             mapping_version="other-map-v1",
             available_at=utc("2026-08-02T08:00:00Z"),
         )
+        other_disclosures = (other_old,)
+        if other_grant == "expired":
+            # An in-window, not-yet-visible row under lhb-other's own distinct
+            # catalog identity. With the grant expired the Python gate must
+            # exclude it from coverage exactly as it excludes the out-of-window
+            # row; merely failing the identity resolution would not prove this.
+            # The valid branch keeps its original single out-of-window row.
+            other_late = disclosure(
+                source_id="lhb-other",
+                disclosure_id="D-OTHER-LATE",
+                disclosure_date=DISCLOSED_ON,
+                source_row_id="ROW-OTHER-LATE",
+                source_seat_name="Other Hidden Branch",
+                mapping_version="other-map-v1",
+                available_at=LIST_AS_OF + timedelta(minutes=1),
+            )
+            other_disclosures = (other_old, other_late)
         repository.ingest_batch(repo_batch("cold-window-3", disclosures=(late,)))
         repository.ingest_batch(
             repo_batch(
                 "cold-window-4",
                 source_id="lhb-other",
-                disclosures=(other_old,),
+                disclosures=other_disclosures,
             )
         )
         # The merged SQL is snapshot-gated only; the grant provenance gate is
@@ -4716,9 +4733,15 @@ def test_lhb_repo_empty_window_merged_read_applies_grant_gate_per_source(
             ),
         )
 
+        # Exactly four cold-path statements (probe, anchor, merged carrier/
+        # coverage read, scoped catalog lookup); the extra evidence row adds
+        # no round trip.
         assert len(statements) == 4
         assert history.items == ()
         assert history.total == 0
+        # In the expired branch lhb-other owns an in-window late row, but the
+        # grant gate must drop the whole source: coverage stays at the single
+        # lhb-source row instead of growing to total=2/late=2.
         assert history.coverage == AggregationCoverage(
             total_disclosures=1,
             visible_disclosures=0,
@@ -4729,8 +4752,8 @@ def test_lhb_repo_empty_window_merged_read_applies_grant_gate_per_source(
             unknown_seats=0,
         )
         if other_grant == "expired":
-            # The Python grant gate rejects lhb-other: it neither anchors the
-            # catalog identity nor enters coverage.
+            # The Python grant gate rejects lhb-other: its in-window late row
+            # neither anchors the catalog identity nor enters coverage.
             assert history.identity_state == "known"
             assert history.seat == SeatIdentity(
                 source_id="lhb-source",
