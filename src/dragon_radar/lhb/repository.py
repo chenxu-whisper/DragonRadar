@@ -1268,45 +1268,36 @@ class LHBRepository(Repository):
             )
         return self._synthetic_header(selection), "unknown"
 
-    def _seat_identity_sources(
+    def _empty_window_candidates(
         self,
         connection,
         *,
         operation_now: datetime,
         seat_id: str,
-    ) -> tuple[str, ...]:
-        """Display-authorized sources that carry ``seat_id``.
+    ):
+        """Fetch carrier and coverage evidence for an empty window in one read.
 
         Quiet fallback used only after the visibility-scoped probe found no
-        readable candidate: it is independent of the read window and of
-        revision availability, so an authorized source whose evidence landed
-        outside the window (or is not yet visible) can still anchor a real
-        catalog identity and a late-candidate count. It makes no visibility
-        verdict and never raises Forbidden or NotFound -- those semantics
-        belong to the visibility-scoped authorization statement; revoked
-        grants and display-disallowed snapshots stay excluded. This is not a
-        blanket guarantee: malformed grant JSON fails
+        readable candidate and the anchor probe found no activity. One
+        statement serves both later decisions: which currently display-
+        authorized sources carry ``seat_id`` (carrier resolution) and which
+        revisions fall inside the read window (empty-envelope coverage). It is
+        independent of the read window and of revision availability, so an
+        authorized source whose evidence landed outside the window (or is not
+        yet visible) still anchors a real catalog identity and a late-candidate
+        count. It makes no visibility verdict and never raises Forbidden or
+        NotFound -- those semantics belong to the visibility-scoped
+        authorization statement; display-disallowed snapshots stay excluded in
+        SQL and revoked grants stay excluded by the one-time Python grant gate
+        per source. This is not a blanket guarantee: malformed grant JSON fails
         ``SourceGrant.model_validate`` with a ValidationError, which surfaces
         to the caller as HTTP 400 rather than as a visibility error.
         """
-        revision, disclosure, batch = self._revision_chain()[:3]
-        seat_row = lhb_disclosure_seats.alias("lhb_id_sr")
+        revision, disclosure, batch, chain = self._revision_chain()
+        seat_row = lhb_disclosure_seats.alias("lhb_ew_sr")
+        catalog = lhb_seats.alias("lhb_ew_seat")
         chain = (
-            revision.join(
-                disclosure,
-                and_(
-                    revision.c.source_id == disclosure.c.source_id,
-                    revision.c.disclosure_id == disclosure.c.disclosure_id,
-                ),
-            )
-            .join(
-                batch,
-                and_(
-                    revision.c.source_id == batch.c.source_id,
-                    revision.c.batch_id == batch.c.batch_id,
-                ),
-            )
-            .join(
+            chain.join(
                 seat_row,
                 and_(
                     seat_row.c.source_id == revision.c.source_id,
@@ -1314,68 +1305,120 @@ class LHBRepository(Repository):
                     seat_row.c.revision == revision.c.revision,
                 ),
             )
+            # LEFT OUTER: carrier resolution must not depend on the catalog.
+            # A seat row's catalog mapping is held by an FK RESTRICT, so a
+            # present mapping never comes back null; the outer join only
+            # guarantees a catalog gap cannot drop a carrier or its evidence.
+            .outerjoin(
+                catalog,
+                and_(
+                    catalog.c.source_id == seat_row.c.source_id,
+                    catalog.c.seat_id == seat_row.c.seat_id,
+                    catalog.c.mapping_version == seat_row.c.mapping_version,
+                ),
+            )
+            .join(
+                source_grants,
+                source_grants.c.source_id == revision.c.source_id,
+            )
         )
-        carries = (
-            select(1)
+        query = (
+            select(
+                source_grants.c.source_id.label("grant_source_id"),
+                source_grants.c.grant,
+                revision.c.id.label("revision_id"),
+                revision.c.source_id,
+                revision.c.disclosure_id,
+                revision.c.revision,
+                revision.c.source_event_at,
+                revision.c.received_at,
+                revision.c.available_at,
+                revision.c.permission_snapshot,
+                batch.c.source_version,
+                disclosure.c.security_id,
+                disclosure.c.disclosure_date,
+                disclosure.c.reason,
+                seat_row.c.source_row_id,
+                seat_row.c.seat_id,
+                seat_row.c.mapping_version,
+                seat_row.c.side,
+                seat_row.c.rank,
+                seat_row.c.buy_amount,
+                seat_row.c.sell_amount,
+                seat_row.c.currency,
+                seat_row.c.unit,
+                catalog.c.source_seat_name,
+            )
             .select_from(chain)
+            # Only the seat match and the captured snapshot gate belong here:
+            # no window predicate, no availability predicate, and no source
+            # IN-list -- carriers are independent of window and visibility.
             .where(
                 seat_row.c.seat_id == seat_id,
-                revision.c.source_id == source_grants.c.source_id,
                 *self._snapshot_allows_display(
                     revision.c.permission_snapshot, operation_now
                 ),
             )
-            .limit(1)
-            .exists()
-        )
-        rows = (
-            connection.execute(
-                select(source_grants.c.source_id, source_grants.c.grant).where(carries)
-            )
-            .mappings()
-            .all()
-        )
-        return tuple(
-            row["source_id"]
-            for row in rows
-            if grant_allows_display(
-                SourceGrant.model_validate(row["grant"]),
-                source_id=row["source_id"],
-                now=operation_now,
+            .order_by(
+                revision.c.source_id,
+                revision.c.disclosure_id,
+                revision.c.revision.desc(),
+                revision.c.available_at.desc(),
+                revision.c.id,
+                seat_row.c.source_row_id,
             )
         )
+        return connection.execute(query).mappings().all()
 
-    def _empty_window_coverage(
+    def _empty_window_partition(
         self,
-        connection,
-        authorized_sources: Sequence[str],
+        rows,
+        *,
         selection: SeatHistorySelection,
         as_of: datetime,
         operation_now: datetime,
-    ) -> AggregationCoverage:
-        """Coverage for an empty envelope, keeping late candidates visible."""
-        zero = AggregationCoverage(
-            total_disclosures=0,
-            visible_disclosures=0,
-            late_disclosures=0,
-            selected_disclosures=0,
-            seat_count=0,
-            complete_seats=0,
-            unknown_seats=0,
-        )
-        if not authorized_sources:
-            return zero
+    ) -> tuple[tuple[str, ...], AggregationCoverage]:
+        """Split one candidate set into ordered carriers and window coverage.
+
+        The current grant is validated and evaluated once per source (memoized
+        across that source's repeated rows); a rejected source contributes
+        neither a carrier nor coverage. Window filtering happens in Python so
+        the same row set can drive both decisions; only in-window rows of
+        carrier sources are grouped, reusing the shared latest/visible
+        selection so late candidates stay in total but never in visible.
+        """
         window_start = selection.date - timedelta(days=selection.days)
-        revisions = self._fetch_revisions(
-            connection,
-            authorized_sources=authorized_sources,
-            operation_now=operation_now,
-            seat_id=selection.seat_id,
-            window=(window_start, selection.date),
+        grant_decisions: dict[str, bool] = {}
+        revisions: dict[tuple[str, str, int], dict[str, Any]] = {}
+        for row in rows:
+            source_id = row["source_id"]
+            allowed = grant_decisions.get(source_id)
+            if allowed is None:
+                allowed = grant_allows_display(
+                    SourceGrant.model_validate(row["grant"]),
+                    source_id=row["grant_source_id"],
+                    now=operation_now,
+                )
+                grant_decisions[source_id] = allowed
+            if not allowed:
+                continue
+            disclosure_date = row["disclosure_date"]
+            if not (window_start < disclosure_date <= selection.date):
+                continue
+            key = (source_id, row["disclosure_id"], row["revision"])
+            record = revisions.get(key)
+            if record is None:
+                record = {"meta": row, "seats": []}
+                revisions[key] = record
+            record["seats"].append(row)
+        identity_sources = tuple(
+            source_id
+            for source_id in sorted(grant_decisions)
+            if grant_decisions[source_id]
         )
         latest = self._select_latest(revisions)
         visible = self._select_latest_visible(revisions, as_of)
-        return AggregationCoverage(
+        return identity_sources, AggregationCoverage(
             total_disclosures=len(latest),
             visible_disclosures=len(visible),
             late_disclosures=len(latest) - len(visible),
@@ -1433,24 +1476,23 @@ class LHBRepository(Repository):
                     raise NotFound("Seat has no history in the selected window")
                 # Build the header only after the NotFound short-circuit. The
                 # visibility-scoped probe found nothing (everything may simply
-                # be late or outside the window), so resolve authorized
-                # carriers independently to anchor a real catalog identity and
-                # to keep late candidates visible in coverage; the header
-                # lookup itself stays scoped to those sources only.
-                identity_sources = self._seat_identity_sources(
+                # be late or outside the window), so one quiet read resolves
+                # authorized carriers independently of window/visibility and
+                # fetches coverage evidence together; the header lookup stays
+                # scoped to those carriers only.
+                candidates = self._empty_window_candidates(
                     connection,
                     operation_now=operation_now,
                     seat_id=selection.seat_id,
                 )
+                identity_sources, coverage = self._empty_window_partition(
+                    candidates,
+                    selection=selection,
+                    as_of=as_of,
+                    operation_now=operation_now,
+                )
                 header, identity_state = self._seat_header(
                     connection, (), selection, identity_sources
-                )
-                coverage = self._empty_window_coverage(
-                    connection,
-                    identity_sources,
-                    selection,
-                    as_of,
-                    operation_now,
                 )
                 return self._empty_history(
                     selection, as_of, header, identity_state, coverage

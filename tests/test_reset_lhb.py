@@ -4530,6 +4530,233 @@ def test_lhb_repo_seat_history_unknown_seat_is_not_found(lhb_repository):
         )
 
 
+def _statement_count(engine, callable_):
+    """Run ``callable_`` while counting every cursor statement exactly."""
+    from sqlalchemy import event
+
+    statements = []
+
+    def count_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        statements.append(statement)
+
+    event.listen(engine, "after_cursor_execute", count_statement)
+    try:
+        result = callable_()
+    finally:
+        event.remove(engine, "after_cursor_execute", count_statement)
+    return statements, result
+
+
+def test_lhb_repo_empty_window_carrier_and_coverage_share_one_read(
+    lhb_repository,
+):
+    # EX09 cold path: the visibility-scoped probe finds nothing (the only
+    # in-window evidence is late and the rest is outside the window) and the
+    # anchor date has no visible activity, so the envelope stays empty rather
+    # than 404. The quiet carrier resolution and the empty-window coverage
+    # fetch must be a single round trip: probe, anchor, merged carrier/
+    # coverage read, scoped catalog lookup -- exactly four statements.
+    old = disclosure(
+        disclosure_id="D-OLD-COLD",
+        disclosure_date=date(2026, 8, 1),
+        source_row_id="ROW-OLD-COLD",
+        available_at=utc("2026-08-01T08:00:00Z"),
+    )
+    late = disclosure(
+        disclosure_id="D-LATE-COLD",
+        disclosure_date=DISCLOSED_ON,
+        source_row_id="ROW-LATE-COLD",
+        available_at=LIST_AS_OF + timedelta(minutes=1),
+    )
+    lhb_repository.ingest_batch(repo_batch("cold-window-1", disclosures=(old, late)))
+
+    statements, history = _statement_count(
+        lhb_repository.database.engine,
+        lambda: lhb_repository.get_seat_history(
+            SeatHistorySelection(
+                seat_id="SEAT-A", date=DISCLOSED_ON, days=30, as_of=LIST_AS_OF
+            )
+        ),
+    )
+
+    assert len(statements) == 4
+    # The merge must not do less work: the late in-window row still counts in
+    # total/late coverage and the carrier still anchors the catalog identity.
+    assert history.items == ()
+    assert history.total == 0
+    assert history.identity_state == "known"
+    assert history.seat == SeatIdentity(
+        source_id="lhb-source",
+        seat_id="SEAT-A",
+        source_seat_name="Example branch",
+        mapping_version="seat-map-v1",
+    )
+    assert history.coverage == AggregationCoverage(
+        total_disclosures=1,
+        visible_disclosures=0,
+        late_disclosures=1,
+        selected_disclosures=0,
+        seat_count=0,
+        complete_seats=0,
+        unknown_seats=0,
+    )
+
+
+def test_lhb_repo_empty_window_without_carrier_skips_catalog_lookup(
+    lhb_repository,
+):
+    # No source carries the queried seat at all: the merged read returns no
+    # carrier rows, so coverage is zeroed and the header goes synthetic
+    # without the scoped catalog lookup -- probe, anchor, merged read only.
+    late = disclosure(
+        disclosure_id="D-LATE-NOANCHOR",
+        disclosure_date=DISCLOSED_ON,
+        source_row_id="ROW-LATE-NOANCHOR",
+        available_at=LIST_AS_OF + timedelta(minutes=1),
+    )
+    lhb_repository.ingest_batch(repo_batch("cold-window-2", disclosures=(late,)))
+
+    statements, history = _statement_count(
+        lhb_repository.database.engine,
+        lambda: lhb_repository.get_seat_history(
+            SeatHistorySelection(
+                seat_id="SEAT-MISSING",
+                date=DISCLOSED_ON,
+                days=30,
+                as_of=LIST_AS_OF,
+            )
+        ),
+    )
+
+    assert len(statements) == 3
+    assert history.items == ()
+    assert history.total == 0
+    assert history.identity_state == "unknown"
+    assert history.seat == SeatIdentity(
+        source_id="SEAT-MISSING",
+        seat_id="SEAT-MISSING",
+        source_seat_name="SEAT-MISSING",
+        mapping_version="unknown",
+    )
+    assert history.coverage == AggregationCoverage(
+        total_disclosures=0,
+        visible_disclosures=0,
+        late_disclosures=0,
+        selected_disclosures=0,
+        seat_count=0,
+        complete_seats=0,
+        unknown_seats=0,
+    )
+
+
+@pytest.mark.parametrize("other_grant", ["expired", "valid"])
+def test_lhb_repo_empty_window_merged_read_applies_grant_gate_per_source(
+    database_url, other_grant
+):
+    from factories import grant as grant_factory
+
+    from dragon_radar.lhb.repository import LHBRepository
+    from dragon_radar.storage.repository import Repository
+
+    database = _upgrade_to_lhb(database_url)
+    try:
+        sources = Repository(database, clock=lambda: OPERATION_NOW)
+        sources.register_source(grant_factory(source_id="lhb-source"))
+        sources.register_source(grant_factory(source_id="lhb-other"))
+        repository = LHBRepository(database, clock=lambda: OPERATION_NOW)
+        late = disclosure(
+            disclosure_id="D-LATE-COLD3",
+            disclosure_date=DISCLOSED_ON,
+            source_row_id="ROW-LATE-COLD3",
+            available_at=LIST_AS_OF + timedelta(minutes=1),
+        )
+        other_old = disclosure(
+            source_id="lhb-other",
+            disclosure_id="D-OTHER-OLD",
+            disclosure_date=date(2026, 8, 2),
+            source_row_id="ROW-OTHER-OLD",
+            source_seat_name="Other Hidden Branch",
+            mapping_version="other-map-v1",
+            available_at=utc("2026-08-02T08:00:00Z"),
+        )
+        repository.ingest_batch(repo_batch("cold-window-3", disclosures=(late,)))
+        repository.ingest_batch(
+            repo_batch(
+                "cold-window-4",
+                source_id="lhb-other",
+                disclosures=(other_old,),
+            )
+        )
+        # The merged SQL is snapshot-gated only; the grant provenance gate is
+        # re-checked in Python, one memoized verdict per source.
+        if other_grant == "expired":
+            sources.register_source(
+                grant_factory(
+                    source_id="lhb-other",
+                    expires_at=OPERATION_NOW - timedelta(hours=1),
+                )
+            )
+
+        statements, history = _statement_count(
+            database.engine,
+            lambda: repository.get_seat_history(
+                SeatHistorySelection(
+                    seat_id="SEAT-A",
+                    date=DISCLOSED_ON,
+                    days=30,
+                    as_of=LIST_AS_OF,
+                )
+            ),
+        )
+
+        assert len(statements) == 4
+        assert history.items == ()
+        assert history.total == 0
+        assert history.coverage == AggregationCoverage(
+            total_disclosures=1,
+            visible_disclosures=0,
+            late_disclosures=1,
+            selected_disclosures=0,
+            seat_count=0,
+            complete_seats=0,
+            unknown_seats=0,
+        )
+        if other_grant == "expired":
+            # The Python grant gate rejects lhb-other: it neither anchors the
+            # catalog identity nor enters coverage.
+            assert history.identity_state == "known"
+            assert history.seat == SeatIdentity(
+                source_id="lhb-source",
+                seat_id="SEAT-A",
+                source_seat_name="Example branch",
+                mapping_version="seat-map-v1",
+            )
+            rendered = history.seat.model_dump_json()
+            assert "lhb-other" not in rendered
+            assert "Other Hidden Branch" not in rendered
+            assert "other-map-v1" not in rendered
+        else:
+            # Two carriers with distinct catalog identities fail closed to the
+            # synthetic placeholder; the out-of-window evidence stays out of
+            # coverage even though both sources are carriers.
+            assert history.identity_state == "unknown"
+            assert history.seat == SeatIdentity(
+                source_id="SEAT-A",
+                seat_id="SEAT-A",
+                source_seat_name="SEAT-A",
+                mapping_version="unknown",
+            )
+    finally:
+        database.close()
+
+
 def test_lhb_repo_seat_history_candidates_all_unauthorized_is_forbidden(
     lhb_repository,
 ):
