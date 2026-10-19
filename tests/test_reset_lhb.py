@@ -5458,6 +5458,158 @@ def test_lhb_repo_authorization_reads_stay_linear_on_filter_misses(
         database.close()
 
 
+def test_lhb_repo_seat_identity_lookup_is_bounded_to_batch_keys(lhb_repository):
+    # Write-path bound: the seat-identity dedupe probe reads only the
+    # (seat_id, mapping_version) composite keys present in the batch (scoped
+    # by source_id), never the source's full seat catalog. A 400-row catalog
+    # of unrelated seats must stay invisible to a 2-key batch: the captured
+    # SELECT carries the composite IN predicates as bound parameters and an
+    # EXPLAIN ANALYZE replay touches no more lhb_seats rows than batch keys.
+    from uuid import uuid4
+
+    from sqlalchemy import event, insert
+
+    from dragon_radar.lhb.tables import lhb_seats
+
+    catalog_size = 400
+    batch_key_count = 2
+    catalog_rows = [
+        {
+            "id": uuid4(),
+            "source_id": "lhb-source",
+            "seat_id": f"SEAT-OTHER-{index}",
+            "mapping_version": "seat-map-v1",
+            "source_seat_name": f"Other branch {index}",
+            "provenance": {
+                "mapping_version": "seat-map-v1",
+                "source_id": "lhb-source",
+            },
+        }
+        for index in range(catalog_size)
+    ]
+    engine = lhb_repository.database.engine
+    with engine.begin() as connection:
+        connection.execute(insert(lhb_seats), catalog_rows)
+        connection.execute(text("ANALYZE lhb_seats"))
+
+    batch_disclosure = disclosure(
+        disclosure_id="D-BATCH",
+        seats=(
+            seat(
+                seat_id="SEAT-BATCH-1",
+                source_row_id="ROW-BATCH-1",
+                source_seat_name="Batch branch 1",
+            ),
+            seat(
+                seat_id="SEAT-BATCH-2",
+                source_row_id="ROW-BATCH-2",
+                source_seat_name="Batch branch 2",
+                buy_amount=Decimal("7"),
+                sell_amount=Decimal("4"),
+            ),
+        ),
+    )
+
+    captured = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        parameters,
+        _context,
+        _executemany,
+    ):
+        captured.append((statement, parameters))
+
+    event.listen(engine, "after_cursor_execute", record_statement)
+    try:
+        result = lhb_repository.ingest_batch(
+            repo_batch("seat-bounded-1", disclosures=(batch_disclosure,))
+        )
+    finally:
+        event.remove(engine, "after_cursor_execute", record_statement)
+
+    seat_lookups = [
+        (statement, parameters)
+        for statement, parameters in captured
+        if statement.lstrip().upper().startswith("SELECT")
+        and "lhb_seats" in statement
+        and "lhb_disclosure_seats" not in statement
+    ]
+    assert len(seat_lookups) == 1
+    statement, parameters = seat_lookups[0]
+    where_clause = statement[statement.upper().index("WHERE") :]
+    # Structural shape (statistics-independent): the predicate pairs both
+    # composite-key columns through an IN list instead of source_id alone.
+    assert "seat_id" in where_clause, where_clause
+    assert "mapping_version" in where_clause, where_clause
+    assert "IN (" in where_clause.upper(), where_clause
+    # User values stay bound parameters, never inlined into SQL text.
+    assert "lhb-source" not in statement
+    assert "SEAT-OTHER" not in statement
+    assert "SEAT-BATCH" not in statement
+
+    # Replay the exact captured probe after unhooking the listener: the
+    # lhb_seats_identity_key unique index on (source_id, seat_id,
+    # mapping_version) backs the predicate, so the scan touches only the two
+    # batch keys even though the source catalog holds catalog_size rows.
+    def plan_nodes(node):
+        yield node
+        for child in node.get("Plans", ()):
+            yield from plan_nodes(child)
+
+    touches = 0
+    node_types = []
+    index_names = []
+    raw_connection = engine.raw_connection()
+    try:
+        cursor = raw_connection.cursor()
+        cursor.execute(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {statement}",
+            parameters,
+        )
+        plan = cursor.fetchone()[0][0]["Plan"]
+        for node in plan_nodes(plan):
+            if node.get("Relation Name") == "lhb_seats":
+                node_types.append(node["Node Type"])
+                touches += (
+                    node.get("Actual Rows", 0)
+                    + node.get("Rows Removed by Filter", 0)
+                    + node.get("Rows Removed by Index Recheck", 0)
+                ) * node.get("Actual Loops", 0)
+            if str(node.get("Index Name", "")).startswith("lhb_seats"):
+                index_names.append(node["Index Name"])
+    finally:
+        raw_connection.rollback()
+        raw_connection.close()
+
+    assert index_names, node_types
+    assert "Seq Scan" not in node_types, node_types
+    assert touches <= batch_key_count, (touches, node_types, index_names)
+    assert catalog_size >= touches * 10
+
+    # Business behavior is unchanged: accepted attempt, missing identities
+    # inserted, unrelated catalog rows untouched.
+    assert result.status == "accepted"
+    counts = lhb_table_counts(engine)
+    assert counts["lhb_seats"] == catalog_size + batch_key_count
+    assert counts["lhb_import_batches"] == 1
+    assert counts["lhb_import_attempts"] == 1
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(lhb_seats.c.seat_id, lhb_seats.c.source_seat_name)
+        ).all()
+    identities = dict(rows)
+    assert len(identities) == catalog_size + batch_key_count
+    assert identities["SEAT-BATCH-1"] == "Batch branch 1"
+    assert identities["SEAT-BATCH-2"] == "Batch branch 2"
+    assert identities["SEAT-OTHER-0"] == "Other branch 0"
+    assert identities[f"SEAT-OTHER-{catalog_size - 1}"] == (
+        f"Other branch {catalog_size - 1}"
+    )
+
+
 # --- EX08/EX09: read-only HTTP contracts ----------------------------------
 #
 # The pure validation tests below run without PostgreSQL: parameter rejection

@@ -26,7 +26,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import DateTime, and_, cast, insert, select, true
+from sqlalchemy import DateTime, and_, cast, insert, select, true, tuple_
 from sqlalchemy.exc import IntegrityError
 
 from dragon_radar.domain.models import SourceGrant
@@ -584,10 +584,17 @@ class LHBRepository(Repository):
                         digest=digest,
                     )
                 wanted.setdefault(key, row.source_seat_name)
+        if not wanted:
+            return
         existing = {
             (row["seat_id"], row["mapping_version"]): row
             for row in connection.execute(
-                select(lhb_seats).where(lhb_seats.c.source_id == source_id)
+                select(lhb_seats).where(
+                    lhb_seats.c.source_id == source_id,
+                    tuple_(lhb_seats.c.seat_id, lhb_seats.c.mapping_version).in_(
+                        tuple(wanted)
+                    ),
+                )
             )
             .mappings()
             .all()
