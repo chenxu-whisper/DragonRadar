@@ -28,30 +28,46 @@ licensed the inputs, or that production use is authorized.
 
 ## CI Contract
 
-Three focused LHB gates were added to the Data Foundation workflow, matching
-the existing Task 21R realtime pattern:
+Two focused LHB gates run in the Data Foundation workflow, alongside the
+existing Task 21R realtime pattern:
 
 - PostgreSQL 17 `verify` job: `uv run pytest tests/test_reset_lhb.py -q`.
 - `web_quality` job: `npm test -- --run tests/unit/reset-lhb.test.ts`.
-- `web_e2e_reset` job: `npx playwright test tests/e2e/reset-lhb.spec.ts`.
 
-The focused browser command deliberately contains no inline
-`--config playwright.reset.config.ts`: the web quality gate
-(`tests/unit/quality-gates.test.ts`) forbids the string
-`npx playwright test --config` in the workflow. The default
-`web/playwright.config.ts` detects an explicitly passed focused reset spec
-(`reset-realtime.spec.ts` or `reset-lhb.spec.ts`) on the process arguments,
-clears the reset ignore pattern, and starts the dev server with
-`VITE_RESET_WORKBENCH=1`, exactly as the Task 21R focused realtime gate does.
-The explicit reset config remains the environment owner for full reset runs
-(`npm run test:e2e:reset`) and was used for the local two-spec drill recorded
-below.
+The LHB browser cases have no standalone focused CI line: the
+`web_e2e_reset` job collects them exactly once through the family command
+`npm run test:e2e:reset` (the `playwright.reset.config.ts` testMatch is
+`reset-*.spec.ts`), which already contains `reset-lhb.spec.ts` and
+automatically includes any future `reset-*` spec. The Task 21R focused
+realtime line (`npx playwright test tests/e2e/reset-realtime.spec.ts`)
+still runs ahead of the family command and was not changed.
+
+The default `web/playwright.config.ts` still detects an explicitly passed
+focused reset spec (`reset-realtime.spec.ts` or `reset-lhb.spec.ts`) on the
+process arguments, clears the reset ignore pattern, and starts the dev
+server with `VITE_RESET_WORKBENCH=1` and `VITE_PRIVATE_REVIEW=0`. This is a
+developer convenience for running one reset spec locally; it is no longer
+exercised by a second CI browser execution, and its behavior is pinned at
+millisecond scale by `web/tests/unit/playwright-reset-argv.test.ts`. The
+explicit reset config remains the environment owner for full reset runs
+(`npm run test:e2e:reset`) and was used for the local two-spec drill
+recorded below.
+
+On 2026-10-19 a CI/web-only follow-up removed the standalone
+`npx playwright test tests/e2e/reset-lhb.spec.ts` line from
+`web_e2e_reset`: the family run already collects the same seven LHB browser
+tests, so that line duplicated them on every CI run for about 14.4s. Only
+CI wiring, this documentation, and the new millisecond-scale unit test
+changed; no application code or Task 21R gate was touched.
 
 The initial C1 line used an inline `--config`, which the full web unit suite
 caught (539 passed, 1 failed in `quality-gates.test.ts`). Commit `d84a3b7`
-corrected the line and generalized the default-config argument detection; the
-suite then passed 540 / 27, and the corrected focused command was run directly
-and passed 7 / 7.
+corrected the line and generalized the default-config argument detection;
+the suite then passed 540 / 27, and the corrected focused command was run
+directly and passed 7 / 7. That corrected focused line is the same line the
+2026-10-19 follow-up later removed as a duplicate of the family collection;
+the argument detection it introduced remains as the retained developer
+local-run path.
 
 No Task 21R gate was removed: backend full pytest with warnings as errors and
 coverage, focused realtime suites, web full unit tests, default and private
@@ -75,12 +91,43 @@ contract.
 | Default production build | passed (TypeScript check plus 2464 transformed modules) |
 | Default entry bundle | 314852 / 315500 bytes |
 | Reset two-spec Playwright drill (`--config playwright.reset.config.ts`, reset-lhb plus reset-realtime) | 20 passed in 32.7s (reset-lhb 7, reset-realtime 13) |
-| Focused LHB browser gate in CI form (`npx playwright test tests/e2e/reset-lhb.spec.ts`) | 7 passed in 14.4s |
+| Focused LHB browser gate in CI form (`npx playwright test tests/e2e/reset-lhb.spec.ts`) | 7 passed in 14.4s — superseded 2026-10-19; see Post-acceptance update below |
 
 The red-then-green quality gate result above was the only failure encountered
 while closing this gate; every recorded number was executed and observed in
 this worktree. No pytest suite was rerun after the already-accepted backend
 runs, and the static, web, wheel, and restore steps were run serially.
+
+### Post-acceptance update (2026-10-19)
+
+A CI/web-only follow-up removed the duplicate standalone
+`npx playwright test tests/e2e/reset-lhb.spec.ts` line from the
+`web_e2e_reset` job. The change to `.github/workflows/ci.yml` was exactly 0
+added / 1 removed: the `npm run test:e2e:reset` family collection already
+runs the same seven LHB browser tests, so the focused line repeated them on
+every CI run (about 14.4s per run). The Task 21R realtime focused line was
+not touched and no Task 21R gate was removed.
+
+The default-config argv detection remains as a developer convenience for
+running a single reset spec locally; it no longer needs a second CI browser
+execution and is instead pinned by a millisecond-scale Vitest file. Fresh
+post-change evidence:
+
+- New `web/tests/unit/playwright-reset-argv.test.ts`: 8 tests, 8 passed
+  (three CI structure assertions and five argv cases covering reset-lhb,
+  reset-realtime, no reset spec, and two look-alike non-matches). The CI
+  structure assertion for the removed line failed red before the workflow
+  edit and passed green afterward.
+- Web full unit suite (`npm test -- --run`): 548 tests across 28 files
+  passed (previously 540 / 27; the delta is exactly this one new file with
+  8 tests).
+- Reset family drill (`npx playwright test --config playwright.reset.config.ts tests/e2e/reset-lhb.spec.ts tests/e2e/reset-realtime.spec.ts`): 20 passed (7 lhb + 13 realtime) in 56.3s.
+- Retained developer local-run path (`npx playwright test tests/e2e/reset-lhb.spec.ts` under the default config): 7 passed in 26.2s.
+- Production build passed (TypeScript check plus 2464 transformed modules);
+  the default entry bundle stayed 314852 / 315500 bytes.
+
+No backend, wheel, migration, or restore evidence changed in this
+follow-up; the rows above remain the authoritative acceptance record.
 
 ### Task 22 Commit Chain
 
@@ -101,7 +148,7 @@ runs, and the static, web, wheel, and restore steps were run serially.
 | `efadac7` | 2026-10-16 | chore: verify LHB release contracts (frozen audited commit) |
 | `d84a3b7` | 2026-10-19 | fix: route focused LHB e2e gate through reset spec detection (post-evidence CI/web wiring only) |
 
-The focused LHB suite covers disclosure authorization and source scoping,
+The LHB e2e suite covers disclosure authorization and source scoping,
 batch and revision validation, immutable revision history, the authorized
 0012 sentinel (one authorized disclosure revision with two seats including an
 empty amount, mapping version, and readiness state), read contracts, seat
@@ -236,7 +283,7 @@ records, not separately trusted attestations and not production input.
 | `npm run build` (web) | `04b-web-build.log` | TypeScript plus production build passed |
 | `npm run check:bundle` (web) | `04c-web-bundle.log` | entryBytes 314852 against 315500 |
 | `npx playwright test --config playwright.reset.config.ts tests/e2e/reset-lhb.spec.ts tests/e2e/reset-realtime.spec.ts` | `04d-web-playwright-reset.log` | 20 passed (7 LHB, 13 realtime) |
-| `npx playwright test tests/e2e/reset-lhb.spec.ts` | `04e-web-playwright-lhb-focused.log` | 7 passed; CI-form focused gate verified |
+| `npx playwright test tests/e2e/reset-lhb.spec.ts` | `04e-web-playwright-lhb-focused.log` | 7 passed; CI-form focused gate verified (historical; focused line superseded 2026-10-19) |
 | `uv build --out-dir .temp/task22/dist` | `05-wheel-build.log`, `dist/` | Rebuilt sdist and `dragon_radar-0.1.0-py3-none-any.whl` (SHA-256 `4cd1344a...`) |
 | Installed-wheel migration verification with `--audited-commit efadac79bf117bb81f85d0d2c91b501bc0ab7505` | `05-wheel.log`, `wheel-evidence.json` | Isolated import passed; fresh plus all 12 supported starts reached `0012_lhb`, sentinels preserved, ready; exit 0 |
 | Named-container backup/restore drill with the same audited commit | `06-restore.log`, `restore-evidence.json` | backup SHA-256 `17f1f8fa...`, 9.844s, cleanup complete |
