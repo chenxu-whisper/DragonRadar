@@ -1638,6 +1638,7 @@ _WIRE_EVENT_KEYS = {
     "comparable",
     "reason",
     "input_manifest",
+    "snapshot_id",
 }
 _FUTURE_DAY = date(2026, 9, 9)
 
@@ -1854,6 +1855,25 @@ async def test_http_rotation_three_day_two_sector_timeline(rotation_http_chain):
         ("2026-09-08", "topic-b"),
     ]
     assert all(set(event) == _WIRE_EVENT_KEYS for event in events)
+    # Each event carries the publication id serving that historical day, so
+    # clients can drill into the exact published version; the market snapshot
+    # uuid inside input_manifest is a different identifier.
+    anchor_publication_id = str(chain.entries[chain.days[2]].publication.id)
+    for event in events:
+        serving = chain.entries[date.fromisoformat(event["at"])].publication.id
+        assert event["snapshot_id"] == str(serving)
+    anchor_events = [
+        event for event in events if event["at"] == chain.days[2].isoformat()
+    ]
+    assert len(anchor_events) == 2
+    assert all(event["snapshot_id"] == anchor_publication_id for event in anchor_events)
+    historical_events = [
+        event for event in events if event["at"] != chain.days[2].isoformat()
+    ]
+    assert len(historical_events) == 4
+    assert all(
+        event["snapshot_id"] != anchor_publication_id for event in historical_events
+    )
     first, _first_b, expanded, no_core, contracted, unchanged = events
     assert first["core_ids"] == ["A"]
     assert first["change"] == "segment_start"

@@ -82,7 +82,7 @@ The original PRD 29 numbers and examples remain intact. All entries below are se
 | EX08 | GET /api/lhb | date,security_id?,page>=1,size1-100 -> disclosure_id,reason,seats,coverage,total | 22; disclosed source rows and licenses |
 | EX09 | GET /api/lhb/seats/{seat_id} | date,days1-250 -> seat source identity, disclosures,buy_amount,sell_amount,net_amount; no person attribution | 22; seat mappings/version |
 | EX10 | GET /api/news/wordcloud | date,top_n1-100,type? -> words[{term,document_count,article_ids,sentiment:null or research label}],tokenizer_version | 23; licensed text/title corpus |
-| EX11 | GET /api/topics/rotation | date,days1-250,sector? -> events[{at,sector_id,core_ids,change,comparable,reason,input_manifest}],returns; history not current members | 24; historical topic/role versions |
+| EX11 | GET /api/topics/rotation | date,days1-250,sector? -> events[{at,sector_id,core_ids,change,comparable,reason,input_manifest,snapshot_id=publication version id serving the event}],returns; history not current members | 24; historical topic/role versions |
 | EX12 | POST /api/query/parse | text1-500,snapshot_id,idempotency_key -> query_id,typed_ast,explanation,unsupported; optional model parser cannot execute | 26; deterministic parser baseline, optional AI permission |
 | EX13 | POST /api/query/execute | query_id,confirmed_ast_hash,snapshot_id,idempotency_key -> fields,rows<=100,total,coverage; rejects unapproved/changed AST | 26; authorized frozen read-model fields |
 | EX14 | POST /api/research/backtests | snapshot_id,input_manifests,strategy_id,parameters,period,cost_model,execution_model,experiment,idempotency_key -> run_id,status | 27; PIT data and disclosed simulation assumptions |

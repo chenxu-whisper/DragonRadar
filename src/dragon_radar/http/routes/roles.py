@@ -740,7 +740,12 @@ def evidence(request: Request):
 # EX11: sector rotation timeline. Read-side assembly only: per-sector event
 # blocks are materialized at publication time and archived inside the role
 # payload; the endpoint never reruns a role algorithm. Archived blocks are
-# validated fail-closed against the frozen seven-key contract.
+# validated fail-closed against the frozen seven-key contract (at, sector_id,
+# core_ids, change, comparable, reasons, input_manifest); that block and
+# rotation_version are never altered. The wire projection is an eight-key,
+# read-only view: the internal reasons tuple collapses to one reason token
+# and the serving publication id is added as snapshot_id so clients can drill
+# into evidence at the exact historical publication rather than the latest one.
 # ---------------------------------------------------------------------------
 
 _ROTATION_BLOCK_KEYS = frozenset(
@@ -875,6 +880,14 @@ def _validate_rotation_block(
 def _rotation_topic_events(
     snapshot: PublishedSnapshot, payload: dict[str, Any], sector: str | None
 ) -> list[dict[str, Any]]:
+    """Project frozen rotation blocks into the eight-key wire event shape.
+
+    The archived block keeps its seven-key contract (with the internal
+    ``reasons`` tuple); each projected event collapses that tuple to one
+    nullable reason and carries ``snapshot_id``: the id of the publication
+    serving this event, so evidence drill-down stays pinned to the historical
+    published version.
+    """
     topics = payload["topics"]
     if not isinstance(topics, list):
         raise DataUnavailable
@@ -915,6 +928,11 @@ def _rotation_topic_events(
                 "comparable": block["comparable"],
                 "reason": reason,
                 "input_manifest": block["input_manifest"],
+                # Read-side projection only: the publication serving this
+                # event, so clients drill into evidence at this version
+                # instead of the latest publication. Never written back to
+                # the frozen block; absent from rotation_version's contract.
+                "snapshot_id": str(snapshot.id),
             }
         )
     return events
