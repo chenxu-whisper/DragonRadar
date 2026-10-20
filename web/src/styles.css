@@ -412,3 +412,15 @@ body:has(dialog[open]) { overflow: hidden; }
   .positive, .negative, .unknown { color: CanvasText; }
   .sidebar nav a[aria-current="page"] { outline: 2px solid Highlight; }
 }
+
+.wordcloud-panel { min-width: 0; margin-block: 16px; }
+.wordcloud-heading h3 { margin: 0 0 4px; font-size: 16px; }
+.wordcloud-meta { margin: 0 0 10px; overflow-wrap: anywhere; }
+.wordcloud-svg { display: block; width: min(100%, 320px); max-width: 100%; height: auto; }
+.wordcloud-svg text { fill: #26374d; }
+.wordcloud-words { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.wordcloud-words li { min-width: 0; }
+.wordcloud-word { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: #f5f7f9; overflow-wrap: anywhere; }
+.wordcloud-word[aria-pressed="true"] { border-color: var(--blue); background: #edf4fc; box-shadow: inset 0 -2px var(--blue); }
+.wordcloud-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.wordcloud-empty { margin-block: 12px; }

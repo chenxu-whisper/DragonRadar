@@ -81,3 +81,36 @@ export interface NewsDetailRequest {
   date: string;
   snapshot: string;
 }
+
+export type WordCloudGroup = 'all' | 'news' | 'announcement' | 'research';
+
+export interface WordCloudWord {
+  term: string;
+  document_count: number;
+  article_ids: string[];
+  sentiment: null;
+}
+
+export interface WordCloudTextScope {
+  titles: number;
+  summaries: number;
+  contents: number;
+}
+
+export interface WordCloud {
+  type: WordCloudGroup;
+  top_n: number;
+  total: number;
+  words: WordCloudWord[];
+  text_scope: WordCloudTextScope;
+  tokenizer_version: string;
+}
+
+export type WordCloudResponse = WorkbenchEnvelope<WordCloud | null>;
+
+export interface WordCloudRequest {
+  date: string;
+  snapshot: string;
+  group: WordCloudGroup;
+  topN: number;
+}

@@ -11,6 +11,7 @@ import type {
   NewsDetailResponse,
   NewsListResponse,
   NewsType,
+  WordCloudGroup,
 } from '../features/news/types';
 import { useResource } from '../hooks/useResource';
 import type { ResearchState } from '../state';
@@ -18,6 +19,9 @@ import { CsvExportButton } from '../export/CsvExportButton';
 
 const NewsAITools = import.meta.env.VITE_PRIVATE_AI === '1'
   ? lazy(() => import('../features/ai/NewsAITools'))
+  : null;
+const WordCloud = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(() => import('../features/news/WordCloud'))
   : null;
 const TYPE_LABELS: Record<Exclude<NewsType, ''>, string> = {
   news: '新闻',
@@ -134,6 +138,7 @@ export function News({
 }: NewsProps) {
   const [query, setQuery] = useState(state.q);
   useEffect(() => setQuery(state.q), [state.q]);
+  const wordcloudGroup: WordCloudGroup = state.news_type === '' ? 'all' : state.news_type;
   const request = {
     date: state.date,
     snapshot: state.snapshot,
@@ -241,6 +246,19 @@ export function News({
         <button type="submit">搜索消息</button>
       </form>
     </div>
+    {WordCloud && <Suspense fallback={<p role="status">正在加载新闻词云…</p>}>
+      <WordCloud
+        date={state.date}
+        snapshot={state.snapshot}
+        group={wordcloudGroup}
+        selectedTerm={state.q}
+        refreshToken={refreshToken}
+        onSelectTerm={(term) => {
+          setQuery(term);
+          patch({ q: term, article: '', page: 1 });
+        }}
+      />
+    </Suspense>}
     <ResourceStatus resource={list} name="消息列表" />
     <ResourceStatus resource={detail} name="消息详情" />
     {data && <div className="news-layout">

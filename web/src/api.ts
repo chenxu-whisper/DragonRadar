@@ -1,4 +1,4 @@
-import type { NewsType } from './features/news/types';
+import type { NewsType, WordCloudGroup } from './features/news/types';
 
 export class ApiError extends Error {
   status: number;
@@ -118,13 +118,21 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
     if (import.meta.env.VITE_RESET_WORKBENCH === '1') {
       const newsPath = path.match(/^\/api\/news(?:\/([^/?#]+))?(?:[?#]|$)/);
       if (newsPath) {
-        const { validateNewsDetailResponse, validateNewsListResponse } = await import('./features/news/api');
+        const { validateNewsDetailResponse, validateNewsListResponse, validateWordcloudResponse } = await import('./features/news/api');
         const expected = {
           date: query.get('date') || '',
           snapshot: query.get('snapshot_id') || '',
         };
         let failure;
-        if (newsPath[1]) {
+        if (newsPath[1] === 'wordcloud') {
+          const wordcloudFailure = validateWordcloudResponse(data, {
+            ...expected,
+            group: (query.get('type') || 'all') as WordCloudGroup,
+            topN: Number(query.get('top_n')),
+          });
+          if (wordcloudFailure === 'selection_mismatch') throw new ApiError(409, '词云响应与当前选择不匹配，已丢弃该响应。');
+          if (wordcloudFailure) throw new ApiError(502, '词云响应格式无效，已丢弃该响应。', 'malformed_response');
+        } else if (newsPath[1]) {
           let articleId: string;
           try { articleId = decodeURIComponent(newsPath[1]); }
           catch { throw new ApiError(400, '消息标识无效，请返回消息列表重新选择。'); }

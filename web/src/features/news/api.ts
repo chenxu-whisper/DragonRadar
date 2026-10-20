@@ -4,10 +4,25 @@ import type {
   NewsListArticle,
   NewsListRequest,
   NewsType,
+  WordCloudRequest,
 } from './types';
 
 type Failure = 'malformed_response' | 'selection_mismatch' | 'article_mismatch' | null;
 const UUID = /^[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
+// Word cloud article_ids are canonical lowercase UUIDs; the generic UUID
+// helper above keeps the i flag for legacy news payloads.
+const UUID_LOWER = /^[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/;
+
+export const WORDCLOUD_TOKENIZER_V1 = 'wordcloud-tokenizer-v1';
+export const WORDCLOUD_GROUPS = ['all', 'announcement', 'news', 'research'] as const;
+export const WORDCLOUD_MAX_TOP_N = 100;
+export const WORDCLOUD_MIN_TOP_N = 1;
+
+const WORDCLOUD_WORD_KEYS = ['term', 'document_count', 'article_ids', 'sentiment'] as const;
+const WORDCLOUD_SCOPE_KEYS = ['titles', 'summaries', 'contents'] as const;
+const WORDCLOUD_DATA_KEYS = [
+  'type', 'top_n', 'total', 'words', 'text_scope', 'tokenizer_version',
+] as const;
 const TYPES: NewsType[] = ['', 'news', 'announcement', 'research'];
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -133,4 +148,102 @@ export function validateNewsDetailResponse(
   if (data === null) return null;
   if (!article(data)) return 'malformed_response';
   return data.article_id === request.articleId ? null : 'article_mismatch';
+}
+
+export function wordcloudPath(request: WordCloudRequest): string {
+  return `/api/news/wordcloud?${new URLSearchParams({
+    date: request.date,
+    snapshot_id: request.snapshot,
+    top_n: String(request.topN),
+    type: request.group,
+  })}`;
+}
+
+function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return record(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every(key => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+// Python compares archive terms by Unicode code point; compare the same way
+// (UTF-16 ordering would disagree for astral characters).
+function termAfter(a: string, b: string): boolean {
+  const left = Array.from(a, character => character.codePointAt(0) ?? 0);
+  const right = Array.from(b, character => character.codePointAt(0) ?? 0);
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index];
+  }
+  return left.length > right.length;
+}
+
+export function validateWordcloudResponse(
+  value: unknown,
+  request: WordCloudRequest,
+): Failure {
+  const mismatch = envelope(value, request.date, request.snapshot);
+  if (mismatch) return mismatch;
+  const data = (value as Record<string, unknown>).data;
+  if (data === null) return null;
+  if (!exactKeys(data, WORDCLOUD_DATA_KEYS)) return 'malformed_response';
+  const {
+    type,
+    top_n: topN,
+    total,
+    words,
+    text_scope: scope,
+    tokenizer_version: tokenizerVersion,
+  } = data;
+  if (
+    typeof type !== 'string' ||
+    !(WORDCLOUD_GROUPS as readonly string[]).includes(type) ||
+    type !== request.group ||
+    !Number.isInteger(topN) ||
+    Number(topN) < WORDCLOUD_MIN_TOP_N ||
+    Number(topN) > WORDCLOUD_MAX_TOP_N ||
+    topN !== request.topN ||
+    !Number.isInteger(total) ||
+    Number(total) < 0 ||
+    tokenizerVersion !== WORDCLOUD_TOKENIZER_V1 ||
+    !Array.isArray(words) ||
+    !exactKeys(scope, WORDCLOUD_SCOPE_KEYS) ||
+    !WORDCLOUD_SCOPE_KEYS.every(key => {
+      const scopeValue = scope[key];
+      return Number.isInteger(scopeValue) && Number(scopeValue) >= 0;
+    })
+  ) return 'malformed_response';
+
+  const seenTerms = new Set<string>();
+  let previous: { count: number; term: string } | null = null;
+  for (const rawWord of words) {
+    if (!exactKeys(rawWord, WORDCLOUD_WORD_KEYS)) return 'malformed_response';
+    const { term, document_count: count, article_ids: ids, sentiment } = rawWord;
+    if (
+      typeof term !== 'string' ||
+      term.length === 0 ||
+      !Number.isInteger(count) ||
+      Number(count) < 1 ||
+      sentiment !== null ||
+      !Array.isArray(ids) ||
+      ids.length === 0 ||
+      !ids.every(id => typeof id === 'string' && UUID_LOWER.test(id))
+    ) return 'malformed_response';
+    const sortedIds = [...ids].sort();
+    if (
+      count !== ids.length ||
+      new Set(ids).size !== ids.length ||
+      sortedIds.some((sorted, index) => sorted !== ids[index])
+    ) return 'malformed_response';
+    if (seenTerms.has(term)) return 'malformed_response';
+    seenTerms.add(term);
+    if (
+      previous !== null &&
+      (Number(count) > previous.count ||
+        (Number(count) === previous.count && !termAfter(term, previous.term)))
+    ) return 'malformed_response';
+    previous = { count: Number(count), term };
+  }
+  // The route always serves words[:top_n], whose length is exactly
+  // min(total, top_n); reject both over-delivery and truncated archives.
+  if (words.length !== Math.min(Number(total), Number(topN))) return 'malformed_response';
+  return null;
 }
