@@ -27,6 +27,7 @@ from dragon_radar.roles.models import (
     RoleTopicStatus,
     RoleValidation,
 )
+from dragon_radar.roles.rotation import materialize_run_rotation
 from dragon_radar.roles.rules import RULE_DEFINITIONS
 from dragon_radar.roles.tables import (
     role_change_summaries,
@@ -721,6 +722,53 @@ class RoleRepository:
         elif not source_ids <= set(grants):
             raise Forbidden("Role run source authorization is incomplete")
         self._authorize_prepared_roles(connection, contexts, grants)
+        sessions = contexts[run_id][1].calendar.sessions
+        predecessor_id = row["previous_comparable_run_id"]
+        predecessor_row = None
+        predecessor_topics: list = []
+        predecessor_results: list = []
+        if predecessor_id is not None:
+            # The predecessor is the archived run explicitly named by the
+            # materializer; loading it through _role_rows fails closed when it
+            # is missing or not materialized. Only trend evidence feeds the
+            # core-set comparison, the other five roles never enter rotation.
+            predecessor_row = self._role_rows(connection, {predecessor_id})[
+                predecessor_id
+            ]
+            predecessor_topics = (
+                connection.execute(
+                    select(role_run_topics)
+                    .where(role_run_topics.c.role_run_id == predecessor_id)
+                    .order_by(role_run_topics.c.topic_id)
+                )
+                .mappings()
+                .all()
+            )
+            predecessor_results = (
+                connection.execute(
+                    select(role_results)
+                    .where(
+                        role_results.c.role_run_id == predecessor_id,
+                        role_results.c.role == "trend",
+                    )
+                    .order_by(
+                        role_results.c.topic_id,
+                        role_results.c.tie_rank,
+                        role_results.c.security_id,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        rotation_blocks = materialize_run_rotation(
+            run_row=row,
+            topic_rows=topics,
+            result_rows=results,
+            sessions=sessions,
+            predecessor_row=predecessor_row,
+            predecessor_topic_rows=predecessor_topics,
+            predecessor_result_rows=predecessor_results,
+        )
         pending_topics = {
             pending["id"]: pending["topic_id"] for pending in pending_rows
         }
@@ -777,10 +825,12 @@ class RoleRepository:
             "trade_date": row["trade_date"].isoformat(),
             "rule_version": row["rule_version"],
             "benchmark_id": row["benchmark_id"],
+            "rotation_version": 1,
             "topics": [
                 {
                     "topic_id": topic["topic_id"],
                     "member_ids": topic["member_ids"],
+                    "rotation": rotation_blocks[topic["topic_id"]],
                     "statuses": [
                         public(status, {"role_run_id", "topic_id"})
                         for status in statuses

@@ -14,7 +14,12 @@ from dragon_radar.http.contracts import (
 )
 from dragon_radar.http.errors import DataUnavailable, StorageUnavailable
 from dragon_radar.http.routes.market import _published_payload
-from dragon_radar.http.selection import query_date, query_values, select_snapshot
+from dragon_radar.http.selection import (
+    query_date,
+    query_integer,
+    query_values,
+    select_snapshot,
+)
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.roles.adapters import adapt_role_evaluation
@@ -727,3 +732,258 @@ def evidence(request: Request):
         },
         coverage,
     )
+
+
+# ---------------------------------------------------------------------------
+# EX11: sector rotation timeline. Read-side assembly only: per-sector event
+# blocks are materialized at publication time and archived inside the role
+# payload; the endpoint never reruns a role algorithm. Archived blocks are
+# validated fail-closed against the frozen seven-key contract.
+# ---------------------------------------------------------------------------
+
+_ROTATION_BLOCK_KEYS = frozenset(
+    {
+        "at",
+        "sector_id",
+        "core_ids",
+        "change",
+        "comparable",
+        "reasons",
+        "input_manifest",
+    }
+)
+_ROTATION_MANIFEST_KEYS = frozenset(
+    {
+        "run_id",
+        "market_snapshot_id",
+        "topic_snapshot_id",
+        "rule_version",
+        "membership_version",
+    }
+)
+_ROTATION_CHANGES = frozenset(
+    {"segment_start", "unchanged", "expanded", "contracted", "reorganized"}
+)
+
+
+def _rotation_payload(snapshot: PublishedSnapshot):
+    """Return the JSON-normalized ready role payload, or ``(None, result)``.
+
+    A missing or non-ready role result is a day the caller may skip; a ready
+    payload missing the frozen identity keys is corruption and fails closed.
+    """
+    result = next(
+        (item for item in snapshot.results if item.domain == "role"),
+        None,
+    )
+    if result is None or result.status != "ready":
+        return None, result
+    payload = result.model_dump(mode="json")["payload"]
+    if (
+        not isinstance(payload, dict)
+        or not {
+            "role_run_id",
+            "trade_date",
+            "rule_version",
+            "benchmark_id",
+            "topics",
+        }
+        <= payload.keys()
+    ):
+        raise DataUnavailable
+    if not isinstance(payload["role_run_id"], str) or not payload["role_run_id"]:
+        raise DataUnavailable
+    if payload["trade_date"] != snapshot.trade_date.isoformat():
+        raise DataUnavailable
+    return payload, result
+
+
+def _identifier_list(value) -> bool:
+    return (
+        isinstance(value, list)
+        and all(isinstance(item, str) and bool(item) for item in value)
+        and len(set(value)) == len(value)
+    )
+
+
+def _validate_rotation_block(block, *, at, sector_id, member_ids, run_id) -> None:
+    """Validate one archived rotation block against the frozen contract.
+
+    Any mismatch raises :class:`DataUnavailable`; the timeline endpoint is
+    fail-closed and never projects a corrupted block.
+    """
+    if not isinstance(block, dict) or set(block) != _ROTATION_BLOCK_KEYS:
+        raise DataUnavailable
+    if block.get("at") != at.isoformat() or block.get("sector_id") != sector_id:
+        raise DataUnavailable
+    core_ids = block.get("core_ids")
+    if not _identifier_list(core_ids) or not set(core_ids) <= set(member_ids):
+        raise DataUnavailable
+    change = block.get("change")
+    comparable = block.get("comparable")
+    if change not in _ROTATION_CHANGES or type(comparable) is not bool:
+        raise DataUnavailable
+    # segment_start and comparable=False describe the same state.
+    if (change == "segment_start") == comparable:
+        raise DataUnavailable
+    reasons = block.get("reasons")
+    if not _identifier_list(reasons):
+        raise DataUnavailable
+    if comparable:
+        if reasons not in ([], ["no_core_candidate"]):
+            raise DataUnavailable
+    elif not reasons:
+        raise DataUnavailable
+    manifest = block.get("input_manifest")
+    if not isinstance(manifest, dict) or set(manifest) != _ROTATION_MANIFEST_KEYS:
+        raise DataUnavailable
+    if manifest.get("run_id") != run_id:
+        raise DataUnavailable
+    try:
+        UUID(manifest.get("market_snapshot_id"))
+        UUID(manifest.get("topic_snapshot_id"))
+    except (AttributeError, TypeError, ValueError):
+        raise DataUnavailable from None
+    if any(
+        not isinstance(manifest.get(key), str) or not manifest.get(key)
+        for key in ("rule_version", "membership_version")
+    ):
+        raise DataUnavailable
+
+
+def _rotation_topic_events(snapshot: PublishedSnapshot, payload, sector):
+    topics = payload["topics"]
+    if not isinstance(topics, list):
+        raise DataUnavailable
+    events = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            raise DataUnavailable
+        topic_id = topic.get("topic_id")
+        member_ids = topic.get("member_ids")
+        if not isinstance(topic_id, str) or not topic_id:
+            raise DataUnavailable
+        if not _identifier_list(member_ids):
+            raise DataUnavailable
+        block = topic.get("rotation")
+        _validate_rotation_block(
+            block,
+            at=snapshot.trade_date,
+            sector_id=topic_id,
+            member_ids=member_ids,
+            run_id=payload["role_run_id"],
+        )
+        if sector is not None and topic_id != sector:
+            continue
+        if block["comparable"]:
+            reason = (
+                "no_core_candidate"
+                if block["reasons"] == ["no_core_candidate"]
+                else None
+            )
+        else:
+            reason = block["reasons"][0]
+        events.append(
+            {
+                "at": block["at"],
+                "sector_id": topic_id,
+                "core_ids": block["core_ids"],
+                "change": block["change"],
+                "comparable": block["comparable"],
+                "reason": reason,
+                "input_manifest": block["input_manifest"],
+            }
+        )
+    return events
+
+
+def _rotation_domain_unavailable(snapshot: PublishedSnapshot, role_result):
+    payload = snapshot_envelope(snapshot, None, unit=None)
+    payload["source"] = "role_materialization"
+    payload["coverage"] = None
+    payload["rule_version"] = None
+    payload["basis"] = {
+        "unit": None,
+        "currency": None,
+        "price_type": None,
+        "benchmark": None,
+    }
+    flags = set(payload["quality_flags"])
+    if role_result is not None:
+        flags.update(role_result.quality_flags)
+        flags.add(f"role_{role_result.status}")
+    else:
+        flags.add("role_missing")
+    payload["quality_flags"] = sorted(flags)
+    return DecimalJSONResponse(payload)
+
+
+@router.get("/api/topics/rotation")
+def topic_rotation(request: Request):
+    query = query_values(request, {"date", "days", "sector", "snapshot_id"})
+    trade_date = query_date(query.get("date"))
+    if trade_date is None:
+        raise ValueError("Rotation date is required")
+    days = query_integer(query.get("days", "30"), 1, 250)
+    sector = query.get("sector")
+    if sector is not None:
+        sector = _required_text(sector)
+    snapshot_id = UUID(query["snapshot_id"]) if "snapshot_id" in query else None
+
+    repository = _repository(request)
+    snapshot = _select_publication(request, trade_date, snapshot_id)
+    if snapshot is None:
+        return DecimalJSONResponse(empty_envelope(trade_date))
+    anchor_payload, anchor_result = _rotation_payload(snapshot)
+    if anchor_payload is None:
+        return _rotation_domain_unavailable(snapshot, anchor_result)
+    if "rotation_version" not in anchor_payload:
+        raise DataUnavailable
+
+    sessions = snapshot.batch.calendar.sessions
+    try:
+        anchor_index = sessions.index(snapshot.trade_date)
+    except ValueError:
+        raise DataUnavailable from None
+    window_start = sessions[max(0, anchor_index - days + 1)]
+    window_end = snapshot.trade_date
+    history = repository.list_published_window(snapshot.id, window_start, window_end)
+
+    events = []
+    seen: set[tuple[str, str]] = set()
+    quality_flags = set()
+    for daily_snapshot in sorted(
+        [*history, snapshot], key=lambda item: item.trade_date
+    ):
+        if daily_snapshot is snapshot:
+            payload, role_result = anchor_payload, anchor_result
+        else:
+            payload, role_result = _rotation_payload(daily_snapshot)
+            if payload is None or "rotation_version" not in payload:
+                # Older publications predate rotation materialization or
+                # carry no ready role domain; history is never backfilled.
+                continue
+        quality_flags.update(role_result.quality_flags)
+        for event in _rotation_topic_events(daily_snapshot, payload, sector):
+            key = (event["at"], event["sector_id"])
+            if key in seen:
+                raise DataUnavailable
+            seen.add(key)
+            events.append(event)
+    events.sort(key=lambda event: (event["at"], event["sector_id"]))
+
+    data = {
+        "events": events,
+        "days": days,
+        "sector": sector,
+        "window": {
+            "start": window_start.isoformat(),
+            "end": window_end.isoformat(),
+        },
+    }
+    payload = snapshot_envelope(snapshot, data, unit=None)
+    payload["source"] = "role_materialization"
+    payload["rule_version"] = anchor_payload["rule_version"]
+    payload["basis"]["benchmark"] = anchor_payload["benchmark_id"]
+    payload["quality_flags"] = sorted({*payload["quality_flags"], *quality_flags})
+    return DecimalJSONResponse(payload)

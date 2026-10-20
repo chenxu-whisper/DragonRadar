@@ -1392,6 +1392,62 @@ class PublicationRepository:
             last_candidate = rows[-1]
         return visible
 
+    def list_published_window(
+        self,
+        anchor_publication_id: UUID | str,
+        start: date,
+        end: date,
+    ) -> list[PublishedSnapshot]:
+        """Latest visible publication per trade date before an anchor day.
+
+        Point-in-time window read for timeline endpoints. Returns one
+        published publication per ``trade_date`` in the inclusive
+        ``[start, end]`` range, excluding the anchor's own trade date,
+        restricted to publications whose sequence is at most the anchor's
+        own sequence. A v2 of an older day published *after* the anchor can
+        therefore never flow back into a timeline pinned to the anchor. The
+        range is bounded by callers to at most 250 calendar sessions; reads
+        are transactional and never cached.
+        """
+        anchor_id = _uuid(anchor_publication_id)
+        with self.database.engine.begin() as connection:
+            self.market._lock(connection, PUBLICATION_SEQUENCE_LOCK)
+            anchor = (
+                connection.execute(
+                    select(
+                        publications.c.publication_sequence,
+                        publications.c.trade_date,
+                        publications.c.status,
+                    ).where(publications.c.id == anchor_id)
+                )
+                .mappings()
+                .first()
+            )
+            if anchor is None or anchor["status"] != "published":
+                return []
+            rows = (
+                connection.execute(
+                    select(publications)
+                    .where(
+                        publications.c.status == "published",
+                        publications.c.publication_sequence
+                        <= anchor["publication_sequence"],
+                        publications.c.trade_date >= start,
+                        publications.c.trade_date <= end,
+                        publications.c.trade_date < anchor["trade_date"],
+                    )
+                    .order_by(
+                        publications.c.trade_date.desc(),
+                        publications.c.version.desc(),
+                        publications.c.id,
+                    )
+                    .distinct(publications.c.trade_date)
+                )
+                .mappings()
+                .all()
+            )
+            return self._authorized_records(connection, rows, omit_forbidden=True)
+
     def list_results(self, publication_id: UUID | str) -> tuple[PublicationResult, ...]:
         publication_id = _uuid(publication_id)
         with self.database.engine.begin() as connection:

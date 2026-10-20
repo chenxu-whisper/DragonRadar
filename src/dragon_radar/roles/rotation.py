@@ -2,8 +2,18 @@
 
 This module is a synchronous, dependency-free pure function over archived
 role-run projections. It performs no database access, no HTTP concerns, no
-clock reads and no logging; publication-time materialization and the
-``GET /api/topics/rotation`` parameter validation live in later slices.
+clock reads and no logging; publication-time materialization lives in the
+role repository (which assembles the loaded rows into the mapping inputs
+defined here) and the ``GET /api/topics/rotation`` parameter validation and
+window assembly live in the HTTP layer.
+
+Slice 2 adds the publication-side adapters that stay pure:
+:func:`trend_core_ids` extracts the archived core set from role-result-shaped
+mapping rows, :func:`materialize_run_rotation` turns the already-loaded rows
+of one run (and its optional immediate predecessor run) into frozen per-topic
+event payloads, and :func:`rotation_event_payload` projects one event to the
+JSON-safe archive shape. Database row-to-mapping assembly belongs to the
+repository; this module never imports SQLAlchemy.
 
 The timeline describes **set algebra only**. ``change`` compares consecutive
 visible core sets (the trend rank-1, ``status="candidate"`` securities
@@ -30,9 +40,9 @@ raise even when it would be invisible; duplicate ``(sector, date)`` is
 judged only across the visible set that survives filtering.
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime
-from typing import Literal, Self
+from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import ConfigDict, field_validator, model_validator
@@ -318,6 +328,149 @@ def build_rotation(
     return RotationTimeline(events=tuple(event for _, event in dated_events))
 
 
+def trend_core_ids(
+    result_rows: Iterable[Mapping[str, Any]],
+) -> tuple[Identifier, ...]:
+    """Extract the archived trend core set from role-result mapping rows.
+
+    A security is a core member only when its trend result row is an
+    internal ``candidate`` at ``tie_rank == 1`` (the same caliber used by
+    the role relay materializer). Identifiers are canonicalized as
+    ``tuple(sorted(set(...)))`` so the output is independent of row order
+    and duplicates.
+    """
+    return tuple(
+        sorted(
+            {
+                row["security_id"]
+                for row in result_rows
+                if row["role"] == "trend"
+                and row["internal_status"] == "candidate"
+                and row["tie_rank"] == 1
+            }
+        )
+    )
+
+
+def rotation_event_payload(event: RotationEvent) -> dict[str, Any]:
+    """Project one rotation event to its JSON-safe archived block shape."""
+    manifest = event.input_manifest
+    return {
+        "at": event.at,
+        "sector_id": event.sector_id,
+        "core_ids": list(event.core_ids),
+        "change": event.change,
+        "comparable": event.comparable,
+        "reasons": list(event.reasons),
+        "input_manifest": {
+            "run_id": manifest.run_id,
+            "market_snapshot_id": str(manifest.market_snapshot_id),
+            "topic_snapshot_id": str(manifest.topic_snapshot_id),
+            "rule_version": manifest.rule_version,
+            "membership_version": manifest.membership_version,
+        },
+    }
+
+
+def _run_projection(
+    run_row: Mapping[str, Any],
+    topic_row: Mapping[str, Any],
+    core_ids: Sequence[Identifier],
+) -> dict[str, Any]:
+    previous_id = run_row["previous_comparable_run_id"]
+    return {
+        "run_id": str(run_row["id"]),
+        "sector_id": topic_row["topic_id"],
+        "trade_date": run_row["trade_date"],
+        "available_at": run_row["materialized_at"],
+        "rule_version": run_row["rule_version"],
+        "topic_source_version": run_row["topic_source_version"],
+        "taxonomy_version": run_row["taxonomy_version"],
+        "membership_version": run_row["membership_version"],
+        "member_ids": tuple(topic_row["member_ids"]),
+        "core_ids": tuple(core_ids),
+        "market_snapshot_id": run_row["market_snapshot_id"],
+        "topic_snapshot_id": run_row["topic_snapshot_id"],
+        "previous_comparable_run_id": (
+            str(previous_id) if previous_id is not None else None
+        ),
+    }
+
+
+def _results_by_topic(
+    result_rows: Iterable[Mapping[str, Any]] | None,
+) -> dict[str, list[Mapping[str, Any]]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in result_rows or ():
+        grouped.setdefault(row["topic_id"], []).append(row)
+    return grouped
+
+
+def materialize_run_rotation(
+    *,
+    run_row: Mapping[str, Any],
+    topic_rows: Sequence[Mapping[str, Any]],
+    result_rows: Iterable[Mapping[str, Any]],
+    sessions: Sequence[date],
+    predecessor_row: Mapping[str, Any] | None = None,
+    predecessor_topic_rows: Sequence[Mapping[str, Any]] | None = None,
+    predecessor_result_rows: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build frozen per-topic rotation blocks for one published role run.
+
+    Inputs are the already-loaded run row, ``role_run_topics`` rows and
+    ``role_results`` rows of the current run and, when the run has an
+    immediate comparable predecessor run, the same three row sets for that
+    predecessor. ``sessions`` is the deterministic market calendar (no clock
+    read). Returns ``{topic_id: rotation event block}`` for every current
+    topic; a sector absent from the predecessor restarts with
+    ``first_observation`` and history is never backfilled.
+
+    Every run is validated through :class:`RotationRun` first, so corrupted
+    rows fail the publication transaction instead of producing a silent gap.
+    """
+    predecessor_topics = (
+        {row["topic_id"]: row for row in predecessor_topic_rows}
+        if predecessor_row is not None and predecessor_topic_rows is not None
+        else {}
+    )
+    current_results = _results_by_topic(result_rows)
+    predecessor_results = _results_by_topic(predecessor_result_rows)
+    current_date = run_row["trade_date"]
+    blocks: dict[str, dict[str, Any]] = {}
+    for topic_row in topic_rows:
+        topic_id = topic_row["topic_id"]
+        runs: list[RotationRun] = []
+        previous_topic = predecessor_topics.get(topic_id)
+        if predecessor_row is not None and previous_topic is not None:
+            runs.append(
+                RotationRun.model_validate(
+                    _run_projection(
+                        predecessor_row,
+                        previous_topic,
+                        trend_core_ids(predecessor_results.get(topic_id, ())),
+                    )
+                )
+            )
+        runs.append(
+            RotationRun.model_validate(
+                _run_projection(
+                    run_row,
+                    topic_row,
+                    trend_core_ids(current_results.get(topic_id, ())),
+                )
+            )
+        )
+        timeline = build_rotation(runs, sessions=sessions)
+        current_event = next(
+            event
+            for event in timeline.events
+            if event.sector_id == topic_id and event.at == current_date.isoformat()
+        )
+        blocks[topic_id] = rotation_event_payload(current_event)
+    return blocks
+
+
 __all__ = [
     "ChangeKind",
     "RotationEvent",
@@ -325,4 +478,7 @@ __all__ = [
     "RotationRun",
     "RotationTimeline",
     "build_rotation",
+    "materialize_run_rotation",
+    "rotation_event_payload",
+    "trend_core_ids",
 ]
