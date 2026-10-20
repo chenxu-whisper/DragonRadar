@@ -27,6 +27,7 @@ from dragon_radar.news.service import (
     NEWS_SCHEMA,
     NEWS_SCHEMA_VERSION,
 )
+from dragon_radar.news.wordcloud import TOKENIZER_V1, WORDCLOUD_GROUPS
 from dragon_radar.owner.security import (
     BoundaryError,
     OwnerWrite,
@@ -38,6 +39,8 @@ from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
 router = APIRouter()
 _NEWS_TYPES = frozenset({"news", "announcement", "research"})
+_WORDCLOUD_WORD_KEYS = frozenset({"term", "document_count", "article_ids", "sentiment"})
+_WORDCLOUD_SCOPE_KEYS = frozenset({"titles", "summaries", "contents"})
 
 
 def _repository(request: Request):
@@ -238,6 +241,87 @@ def _payload(snapshot: PublishedSnapshot):
     return value, archived_coverage(dict(result.coverage)), None
 
 
+def _wordcloud_scope(value) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == _WORDCLOUD_SCOPE_KEYS
+        and all(
+            type(value[key]) is int and value[key] >= 0 for key in _WORDCLOUD_SCOPE_KEYS
+        )
+    )
+
+
+def _wordcloud_words(value) -> bool:
+    if not isinstance(value, list):
+        return False
+    previous: tuple[int, str] | None = None
+    seen_terms: set[str] = set()
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item) != _WORDCLOUD_WORD_KEYS
+            or not isinstance(item["term"], str)
+            or not item["term"]
+            or type(item["document_count"]) is not int
+            or item["document_count"] < 1
+            or not isinstance(item["article_ids"], list)
+            or not item["article_ids"]
+            or not all(
+                isinstance(article_id, str) for article_id in item["article_ids"]
+            )
+            or item["sentiment"] is not None
+        ):
+            return False
+        try:
+            article_ids = tuple(UUID(value_) for value_ in item["article_ids"])
+        except (TypeError, ValueError):
+            return False
+        if (
+            item["document_count"] != len(article_ids)
+            or len(article_ids) != len(set(article_ids))
+            or article_ids != tuple(sorted(article_ids))
+        ):
+            return False
+        # A term may never appear twice: the strict ordering check alone only
+        # catches identical (-count, term) pairs, not same-term rows carrying
+        # different document counts.
+        if item["term"] in seen_terms:
+            return False
+        seen_terms.add(item["term"])
+        ordering = (-item["document_count"], item["term"])
+        if previous is not None and ordering <= previous:
+            return False
+        previous = ordering
+    return True
+
+
+def _wordcloud_group(value) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"words", "text_scope"}
+        and _wordcloud_words(value["words"])
+        and _wordcloud_scope(value["text_scope"])
+    )
+
+
+def _validate_wordcloud_block(value) -> dict:
+    """Fail-closed validation of the archived word cloud block.
+
+    Returns the block unchanged when it matches the frozen archive contract;
+    raises :class:`DataUnavailable` otherwise.
+    """
+    if not (
+        isinstance(value, dict)
+        and set(value) == {"groups", "tokenizer_version"}
+        and value.get("tokenizer_version") == TOKENIZER_V1
+        and isinstance(value.get("groups"), dict)
+        and set(value["groups"]) == set(WORDCLOUD_GROUPS)
+        and all(_wordcloud_group(value["groups"][name]) for name in WORDCLOUD_GROUPS)
+    ):
+        raise DataUnavailable
+    return value
+
+
 def _response(snapshot, data, coverage, *, reason=None):
     payload = snapshot_envelope(snapshot, data, unit=None, coverage=coverage)
     payload["source"] = "news_materialization"
@@ -309,6 +393,41 @@ def list_news(request: Request):
         "total": total,
         "sources": sorted({item["source"]["id"] for item in items}),
         "event_count": len({item["event_id"] for item in items}),
+    }
+    return _response(snapshot, data, coverage)
+
+
+@router.get("/api/news/wordcloud")
+def news_wordcloud(request: Request):
+    # Registered before /api/news/{article_id} so "wordcloud" is never parsed
+    # as an article UUID.
+    query = query_values(request, {"date", "snapshot_id", "top_n", "type"})
+    trade_date = query_date(query.get("date"))
+    if trade_date is None:
+        raise ValueError("Word cloud date is required")
+    if "top_n" not in query:
+        raise ValueError("Word cloud top_n is required")
+    top_n = query_integer(query["top_n"], 1, 100)
+    group_name = query.get("type", "all")
+    if group_name not in WORDCLOUD_GROUPS:
+        raise ValueError("Invalid word cloud type")
+    snapshot_id = UUID(query["snapshot_id"]) if "snapshot_id" in query else None
+    snapshot = _selected_snapshot(request, trade_date, snapshot_id)
+    if snapshot is None:
+        return DecimalJSONResponse(empty_envelope(trade_date))
+    payload, coverage, reason = _payload(snapshot)
+    if payload is None:
+        return _response(snapshot, None, coverage, reason=reason)
+    block = _validate_wordcloud_block(payload.get("wordcloud"))
+    group = block["groups"][group_name]
+    words = group["words"]
+    data = {
+        "type": group_name,
+        "top_n": top_n,
+        "total": len(words),
+        "words": words[:top_n],
+        "text_scope": group["text_scope"],
+        "tokenizer_version": block["tokenizer_version"],
     }
     return _response(snapshot, data, coverage)
 

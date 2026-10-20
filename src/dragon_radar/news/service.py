@@ -9,12 +9,51 @@ from dragon_radar.news.models import (
     NewsEventEvidence,
 )
 from dragon_radar.news.repository import NewsRepository
+from dragon_radar.news.wordcloud import (
+    STOPWORDS_V1,
+    TOKENIZER_V1,
+    WORDCLOUD_GROUPS,
+    WordCloudDocument,
+    build_wordcloud,
+)
 from dragon_radar.publication.models import DomainMaterialization
 from dragon_radar.storage.repository import Repository
 
 NEWS_SCHEMA = "dragon-radar.news"
-NEWS_SCHEMA_VERSION = 1
+NEWS_SCHEMA_VERSION = 2
 NEWS_RULE_VERSION = "news-v1"
+
+
+def _wordcloud_block(rows: list[dict], as_of: datetime) -> dict:
+    """Project the frozen word cloud for all four read-side groups."""
+    groups = {}
+    for group in WORDCLOUD_GROUPS:
+        documents = [
+            WordCloudDocument(
+                article_id=row["article_id"],
+                news_type=row["news_type"],
+                title=row["title"],
+                summary=row["summary"],
+                content=row["content"],
+                received_at=row["received_at"],
+            )
+            for row in rows
+            if group == "all" or row["news_type"] == group
+        ]
+        result = build_wordcloud(
+            documents,
+            TOKENIZER_V1,
+            STOPWORDS_V1,
+            as_of=as_of,
+        )
+        # Groups carry only words/text_scope; the tokenizer version lives
+        # once on the enclosing block.
+        dumped = result.model_dump(mode="json")
+        groups[group] = {
+            "words": dumped["words"],
+            "text_scope": dumped["text_scope"],
+        }
+    return {"tokenizer_version": TOKENIZER_V1, "groups": groups}
 
 
 class NewsService:
@@ -161,6 +200,7 @@ class NewsService:
             )
         event_count = len({article["event_id"] for article in articles})
         expected = len(articles)
+        wordcloud = _wordcloud_block(list(context["rows"]), context["root"]["as_of"])
         return DomainMaterialization(
             payload={
                 "schema": NEWS_SCHEMA,
@@ -170,6 +210,7 @@ class NewsService:
                 "articles": articles,
                 "sources": sorted({article["source"]["id"] for article in articles}),
                 "event_count": event_count,
+                "wordcloud": wordcloud,
             },
             coverage={
                 "expected": expected,

@@ -27,15 +27,72 @@ Tokenizer ``wordcloud-tokenizer-v1`` is frozen:
 import re
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Annotated, Self
+from typing import Annotated, Protocol, Self
 from uuid import UUID
 
 from pydantic import Field, StrictStr, model_validator
 
-from dragon_radar.domain.models import FrozenModel
-from dragon_radar.news.models import NewsArticleRevision
+from dragon_radar.domain.models import FrozenModel, UTCDateTime
+from dragon_radar.news.models import NewsType
 
 TOKENIZER_V1 = "wordcloud-tokenizer-v1"
+
+# Frozen read-side groups, in producer insertion order. ``all`` spans every
+# news type and the other three match ``NewsType`` values exactly. The group
+# set is part of the archived block contract: adding a group requires a news
+# schema version bump, so both the materializer and the route validator
+# derive their group sets from this tuple instead of redefining them.
+WORDCLOUD_GROUPS: tuple[str, ...] = ("all", "announcement", "news", "research")
+
+# Stopwords are deliberately minimal for v1 and are frozen together with the
+# tokenizer: changing the production dictionary or stopword set is an external
+# production gate and must ship as a new tokenizer version (v2), never as an
+# in-place edit that would recompute history differently.
+STOPWORDS_V1 = frozenset(
+    {
+        # 23 Chinese function words.
+        "的",
+        "了",
+        "是",
+        "在",
+        "和",
+        "与",
+        "及",
+        "或",
+        "但",
+        "也",
+        "都",
+        "就",
+        "为",
+        "对",
+        "把",
+        "被",
+        "将",
+        "从",
+        "向",
+        "到",
+        "以",
+        "于",
+        "不",
+        # 16 English function words (matched after lowercasing).
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "for",
+        "on",
+        "at",
+        "by",
+        "is",
+        "are",
+        "was",
+        "were",
+    }
+)
 
 # Frozen v1 vocabulary. It must not grow to cover sample words such as
 # 快报/标题/摘要/利好/风险/涨跌: out-of-vocabulary CJK degrades to single
@@ -90,6 +147,40 @@ class WordCloudResult(FrozenModel):
     text_scope: WordCloudTextScope
 
 
+class WordCloudDocumentLike(Protocol):
+    """Structural input contract for :func:`build_wordcloud`.
+
+    ``NewsArticleRevision`` satisfies it directly; publication rows are
+    projected through the concrete :class:`WordCloudDocument` adapter.
+    """
+
+    @property
+    def article_id(self) -> UUID: ...
+
+    @property
+    def title(self) -> str: ...
+
+    @property
+    def summary(self) -> str | None: ...
+
+    @property
+    def content(self) -> str | None: ...
+
+    @property
+    def received_at(self) -> datetime: ...
+
+
+class WordCloudDocument(FrozenModel):
+    """Frozen snapshot-row adapter: only licensed fields needed for tokens."""
+
+    article_id: UUID
+    news_type: NewsType
+    title: Annotated[StrictStr, Field(min_length=1)]
+    summary: StrictStr | None
+    content: StrictStr | None
+    received_at: UTCDateTime
+
+
 def _tokenize_v1(text: str) -> list[str]:
     tokens: list[str] = []
     for match in _TOKEN_RUN.finditer(text):
@@ -113,7 +204,7 @@ def _tokenize_v1(text: str) -> list[str]:
 
 
 def build_wordcloud(
-    articles: Iterable[NewsArticleRevision],
+    articles: Iterable[WordCloudDocumentLike],
     tokenizer_version: str,
     stopwords: frozenset[str],
     *,
@@ -181,7 +272,11 @@ def build_wordcloud(
 
 
 __all__ = [
+    "STOPWORDS_V1",
     "TOKENIZER_V1",
+    "WORDCLOUD_GROUPS",
+    "WordCloudDocument",
+    "WordCloudDocumentLike",
     "WordCloudResult",
     "WordCloudTextScope",
     "WordCloudWord",
