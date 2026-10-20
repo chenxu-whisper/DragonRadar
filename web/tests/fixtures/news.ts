@@ -3,6 +3,11 @@ import type { Page, Route } from '@playwright/test';
 export const NEWS_SNAPSHOT = '00000000-0000-4000-8000-000000000141';
 export const ARTICLE_A = '00000000-0000-4000-8000-000000000151';
 export const ARTICLE_B = '00000000-0000-4000-8000-000000000152';
+// Word-cloud-fixture only: never part of the /api/news list or article mocks.
+// It models licensed documents that contribute terms without a list row.
+const ARTICLE_C = '00000000-0000-4000-8000-000000000153';
+
+const WORDCLOUD_TOKENIZER_VERSION = 'wordcloud-tokenizer-v1';
 
 const coverage = { expected: 2, valid: 2, excluded: 0, missing: 0 };
 const basis = { unit: null, currency: null, price_type: null, benchmark: null };
@@ -99,10 +104,50 @@ export const listArticleB = {
   summary: articleB.summary,
 };
 
+type CloudGroup = 'all' | 'announcement' | 'news' | 'research';
+type CloudScope = { titles: number; summaries: number; contents: number };
+
+function cloudWord(term: string, count: number, ids: string[]) {
+  // Canonical ascending article ids mirror the backend contract the frontend
+  // validator enforces fail-closed.
+  return { term, document_count: count, article_ids: [...ids].sort(), sentiment: null };
+}
+type CloudWord = ReturnType<typeof cloudWord>;
+
+// Word-cloud groups and text scopes are synthesized independently of the
+// article-list mock on purpose: the frontend validator only checks the
+// wordcloud block contract and never cross-correlates terms with list rows
+// (the backend materializes them from different licensed-text projections).
+// E.g. the research list still carries article B while its cloud group is
+// empty because that revision grants no licensed text (titles: 0).
+//
+// Ordered by document_count desc, ties by Unicode code point asc; the
+// validator rejects any other ordering.
+const WORDCLOUD_WORDS: Record<CloudGroup, CloudWord[]> = {
+  all: [
+    cloudWord('机器人', 2, [ARTICLE_A, ARTICLE_C]),
+    cloudWord('订单', 2, [ARTICLE_A, ARTICLE_B]),
+    cloudWord('robot', 1, [ARTICLE_C]),
+    cloudWord('涨停', 1, [ARTICLE_A]),
+    cloudWord('行业', 1, [ARTICLE_B]),
+  ],
+  announcement: [cloudWord('订单', 1, [ARTICLE_A])],
+  news: [cloudWord('机器人', 1, [ARTICLE_A])],
+  research: [],
+};
+
+const WORDCLOUD_SCOPE: Record<CloudGroup, CloudScope> = {
+  all: { titles: 3, summaries: 2, contents: 0 },
+  announcement: { titles: 1, summaries: 1, contents: 0 },
+  news: { titles: 1, summaries: 1, contents: 0 },
+  research: { titles: 0, summaries: 0, contents: 0 },
+};
+
 export type NewsMockState = {
   malformed?: boolean;
   wrongArticle?: boolean;
   offline?: boolean;
+  wordcloud?: 'null' | 'malformed';
 };
 
 export async function mockNews(page: Page, state: NewsMockState = {}) {
@@ -147,6 +192,40 @@ export async function mockNews(page: Page, state: NewsMockState = {}) {
         total: articles.length,
         sources: ['synthetic-wire'],
         event_count: new Set(articles.map(item => item.event_id)).size,
+      }));
+    }
+    if (url.pathname === '/api/news/wordcloud') {
+      // Must precede the startsWith('/api/news/') article branch, otherwise
+      // "wordcloud" would be treated as an article id and 404.
+      if (state.wordcloud === 'malformed') {
+        // Declares 2 documents while carrying a single article id: the
+        // fail-closed validator must discard the whole block.
+        return respond(newsEnvelope({
+          type: 'all',
+          top_n: 40,
+          total: 1,
+          words: [cloudWord('坏块', 2, [ARTICLE_A])],
+          text_scope: { titles: 1, summaries: 0, contents: 0 },
+          tokenizer_version: WORDCLOUD_TOKENIZER_VERSION,
+        }));
+      }
+      if (state.wordcloud === 'null') {
+        return respond(newsEnvelope(null));
+      }
+      const requestedGroup = url.searchParams.get('type') || 'all';
+      const group: CloudGroup = requestedGroup === 'announcement'
+        || requestedGroup === 'news' || requestedGroup === 'research'
+        ? requestedGroup
+        : 'all';
+      const topN = Number(url.searchParams.get('top_n') || '40');
+      const full = WORDCLOUD_WORDS[group];
+      return respond(newsEnvelope({
+        type: group,
+        top_n: topN,
+        total: full.length,
+        words: full.slice(0, topN),
+        text_scope: WORDCLOUD_SCOPE[group],
+        tokenizer_version: WORDCLOUD_TOKENIZER_VERSION,
       }));
     }
     if (url.pathname.startsWith('/api/news/')) {

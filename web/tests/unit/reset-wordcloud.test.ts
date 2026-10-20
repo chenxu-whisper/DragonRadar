@@ -326,6 +326,10 @@ describe('WordCloudView', () => {
     expect(markup).toContain('aria-label="新闻词云词语"');
     expect(markup).toContain('data-term="涨停"');
     expect(markup).toContain('aria-pressed="false"');
+    // The accessible name is explicit so it never depends on flex-generated
+    // text boundaries between the term and the count span.
+    expect(markup).toContain('aria-label="涨停，3 篇"');
+    expect(markup).toContain('aria-label="龙虎榜，2 篇"');
     expect(markup).toContain('3 篇');
     expect(markup).toContain('1 篇');
     expect(markup).toContain('标题 3');

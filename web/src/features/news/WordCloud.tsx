@@ -111,7 +111,7 @@ export function WordCloudView({ data, selectedTerm, onSelectTerm }: WordCloudVie
   const { titles, summaries, contents } = data.text_scope;
   return <section className="wordcloud-panel" aria-label="新闻词云">
     <div className="wordcloud-heading">
-      <h3>新闻词云</h3>
+      <h2>新闻词云</h2>
       <p className="muted wordcloud-meta">
         {data.tokenizer_version} · 标题 {titles} · 摘要 {summaries} · 正文 {contents}
         {' '}· 共 {data.total} 个词
@@ -139,6 +139,7 @@ export function WordCloudView({ data, selectedTerm, onSelectTerm }: WordCloudVie
             type="button"
             className="wordcloud-word"
             data-term={word.term}
+            aria-label={`${word.term}，${word.document_count} 篇`}
             aria-pressed={selectedTerm === word.term}
             onClick={() => onSelectTerm(selectedTerm === word.term ? '' : word.term)}
           >

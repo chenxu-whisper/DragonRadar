@@ -414,7 +414,7 @@ body:has(dialog[open]) { overflow: hidden; }
 }
 
 .wordcloud-panel { min-width: 0; margin-block: 16px; }
-.wordcloud-heading h3 { margin: 0 0 4px; font-size: 16px; }
+.wordcloud-heading h2 { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
 .wordcloud-meta { margin: 0 0 10px; overflow-wrap: anywhere; }
 .wordcloud-svg { display: block; width: min(100%, 320px); max-width: 100%; height: auto; }
 .wordcloud-svg text { fill: #26374d; }
