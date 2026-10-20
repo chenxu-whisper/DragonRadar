@@ -187,7 +187,13 @@ test('reset stock 404 is shown directly and never falls back to the legacy endpo
   await page.getByRole('table', { name: '角色候选' })
     .getByRole('button', { name: '合成测试证券1', exact: true }).click();
 
-  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('未找到该快照或证券');
+  // 弹窗可能同时承载证券详情与懒加载龙虎榜两个同文告警（挂载时序不定）。
+  // 404 时 modern 证券详情必发且必失败；rawKline 以 modernData 为请求门控，
+  // 详情失败时不发请求，故不存在“重试证券行情”告警。用唯一的重试按钮名
+  // 收敛到证券详情告警，避免文案过滤在 LHB 告警时序抖动下命中多个。
+  const stockAlert = page.getByRole('dialog').getByRole('alert')
+    .filter({ has: page.getByRole('button', { name: '重试证券详情' }) });
+  await expect(stockAlert).toContainText('未找到该快照或证券');
   expect(legacyStockRequests).toEqual([]);
 });
 
@@ -202,7 +208,8 @@ test('malformed reset stock response uses the public error state and clears stal
 
   state.malformedStock = true;
   await page.getByRole('button', { name: '刷新快照' }).evaluate((button: HTMLButtonElement) => button.click());
-  await expect(dialog.getByRole('alert')).toContainText('证券详情加载失败：数据格式不完整。');
+  await expect(dialog.getByRole('alert')
+    .filter({ hasText: '证券详情加载失败' })).toContainText('证券详情加载失败：数据格式不完整。');
   await expect(dialog.getByRole('heading', { name: '合成测试证券1' })).toHaveCount(0);
   await expect(dialog.getByText('不应泄露的旧证券数据')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: '我的复盘', exact: true })).toHaveCount(0);

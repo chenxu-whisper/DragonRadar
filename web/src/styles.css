@@ -177,6 +177,9 @@ body:has(dialog[open]) { overflow: hidden; }
 .leaders-controls label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
 .leaders-controls select { min-width: 150px; color: #202b3b; }
 .status-token { display: inline-flex; align-items: center; min-height: 26px; width: fit-content; padding: 2px 8px; border: 1px solid #aeb8c6; border-radius: 999px; color: #354458; background: #f5f7f9; font-size: 12px; line-height: 1.3; white-space: nowrap; }
+/* LHB synthetic-data badges sit inside flex headings and must wrap at 375px/200% emulation. */
+.lhb-seats-panel .section-heading .status-token,
+.lhb-seat-history-dialog .status-token { white-space: normal; overflow-wrap: anywhere; text-align: start; }
 .leaders-section { margin-top: 24px; }
 .ladder-matrix { min-width: 660px; table-layout: fixed; }
 .ladder-matrix th:not(.identity), .ladder-matrix td { width: 170px; }

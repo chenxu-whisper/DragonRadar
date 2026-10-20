@@ -106,7 +106,10 @@ test('implemented reset destinations retain a fixed historical snapshot and hone
   await expect(page).toHaveURL(/view=news/);
   await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
   await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
-  await expect(page.getByRole('alert')).toContainText('未找到该快照或证券，当前日期与输入已保留。');
+  // 词云与消息列表各自渲染一个 404 告警，断言必须收敛到列表面板自己的 alert。
+  const listAlert = page.getByRole('alert')
+    .filter({ has: page.getByRole('button', { name: '重试消息列表' }) });
+  await expect(listAlert).toContainText('未找到该快照或证券，当前日期与输入已保留。');
   await expect(page.getByRole('button', { name: '重试消息列表' })).toBeVisible();
 
   await nav.getByRole('link', { name: '监管', exact: true }).click();
