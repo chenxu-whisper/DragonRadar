@@ -431,7 +431,7 @@ body:has(dialog[open]) { overflow: hidden; }
 .rotation-days select { min-width: 0; }
 .rotation-meta { margin: 4px 0 12px; overflow-wrap: anywhere; }
 .rotation-empty { margin-block: 12px; }
-.rotation-lane-block { margin-top: 14px; min-width: 0; }
+.rotation-lane-block { margin-top: 14px; min-width: 0; padding-left: 6px; }
 .rotation-sector { margin: 0 0 8px; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
 .rotation-lane {
   list-style: none; margin: 0; padding: 0 0 0 20px;

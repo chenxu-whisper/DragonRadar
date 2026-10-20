@@ -1,8 +1,22 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
-import { ApiError } from '../../src/api';
-import { rotationPath, validateRotation } from '../../src/features/roles/api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError, request } from '../../src/api';
+import {
+  ROTATION_FIRST_OBSERVATION,
+  ROTATION_MEMBER_POOL_CHANGED,
+  ROTATION_MEMBERSHIP_VERSION_CHANGED,
+  ROTATION_NO_CORE_CANDIDATE,
+  ROTATION_NOT_PREVIOUS_COMPARABLE_SESSION,
+  ROTATION_PREVIOUS_COMPARABLE_RUN_MISMATCH,
+  ROTATION_RULE_VERSION_CHANGED,
+  ROTATION_TAXONOMY_VERSION_CHANGED,
+  ROTATION_TOPIC_REVISION_CHANGED,
+  rotationPath,
+  validateRotation,
+} from '../../src/features/roles/api';
+import { reasonLabel, rotationChangeLabel } from '../../src/features/roles/labels';
+import { SectionLoadError } from '../../src/features/roles/SectionBoundary';
 import {
   groupRotationLanes,
   RotationTimelineView,
@@ -23,6 +37,8 @@ const HIST_SNAPSHOT = '00000000-0000-4000-8000-0000000000cd';
 const MARKET_UUID = '11111111-1111-4111-8111-aaaaaaaaaaaa';
 const TOPIC_UUID = '22222222-2222-4222-a222-bbbbbbbbbbbb';
 const selection = { snapshot: SNAPSHOT, date: DATE };
+
+afterEach(() => vi.unstubAllGlobals());
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -252,6 +268,66 @@ describe('validateRotation', () => {
   ])('%s 时丢弃该响应', (_name, expectedStatus, call) => {
     expectRejected(call, expectedStatus);
   });
+
+  it('rejects an event whose at is later than window.end', () => {
+    expectRejected(() => withEvent(5, event => { event.at = '2026-09-09'; }), 502);
+  });
+
+  it('accepts a sector-filtered request whose data echoes the same sector', () => {
+    const filtered = makeEvents().filter(event => event.sector_id === 'topic-a');
+    const body = makeEnvelope(makeData(filtered, { sector: 'topic-a' }));
+    expect(() => validate(body, { snapshot: SNAPSHOT, date: DATE, sector: 'topic-a' })).not.toThrow();
+  });
+
+  it.each([
+    ROTATION_FIRST_OBSERVATION,
+    ROTATION_RULE_VERSION_CHANGED,
+    ROTATION_TOPIC_REVISION_CHANGED,
+    ROTATION_TAXONOMY_VERSION_CHANGED,
+    ROTATION_MEMBERSHIP_VERSION_CHANGED,
+    ROTATION_MEMBER_POOL_CHANGED,
+    ROTATION_PREVIOUS_COMPARABLE_RUN_MISMATCH,
+    ROTATION_NOT_PREVIOUS_COMPARABLE_SESSION,
+    ROTATION_NO_CORE_CANDIDATE,
+  ])('accepts non-comparable events carrying frozen reason token %s', token => {
+    const events = makeEvents();
+    (events[0] as unknown as Record<string, unknown>).reason = token;
+    expect(() => validate(makeEnvelope(makeData(events)))).not.toThrow();
+  });
+});
+
+describe('rotation vocabulary labels', () => {
+  const REASON_LABELS: ReadonlyArray<readonly [string, string]> = [
+    [ROTATION_FIRST_OBSERVATION, '首次观察'],
+    [ROTATION_RULE_VERSION_CHANGED, '规则版本已变化'],
+    [ROTATION_TOPIC_REVISION_CHANGED, '题材修订已变化'],
+    [ROTATION_TAXONOMY_VERSION_CHANGED, '题材分类版本已变化'],
+    [ROTATION_MEMBERSHIP_VERSION_CHANGED, '题材成员版本已变化'],
+    [ROTATION_MEMBER_POOL_CHANGED, '题材成员池已变化'],
+    [ROTATION_PREVIOUS_COMPARABLE_RUN_MISMATCH, '前驱可比运行不匹配'],
+    [ROTATION_NOT_PREVIOUS_COMPARABLE_SESSION, '前驱不是相邻可比交易日'],
+    [ROTATION_NO_CORE_CANDIDATE, '无核心候选'],
+  ];
+  const CHANGE_LABELS: ReadonlyArray<readonly [RotationChange, string]> = [
+    ['segment_start', '新观察段'],
+    ['unchanged', '核心未变'],
+    ['expanded', '核心扩大'],
+    ['contracted', '核心缩小'],
+    ['reorganized', '核心重组'],
+  ];
+
+  it.each(REASON_LABELS)('maps frozen reason %s to a Chinese label', (token, label) => {
+    const actual = reasonLabel(token);
+    expect(actual).toBe(label);
+    expect(actual).not.toBe('未识别状态');
+  });
+
+  it.each(CHANGE_LABELS)('maps change %s without causal wording', (change, label) => {
+    expect(rotationChangeLabel(change)).toBe(label);
+    for (const forbidden of ['接替', '接力', '取代', '替代', '易主', '领涨']) {
+      expect(label).not.toContain(forbidden);
+    }
+  });
 });
 
 describe('groupRotationLanes', () => {
@@ -331,6 +407,19 @@ describe('RotationTimelineView', () => {
     expect(emptyLane).not.toContain('<button');
   });
 
+  it('exposes structural markers: labelled section, ordered lanes, timestamps and window selector', () => {
+    const markup = render(makeData());
+    expect(markup).toContain('<section class="leaders-section rotation-section" aria-labelledby="rotation-title"');
+    expect(markup).toContain('<ol class="rotation-lane">');
+    // React 19 server rendering emits the camelCase dateTime property name.
+    expect(markup).toContain('<time dateTime="2026-09-04">2026-09-04</time>');
+    expect(markup).toContain('aria-label="轮动窗口交易日数"');
+    // Unselected core buttons stay collapsed but still declare the region
+    // they would control.
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-controls="rotation-evidence-2026-09-04-topic-a-A"');
+  });
+
   it('marks only the selected node button pressed and shows the evidence heading', () => {
     const selected: RotationNodeSelection = {
       snapshotId: SNAPSHOT,
@@ -346,6 +435,17 @@ describe('RotationTimelineView', () => {
     const pressedBlocks = markup.split('<li').filter(block => block.includes('aria-pressed="true"'));
     expect(pressedBlocks).toHaveLength(1);
     expect(pressedBlocks[0]).toContain('data-security="B"');
+    // aria-expanded/aria-controls pair with the live evidence region whose
+    // id derives from the same four-tuple.
+    expect(pressedBlocks[0]).toContain('aria-expanded="true"');
+    const regionId = 'rotation-evidence-2026-09-08-topic-a-B';
+    expect(pressedBlocks[0]).toContain(`aria-controls="${regionId}"`);
+    expect(markup).toContain(`id="${regionId}"`);
+    expect(markup).toContain('role="region"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain('aria-label="B 2026-09-08 角色证据"');
+    const expandedCount = (markup.match(/aria-expanded="true"/g) ?? []).length;
+    expect(expandedCount).toBe(1);
   });
 
   it('renders the no-publication empty state for null data', () => {
@@ -359,5 +459,32 @@ describe('RotationTimelineView', () => {
     expect(markup).toContain('窗口内没有可展示的轮动记录。');
     expect(markup).toContain('2026-09-04–2026-09-08');
     expect(markup).not.toContain('rotation-node');
+  });
+});
+
+describe('SectionLoadError', () => {
+  it('renders a section-scoped reload alert without private-workbench copy', () => {
+    const markup = renderToStaticMarkup(createElement(SectionLoadError, { name: '题材轮动时间轴' }));
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('题材轮动时间轴加载失败，请检查本机服务后重试。');
+    expect(markup).toContain('重新加载并重试');
+    expect(markup).toContain('class="notice error"');
+    expect(markup).not.toContain('私人');
+  });
+});
+
+describe('rotation request path allowlist', () => {
+  it.each([
+    '/api/topics/rotation-evil',
+    '/api/topics/other',
+    '//api/topics/rotation',
+  ])('rejects non-whitelisted path %j without dispatching fetch', async path => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(request(path)).rejects.toMatchObject({
+      status: 400,
+      message: '仅允许同源只读接口。',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,7 @@ import {
 import type { ResearchState } from '../state';
 import type { ResetHeatmap, WorkbenchEnvelope } from '../types';
 import { CsvExportButton } from '../export/CsvExportButton';
+import { SectionBoundary } from '../features/roles/SectionBoundary';
 
 const RotationTimeline = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(() => import('../features/roles/RotationTimeline'))
@@ -249,13 +250,15 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
         <p className="muted">没有已发布的变化记录。</p>}
     </section>}
 
-    {RotationTimeline && state.snapshot && state.date && <Suspense fallback={<p role="status" className="status">正在加载题材轮动时间轴…</p>}>
-      <RotationTimeline
-        date={state.date}
-        snapshot={state.snapshot}
-        sector={state.sector || undefined}
-        refreshToken={refreshToken}
-      />
-    </Suspense>}
+    {RotationTimeline && state.snapshot && state.date && <SectionBoundary name="题材轮动时间轴">
+      <Suspense fallback={<p role="status" className="status">正在加载题材轮动时间轴…</p>}>
+        <RotationTimeline
+          date={state.date}
+          snapshot={state.snapshot}
+          sector={state.sector || undefined}
+          refreshToken={refreshToken}
+        />
+      </Suspense>
+    </SectionBoundary>}
   </>;
 }

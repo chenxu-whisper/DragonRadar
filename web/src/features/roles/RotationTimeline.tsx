@@ -1,8 +1,9 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ResourceStatus } from '../../components/Common';
 import { useResource } from '../../hooks/useResource';
 import { rotationPath, validateRotation } from './api';
 import { reasonLabel, rotationChangeLabel } from './labels';
+import { SectionBoundary } from './SectionBoundary';
 import type { RotationData, RotationEvent } from './types';
 
 // Evidence drill-down stays in a nested lazy chunk: selecting a core node
@@ -17,6 +18,14 @@ export interface RotationNodeSelection {
   at: string;
   sectorId: string;
   securityId: string;
+}
+
+// Stable region id shared by the core button aria-controls and the evidence
+// region; the four tuple components are ids/ISO dates without whitespace.
+export function rotationEvidenceId(
+  node: Pick<RotationNodeSelection, 'at' | 'sectorId' | 'securityId'>,
+): string {
+  return `rotation-evidence-${node.at}-${node.sectorId}-${node.securityId}`;
 }
 
 export interface RotationLane {
@@ -120,6 +129,12 @@ export function RotationTimelineView({
                             data-security={securityId}
                             data-snapshot={event.snapshot_id}
                             aria-pressed={pressed(event, securityId)}
+                            aria-expanded={pressed(event, securityId)}
+                            aria-controls={rotationEvidenceId({
+                              at: event.at,
+                              sectorId: event.sector_id,
+                              securityId,
+                            })}
                             aria-label={`查看 ${securityId} 于 ${event.at} 的角色证据`}
                             onClick={() => onSelectNode({
                               snapshotId: event.snapshot_id,
@@ -134,20 +149,44 @@ export function RotationTimelineView({
                   </li>)}
               </ol>
             </div>)}
-        {selected && <div
-          className="rotation-evidence"
+        {selected && <RotationEvidenceRegion
           key={`${selected.snapshotId}:${selected.at}:${selected.sectorId}:${selected.securityId}`}
+          selection={selected}
+          onCloseEvidence={onCloseEvidence}
         >
-          <div className="rotation-evidence-heading">
-            <h3 className="rotation-evidence-title">
-              {selected.securityId} · {selected.at} 角色证据（原始发布快照 {selected.snapshotId.slice(0, 8)}…）
-            </h3>
-            <button type="button" className="rotation-back" onClick={onCloseEvidence}>返回时间轴</button>
-          </div>
           {evidencePanel}
-        </div>}
+        </RotationEvidenceRegion>}
       </>}
   </section>;
+}
+
+interface RotationEvidenceRegionProps {
+  selection: RotationNodeSelection;
+  onCloseEvidence: () => void;
+  children: ReactNode;
+}
+
+// Container-side region: the only DOM-touching part of this feature. Moves
+// focus to the close button on mount and on every node switch, because the
+// parent keys it by the full four-tuple. Effects never run under SSR.
+function RotationEvidenceRegion({ selection, onCloseEvidence, children }: RotationEvidenceRegionProps) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { closeRef.current?.focus(); }, []);
+  return <div
+    className="rotation-evidence"
+    id={rotationEvidenceId(selection)}
+    role="region"
+    aria-live="polite"
+    aria-label={`${selection.securityId} ${selection.at} 角色证据`}
+  >
+    <div className="rotation-evidence-heading">
+      <h3 className="rotation-evidence-title">
+        {selection.securityId} · {selection.at} 角色证据（原始发布快照 {selection.snapshotId.slice(0, 8)}…）
+      </h3>
+      <button ref={closeRef} type="button" className="rotation-back" onClick={onCloseEvidence}>返回时间轴</button>
+    </div>
+    {children}
+  </div>;
 }
 
 interface RotationTimelineProps {
@@ -191,15 +230,17 @@ export default function RotationTimeline({ date, snapshot, sector, refreshToken 
       onSelectNode={setSelected}
       onCloseEvidence={() => setSelected(null)}
       evidencePanel={selected
-        ? <Suspense fallback={<p role="status" className="status">正在加载角色证据…</p>}>
-          <EvidencePanel
-            snapshot={selected.snapshotId}
-            date={selected.at}
-            sector={selected.sectorId}
-            security={selected.securityId}
-            refreshToken={refreshToken}
-          />
-        </Suspense>
+        ? <SectionBoundary name="角色证据">
+          <Suspense fallback={<p role="status" className="status">正在加载角色证据…</p>}>
+            <EvidencePanel
+              snapshot={selected.snapshotId}
+              date={selected.at}
+              sector={selected.sectorId}
+              security={selected.securityId}
+              refreshToken={refreshToken}
+            />
+          </Suspense>
+        </SectionBoundary>
         : null}
     />}
   </>;
