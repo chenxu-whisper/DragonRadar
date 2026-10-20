@@ -138,3 +138,40 @@ export interface EvidenceData {
   sector_id: string;
   roles: RoleEvidence[];
 }
+
+export type RotationChange =
+  | 'segment_start'
+  | 'unchanged'
+  | 'expanded'
+  | 'contracted'
+  | 'reorganized';
+
+export interface RotationManifest {
+  run_id: string;
+  market_snapshot_id: string;
+  topic_snapshot_id: string;
+  rule_version: string;
+  membership_version: string;
+}
+
+export interface RotationEvent {
+  at: string;
+  sector_id: string;
+  core_ids: string[];
+  change: RotationChange;
+  comparable: boolean;
+  reason: string | null;
+  // Publication id serving this historical event; evidence drill-down stays
+  // pinned to this version instead of the latest publication.
+  snapshot_id: string;
+  input_manifest: RotationManifest;
+}
+
+export interface RotationData {
+  events: RotationEvent[];
+  days: number;
+  sector: string | null;
+  window: { start: string; end: string };
+}
+
+export type RotationResponse = RoleEnvelope<RotationData>;

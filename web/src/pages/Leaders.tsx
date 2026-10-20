@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowRight, CircleDashed } from 'lucide-react';
-import { useMemo, type ComponentType } from 'react';
+import { lazy, Suspense, useMemo, type ComponentType } from 'react';
 import { ResourceStatus, TableScroll, type Patch } from '../components/Common';
 import { useResource } from '../hooks/useResource';
 import {
@@ -23,6 +23,10 @@ import {
 import type { ResearchState } from '../state';
 import type { ResetHeatmap, WorkbenchEnvelope } from '../types';
 import { CsvExportButton } from '../export/CsvExportButton';
+
+const RotationTimeline = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(() => import('../features/roles/RotationTimeline'))
+  : null;
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
 export interface LeadersProps {
@@ -244,5 +248,14 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
       {candidateData.change_summaries.length === 0 && candidateData.role_changes.length === 0 &&
         <p className="muted">没有已发布的变化记录。</p>}
     </section>}
+
+    {RotationTimeline && state.snapshot && state.date && <Suspense fallback={<p role="status" className="status">正在加载题材轮动时间轴…</p>}>
+      <RotationTimeline
+        date={state.date}
+        snapshot={state.snapshot}
+        sector={state.sector || undefined}
+        refreshToken={refreshToken}
+      />
+    </Suspense>}
   </>;
 }

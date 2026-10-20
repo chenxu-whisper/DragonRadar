@@ -9,6 +9,7 @@ import {
   type RoleEnvelope,
   type RoleName,
   type RoleSelection,
+  type RotationData,
 } from './types';
 
 type ObjectValue = Record<string, unknown>;
@@ -267,4 +268,152 @@ export function validateEvidence(
   }
   if (seen.size !== ROLE_NAMES.length) throw new ApiError(502, '角色证据未覆盖六类角色，已丢弃该响应。');
   return root as unknown as RoleEnvelope<EvidenceData>;
+}
+
+// Frozen EX11 reason vocabulary, identical to the backend ROTATION_REASONS.
+export const ROTATION_FIRST_OBSERVATION = 'first_observation';
+export const ROTATION_RULE_VERSION_CHANGED = 'rule_version_changed';
+export const ROTATION_TOPIC_REVISION_CHANGED = 'topic_revision_changed';
+export const ROTATION_TAXONOMY_VERSION_CHANGED = 'taxonomy_version_changed';
+export const ROTATION_MEMBERSHIP_VERSION_CHANGED = 'membership_version_changed';
+export const ROTATION_MEMBER_POOL_CHANGED = 'member_pool_changed';
+export const ROTATION_PREVIOUS_COMPARABLE_RUN_MISMATCH = 'previous_comparable_run_mismatch';
+export const ROTATION_NOT_PREVIOUS_COMPARABLE_SESSION = 'not_previous_comparable_session';
+export const ROTATION_NO_CORE_CANDIDATE = 'no_core_candidate';
+
+const ROTATION_REASONS = new Set<string>([
+  ROTATION_FIRST_OBSERVATION,
+  ROTATION_RULE_VERSION_CHANGED,
+  ROTATION_TOPIC_REVISION_CHANGED,
+  ROTATION_TAXONOMY_VERSION_CHANGED,
+  ROTATION_MEMBERSHIP_VERSION_CHANGED,
+  ROTATION_MEMBER_POOL_CHANGED,
+  ROTATION_PREVIOUS_COMPARABLE_RUN_MISMATCH,
+  ROTATION_NOT_PREVIOUS_COMPARABLE_SESSION,
+  ROTATION_NO_CORE_CANDIDATE,
+]);
+const ROTATION_CHANGES = new Set(['segment_start', 'unchanged', 'expanded', 'contracted', 'reorganized']);
+const ROTATION_DATA_KEYS = ['events', 'days', 'sector', 'window'];
+const ROTATION_WINDOW_KEYS = ['start', 'end'];
+const ROTATION_EVENT_KEYS = [
+  'at', 'sector_id', 'core_ids', 'change', 'comparable', 'reason', 'snapshot_id', 'input_manifest',
+];
+const ROTATION_MANIFEST_KEYS = [
+  'run_id', 'market_snapshot_id', 'topic_snapshot_id', 'rule_version', 'membership_version',
+];
+const CANONICAL_UUID = /^[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/;
+
+export function rotationPath(selection: { date: string; snapshot: string; sector?: string; days: number }): string {
+  const params = new URLSearchParams({
+    date: selection.date,
+    snapshot_id: selection.snapshot,
+    days: String(selection.days),
+  });
+  if (selection.sector) params.set('sector', selection.sector);
+  return `/api/topics/rotation?${params.toString()}`;
+}
+
+function rotationMalformed(): ApiError {
+  return new ApiError(502, '题材轮动响应格式无效，已丢弃该响应。');
+}
+
+function exactKeys(row: ObjectValue, keys: readonly string[]): void {
+  const present = Object.keys(row);
+  if (present.length !== keys.length || keys.some(key => !(key in row))) throw rotationMalformed();
+}
+
+function canonicalUuid(value: unknown): string {
+  if (typeof value !== 'string' || !CANONICAL_UUID.test(value)) {
+    throw new ApiError(502, '题材轮动快照标识无效，已丢弃该响应。');
+  }
+  return value;
+}
+
+function rotationDay(value: unknown): string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new ApiError(502, '题材轮动日期无效，已丢弃该响应。');
+  }
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new ApiError(502, '题材轮动日期无效，已丢弃该响应。');
+  }
+  return value;
+}
+
+export function validateRotation(
+  value: unknown,
+  selection: { snapshot: string; date: string; sector?: string },
+  days: number,
+): RoleEnvelope<RotationData> {
+  const root = envelope(value, selection);
+  if (root.data === null) return root as unknown as RoleEnvelope<RotationData>;
+  const data = object(root.data);
+  exactKeys(data, ROTATION_DATA_KEYS);
+  if (!Number.isSafeInteger(data.days) || (data.days as number) < 1 || (data.days as number) > 250) {
+    throw new ApiError(502, '题材轮动窗口天数无效，已丢弃该响应。');
+  }
+  if (data.days !== days) throw new ApiError(502, '题材轮动窗口天数与请求不一致，已丢弃该响应。');
+  if (data.sector !== (selection.sector ?? null)) {
+    throw new ApiError(409, '题材轮动响应题材与当前请求不匹配，已丢弃该响应。');
+  }
+  const windowRow = object(data.window);
+  exactKeys(windowRow, ROTATION_WINDOW_KEYS);
+  const start = rotationDay(windowRow.start);
+  const end = rotationDay(windowRow.end);
+  if (end !== selection.date) throw rotationMalformed();
+  if (start > end) throw rotationMalformed();
+  if (!Array.isArray(data.events)) throw rotationMalformed();
+
+  let previousKey = '';
+  for (const rawEvent of data.events) {
+    const event = object(rawEvent);
+    exactKeys(event, ROTATION_EVENT_KEYS);
+    const at = rotationDay(event.at);
+    if (at < start || at > end) throw new ApiError(502, '题材轮动事件日期越出窗口，已丢弃该响应。');
+    const sectorId = event.sector_id;
+    if (typeof sectorId !== 'string' || !sectorId) throw rotationMalformed();
+    const orderKey = `${at}\u0000${sectorId}`;
+    // Equal adjacent keys are duplicate (at, sector) pairs; smaller keys break
+    // the global (at, sector) ascending order.
+    if (orderKey <= previousKey) throw rotationMalformed();
+    previousKey = orderKey;
+
+    const coreIds = event.core_ids;
+    if (
+      !Array.isArray(coreIds)
+      || coreIds.some(id => typeof id !== 'string' || !id)
+      || new Set(coreIds).size !== coreIds.length
+    ) {
+      throw rotationMalformed();
+    }
+    const change = event.change;
+    if (typeof change !== 'string' || !ROTATION_CHANGES.has(change)) throw rotationMalformed();
+    if (typeof event.comparable !== 'boolean') throw rotationMalformed();
+    const isSegmentStart = change === 'segment_start';
+    if (isSegmentStart === event.comparable) throw rotationMalformed();
+
+    const reason = event.reason;
+    if (event.comparable) {
+      if (reason !== null && reason !== ROTATION_NO_CORE_CANDIDATE) throw rotationMalformed();
+      if ((coreIds.length === 0) !== (reason === ROTATION_NO_CORE_CANDIDATE)) throw rotationMalformed();
+    } else if (typeof reason !== 'string' || !reason || !ROTATION_REASONS.has(reason)) {
+      throw rotationMalformed();
+    }
+
+    // Anchor events must be served by the requested publication id so a
+    // historical/anchor swap can never masquerade as the current version.
+    const snapshotId = canonicalUuid(event.snapshot_id);
+    if (at === selection.date && snapshotId !== selection.snapshot) {
+      throw new ApiError(502, '题材轮动锚点快照与当前请求不匹配，已丢弃该响应。');
+    }
+
+    const manifest = object(event.input_manifest);
+    exactKeys(manifest, ROTATION_MANIFEST_KEYS);
+    for (const key of ['run_id', 'rule_version', 'membership_version'] as const) {
+      if (typeof manifest[key] !== 'string' || !(manifest[key] as string)) throw rotationMalformed();
+    }
+    canonicalUuid(manifest.market_snapshot_id);
+    canonicalUuid(manifest.topic_snapshot_id);
+  }
+  return root as unknown as RoleEnvelope<RotationData>;
 }

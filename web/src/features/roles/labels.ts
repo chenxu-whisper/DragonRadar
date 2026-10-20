@@ -105,6 +105,22 @@ const REASON_LABELS: Record<string, string> = {
   regulation_disabled: '监管数据未发布',
   relative_strength_positive: '相对强度为正',
   lags_unique_core: '落后于唯一核心标的',
+  first_observation: '首次观察',
+  topic_revision_changed: '题材修订已变化',
+  taxonomy_version_changed: '题材分类版本已变化',
+  membership_version_changed: '题材成员版本已变化',
+  member_pool_changed: '题材成员池已变化',
+  previous_comparable_run_mismatch: '前驱可比运行不匹配',
+  not_previous_comparable_session: '前驱不是相邻可比交易日',
+  no_core_candidate: '无核心候选',
+};
+
+const ROTATION_CHANGE_LABELS: Record<string, string> = {
+  segment_start: '新观察段',
+  unchanged: '核心未变',
+  expanded: '核心扩大',
+  contracted: '核心缩小',
+  reorganized: '核心重组',
 };
 
 const METRIC_LABELS: Record<string, string> = {
@@ -128,6 +144,7 @@ export const changeTypeLabel = (value: string | null | undefined) => lookup(CHAN
 export const comparisonStatusLabel = (value: string | null | undefined) => lookup(COMPARISON_STATUS_LABELS, value);
 export const reasonLabel = (value: string | null | undefined) => lookup(REASON_LABELS, value);
 export const reasonLabels = (values: string[]) => values.map(reasonLabel);
+export const rotationChangeLabel = (value: string | null | undefined) => lookup(ROTATION_CHANGE_LABELS, value);
 export const metricLabel = (value: string | null | undefined) => lookup(METRIC_LABELS, value);
 
 const STATUS_PRIORITY: Record<RoleStatus['status'], number> = {
