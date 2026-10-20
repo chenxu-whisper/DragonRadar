@@ -27,6 +27,7 @@ import pytest
 from pydantic import ValidationError
 
 from dragon_radar.roles.rotation import (
+    ROTATION_REASONS,
     RotationEvent,
     RotationInputManifest,
     RotationRun,
@@ -740,6 +741,31 @@ def test_consistent_comparable_rotation_event_constructs():
     assert event.comparable is True
 
 
+def test_rotation_event_rejects_reason_outside_allowlist():
+    # The frozen vocabulary is the model boundary: a typo or a fabricated
+    # token must never be archivable (and therefore never served).
+    with pytest.raises(ValidationError):
+        _rotation_event(reasons=("totally_fake",))
+    with pytest.raises(ValidationError):
+        _rotation_event(reasons=("first_observation", "succeeded"))
+
+
+def test_rotation_reason_allowlist_is_the_frozen_v1_vocabulary():
+    assert ROTATION_REASONS == frozenset(
+        {
+            "first_observation",
+            "rule_version_changed",
+            "topic_revision_changed",
+            "taxonomy_version_changed",
+            "membership_version_changed",
+            "member_pool_changed",
+            "previous_comparable_run_mismatch",
+            "not_previous_comparable_session",
+            "no_core_candidate",
+        }
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -869,9 +895,10 @@ def test_segment_restart_without_cores_carries_only_break_reasons():
 
 import factories  # noqa: E402
 import topic_factories  # noqa: E402
-from sqlalchemy import insert, update  # noqa: E402
+from sqlalchemy import delete, insert, update  # noqa: E402
 from sqlalchemy import text as sql_text  # noqa: E402
 
+import dragon_radar.publication.repository as publication_repository  # noqa: E402
 from dragon_radar.domain.models import ExchangeCalendar  # noqa: E402
 from dragon_radar.publication.models import PublicationCommand  # noqa: E402
 from dragon_radar.publication.repository import PublicationRepository  # noqa: E402
@@ -1542,6 +1569,47 @@ def test_pg_rotation_fails_closed_when_core_is_outside_member_pool(rotation_chai
         chain.roles.payload(chain.run2.id)
 
 
+def test_pg_rotation_window_validates_bounds_before_storage(rotation_chain):
+    chain = rotation_chain
+    persisted = PublicationRepository(chain.database, chain.repository)
+
+    # Bounds are rejected before any transaction opens, so a random anchor
+    # id is enough: storage must never be reached.
+    with pytest.raises(ValueError):
+        persisted.list_published_window(chain.publication2.id, chain.day2, chain.day1)
+    with pytest.raises(ValueError):
+        persisted.list_published_window(chain.publication2.id, "2026-09-01", chain.day2)
+    with pytest.raises(ValueError):
+        persisted.list_published_window(chain.publication2.id, chain.day1, 9)
+    with pytest.raises(ValueError):
+        persisted.list_published_window(
+            chain.publication2.id,
+            chain.day1,
+            datetime(2026, 9, 8),
+        )
+
+
+def test_pg_rotation_window_distinct_date_count_guard(rotation_chain, monkeypatch):
+    chain = rotation_chain
+    persisted = PublicationRepository(chain.database, chain.repository)
+    sessions = topic_factories._weekday_sessions(end=chain.day2, count=61)
+
+    # The two-day chain yields exactly one predecessor distinct trade date.
+    rows = persisted.list_published_window(
+        chain.publication2.id, sessions[0], chain.day2
+    )
+    assert [row.trade_date for row in rows] == [chain.day1]
+
+    # The production guard is a module constant exercised for real: with the
+    # bound tightened below the row count the read must raise rather than
+    # silently truncate the timeline.
+    monkeypatch.setattr(
+        publication_repository, "_PUBLISHED_WINDOW_MAX_DISTINCT_DATES", 0
+    )
+    with pytest.raises(ValueError):
+        persisted.list_published_window(chain.publication2.id, sessions[0], chain.day2)
+
+
 # ---------------------------------------------------------------------------
 # Slice 2 C: HTTP timeline assembly (GET /api/topics/rotation). These are
 # async PostgreSQL tests; without DRAGON_TEST_DATABASE_URL the database
@@ -1677,6 +1745,40 @@ def _set_role_flags(database, publication, flags):
         )
 
 
+def _set_role_status(database, publication, status):
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results DISABLE TRIGGER USER"
+        )
+        connection.execute(
+            update(publication_results)
+            .where(
+                publication_results.c.publication_id == publication.id,
+                publication_results.c.domain == "role",
+            )
+            .values(status=status)
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results ENABLE TRIGGER USER"
+        )
+
+
+def _delete_role_result(database, publication):
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results DISABLE TRIGGER USER"
+        )
+        connection.execute(
+            delete(publication_results).where(
+                publication_results.c.publication_id == publication.id,
+                publication_results.c.domain == "role",
+            )
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results ENABLE TRIGGER USER"
+        )
+
+
 async def _rotation_client(persisted):
     from dragon_radar.http.app import create_workbench_app
 
@@ -1769,6 +1871,12 @@ async def test_http_rotation_three_day_two_sector_timeline(rotation_http_chain):
     assert contracted["core_ids"] == ["B"]
     assert contracted["reason"] is None
     assert unchanged["reason"] is None
+    # The 200 wire projection must never surface a token outside the frozen
+    # vocabulary (the non-null projection of the archived reason tuple).
+    assert all(
+        event["reason"] is None or event["reason"] in ROTATION_REASONS
+        for event in events
+    )
     assert body["data"]["days"] == 30
     assert body["data"]["sector"] is None
     sessions = topic_factories._weekday_sessions(end=chain.days[2], count=61)
@@ -2077,6 +2185,31 @@ def _empty_segment_reasons(block, *_args):
     block["reasons"] = []
 
 
+def _set_comparable_as_int(block, *_args):
+    # int 1 must not be accepted in place of the JSON boolean true.
+    block["comparable"] = 1
+
+
+def _set_non_string_core(block, *_args):
+    block["core_ids"] = ["A", 2]
+
+
+def _set_manifest_null_uuid(block, *_args):
+    block["input_manifest"]["market_snapshot_id"] = None
+
+
+def _set_fake_reason(block, *_args):
+    # segment_start with a non-empty, non-whitelisted token: this passes the
+    # old cross-field shape checks, so only the allowlist guard can stop it.
+    block["reasons"] = ["totally_fake"]
+
+
+def _set_multiple_break_reasons(block, *_args):
+    block["change"] = "segment_start"
+    block["comparable"] = False
+    block["reasons"] = ["membership_version_changed", "member_pool_changed"]
+
+
 def _duplicate_topic(payload):
     payload["topics"].append(_clone(payload["topics"][0]))
 
@@ -2093,6 +2226,9 @@ def _duplicate_topic(payload):
         (_set_bad_manifest_uuid, None),
         (_set_comparable_break_reason, None),
         (_empty_segment_reasons, None),
+        (_set_comparable_as_int, None),
+        (_set_non_string_core, None),
+        (_set_manifest_null_uuid, None),
         (None, _duplicate_topic),
     ],
 )
@@ -2127,3 +2263,124 @@ async def test_http_rotation_unknown_date_returns_no_data_envelope(
     assert body["data"] is None
     assert body["snapshot_id"] is None
     assert body["quality_flags"] == ["no_data"]
+
+
+async def test_http_rotation_fake_reason_in_frozen_block_fails_closed(
+    rotation_http_chain,
+):
+    # The oldest day is a segment_start block; swapping its whitelisted
+    # reason for a fabricated token must fail closed at the frozen-block
+    # validation instead of serving the token on the 200 timeline.
+    chain = rotation_http_chain
+    day1 = chain.days[0]
+    broken = _clone(chain.payloads[day1])
+    _set_fake_reason(broken["topics"][0]["rotation"])
+    _write_role_payload(chain.database, chain.entries[day1].publication, broken)
+
+    async with await _rotation_client(chain.persisted) as client:
+        response = await _get_rotation(client, chain.days[2])
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "DATA_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "bad_version", [2, "1", True], ids=["future_int", "string", "bool"]
+)
+async def test_http_rotation_anchor_requires_exact_rotation_version_one(
+    rotation_http_chain, bad_version
+):
+    # bool True compares equal to int 1 in Python, so the guard must pin
+    # both type and value; a string tag or future version fail likewise.
+    chain = rotation_http_chain
+    day3 = chain.days[2]
+    broken = _clone(chain.payloads[day3])
+    broken["rotation_version"] = bad_version
+    _write_role_payload(chain.database, chain.entries[day3].publication, broken)
+
+    async with await _rotation_client(chain.persisted) as client:
+        response = await _get_rotation(client, day3)
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "DATA_UNAVAILABLE"
+
+
+async def test_http_rotation_skips_history_day_with_other_rotation_version(
+    rotation_http_chain,
+):
+    # A non-v1 history day is a pre/post-contract publication: it is skipped
+    # wholesale (its blocks are never validated) and never backfilled.
+    chain = rotation_http_chain
+    _day1, day2, day3 = chain.days
+    other_version = _clone(chain.payloads[day2])
+    other_version["rotation_version"] = 2
+    # Deliberately corrupt the block shape: a skipped day must not reach
+    # frozen-block validation at all.
+    other_version["topics"][0]["rotation"].pop("at")
+    _write_role_payload(chain.database, chain.entries[day2].publication, other_version)
+
+    async with await _rotation_client(chain.persisted) as client:
+        response = await _get_rotation(client, day3)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [(event["at"], event["sector_id"]) for event in body["data"]["events"]] == [
+        ("2026-09-04", "topic-a"),
+        ("2026-09-04", "topic-b"),
+        ("2026-09-08", "topic-a"),
+        ("2026-09-08", "topic-b"),
+    ]
+
+
+async def test_http_rotation_multiple_break_reasons_project_first_token_only(
+    rotation_http_chain,
+):
+    # The wire contract projects reasons[0] onto a single nullable "reason";
+    # the internal reason tuple is never echoed as a "reasons" array.
+    chain = rotation_http_chain
+    day1 = chain.days[0]
+    broken = _clone(chain.payloads[day1])
+    _set_multiple_break_reasons(broken["topics"][0]["rotation"])
+    _write_role_payload(chain.database, chain.entries[day1].publication, broken)
+
+    async with await _rotation_client(chain.persisted) as client:
+        response = await _get_rotation(client, chain.days[2], sector="topic-a")
+
+    assert response.status_code == 200
+    first = response.json()["data"]["events"][0]
+    assert first["at"] == "2026-09-04"
+    assert first["reason"] == "membership_version_changed"
+    assert "reasons" not in first
+    assert set(first) == _WIRE_EVENT_KEYS
+
+
+async def test_http_rotation_disabled_role_domain_is_unavailable(rotation_http_chain):
+    chain = rotation_http_chain
+    day3 = chain.days[2]
+    _set_role_status(chain.database, chain.entries[day3].publication, "disabled")
+
+    async with await _rotation_client(chain.persisted) as client:
+        response = await _get_rotation(client, day3)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"] is None
+    assert body["source"] == "role_materialization"
+    assert "role_disabled" in body["quality_flags"]
+
+
+async def test_http_rotation_missing_role_result_domain_is_unavailable(
+    rotation_http_chain,
+):
+    chain = rotation_http_chain
+    day3 = chain.days[2]
+    _delete_role_result(chain.database, chain.entries[day3].publication)
+
+    async with await _rotation_client(chain.persisted) as client:
+        response = await _get_rotation(client, day3)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"] is None
+    assert body["source"] == "role_materialization"
+    assert "role_missing" in body["quality_flags"]

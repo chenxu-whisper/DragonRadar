@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, update
@@ -725,8 +725,8 @@ class RoleRepository:
         sessions = contexts[run_id][1].calendar.sessions
         predecessor_id = row["previous_comparable_run_id"]
         predecessor_row = None
-        predecessor_topics: list = []
-        predecessor_results: list = []
+        predecessor_topics: list[Mapping[str, Any]] = []
+        predecessor_results: list[Mapping[str, Any]] = []
         if predecessor_id is not None:
             # The predecessor is the archived run explicitly named by the
             # materializer; loading it through _role_rows fails closed when it

@@ -62,6 +62,25 @@ ChangeKind = Literal[
 _FIRST_OBSERVATION = "first_observation"
 _NO_CORE_CANDIDATE = "no_core_candidate"
 
+# Single authoritative vocabulary of every reason token the v1 rotation
+# contract may ever archive or serve. Frozen alongside tokenizer-style
+# versioned contracts: a new reason requires bumping the rotation payload
+# version, never an ad-hoc string. Both the model boundary and the HTTP
+# frozen-block validation import this constant.
+ROTATION_REASONS = frozenset(
+    {
+        _FIRST_OBSERVATION,
+        "rule_version_changed",
+        "topic_revision_changed",
+        "taxonomy_version_changed",
+        "membership_version_changed",
+        "member_pool_changed",
+        "previous_comparable_run_mismatch",
+        "not_previous_comparable_session",
+        _NO_CORE_CANDIDATE,
+    }
+)
+
 # Set-algebra changes are the only changes allowed for a comparable event.
 _SET_ALGEBRA_CHANGES = frozenset({"unchanged", "expanded", "contracted", "reorganized"})
 
@@ -125,6 +144,17 @@ class RotationEvent(_StrictFrozenRotationModel):
     comparable: bool
     reasons: tuple[Identifier, ...]
     input_manifest: RotationInputManifest
+
+    @field_validator("reasons", mode="after")
+    @classmethod
+    def _validate_reason_vocabulary(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        # Boundary of the frozen reason contract: publication-time
+        # materialization fails closed on any token outside ROTATION_REASONS,
+        # so a fabricated reason can never be archived and later served.
+        unknown = [value for value in values if value not in ROTATION_REASONS]
+        if unknown:
+            raise ValueError(f"unknown rotation reason token(s): {unknown}")
+        return values
 
     @model_validator(mode="after")
     def validate_comparison_result(self) -> Self:
@@ -462,17 +492,29 @@ def materialize_run_rotation(
             )
         )
         timeline = build_rotation(runs, sessions=sessions)
-        current_event = next(
+        current_events = [
             event
             for event in timeline.events
             if event.sector_id == topic_id and event.at == current_date.isoformat()
-        )
-        blocks[topic_id] = rotation_event_payload(current_event)
+        ]
+        # Invariant: the current run is always one of the ``runs`` fed to
+        # build_rotation for exactly this topic row (both sector_id and date
+        # are projected from the same run/topic mappings), so its event is
+        # present exactly once. A miss or duplicate signals corrupt row
+        # assembly above rather than a data gap; fail the publication.
+        if len(current_events) != 1:
+            raise ValueError(
+                "rotation materialization invariant violated: expected exactly "
+                f"one event for sector {topic_id!r} at "
+                f"{current_date.isoformat()}, got {len(current_events)}"
+            )
+        blocks[topic_id] = rotation_event_payload(current_events[0])
     return blocks
 
 
 __all__ = [
     "ChangeKind",
+    "ROTATION_REASONS",
     "RotationEvent",
     "RotationInputManifest",
     "RotationRun",

@@ -45,6 +45,12 @@ from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uu
 from dragon_radar.topics.models import TopicBatch
 from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
 
+# Hard upper bound on distinct trade dates one point-in-time window read may
+# return. Callers normally bound the range to <=250 sessions; this is the
+# storage-side defense-in-depth guard so an over-wide window fails loudly
+# instead of silently truncating the timeline.
+_PUBLISHED_WINDOW_MAX_DISTINCT_DATES = 250
+
 
 def _publication(row: Mapping) -> Publication:
     return Publication(
@@ -1406,9 +1412,24 @@ class PublicationRepository:
         restricted to publications whose sequence is at most the anchor's
         own sequence. A v2 of an older day published *after* the anchor can
         therefore never flow back into a timeline pinned to the anchor. The
-        range is bounded by callers to at most 250 calendar sessions; reads
-        are transactional and never cached.
+        range is bounded by callers to at most 250 calendar sessions and
+        independently by ``_PUBLISHED_WINDOW_MAX_DISTINCT_DATES``; reads are
+        transactional and never cached.
+
+        Bounds are validated before any storage access: both ends must be
+        plain ``date`` values and ``start <= end``, otherwise ``ValueError``.
         """
+        # datetime is a date subclass but never a valid calendar-session key;
+        # reject it explicitly alongside non-date inputs.
+        if (
+            not isinstance(start, date)
+            or isinstance(start, datetime)
+            or not isinstance(end, date)
+            or isinstance(end, datetime)
+        ):
+            raise ValueError("window bounds must be plain date values")
+        if start > end:
+            raise ValueError("window start must be on or before end")
         anchor_id = _uuid(anchor_publication_id)
         with self.database.engine.begin() as connection:
             self.market._lock(connection, PUBLICATION_SEQUENCE_LOCK)
@@ -1446,6 +1467,13 @@ class PublicationRepository:
                 .mappings()
                 .all()
             )
+            # DISTINCT trade_date means one row per trade date; refuse to
+            # project an over-wide window rather than truncating history.
+            if len(rows) > _PUBLISHED_WINDOW_MAX_DISTINCT_DATES:
+                raise ValueError(
+                    f"rotation window covers {len(rows)} distinct trade dates, "
+                    f"above the {_PUBLISHED_WINDOW_MAX_DISTINCT_DATES} guard"
+                )
             return self._authorized_records(connection, rows, omit_forbidden=True)
 
     def list_results(self, publication_id: UUID | str) -> tuple[PublicationResult, ...]:

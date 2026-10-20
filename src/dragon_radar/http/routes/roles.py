@@ -1,6 +1,7 @@
 """Published limit-up ladder and role evidence routes."""
 
 from collections import defaultdict
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -28,6 +29,7 @@ from dragon_radar.roles.models import (
     RoleEvaluation,
     RoleTopicStatus,
 )
+from dragon_radar.roles.rotation import ROTATION_REASONS
 from dragon_radar.roles.rules import RESET_APPROVED_RULE_VERSIONS, ROLE_NAMES
 from dragon_radar.storage.repository import NotFound
 
@@ -764,6 +766,14 @@ _ROTATION_MANIFEST_KEYS = frozenset(
 _ROTATION_CHANGES = frozenset(
     {"segment_start", "unchanged", "expanded", "contracted", "reorganized"}
 )
+# Only payloads carrying exactly this frozen version enter block validation;
+# a bool True compares equal to int 1 in Python, so the type is pinned too.
+_ROTATION_PAYLOAD_VERSION = 1
+
+
+def _rotation_is_version_one(payload: dict[str, Any]) -> bool:
+    version = payload.get("rotation_version")
+    return type(version) is int and version == _ROTATION_PAYLOAD_VERSION
 
 
 def _rotation_payload(snapshot: PublishedSnapshot):
@@ -778,6 +788,11 @@ def _rotation_payload(snapshot: PublishedSnapshot):
     )
     if result is None or result.status != "ready":
         return None, result
+    # model_dump(mode="json") is required (rather than reading ``result.payload``
+    # directly): ImmutableJsonObject hydrates stored JSON arrays as tuples, and
+    # the frozen-block contract below validates list-specific shapes. JSON mode
+    # converts those tuples back to plain lists exactly as the wire response
+    # does, so validation sees the same shape clients receive.
     payload = result.model_dump(mode="json")["payload"]
     if (
         not isinstance(payload, dict)
@@ -798,7 +813,7 @@ def _rotation_payload(snapshot: PublishedSnapshot):
     return payload, result
 
 
-def _identifier_list(value) -> bool:
+def _identifier_list(value: object) -> bool:
     return (
         isinstance(value, list)
         and all(isinstance(item, str) and bool(item) for item in value)
@@ -806,7 +821,9 @@ def _identifier_list(value) -> bool:
     )
 
 
-def _validate_rotation_block(block, *, at, sector_id, member_ids, run_id) -> None:
+def _validate_rotation_block(
+    block: object, *, at: date, sector_id: str, member_ids: list[str], run_id: str
+) -> None:
     """Validate one archived rotation block against the frozen contract.
 
     Any mismatch raises :class:`DataUnavailable`; the timeline endpoint is
@@ -828,6 +845,10 @@ def _validate_rotation_block(block, *, at, sector_id, member_ids, run_id) -> Non
         raise DataUnavailable
     reasons = block.get("reasons")
     if not _identifier_list(reasons):
+        raise DataUnavailable
+    # The reason vocabulary is frozen with the v1 rotation contract; an
+    # archived token outside the shared pure-module allowlist is corruption.
+    if any(reason not in ROTATION_REASONS for reason in reasons):
         raise DataUnavailable
     if comparable:
         if reasons not in ([], ["no_core_candidate"]):
@@ -851,11 +872,13 @@ def _validate_rotation_block(block, *, at, sector_id, member_ids, run_id) -> Non
         raise DataUnavailable
 
 
-def _rotation_topic_events(snapshot: PublishedSnapshot, payload, sector):
+def _rotation_topic_events(
+    snapshot: PublishedSnapshot, payload: dict[str, Any], sector: str | None
+) -> list[dict[str, Any]]:
     topics = payload["topics"]
     if not isinstance(topics, list):
         raise DataUnavailable
-    events = []
+    events: list[dict[str, Any]] = []
     for topic in topics:
         if not isinstance(topic, dict):
             raise DataUnavailable
@@ -937,7 +960,7 @@ def topic_rotation(request: Request):
     anchor_payload, anchor_result = _rotation_payload(snapshot)
     if anchor_payload is None:
         return _rotation_domain_unavailable(snapshot, anchor_result)
-    if "rotation_version" not in anchor_payload:
+    if not _rotation_is_version_one(anchor_payload):
         raise DataUnavailable
 
     sessions = snapshot.batch.calendar.sessions
@@ -949,7 +972,7 @@ def topic_rotation(request: Request):
     window_end = snapshot.trade_date
     history = repository.list_published_window(snapshot.id, window_start, window_end)
 
-    events = []
+    events: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     quality_flags = set()
     for daily_snapshot in sorted(
@@ -959,13 +982,21 @@ def topic_rotation(request: Request):
             payload, role_result = anchor_payload, anchor_result
         else:
             payload, role_result = _rotation_payload(daily_snapshot)
-            if payload is None or "rotation_version" not in payload:
+            if payload is None or not _rotation_is_version_one(payload):
                 # Older publications predate rotation materialization or
-                # carry no ready role domain; history is never backfilled.
+                # carry a different frozen payload version; history is never
+                # backfilled and their blocks are never validated. Such a
+                # day is intentionally asymmetric with the anchor: it does
+                # not participate, so its quality flags are not merged.
                 continue
         quality_flags.update(role_result.quality_flags)
         for event in _rotation_topic_events(daily_snapshot, payload, sector):
             key = (event["at"], event["sector_id"])
+            # Each (at, sector) comes from a distinct publication and trade
+            # date, so a cross-snapshot duplicate cannot occur structurally
+            # (the watermark query is DISTINCT ON trade_date). The practical
+            # defense this guards is two topics carrying the same topic_id
+            # inside one frozen payload; fail closed either way.
             if key in seen:
                 raise DataUnavailable
             seen.add(key)
