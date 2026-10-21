@@ -3,7 +3,8 @@ import {
   DENSITY_KEY,
   THEME_KEY,
   applyPreferences,
-  chartTextColors,
+  bootstrapPreferences,
+  chartThemeColors,
   isPaletteShortcut,
   isTypingBlocked,
   parseStoredDensity,
@@ -90,12 +91,12 @@ describe('preferences settings', () => {
     expect(parseStoredDensity(raw)).toBe('comfortable');
   });
 
-  it('writes valid theme/density values to the whitelisted keys', () => {
-    const setItem = vi.fn();
-    writeTheme(setItem, 'dark');
-    writeTheme(setItem, 'light');
-    writeDensity(setItem, 'compact');
-    writeDensity(setItem, 'comfortable');
+  it('writes valid theme/density values to the whitelisted keys and reports success', () => {
+    const setItem = vi.fn(() => undefined as void);
+    expect(writeTheme(setItem, 'dark')).toBe(true);
+    expect(writeTheme(setItem, 'light')).toBe(true);
+    expect(writeDensity(setItem, 'compact')).toBe(true);
+    expect(writeDensity(setItem, 'comfortable')).toBe(true);
     expect(setItem.mock.calls).toEqual([
       [THEME_KEY, 'dark'],
       [THEME_KEY, 'light'],
@@ -104,16 +105,30 @@ describe('preferences settings', () => {
     ]);
   });
 
-  it.each(['midnight', '"dark"', '', 'DARK'])('never writes invalid theme %j and never throws', invalid => {
+  it.each(['midnight', '"dark"', '', 'DARK'])('never writes invalid theme %j, returns false and never throws', invalid => {
     const setItem = vi.fn();
-    expect(() => writeTheme(setItem, invalid as 'light')).not.toThrow();
+    let result = true;
+    expect(() => { result = writeTheme(setItem, invalid as 'light'); }).not.toThrow();
+    expect(result).toBe(false);
     expect(setItem).not.toHaveBeenCalled();
   });
 
-  it.each(['spacious', '"compact"', '', 'Compact'])('never writes invalid density %j and never throws', invalid => {
+  it.each(['spacious', '"compact"', '', 'Compact'])('never writes invalid density %j, returns false and never throws', invalid => {
     const setItem = vi.fn();
-    expect(() => writeDensity(setItem, invalid as 'compact')).not.toThrow();
+    let result = true;
+    expect(() => { result = writeDensity(setItem, invalid as 'compact'); }).not.toThrow();
+    expect(result).toBe(false);
     expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it('returns false (without throwing) when storage setItem throws', () => {
+    const setItem = vi.fn(() => { throw new Error('storage quota exceeded'); });
+    let themeResult = true;
+    let densityResult = true;
+    expect(() => { themeResult = writeTheme(setItem, 'dark'); }).not.toThrow();
+    expect(() => { densityResult = writeDensity(setItem, 'compact'); }).not.toThrow();
+    expect(themeResult).toBe(false);
+    expect(densityResult).toBe(false);
   });
 
   it('applies preferences onto the injected root dataset', () => {
@@ -124,35 +139,61 @@ describe('preferences settings', () => {
     expect(root.dataset).toEqual({ theme: 'light', density: 'comfortable' });
   });
 
-  it('maps chart text colors for both themes with the same frozen key set', () => {
-    const light = chartTextColors('light');
-    const dark = chartTextColors('dark');
-    const keys = [
+  it('maps chart theme colors for both themes with the same frozen key set', () => {
+    const light = chartThemeColors(false);
+    const dark = chartThemeColors(true);
+    const scalarKeys = [
       'text', 'axisLabel', 'axisLine', 'splitLine',
-      'tooltipBackground', 'tooltipBorder', 'tooltipText',
+      'tooltipBg', 'tooltipBorder', 'tooltipText',
+      'up', 'down', 'accent', 'muted',
     ] as const;
+    const keys = [...scalarKeys, 'palette'] as const;
     expect(Object.keys(light).sort()).toEqual([...keys].sort());
     expect(Object.keys(dark).sort()).toEqual([...keys].sort());
-    for (const key of keys) {
+    for (const key of scalarKeys) {
       expect(light[key]).toMatch(/^#[0-9a-f]{6}$/i);
       expect(dark[key]).toMatch(/^#[0-9a-f]{6}$/i);
       expect(dark[key]).not.toBe(light[key]);
     }
-    // 两张表均冻结，避免运行期被改色
+    // 两张表（含 palette 数组）均冻结，避免运行期被改色
     expect(Object.isFrozen(light)).toBe(true);
     expect(Object.isFrozen(dark)).toBe(true);
-    // 浅色映射当前 Chart.tsx / echarts v6 现状色（零回归）
-    expect(light.text).toBe('#4b5563');
-    expect(light.axisLabel).toBe('#54555a');
-    // 深色采用计划 PRD 深色档位
+    expect(Object.isFrozen(light.palette)).toBe(true);
+    expect(Object.isFrozen(dark.palette)).toBe(true);
+    expect(light.palette).toHaveLength(5);
+    expect(dark.palette).toHaveLength(5);
+    // 同一表重复取用须返回同一引用；布尔入参而非主题字符串
+    expect(chartThemeColors(false)).toBe(light);
+    expect(chartThemeColors(true)).toBe(dark);
+    // 浅色映射当前 Chart.tsx / echarts v6 现状色（零回归），palette 保持原五色
+    expect(light).toEqual({
+      text: '#4b5563',
+      axisLabel: '#54555a',
+      axisLine: '#54555a',
+      splitLine: '#dbdee4',
+      tooltipBg: '#ffffff',
+      tooltipBorder: '#b7b9be',
+      tooltipText: '#6d6e73',
+      up: '#b42332',
+      down: '#087347',
+      accent: '#1759ad',
+      muted: '#64748b',
+      palette: ['#1759ad', '#a64d00', '#733eac', '#007d76', '#a33360'],
+    });
+    // 深色采用计划 PRD 深色档位，palette 为深色底上同语义档
     expect(dark).toEqual({
-      text: '#F3F6FA',
-      axisLabel: '#AAB6C4',
+      text: '#f3f6fa',
+      axisLabel: '#aab6c4',
       axisLine: '#283442',
       splitLine: '#283442',
-      tooltipBackground: '#1B2430',
+      tooltipBg: '#1b2430',
       tooltipBorder: '#283442',
-      tooltipText: '#F3F6FA',
+      tooltipText: '#f3f6fa',
+      up: '#e5484d',
+      down: '#18a058',
+      accent: '#3b82f6',
+      muted: '#aab6c4',
+      palette: ['#3b82f6', '#f59e0b', '#a78bfa', '#2dd4bf', '#f472b6'],
     });
   });
 });
@@ -550,5 +591,168 @@ describe('reportIndexItems', () => {
       },
     };
     expect(() => reportIndexItems({ sectors: [] })).not.toThrow();
+  });
+});
+
+describe('bootstrapPreferences (node DOM stubs)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  interface BootstrapStubsOptions {
+    values?: Record<string, string | null>;
+    getItem?: (key: string) => string | null;
+    systemDark?: boolean;
+    matchMedia?: (query: string) => { matches: boolean };
+    existingMeta?: boolean;
+    querySelector?: (selector: string) => unknown;
+    documentElement?: { dataset: Record<string, unknown> };
+  }
+
+  // 纯 node 环境下伪造最小 DOM 契约：window.localStorage / window.matchMedia、
+  // document.documentElement.dataset、document.querySelector('meta[name=color-scheme]')。
+  function installStubs(options: BootstrapStubsOptions = {}) {
+    const setAttribute = vi.fn();
+    const metaElement = options.existingMeta === true ? { setAttribute } : null;
+    const createElement = vi.fn();
+    const querySelector = vi.fn(options.querySelector ?? (() => metaElement));
+    const documentElement = options.documentElement ?? { dataset: {} as Record<string, unknown> };
+    const getItem = vi.fn(
+      options.getItem ?? ((key: string) => options.values?.[key] ?? null),
+    );
+    const matchMedia = vi.fn(
+      options.matchMedia ?? (() => ({ matches: options.systemDark ?? false })),
+    );
+    const localStorageStub = { getItem };
+    const windowStub = { localStorage: localStorageStub, matchMedia };
+    const documentStub = { documentElement, querySelector, createElement };
+    vi.stubGlobal('window', windowStub);
+    vi.stubGlobal('document', documentStub);
+    // 产品当前仅经 window.* 访问存储与媒体查询；顶层同名全局一并伪造以固定契约。
+    vi.stubGlobal('localStorage', localStorageStub);
+    vi.stubGlobal('matchMedia', matchMedia);
+    return {
+      setAttribute, createElement, querySelector, getItem, matchMedia, documentElement,
+    };
+  }
+
+  it.each(['dark', 'light'] as const)(
+    '落盘存储的 %s 主题与 compact 密度到 dataset，并设置已存在的 color-scheme meta',
+    theme => {
+      const refs = installStubs({
+        values: { [THEME_KEY]: theme, [DENSITY_KEY]: 'compact' },
+        existingMeta: true,
+        systemDark: true,
+      });
+      let result: ReturnType<typeof bootstrapPreferences> | undefined;
+      expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+      expect(result).toEqual({ theme, density: 'compact' });
+      expect(refs.documentElement.dataset).toEqual({ theme, density: 'compact' });
+      expect(refs.querySelector).toHaveBeenCalledWith('meta[name="color-scheme"]');
+      expect(refs.setAttribute).toHaveBeenCalledTimes(1);
+      expect(refs.setAttribute).toHaveBeenCalledWith('content', theme);
+      // 显式主题存在时不查询系统深浅色，也不需要创建 meta
+      expect(refs.matchMedia).not.toHaveBeenCalled();
+      expect(refs.createElement).not.toHaveBeenCalled();
+    },
+  );
+
+  it('meta[name="color-scheme"] 缺失时安全空转：偏好仍落盘，不抛错也不创建节点', () => {
+    const refs = installStubs({
+      values: { [THEME_KEY]: 'dark', [DENSITY_KEY]: 'comfortable' },
+    });
+    let result: ReturnType<typeof bootstrapPreferences> | undefined;
+    expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+    expect(result).toEqual({ theme: 'dark', density: 'comfortable' });
+    expect(refs.documentElement.dataset.theme).toBe('dark');
+    expect(refs.createElement).not.toHaveBeenCalled();
+    expect(refs.setAttribute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [true, 'dark'],
+    [false, 'light'],
+  ] as const)('无 dr:theme 存储时跟随 prefers-color-scheme matches=%s（%s）', (systemDark, expected) => {
+    const refs = installStubs({ systemDark });
+    let result: ReturnType<typeof bootstrapPreferences> | undefined;
+    expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+    expect(result).toEqual({ theme: expected, density: 'comfortable' });
+    expect(refs.documentElement.dataset.theme).toBe(expected);
+    expect(refs.matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
+  });
+
+  it('存储值损坏时主题回退系统信号、密度回退 comfortable', () => {
+    const refs = installStubs({
+      values: { [THEME_KEY]: 'midnight', [DENSITY_KEY]: 'spacious' },
+      systemDark: true,
+    });
+    expect(bootstrapPreferences()).toEqual({ theme: 'dark', density: 'comfortable' });
+    expect(refs.documentElement.dataset).toEqual({
+      theme: 'dark', density: 'comfortable',
+    });
+  });
+
+  it('localStorage.getItem 抛错时回退 light/comfortable 且不抛出', () => {
+    const refs = installStubs({
+      getItem: () => { throw new Error('localStorage unavailable'); },
+      systemDark: false,
+    });
+    let result: ReturnType<typeof bootstrapPreferences> | undefined;
+    expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+    expect(result).toEqual({ theme: 'light', density: 'comfortable' });
+    expect(refs.documentElement.dataset.theme).toBe('light');
+  });
+
+  it('storage 抛错不影响系统主题跟随（两个来源相互隔离）', () => {
+    installStubs({
+      getItem: () => { throw new Error('localStorage unavailable'); },
+      systemDark: true,
+    });
+    let result: ReturnType<typeof bootstrapPreferences> | undefined;
+    expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+    expect(result).toEqual({ theme: 'dark', density: 'comfortable' });
+  });
+
+  it('window.matchMedia 抛错时保持 light/comfortable 且不抛出', () => {
+    const refs = installStubs({
+      matchMedia: () => { throw new Error('matchMedia unavailable'); },
+    });
+    let result: ReturnType<typeof bootstrapPreferences> | undefined;
+    expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+    expect(result).toEqual({ theme: 'light', density: 'comfortable' });
+    expect(refs.documentElement.dataset.theme).toBe('light');
+  });
+
+  it('matchMedia 抛错时已存储的 density 仍被应用', () => {
+    installStubs({
+      values: { [DENSITY_KEY]: 'compact' },
+      matchMedia: () => { throw new Error('matchMedia unavailable'); },
+    });
+    let result: ReturnType<typeof bootstrapPreferences> | undefined;
+    expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+    expect(result).toEqual({ theme: 'light', density: 'compact' });
+  });
+
+  const lockedDataset: Record<string, string> = {};
+  Object.defineProperty(lockedDataset, 'theme', {
+    configurable: true,
+    set() { throw new Error('dataset theme locked'); },
+  });
+
+  it.each<[string, BootstrapStubsOptions]>([
+    ['documentElement.dataset 写入抛错', { documentElement: { dataset: lockedDataset } }],
+    ['document.querySelector 抛错', { querySelector: () => { throw new Error('query boom'); } }],
+    [
+      '已存在 meta 的 setAttribute 抛错',
+      { querySelector: () => ({ setAttribute: () => { throw new Error('attr boom'); } }) },
+    ],
+  ])('document 操作失败被外层吞掉（%s），回退 light/comfortable 且不抛出', (_label, domOptions) => {
+    installStubs({
+      values: { [THEME_KEY]: 'dark', [DENSITY_KEY]: 'compact' },
+      ...domOptions,
+    });
+    let result: ReturnType<typeof bootstrapPreferences> | undefined;
+    expect(() => { result = bootstrapPreferences(); }).not.toThrow();
+    expect(result).toEqual({ theme: 'light', density: 'comfortable' });
   });
 });

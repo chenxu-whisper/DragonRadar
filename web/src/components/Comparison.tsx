@@ -5,7 +5,7 @@ import { formatDecimal, label } from '../format';
 import { useResource } from '../hooks/useResource';
 import { analysisRange } from '../features/analysis/query';
 import type { Envelope, Interval, ResetCurveData, Snapshot, WorkbenchEnvelope } from '../types';
-import { Chart, lineStyles, palette } from './Chart';
+import { Chart, lineStyles } from './Chart';
 import { Exclusions, Percent, ResourceStatus, TableScroll, type Patch } from './Common';
 
 function curveValue(value: number | null, mode: 'normalized' | 'drawdown'): string {
@@ -47,7 +47,6 @@ export function Comparison({ state, patch, refreshToken, snapshot, reset = false
   );
   const data = resource.data;
   const option = useMemo(() => ({
-    color: palette,
     tooltip: { trigger: 'axis', renderMode: 'richText' },
     legend: { top: 4, type: 'scroll', textStyle: { fontSize: 12 } },
     grid: { left: 52, right: 20, top: 60, bottom: 64 },
@@ -62,7 +61,6 @@ export function Comparison({ state, patch, refreshToken, snapshot, reset = false
   const resetData = resetResource.data;
   const dates = resetData?.data?.curves[0]?.points.map(point => point.trade_date) || [];
   const resetOption = useMemo(() => ({
-    color: palette,
     tooltip: { trigger: 'axis', renderMode: 'richText' },
     legend: { top: 4, type: 'scroll', textStyle: { fontSize: 12 } },
     grid: { left: 52, right: 20, top: 60, bottom: 64 },

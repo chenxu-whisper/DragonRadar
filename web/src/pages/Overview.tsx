@@ -6,6 +6,8 @@ import type { ResearchState } from '../state';
 import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
 import { LazyLoadBoundary } from '../components/LazyLoadBoundary';
+import { chartThemeColors } from '../features/preferences/settings';
+import { useThemeMode } from '../hooks/useThemeMode';
 
 const RealtimePanel = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(() => import('../features/realtime/RealtimePanel'))
@@ -23,6 +25,7 @@ function compareMember(left: ResetSecurityIdentity, right: ResetSecurityIdentity
   return 0;
 }
 export function Overview({ state, patch, refreshToken, open, compare, ReviewActions, reset = false }: Props) {
+  const breadthColors = chartThemeColors(useThemeMode() === 'dark');
   const base = `/api/v1/snapshots/${state.snapshot}`;
   const selector = new URLSearchParams({ snapshot_id: state.snapshot });
   if (state.date) selector.set('date', state.date);
@@ -42,11 +45,11 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
     yAxis: { type: 'value', minInterval: 1, name: '家' },
     tooltip: { trigger: 'axis', renderMode: 'richText' },
     series: [{ type: 'bar', barMaxWidth: 48, data: counts ? [
-      { value: counts.advancing, itemStyle: { color: '#b42332' } },
-      { value: counts.declining, itemStyle: { color: '#087347' } },
-      { value: counts.unchanged, itemStyle: { color: '#64748b' } },
+      { value: counts.advancing, itemStyle: { color: breadthColors.up } },
+      { value: counts.declining, itemStyle: { color: breadthColors.down } },
+      { value: counts.unchanged, itemStyle: { color: breadthColors.muted } },
     ] : [] }],
-  }), [counts]);
+  }), [counts, breadthColors]);
   if (reset) {
     const overview = resetOverview.data?.data;
     const ratio = (value: number | null) => value === null ? '不适用' : `${(value * 100).toFixed(2)}%`;

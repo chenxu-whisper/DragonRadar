@@ -12,15 +12,57 @@ export const DENSITY_KEY = 'dr:density';
 const THEME_VALUES: readonly ThemeMode[] = ['light', 'dark'];
 const DENSITY_VALUES: readonly DensityMode[] = ['compact', 'comfortable'];
 
-/** ECharts 配色（文字/轴标签/轴线/分割线/tooltip 背景边框），按主题纯映射。 */
-export interface ChartTextColors {
+/** ECharts 配色：文字/轴/tooltip + 数据系列语义色（涨跌/强调/中性/五色板），按深色开关纯映射。 */
+export interface ChartThemeColors {
   text: string;
   axisLabel: string;
   axisLine: string;
   splitLine: string;
-  tooltipBackground: string;
+  tooltipBg: string;
   tooltipBorder: string;
   tooltipText: string;
+  up: string;
+  down: string;
+  accent: string;
+  muted: string;
+  palette: readonly string[];
+}
+
+const LIGHT_CHART_COLORS: ChartThemeColors = Object.freeze({
+  // 逐值映射 Chart.tsx / echarts v6 现状渲染色，保持浅色零回归；palette 为原 Chart.tsx 五色。
+  text: '#4b5563',
+  axisLabel: '#54555a',
+  axisLine: '#54555a',
+  splitLine: '#dbdee4',
+  tooltipBg: '#ffffff',
+  tooltipBorder: '#b7b9be',
+  tooltipText: '#6d6e73',
+  up: '#b42332',
+  down: '#087347',
+  accent: '#1759ad',
+  muted: '#64748b',
+  palette: Object.freeze(['#1759ad', '#a64d00', '#733eac', '#007d76', '#a33360']),
+});
+
+const DARK_CHART_COLORS: ChartThemeColors = Object.freeze({
+  text: '#f3f6fa',
+  axisLabel: '#aab6c4',
+  axisLine: '#283442',
+  splitLine: '#283442',
+  tooltipBg: '#1b2430',
+  tooltipBorder: '#283442',
+  tooltipText: '#f3f6fa',
+  up: '#e5484d',
+  down: '#18a058',
+  accent: '#3b82f6',
+  muted: '#aab6c4',
+  // 深色底（#141b24）上同语义档，保持 ≥3:1 对比。
+  palette: Object.freeze(['#3b82f6', '#f59e0b', '#a78bfa', '#2dd4bf', '#f472b6']),
+});
+
+/** 深色开关到冻结色表的纯映射；Chart.tsx 据 documentElement[data-theme] 调用。 */
+export function chartThemeColors(dark: boolean): ChartThemeColors {
+  return dark ? DARK_CHART_COLORS : LIGHT_CHART_COLORS;
 }
 
 /** matchMedia('(prefers-color-scheme: dark)').matches 的纯映射。 */
@@ -49,18 +91,33 @@ export function readPreferences(
   };
 }
 
-/** 仅在值合法时写入白名单键；非法值不写入且不抛异常。 */
-export function writeTheme(setItem: (key: string, value: string) => void, value: ThemeMode): void {
-  if (THEME_VALUES.includes(value)) setItem(THEME_KEY, value);
+/** 值合法且 setItem 未抛错时返回 true；非法值或写入抛错返回 false，绝不向上抛。 */
+export function writeTheme(setItem: (key: string, value: string) => void, value: ThemeMode): boolean {
+  if (!THEME_VALUES.includes(value)) return false;
+  try {
+    setItem(THEME_KEY, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/** 仅在值合法时写入白名单键；非法值不写入且不抛异常。 */
-export function writeDensity(setItem: (key: string, value: string) => void, value: DensityMode): void {
-  if (DENSITY_VALUES.includes(value)) setItem(DENSITY_KEY, value);
+/** 值合法且 setItem 未抛错时返回 true；非法值或写入抛错返回 false，绝不向上抛。 */
+export function writeDensity(setItem: (key: string, value: string) => void, value: DensityMode): boolean {
+  if (!DENSITY_VALUES.includes(value)) return false;
+  try {
+    setItem(DENSITY_KEY, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** 把偏好写到注入根节点的 dataset（documentElement.dataset）。 */
-export function applyPreferences(root: { dataset: Record<string, string> }, preferences: Preferences): void {
+export function applyPreferences(
+  root: { dataset: { theme?: string; density?: string } },
+  preferences: Preferences,
+): void {
   root.dataset.theme = preferences.theme;
   root.dataset.density = preferences.density;
 }
@@ -86,28 +143,43 @@ export function isPaletteShortcut(event: {
     && !isTypingBlocked(event);
 }
 
-const LIGHT_CHART_COLORS: ChartTextColors = Object.freeze({
-  // text 映射当前 Chart.tsx textStyle.color；axisLabel/axisLine/splitLine/tooltip
-  // 为当前 echarts v6 token 默认渲染色（neutral70/neutral15/neutral00/border/tertiary），保持浅色零回归。
-  text: '#4b5563',
-  axisLabel: '#54555a',
-  axisLine: '#54555a',
-  splitLine: '#dbdee4',
-  tooltipBackground: '#ffffff',
-  tooltipBorder: '#b7b9be',
-  tooltipText: '#6d6e73',
-});
-
-const DARK_CHART_COLORS: ChartTextColors = Object.freeze({
-  text: '#F3F6FA',
-  axisLabel: '#AAB6C4',
-  axisLine: '#283442',
-  splitLine: '#283442',
-  tooltipBackground: '#1B2430',
-  tooltipBorder: '#283442',
-  tooltipText: '#F3F6FA',
-});
-
-export function chartTextColors(theme: ThemeMode): ChartTextColors {
-  return theme === 'dark' ? DARK_CHART_COLORS : LIGHT_CHART_COLORS;
+/**
+ * 首绘前/偏好变更后的自包含引导：读 localStorage 白名单键（theme 缺失时跟随系统
+ * prefers-color-scheme）→ 写 documentElement.dataset → 同步 meta[name=color-scheme]。
+ * 不引用本文件其他导出，使未用纯函数可被打包器摇出 entry；任何异常回退
+ * {light, comfortable} 且不抛出。
+ */
+export function bootstrapPreferences(): Preferences {
+  try {
+    let theme: ThemeMode = 'light';
+    let density: DensityMode = 'comfortable';
+    // storage 与 matchMedia 分别隔离：任一来源不可用不得影响另一来源。
+    let storedTheme: string | null = null;
+    let storedDensity: string | null = null;
+    try {
+      storedTheme = window.localStorage.getItem(THEME_KEY);
+      storedDensity = window.localStorage.getItem(DENSITY_KEY);
+    } catch {
+      // localStorage 不可用（隐私模式/禁用）：两个显式值均按缺失处理。
+    }
+    if (storedTheme === 'light' || storedTheme === 'dark') {
+      theme = storedTheme;
+    } else {
+      try {
+        if (window.matchMedia('(prefers-color-scheme: dark)').matches) theme = 'dark';
+      } catch {
+        // matchMedia 不可用：保持 light。
+      }
+    }
+    if (storedDensity === 'compact' || storedDensity === 'comfortable') {
+      density = storedDensity;
+    }
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.density = density;
+    const meta = document.querySelector('meta[name="color-scheme"]');
+    if (meta) meta.setAttribute('content', theme);
+    return { theme, density };
+  } catch {
+    return { theme: 'light', density: 'comfortable' };
+  }
 }

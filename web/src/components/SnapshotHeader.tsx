@@ -1,10 +1,20 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { timestamp } from '../format';
 import { useResource, useAccess } from '../hooks/useResource';
 import type { ResearchState } from '../state';
 import type { ResetSnapshotData, Snapshot, WorkbenchEnvelope } from '../types';
 import { ResourceStatus, type Patch } from './Common';
+
+// 偏好控件为独立懒 chunk，仅 reset 工作台渲染时才拉取。
+const PreferenceControls = lazy(async () => ({
+  default: (await import('../features/preferences/PreferenceControls')).PreferenceControls,
+}));
+// 等尺寸（44px 高）占位，避免 chunk 加载完成前控件区布局跳动。
+const preferenceFallback = <>
+  <span className="pref-toggle theme-toggle pref-toggle-placeholder" aria-hidden="true" />
+  <span className="pref-toggle density-toggle pref-toggle-placeholder" aria-hidden="true" />
+</>;
 
 export function versionName(snapshot: Snapshot): string {
   return `${snapshot.result.revision <= 1 ? '首版' : `修订第 ${snapshot.result.revision} 版`} · ${snapshot.provenance === 'retrospective' ? '回溯' : '当时记录'} · ${timestamp(snapshot.result.published_at)}`;
@@ -49,6 +59,7 @@ export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, re
         {options.map(item => <option key={item.snapshot_id} value={item.snapshot_id}>{versionName(item)}</option>)}
       </select></label>
       <button onClick={refresh} title="重新读取当前快照与研究数据" aria-label="刷新快照"><RefreshCw size={17} />{refreshing ? '刷新中' : '刷新'}</button>
+      {reset && <Suspense fallback={preferenceFallback}><PreferenceControls /></Suspense>}
     </div>
     {(offset > 0 || options.length === 100) && <div className="version-pages">
       <span>该日期版本第 {offset / 100 + 1} 页（每页最多 100 条）</span>

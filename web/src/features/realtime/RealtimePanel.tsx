@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
 import type { EChartsCoreOption } from 'echarts/core';
 import { ApiError } from '../../api';
-import { Chart, palette } from '../../components/Chart';
+import { Chart } from '../../components/Chart';
 import { ResourceStatus, TableScroll } from '../../components/Common';
+import { chartThemeColors } from '../preferences/settings';
+import { useThemeMode } from '../../hooks/useThemeMode';
 import { timestamp } from '../../format';
 import type { Resource } from '../../hooks/useResource';
 import {
@@ -103,7 +105,7 @@ function number(value: string | null): string {
   return value === null ? '—' : formatRealtimeDecimal(value);
 }
 
-function sourceColor(sourceId: string): string {
+function sourceColor(palette: readonly string[], sourceId: string): string {
   let hash = 2166136261;
   for (const character of sourceId) {
     hash ^= character.codePointAt(0) ?? 0;
@@ -152,6 +154,7 @@ function minuteAxis(response: MinuteResponse): {
 }
 
 export function MinuteLedger({ response }: { response: MinuteResponse }) {
+  const palette = chartThemeColors(useThemeMode() === 'dark').palette;
   if (!response.data || response.data.bars.length === 0) {
     return <p className="empty">当前证券没有可显示的分钟记录；不会补零或沿用上一分钟。</p>;
   }
@@ -171,8 +174,8 @@ export function MinuteLedger({ response }: { response: MinuteResponse }) {
       connectNulls: false,
       showSymbol: true,
       symbolSize: 5,
-      lineStyle: { width: 1.5, color: sourceColor(sourceId) },
-      itemStyle: { color: sourceColor(sourceId) },
+      lineStyle: { width: 1.5, color: sourceColor(palette, sourceId) },
+      itemStyle: { color: sourceColor(palette, sourceId) },
     })),
   };
   const sourceNames = axis.series.map(item => item.sourceId).join('、');
@@ -205,6 +208,7 @@ export function MinuteLedger({ response }: { response: MinuteResponse }) {
 }
 
 export function FlowLedger({ response }: { response: SectorFlowResponse }) {
+  const palette = chartThemeColors(useThemeMode() === 'dark').palette;
   if (!response.data || response.data.points.length === 0) {
     return <p className="empty">当前题材没有授权的分时资金流记录。</p>;
   }

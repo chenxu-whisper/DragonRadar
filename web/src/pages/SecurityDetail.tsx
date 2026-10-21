@@ -7,6 +7,8 @@ import { klineRange } from '../features/analysis/query';
 import type { Detail, Envelope, ResetKlineData, ResetStock, Snapshot, WorkbenchEnvelope } from '../types';
 import { Chart } from '../components/Chart';
 import { Percent, ResourceStatus, shouldHandleSpaClick, TableScroll, type Patch } from '../components/Common';
+import { chartThemeColors } from '../features/preferences/settings';
+import { useThemeMode } from '../hooks/useThemeMode';
 import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/labels';
 import { newsListPath } from '../features/news/api';
 import type { NewsListResponse } from '../features/news/types';
@@ -30,6 +32,7 @@ const yesNo = (value: boolean | null) => value === null ? '—' : value ? '是' 
 function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, ReviewActions, patch }: {
   state: ResearchState; snapshot?: Snapshot; id: string; evidenceSector?: string; refreshToken: number; ReviewActions?: ReviewActionComponent; patch: Patch;
 }) {
+  const klineColors = chartThemeColors(useThemeMode() === 'dark');
   const modern = useResource<WorkbenchEnvelope<ResetStock | null>>(resetEnabled
     ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
     : null, state.snapshot, refreshToken);
@@ -82,13 +85,13 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
     series: data?.chart_type === 'candlestick' ? [{
       type: 'candlestick', name: '未复权价格',
       data: data.history.map(point => [point.open, point.close, point.low, point.high].map(value => value === null ? '-' : Number(value))),
-      itemStyle: { color: '#b42332', color0: '#087347', borderColor: '#b42332', borderColor0: '#087347' },
+      itemStyle: { color: klineColors.up, color0: klineColors.down, borderColor: klineColors.up, borderColor0: klineColors.down },
     }] : [{
       type: 'line', name: '未复权收盘价', connectNulls: false, showSymbol: false,
       data: data?.history.map(point => point.close === null ? null : Number(point.close)) || [],
-      lineStyle: { color: '#1759ad', width: 2 },
+      lineStyle: { color: klineColors.accent, width: 2 },
     }],
-  }), [data]);
+  }), [data, klineColors]);
   const canDrawCandles = rawData?.chart_type === 'candlestick' && rawData.points.length > 0 &&
     rawData.points.every(point => [point.open, point.high, point.low, point.close]
       .every(value => typeof value === 'number' && Number.isFinite(value)));
@@ -102,16 +105,16 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       type: 'candlestick',
       name: '未复权价格',
       data: rawData!.points.map(point => [point.open, point.close, point.low, point.high]),
-      itemStyle: { color: '#b42332', color0: '#087347', borderColor: '#b42332', borderColor0: '#087347' },
+      itemStyle: { color: klineColors.up, color0: klineColors.down, borderColor: klineColors.up, borderColor0: klineColors.down },
     }] : [{
       type: 'line',
       name: '未复权收盘价',
       connectNulls: false,
       showSymbol: false,
       data: rawData?.points.map(point => point.close) || [],
-      lineStyle: { color: '#1759ad', width: 2 },
+      lineStyle: { color: klineColors.accent, width: 2 },
     }],
-  }), [canDrawCandles, rawData]);
+  }), [canDrawCandles, rawData, klineColors]);
   return <>
     {resetEnabled
       ? <>

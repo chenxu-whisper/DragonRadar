@@ -1,28 +1,31 @@
+/* 局部色值：浅色锁定 78f0d5f 原始计算值；深色映射到全局 token，仅作用于 .local-review 根。 */
+.local-review { --review-border: #e5eaf0; --review-muted-text: #4b5563; --review-input-text: #111827; --review-backup-bg: #f8fafc; --review-preview-bg: #f6f8fa; }
+[data-theme="dark"] .local-review { --review-border: var(--border); --review-muted-text: var(--text-secondary); --review-input-text: var(--text-primary); --review-backup-bg: var(--bg-surface-2); --review-preview-bg: var(--bg-surface-2); }
 .local-review-grid { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: 28px; margin-top: 24px; }
-.local-review-list { border-right: 1px solid var(--border, #e5eaf0); padding-right: 24px; }
+.local-review-list { border-right: 1px solid var(--review-border); padding-right: 24px; }
 .local-review-list ul { list-style: none; padding: 0; }
-.local-review-list li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border, #e5eaf0); }
-.local-review-list small { display: block; color: #4b5563; font-variant-numeric: tabular-nums; }
+.local-review-list li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--review-border); }
+.local-review-list small { display: block; color: var(--review-muted-text); font-variant-numeric: tabular-nums; }
 .local-review-list form { display: grid; gap: 8px; }
 .local-review label { display: grid; gap: 6px; font-weight: 500; }
-.local-review input, .local-review textarea { width: 100%; min-width: 0; font: inherit; padding: 9px 10px; border: 1px solid #aab6c4; border-radius: 5px; background: white; color: #111827; }
-.local-review select { min-width: 180px; font: inherit; padding: 8px 10px; border: 1px solid #aab6c4; border-radius: 5px; background: white; color: #111827; }
+.local-review input, .local-review textarea { width: 100%; min-width: 0; font: inherit; padding: 9px 10px; border: 1px solid var(--border-textarea); border-radius: 5px; background: var(--bg-surface); color: var(--review-input-text); }
+.local-review select { min-width: 180px; font: inherit; padding: 8px 10px; border: 1px solid var(--border-textarea); border-radius: 5px; background: var(--bg-surface); color: var(--review-input-text); }
 .local-review textarea { resize: vertical; line-height: 1.7; }
-.local-backup { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--border, #e5eaf0); background: #f8fafc; }
+.local-backup { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--review-border); background: var(--review-backup-bg); }
 .local-backup .toolbar { align-items: end; }
 .local-backup label { font-size: 13px; }
 .local-backup input[type="file"] { max-width: 280px; padding: 6px; }
 .local-note-editor fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 16px; min-width: 0; }
 .local-note-link { text-align: left; overflow-wrap: anywhere; }
-.local-note-link[aria-current="true"] { color: #1759ad; border-color: #1759ad; font-weight: 700; }
-.local-note-preview { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; background: #f6f8fa; padding: 12px; }
-.local-note-editor [role="status"] { color: #087347; min-height: 24px; }
+.local-note-link[aria-current="true"] { color: var(--accent); border-color: var(--accent); font-weight: 700; }
+.local-note-preview { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; background: var(--review-preview-bg); padding: 12px; }
+.local-note-editor [role="status"] { color: var(--down); min-height: 24px; }
 .local-review-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-block: 10px; }
-.local-review-actions [role="status"] { color: #087347; font-size: 13px; }
-.local-review-actions [role="alert"] { color: #b42332; font-size: 13px; }
+.local-review-actions [role="status"] { color: var(--down); font-size: 13px; }
+.local-review-actions [role="alert"] { color: var(--up); font-size: 13px; }
 @media (max-width: 760px) {
   .local-review-grid { grid-template-columns: 1fr; gap: 20px; }
-  .local-review-list { border-right: 0; padding-right: 0; border-bottom: 1px solid #e5eaf0; padding-bottom: 12px; }
+  .local-review-list { border-right: 0; padding-right: 0; border-bottom: 1px solid var(--review-border); padding-bottom: 12px; }
 }
 @media (max-width: 319px) {
   .local-backup select { width: 100%; min-width: 0; max-width: 100%; }

@@ -4,6 +4,7 @@ import { useLocation } from './hooks/useLocation';
 import { AccessProvider, useAccess, useResource } from './hooks/useResource';
 import { parseState, stateSearch, toggleCompare, type ResearchState } from './state';
 import type { ResetSnapshotData, Snapshot, WorkbenchEnvelope } from './types';
+import { bootstrapPreferences, DENSITY_KEY, THEME_KEY } from './features/preferences/settings';
 import { ResourceStatus, shouldHandleSpaClick, SnapshotEvidence } from './components/Common';
 import { SnapshotHeader } from './components/SnapshotHeader';
 import { CompareMembership } from './components/CompareMembership';
@@ -147,6 +148,24 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   }, [selectedSummary, state.date, patch]);
   useEffect(() => { setDrawer(null); }, [context, denied, privateFeatures?.locked]);
   useEffect(() => {
+    // 偏好落盘统一回放到自包含引导：同标签 dr:prefs-changed、跨标签 storage、
+    // 系统深浅色变化（bootstrap 内部仅在无显式 dr:theme 时跟随系统）。
+    const sync = () => { bootstrapPreferences(); };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== THEME_KEY && event.key !== DENSITY_KEY) return;
+      sync();
+    };
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('dr:prefs-changed', sync);
+    media.addEventListener('change', sync);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('dr:prefs-changed', sync);
+      media.removeEventListener('change', sync);
+    };
+  }, []);
+  useEffect(() => {
     if (denied) { setNotice(''); patch({ compare: [], ...(resetEnabled && state.view === 'review' ? {} : { security: '' }) }, true); }
   }, [denied, context, patch, state.view]);
   const refresh = () => { if (denied) retry(); else setRefreshToken(v => v + 1); };
@@ -184,7 +203,15 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     </aside>
     <div className="workspace">
       {PrivateToolbar && <PrivateToolbar />}
-      <SnapshotHeader state={state} snapshot={snapshot} patch={patch} refresh={refresh} refreshing={summary.loading || resetSummary.loading || list.loading} refreshToken={refreshToken} reset={resetEnabled} />
+      <SnapshotHeader
+        state={state}
+        snapshot={snapshot}
+        patch={patch}
+        refresh={refresh}
+        refreshing={summary.loading || resetSummary.loading || list.loading}
+        refreshToken={refreshToken}
+        reset={resetEnabled}
+      />
       <main id="main" tabIndex={-1}>
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')}>关闭提示</button></div>}
         {LocalReview && state.view === 'review'
