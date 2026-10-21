@@ -642,3 +642,97 @@ body:has(dialog[open]) { overflow: hidden; }
 .rotation-evidence-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .rotation-evidence-title { margin: 0; font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
 .rotation-back { flex: 0 0 auto; }
+
+/* 命令面板（切片 3）：全部使用语义 token，深色随 data-theme 自动切换，无 hex。 */
+.command-palette-trigger {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  min-height: 44px; padding: 0 12px;
+  border: 1px solid var(--border-control); border-radius: 4px;
+  background: var(--bg-surface); color: var(--text-nav);
+  font-size: 13px; cursor: pointer;
+}
+.command-palette-trigger:hover { background: var(--bg-hover); border-color: var(--accent); }
+.command-palette-trigger kbd,
+.command-palette-kbd {
+  display: inline-flex; align-items: center; min-height: 20px; padding: 0 6px;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-surface-2); color: var(--text-faint);
+  font: 11px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  white-space: nowrap;
+}
+.command-palette-trigger:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+.command-palette-scrim {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 12vh 16px 16px;
+  background: var(--bg-backdrop);
+}
+.command-palette {
+  width: min(640px, 100%); max-height: 70vh;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border-header); border-radius: 8px;
+  background: var(--bg-overlay); color: var(--text-primary);
+  box-shadow: 0 18px 48px var(--bg-backdrop);
+  overflow: hidden;
+}
+.command-palette-loading { align-items: center; justify-content: center; min-height: 128px; padding: 24px; }
+.command-palette-loading-text { color: var(--text-secondary); font-size: 13px; }
+.command-palette-input-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+}
+.command-palette-input {
+  flex: 1; min-width: 0; min-height: 44px; padding: 8px 10px;
+  border: 1px solid var(--border-control); border-radius: 4px;
+  background: var(--bg-surface); color: var(--text-primary);
+  font-size: 15px;
+}
+.command-palette-input::placeholder { color: var(--text-faint); }
+.command-palette-input:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
+.command-palette-alert {
+  margin: 0; padding: 10px 14px;
+  border-bottom: 1px solid var(--state-bad-border);
+  background: var(--state-bad-bg); color: var(--state-bad-text);
+  font-size: 13px;
+}
+.command-palette-listbox {
+  margin: 0; padding: 6px; overflow: auto; list-style: none;
+  min-height: 64px;
+}
+.command-palette-group { list-style: none; }
+.command-palette-group-label {
+  padding: 6px 10px 2px;
+  color: var(--text-faint); font-size: 11px; letter-spacing: .06em;
+}
+.command-palette-group-options { margin: 0; padding: 0; list-style: none; }
+.command-palette-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 44px; padding: 8px 10px;
+  border-radius: 4px; color: var(--text-nav);
+  cursor: pointer; transition: background-color .12s ease;
+}
+.command-palette-option-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-palette-option.is-active { background: var(--bg-accent-soft); }
+.command-palette-option.is-current { color: var(--text-faint); }
+.command-palette-option-tag {
+  flex: 0 0 auto; padding: 0 8px; min-height: 20px;
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--border-token); border-radius: 999px;
+  color: var(--text-faint); font-size: 11px;
+}
+.command-palette-option.is-active .command-palette-option-tag { border-color: var(--accent); color: var(--accent); }
+.command-palette-empty { padding: 18px 12px; color: var(--text-secondary); font-size: 13px; }
+
+@media (max-width: 767px) {
+  .command-palette-scrim { padding: 8vh 8px 8px; }
+  .command-palette { max-height: 80vh; }
+  /* 窄屏隐藏按键提示，按钮命中区仍保持 44px。 */
+  .command-palette-trigger kbd { display: none; }
+}
+@media (forced-colors: active) {
+  .command-palette { border: 1px solid CanvasText; }
+  .command-palette-option.is-active { background: Highlight; color: HighlightText; outline: 1px solid Highlight; }
+  .command-palette-option.is-active .command-palette-option-tag { border-color: HighlightText; color: HighlightText; }
+  .command-palette-alert { border: 1px solid CanvasText; }
+}

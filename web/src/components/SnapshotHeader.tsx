@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { timestamp } from '../format';
 import { useResource, useAccess } from '../hooks/useResource';
@@ -19,8 +19,9 @@ const preferenceFallback = <>
 export function versionName(snapshot: Snapshot): string {
   return `${snapshot.result.revision <= 1 ? '首版' : `修订第 ${snapshot.result.revision} 版`} · ${snapshot.provenance === 'retrospective' ? '回溯' : '当时记录'} · ${timestamp(snapshot.result.published_at)}`;
 }
-export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, refreshToken, reset = false }: {
+export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, refreshToken, reset = false, paletteTrigger }: {
   state: ResearchState; snapshot?: Snapshot; patch: Patch; refresh: () => void; refreshing: boolean; refreshToken: number; reset?: boolean;
+  paletteTrigger?: ReactNode;
 }) {
   const { denied } = useAccess();
   const [offset, setOffset] = useState(0);
@@ -52,13 +53,14 @@ export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, re
   const includeCurrent = snapshot && !options.some(item => item.snapshot_id === snapshot.snapshot_id);
   return <header className="snapshot-header" aria-label="快照上下文">
     <div className="snapshot-controls">
-      <label>交易日期<input type="date" value={date} onChange={e => patch({ date: e.target.value, snapshot: '', security: '', compare: [], page: 1 })} /></label>
+      <label>交易日期<input id="trade-date-input" type="date" value={date} onChange={e => patch({ date: e.target.value, snapshot: '', security: '', compare: [], page: 1 })} /></label>
       <label className="version-control">快照版本<select aria-label="快照版本" disabled={!snapshot || denied} value={snapshot?.snapshot_id || ''} onChange={e => patch({ snapshot: e.target.value, security: '', compare: [], page: 1 })}>
         {!snapshot && <option value="">待选择快照</option>}
         {includeCurrent && <option value={snapshot.snapshot_id}>{versionName(snapshot)}</option>}
         {options.map(item => <option key={item.snapshot_id} value={item.snapshot_id}>{versionName(item)}</option>)}
       </select></label>
       <button onClick={refresh} title="重新读取当前快照与研究数据" aria-label="刷新快照"><RefreshCw size={17} />{refreshing ? '刷新中' : '刷新'}</button>
+      {!denied && paletteTrigger}
       {reset && <Suspense fallback={preferenceFallback}><PreferenceControls /></Suspense>}
     </div>
     {(offset > 0 || options.length === 100) && <div className="version-pages">

@@ -5,10 +5,9 @@ import {
   THEME_KEY,
   readPreferences,
   systemTheme,
-  writeDensity,
-  writeTheme,
   type Preferences,
 } from './settings';
+import { persistDensity, persistTheme } from './persist';
 
 /** 读取当前偏好；localStorage/matchMedia 任一不可用时回退 light/comfortable。 */
 function readCurrent(): Preferences {
@@ -19,16 +18,6 @@ function readCurrent(): Preferences {
     );
   } catch {
     return { theme: 'light', density: 'comfortable' };
-  }
-}
-
-/** 白名单写入偏好；隐私模式等 storage 抛错时返回 false，由调用方决定是否派发/更新。 */
-function persist(key: string, value: string): boolean {
-  try {
-    window.localStorage.setItem(key, value);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -82,8 +71,7 @@ export function PreferenceControls() {
       title={themeLabel}
       onClick={() => {
         const next = dark ? 'light' : 'dark';
-        if (!writeTheme(persist, next)) return;
-        window.dispatchEvent(new Event('dr:prefs-changed'));
+        if (!persistTheme(next)) return;
         setPrefs(p => ({ ...p, theme: next }));
       }}
     >{dark ? <Sun size={17} /> : <Moon size={17} />}</button>
@@ -95,8 +83,7 @@ export function PreferenceControls() {
       title={densityLabel}
       onClick={() => {
         const next = compact ? 'comfortable' : 'compact';
-        if (!writeDensity(persist, next)) return;
-        window.dispatchEvent(new Event('dr:prefs-changed'));
+        if (!persistDensity(next)) return;
         setPrefs(p => ({ ...p, density: next }));
       }}
     >{compact ? '舒适' : '紧凑'}</button>

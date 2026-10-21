@@ -17,6 +17,7 @@ import {
 import {
   GROUPS,
   INDEX_ITEMS_EVENT,
+  bindIndexItems,
   buildCommands,
   executeCommand,
   filterCommands,
@@ -25,6 +26,11 @@ import {
   type CommandContext,
   type SearchItem,
 } from '../../src/features/preferences/commands';
+import {
+  mergeIndexItems,
+  sanitizeIndexPayload,
+  type SearchIndex,
+} from '../../src/features/preferences/search-index';
 
 const storageKey = (key: string) => (values: Record<string, string | null>) =>
   (k: string): string | null => (k === key ? values[key] ?? null : null);
@@ -529,6 +535,8 @@ describe('executeCommand', () => {
 describe('reportIndexItems', () => {
   afterEach(() => {
     delete (globalThis as { window?: unknown }).window;
+    // 排空模块级补发队列，避免未绑定态试报残留到 bindIndexItems 用例。
+    bindIndexItems(() => {})();
   });
 
   it('exposes the shared index event name constant', () => {
@@ -591,6 +599,109 @@ describe('reportIndexItems', () => {
       },
     };
     expect(() => reportIndexItems({ sectors: [] })).not.toThrow();
+  });
+});
+
+describe('bindIndexItems', () => {
+  // 最小 EventTarget 桩：dispatchEvent 同步触达 addEventListener 注册的监听者。
+  function installEventWindow() {
+    const listeners = new Map<string, Set<(event: unknown) => void>>();
+    class FakeCustomEvent {
+      type: string;
+      detail: unknown;
+      constructor(type: string, init?: { detail?: unknown }) {
+        this.type = type;
+        this.detail = init?.detail;
+      }
+    }
+    (globalThis as { window?: unknown }).window = {
+      CustomEvent: FakeCustomEvent,
+      dispatchEvent: (event: { type: string }) => {
+        listeners.get(event.type)?.forEach(fn => fn(event));
+        return true;
+      },
+      addEventListener: (type: string, fn: (event: unknown) => void) => {
+        const set = listeners.get(type) ?? new Set<(event: unknown) => void>();
+        set.add(fn);
+        listeners.set(type, set);
+      },
+      removeEventListener: (type: string, fn: (event: unknown) => void) => {
+        listeners.get(type)?.delete(fn);
+      },
+    };
+  }
+
+  afterEach(() => {
+    delete (globalThis as { window?: unknown }).window;
+    // 兜底排空模块队列，保证用例间互不污染。
+    bindIndexItems(() => {})();
+  });
+
+  it('replays reports that arrived before bind in FIFO order, then delivers live events', () => {
+    installEventWindow();
+    const first = { securities: [{ id: 'S1', name: '甲' }] };
+    const second = { securities: [{ id: 'S2', name: '乙' }] };
+    reportIndexItems(first);
+    reportIndexItems(second);
+    const received: unknown[] = [];
+    const unbind = bindIndexItems(detail => received.push(detail));
+    expect(received).toEqual([first, second]);
+    const live = { sectors: [{ id: 'X1', name: '题材' }] };
+    reportIndexItems(live);
+    expect(received).toEqual([first, second, live]);
+    unbind();
+  });
+
+  it('stops delivery after unbind and never replays pre-unbind details on rebind', () => {
+    installEventWindow();
+    const oldPayload = { securities: [{ id: 'OLD', name: '旧' }] };
+    reportIndexItems(oldPayload);
+    const firstReceived: unknown[] = [];
+    const unbind = bindIndexItems(detail => firstReceived.push(detail));
+    expect(firstReceived).toEqual([oldPayload]);
+    unbind();
+    // 解绑后的新上报不会触达旧 handler。
+    const afterPayload = { securities: [{ id: 'AFTER', name: '解绑后' }] };
+    reportIndexItems(afterPayload);
+    expect(firstReceived).toEqual([oldPayload]);
+    // 再绑定不重放解绑前已补发过的 OLD；解绑期间入队的新 detail 按 FIFO 补发一次。
+    const rebound: unknown[] = [];
+    const rebind = bindIndexItems(detail => rebound.push(detail));
+    expect(rebound).toEqual([afterPayload]);
+    const fresh = { securities: [{ id: 'FRESH', name: '新会话' }] };
+    reportIndexItems(fresh);
+    expect(rebound).toEqual([afterPayload, fresh]);
+    expect(firstReceived).toEqual([oldPayload]);
+    rebind();
+  });
+
+  it('caps the pre-bind queue at 16 and drops the oldest entries', () => {
+    installEventWindow();
+    for (let i = 0; i < 18; i += 1) {
+      reportIndexItems({ securities: [{ id: `S${i}`, name: `第${i}` }] });
+    }
+    const ids: string[] = [];
+    const unbind = bindIndexItems(detail => {
+      ids.push((detail as { securities: Array<{ id: string }> }).securities[0].id);
+    });
+    expect(ids).toEqual(Array.from({ length: 16 }, (_, i) => `S${i + 2}`));
+    unbind();
+  });
+
+  it('treats repeated unbind calls as a no-op without throwing', () => {
+    installEventWindow();
+    const unbind = bindIndexItems(() => {});
+    expect(() => { unbind(); unbind(); unbind(); }).not.toThrow();
+  });
+
+  it('replays the queue and unbinds safely when window is unavailable', () => {
+    delete (globalThis as { window?: unknown }).window;
+    reportIndexItems({ securities: [{ id: 'NW', name: null }] });
+    const received: unknown[] = [];
+    let unbind: () => void = () => {};
+    expect(() => { unbind = bindIndexItems(detail => received.push(detail)); }).not.toThrow();
+    expect(received).toHaveLength(1);
+    expect(() => unbind()).not.toThrow();
   });
 });
 
@@ -754,5 +865,189 @@ describe('bootstrapPreferences (node DOM stubs)', () => {
     let result: ReturnType<typeof bootstrapPreferences> | undefined;
     expect(() => { result = bootstrapPreferences(); }).not.toThrow();
     expect(result).toEqual({ theme: 'light', density: 'comfortable' });
+  });
+});
+
+describe('sanitizeIndexPayload', () => {
+  it('透传结构合法的 payload（产生新对象/新数组，不共享引用）', () => {
+    const payload = { securities: [{ id: 'SH600000', name: '浦发银行' }], sectors: [{ id: 'SEC001', name: null }] };
+    const clean = sanitizeIndexPayload(payload);
+    expect(clean).toEqual({
+      securities: [{ id: 'SH600000', name: '浦发银行' }],
+      sectors: [{ id: 'SEC001', name: null }],
+    });
+    expect(clean.securities).not.toBe(payload.securities);
+    expect(clean.sectors).not.toBe(payload.sectors);
+    expect((clean.securities as SearchItem[])[0]).not.toBe(payload.securities[0]);
+    expect(clean).not.toBe(payload);
+  });
+
+  it.each([null, undefined, 'oops', 42, [], Object.create(null)])('非普通对象 detail %j → 空载荷', detail => {
+    expect(sanitizeIndexPayload(detail)).toEqual({});
+  });
+
+  it('securities/sectors 缺失或为非数组时丢弃该键', () => {
+    expect(sanitizeIndexPayload({})).toEqual({});
+    expect(sanitizeIndexPayload({ securities: null })).toEqual({});
+    expect(sanitizeIndexPayload({ securities: 'nope' })).toEqual({});
+    expect(sanitizeIndexPayload({ sectors: 42 })).toEqual({});
+    const clean = sanitizeIndexPayload({ securities: [], sectors: [] });
+    expect(clean).toEqual({ securities: [], sectors: [] });
+  });
+
+  it('丢弃畸形 item：非对象、id 非字符串或空白、name 既非 string 也非 null', () => {
+    const clean = sanitizeIndexPayload({
+      securities: [
+        null,
+        'SH600000',
+        42,
+        { id: '', name: '空 id' },
+        { id: '   ', name: '空白 id' },
+        { id: 42, name: '数字 id' },
+        { id: null, name: 'null id' },
+        { name: '无 id' },
+        { id: 'S1', name: 42 },
+        { id: 'S2', name: undefined },
+        { id: 'S3', name: { nested: true } },
+        { id: 'S4', name: '' },
+        { id: 'S5', name: null },
+        { id: 'S6', name: '正规名' },
+      ],
+    });
+    expect(clean.securities).toEqual([
+      { id: 'S4', name: '' },
+      { id: 'S5', name: null },
+      { id: 'S6', name: '正规名' },
+    ]);
+  });
+
+  it('对恶意 detail 从不抛出（含循环引用/抛错 getter）', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => sanitizeIndexPayload(cyclic)).not.toThrow();
+    const evil = {};
+    Object.defineProperty(evil, 'securities', { get() { throw new Error('boom'); } });
+    expect(() => sanitizeIndexPayload(evil)).not.toThrow();
+    expect(sanitizeIndexPayload(evil)).toEqual({});
+  });
+});
+
+describe('mergeIndexItems', () => {
+  const empty: SearchIndex = { securities: [], sectors: [] };
+  const item = (id: string, name: string | null = null): SearchItem => ({ id, name });
+
+  it('基本合并：两类按 securities 先于 sectors 归入', () => {
+    const merged = mergeIndexItems(empty, {
+      securities: [item('S1', '证券甲'), item('S2', '证券乙')],
+      sectors: [item('T1', '题材甲')],
+    });
+    expect(merged).toEqual({
+      securities: [{ id: 'S1', name: '证券甲' }, { id: 'S2', name: '证券乙' }],
+      sectors: [{ id: 'T1', name: '题材甲' }],
+    });
+  });
+
+  it('跨事件按 kind+id 去重并保持首见顺序', () => {
+    const first = mergeIndexItems(empty, { securities: [item('S2'), item('S1')], sectors: [item('T2')] });
+    const second = mergeIndexItems(first, { securities: [item('S1'), item('S3')], sectors: [item('T1'), item('T2')] });
+    expect(second.securities.map(s => s.id)).toEqual(['S2', 'S1', 'S3']);
+    expect(second.sectors.map(s => s.id)).toEqual(['T2', 'T1']);
+  });
+
+  it('同 id 新名字为非空白字符串则更新；null/空白保留旧名；旧名为 null 时可被新名补上', () => {
+    const prev: SearchIndex = {
+      securities: [item('S1', '旧名'), item('S2', null), item('S3', '旧名三')],
+      sectors: [],
+    };
+    const merged = mergeIndexItems(prev, {
+      securities: [
+        item('S1', '新名'),
+        item('S1', '再报一名'),
+        item('S2', null),
+        item('S3', '   '),
+        { id: 'S4', name: '' } as SearchItem,
+      ],
+    });
+    // 同事件内重复 id 以首个非空白新名为准（首见更新语义）
+    expect(merged.securities).toEqual([
+      { id: 'S1', name: '新名' },
+      { id: 'S2', name: null },
+      { id: 'S3', name: '旧名三' },
+      { id: 'S4', name: '' },
+    ]);
+    const filled = mergeIndexItems(
+      { securities: [item('S2', null)], sectors: [] },
+      { securities: [item('S2', '补名')] },
+    );
+    expect(filled.securities[0].name).toBe('补名');
+  });
+
+  it('畸形 item 在合并时同样被丢弃且不抛错（prev 与 incoming 都防御）', () => {
+    const dirtyPrev = {
+      securities: [null, 'x', 42, { id: '' }, { id: 'ok', name: 1 }, { name: '缺 id' }, item('KEEP', '保留')] as unknown[],
+      sectors: [{ id: 'T1', name: ['not-string'] }] as unknown[],
+    } as SearchIndex;
+    let merged: SearchIndex | undefined;
+    expect(() => {
+      merged = mergeIndexItems(dirtyPrev, {
+        securities: [null, { id: 'NEW', name: null }, { id: 7, name: null }, { id: 'NO_NAME' }] as unknown[] as SearchItem[],
+      });
+    }).not.toThrow();
+    // name 非法（数字/缺失）的整项一律丢弃，仅 KEEP 与合法 NEW 保留
+    expect(merged!.securities.map(s => s.id)).toEqual(['KEEP', 'NEW']);
+    expect(merged!.sectors).toEqual([]);
+  });
+
+  it('上限截断确定性：securities 先于 sectors 占满 maxTotal，超出按首见顺序丢弃', () => {
+    const prev: SearchIndex = {
+      securities: [item('S1'), item('S2'), item('S3')],
+      sectors: [item('T1')],
+    };
+    const merged = mergeIndexItems(prev, {
+      securities: [item('S4')],
+      sectors: [item('T2'), item('T3')],
+    }, 4);
+    expect(merged.securities.map(s => s.id)).toEqual(['S1', 'S2', 'S3', 'S4']);
+    expect(merged.sectors).toEqual([]);
+  });
+
+  it('上限截断在两 kind 间按比例切（securities 占满后不再评估 sectors），边界恰满不丢项', () => {
+    const merged = mergeIndexItems(empty, {
+      securities: [item('S1'), item('S2')],
+      sectors: [item('T1'), item('T2')],
+    }, 3);
+    expect(merged.securities.map(s => s.id)).toEqual(['S1', 'S2']);
+    expect(merged.sectors.map(s => s.id)).toEqual(['T1']);
+    const exact = mergeIndexItems(empty, {
+      securities: [item('S1')], sectors: [item('T1')],
+    }, 2);
+    expect(exact.securities.map(s => s.id)).toEqual(['S1']);
+    expect(exact.sectors.map(s => s.id)).toEqual(['T1']);
+  });
+
+  it('默认上限 500：300 证券 + 300 题材 → 证券 300 + 题材 200', () => {
+    const securities = Array.from({ length: 300 }, (_, i) => item(`S${i}`));
+    const sectors = Array.from({ length: 300 }, (_, i) => item(`T${i}`));
+    const merged = mergeIndexItems(empty, { securities, sectors });
+    expect(merged.securities).toHaveLength(300);
+    expect(merged.sectors).toHaveLength(200);
+    expect(merged.sectors[199].id).toBe('T199');
+  });
+
+  it('不突变入参并返回等价新对象', () => {
+    const prev: SearchIndex = { securities: [item('S1', '甲')], sectors: [item('T1')] };
+    const incoming = { securities: [item('S1', '乙'), item('S2')], sectors: [item('T2')] };
+    const prevSnapshot = JSON.stringify(prev);
+    const incomingSnapshot = JSON.stringify(incoming);
+    const merged = mergeIndexItems(prev, incoming);
+    expect(JSON.stringify(prev)).toBe(prevSnapshot);
+    expect(JSON.stringify(incoming)).toBe(incomingSnapshot);
+    expect(merged).not.toBe(prev);
+    expect(merged.securities).not.toBe(prev.securities);
+    expect(merged.sectors).not.toBe(prev.sectors);
+    const emptyResult = mergeIndexItems(empty, {});
+    expect(emptyResult).toEqual({ securities: [], sectors: [] });
+    expect(emptyResult).not.toBe(empty);
+    expect(emptyResult.securities).not.toBe(empty.securities);
   });
 });

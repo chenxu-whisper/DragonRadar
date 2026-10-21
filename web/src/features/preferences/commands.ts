@@ -1,5 +1,9 @@
 import type { DensityMode, ThemeMode } from './settings';
 
+/** 已加载索引上报事件名（上报方与监听方共用，杜绝拼写漂移）；常量留在静态侧，
+ * 避免仅经动态 import 外移的 search-index 被静态依赖拖入 entry。 */
+export const INDEX_ITEMS_EVENT = 'dr:index-items';
+
 export interface SearchItem {
   id: string;
   name: string | null;
@@ -43,9 +47,6 @@ export const SECURITY_PREFIX = 'security:';
 export const SECTOR_PREFIX = 'sector:';
 export const THEME_PREFIX = 'theme:';
 export const DENSITY_PREFIX = 'density:';
-/** 已加载索引上报事件名，切片 3 监听方共用此常量。 */
-export const INDEX_ITEMS_EVENT = 'dr:index-items';
-
 const REASON_UNAVAILABLE = '命令不在当前可用列表中。';
 const REASON_UNSUPPORTED = '暂不支持的命令类型。';
 
@@ -210,22 +211,72 @@ export function executeCommand(command: Command, ctx: CommandContext): CommandRe
     : { ok: true, action };
 }
 
+// 纯逻辑 search-index 仅由 App 侧动态 import 加载（独立懒 chunk）；这里只再导出类型，
+// 编译期完全擦除，不产生静态依赖边——禁止再导出其值绑定，否则合并/消毒实现会被拖入 entry。
+export type { SearchIndex, SanitizedIndexPayload } from './search-index';
+
 interface IndexEventTarget {
   CustomEvent: new (type: string, init?: { detail?: unknown }) => unknown;
   dispatchEvent: (event: unknown) => boolean;
+  addEventListener?: (type: string, listener: (event: Event) => void) => void;
+  removeEventListener?: (type: string, listener: (event: Event) => void) => void;
+}
+
+/**
+ * 绑定前补发队列：FIFO 缓存 chunk 就绪前的上报 detail，上限 16，超出丢最旧，
+ * 防止懒加载窗口内无限堆积。
+ */
+const INDEX_QUEUE_LIMIT = 16;
+let indexQueue: unknown[] = [];
+let indexBound = false;
+
+/**
+ * 绑定会话索引处理器：首次绑定先把绑定前缓存的 detail 按 FIFO 同步补发并清空队列，
+ * 随后经 window 上的 INDEX_ITEMS_EVENT 实时派发；返回解绑函数（移除监听、恢复未绑定态、
+ * 清空队列，重复调用安全无操作）。window/CustomEvent 缺失时补发仍工作、永不抛错。
+ */
+export function bindIndexItems(handler: (detail: unknown) => void): () => void {
+  let unbound = false;
+  const deliver = (detail: unknown) => {
+    try { handler(detail); } catch { /* handler 异常不得断开索引通道 */ }
+  };
+  for (const detail of indexQueue) deliver(detail);
+  indexQueue = [];
+  const listener = (event: Event) => deliver((event as CustomEvent<unknown>).detail);
+  const win = (globalThis as { window?: IndexEventTarget }).window;
+  if (win && typeof win.addEventListener === 'function') {
+    try { win.addEventListener(INDEX_ITEMS_EVENT, listener); } catch { /* 受限环境静默降级 */ }
+  }
+  indexBound = true;
+  return () => {
+    if (unbound) return;
+    unbound = true;
+    const current = (globalThis as { window?: IndexEventTarget }).window;
+    if (current && typeof current.removeEventListener === 'function') {
+      try { current.removeEventListener(INDEX_ITEMS_EVENT, listener); } catch { /* 同上 */ }
+    }
+    indexBound = false;
+    indexQueue = [];
+  };
 }
 
 /**
  * 派发已加载索引上报事件（node 环境零全局依赖）：
  * window/CustomEvent 缺失直接静默；CustomEvent 构造或 dispatchEvent 抛错
  * （受限环境或监听器抛错）同样吞掉，不影响调用方。
+ * 未绑定时额外把 payload 入补发队列，供懒 chunk 就绪后的首次绑定重放。
  */
 export function reportIndexItems(payload: { securities?: SearchItem[]; sectors?: SearchItem[] }): void {
   const win = (globalThis as { window?: IndexEventTarget }).window;
-  if (!win || typeof win.dispatchEvent !== 'function' || typeof win.CustomEvent !== 'function') return;
-  try {
-    win.dispatchEvent(new win.CustomEvent(INDEX_ITEMS_EVENT, { detail: payload }));
-  } catch {
-    // 静默：上报失败不得影响数据页主流程。
+  if (win && typeof win.dispatchEvent === 'function' && typeof win.CustomEvent === 'function') {
+    try {
+      win.dispatchEvent(new win.CustomEvent(INDEX_ITEMS_EVENT, { detail: payload }));
+    } catch {
+      // 静默：上报失败不得影响数据页主流程。
+    }
+  }
+  if (!indexBound) {
+    indexQueue.push(payload);
+    if (indexQueue.length > INDEX_QUEUE_LIMIT) indexQueue.shift();
   }
 }

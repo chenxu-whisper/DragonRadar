@@ -1,4 +1,4 @@
-import { useMemo, type ComponentType } from 'react';
+import { useEffect, useMemo, type ComponentType } from 'react';
 import { useResource } from '../../hooks/useResource';
 import type { ResearchState, Sort } from '../../state';
 import type { ResetRankData, Snapshot, WorkbenchEnvelope } from '../../types';
@@ -6,6 +6,7 @@ import { Exclusions, Pager, ResourceStatus, SearchForm, TableScroll, type Patch 
 import { IntervalForm } from '../../components/IntervalForm';
 import { analysisRange, analysisSortDescriptor } from './query';
 import { CsvExportButton } from '../../export/CsvExportButton';
+import { reportIndexItems } from '../preferences/commands';
 
 export interface ResetAnalysisProps {
   state: ResearchState;
@@ -65,6 +66,18 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
       `${item.security_id} ${item.name || ''}`.toLowerCase().includes(term));
   }, [response, state.q]);
   const visible = filtered.slice((state.page - 1) * state.page_size, state.page * state.page_size);
+  const rankData = response?.data;
+
+  // 仅上报本页已加载排行证券；不新增请求，排行证券为空时不派发。
+  // 不上报题材：排行项只携带题材快照域的 topic_id（与 News topic_id 同源），
+  // 而面板题材命令导航到 leaders 的 sector_id 空间，两 id 域不保证相等，
+  // 猜测映射会跳到 leaders 匹配不到的 sector；题材候选由 Overview/Leaders
+  // 已加载的 sector_id 提供。
+  useEffect(() => {
+    if (!rankData || rankData.ranking.length === 0) return;
+    const securities = rankData.ranking.map(item => ({ id: item.security_id, name: item.name }));
+    reportIndexItems({ securities });
+  }, [rankData]);
 
   return <>
     <div className="page-heading"><h1>涨幅分析</h1></div>

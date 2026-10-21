@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowRight, CircleDashed } from 'lucide-react';
-import { lazy, Suspense, useMemo, type ComponentType } from 'react';
+import { lazy, Suspense, useEffect, useMemo, type ComponentType } from 'react';
 import { ResourceStatus, TableScroll, type Patch } from '../components/Common';
 import { useResource } from '../hooks/useResource';
 import {
@@ -24,6 +24,7 @@ import type { ResearchState } from '../state';
 import type { ResetHeatmap, WorkbenchEnvelope } from '../types';
 import { CsvExportButton } from '../export/CsvExportButton';
 import { SectionBoundary } from '../features/roles/SectionBoundary';
+import { reportIndexItems } from '../features/preferences/commands';
 
 const RotationTimeline = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(() => import('../features/roles/RotationTimeline'))
@@ -109,6 +110,22 @@ export function Leaders({ state, patch, open, refreshToken, ReviewActions: _Revi
   const selectedStatus = state.sector
     ? candidateData?.statuses.find(item => item.sector_id === state.sector)
     : aggregateRoleStatuses(candidateData?.statuses ?? []);
+
+  // 上报本页已加载证券（梯队矩阵 stocks + 角色候选）与题材（逐题材状态 id，名字缺失传 null）；不新增请求。
+  useEffect(() => {
+    const ladderStocks = ladderData?.cells.flatMap(cell => cell.stocks) ?? [];
+    const securities = [
+      ...ladderStocks.map(stock => ({ id: stock.security_id, name: stock.name })),
+      ...(candidateData?.candidates.map(candidate => ({ id: candidate.security_id, name: candidate.name })) ?? []),
+    ];
+    const sectorIds = new Set<string>([
+      ...(candidateData?.statuses.map(item => item.sector_id) ?? []),
+      ...ladderStocks.map(stock => stock.sector_id),
+      ...(state.sector ? [state.sector] : []),
+    ]);
+    const sectors = [...sectorIds].map(id => ({ id, name: null }));
+    if (securities.length || sectors.length) reportIndexItems({ securities, sectors });
+  }, [ladderData, candidateData, state.sector]);
 
   return <>
     <div className="page-heading leaders-heading"><div><p className="eyebrow">梯队结构 / 角色证据</p><h1>梯队</h1></div>

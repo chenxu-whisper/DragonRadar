@@ -1,10 +1,12 @@
-import { lazy, Suspense, useEffect, useState, type ComponentType } from 'react';
+import { Component, lazy, Suspense, useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import { ArrowLeft, BarChart3, ChartNoAxesCombined, ChevronLeft, Menu, Radar, Newspaper, Layers, ShieldCheck, NotebookPen } from 'lucide-react';
 import { useLocation } from './hooks/useLocation';
 import { AccessProvider, useAccess, useResource } from './hooks/useResource';
-import { parseState, stateSearch, toggleCompare, type ResearchState } from './state';
+import { parseState, stateSearch, toggleCompare, type ResearchState, type View } from './state';
 import type { ResetSnapshotData, Snapshot, WorkbenchEnvelope } from './types';
-import { bootstrapPreferences, DENSITY_KEY, THEME_KEY } from './features/preferences/settings';
+import { bootstrapPreferences, DENSITY_KEY, isPaletteShortcut, THEME_KEY } from './features/preferences/settings';
+import { bindIndexItems, type CommandAction } from './features/preferences/commands';
+import type { SearchIndex } from './features/preferences/search-index';
 import { ResourceStatus, shouldHandleSpaClick, SnapshotEvidence } from './components/Common';
 import { SnapshotHeader } from './components/SnapshotHeader';
 import { CompareMembership } from './components/CompareMembership';
@@ -73,6 +75,41 @@ const SecurityPage = lazy(async () => ({
 const Comparison = lazy(async () => ({
   default: (await import('./components/Comparison')).Comparison as ComponentType<ComparisonProps>,
 }));
+// 命令面板仅 reset 构建接线：非 reset/私人构建下该动态 import 随死代码消除，不产出 chunk。
+const CommandPalette = resetEnabled
+  ? lazy(async () => ({ default: (await import('./components/CommandPalette')).CommandPalette }))
+  : null;
+
+/**
+ * 面板白名单的页面视图与文案：仅 reset 构建生成，直接沿用已按 publicSharing 收窄的
+ * resetNavigation；非 reset/私人构建下整个三元折叠，resetNavigation 随之死代码消除，
+ * 不把私有 marker（“我的复盘”）带入默认 entry。
+ */
+const paletteViews: readonly View[] = resetEnabled
+  ? resetNavigation.map(({ view }) => view as View)
+  : [];
+const paletteViewLabels: Record<string, string> = resetEnabled
+  ? Object.fromEntries(resetNavigation.map(({ view, text }) => [view, text]))
+  : {};
+const EMPTY_INDEX: SearchIndex = { securities: [], sectors: [] };
+const paletteFallback = (
+  <div className="command-palette-scrim">
+    <div className="command-palette command-palette-loading" role="dialog" aria-modal="true" aria-label="命令面板" aria-busy="true">
+      <span className="command-palette-loading-text" role="status">正在加载命令面板…</span>
+    </div>
+  </div>
+);
+
+/**
+ * 面板懒 chunk 加载/渲染失败边界：不得拖垮整棵 Workbench——失败即通知关闭并渲染 null；
+ * 关闭后本边界随面板子树卸载，再次打开是全新挂载、可重新尝试加载。
+ */
+class PaletteErrorBoundary extends Component<{ onClose: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch() { this.props.onClose(); }
+  render() { return this.state.failed ? null : this.props.children; }
+}
 
 function ResetReviewActions(props: { snapshot: string; security: string }) {
   return LocalReviewActions
@@ -99,6 +136,9 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const [menu, setMenu] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [drawer, setDrawer] = useState<{ id: string; sector?: string; trigger: HTMLElement; context: string } | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // 命令索引只保存在内存：仅由已加载 reset 页面经 dr:index-items 上报，去重上限 500。
+  const [index, setIndex] = useState<SearchIndex>(EMPTY_INDEX);
   const context = stateSearch(state, privateEnabled, resetEnabled);
   const list = useResource<Snapshot[] | ResetSnapshotList>(resetEnabled
     ? `/api/snapshots/list?${new URLSearchParams({ ...(state.date ? { date: state.date } : {}), limit: '100', offset: '0' })}`
@@ -168,6 +208,74 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   useEffect(() => {
     if (denied) { setNotice(''); patch({ compare: [], ...(resetEnabled && state.view === 'review' ? {} : { security: '' }) }, true); }
   }, [denied, context, patch, state.view]);
+  useEffect(() => {
+    if (!resetEnabled) return;
+    // 输入态 Ctrl/Cmd+K 也开面板（isPaletteShortcut 不排斥输入元素，仅拦 IME）；repeat 不切状态。
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (isPaletteShortcut(event)) {
+        // 原生顶层（如证券详情 <dialog open>）存在时，让其自身的 Esc/快捷键上下文优先，
+        // 不打开面板、不拦截默认行为。
+        if (document.querySelector('dialog[open]')) return;
+        event.preventDefault();
+        setPaletteOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+  useEffect(() => {
+    if (!resetEnabled) return;
+    let cancelled = false;
+    let unbind: (() => void) | undefined;
+    // 索引纯逻辑经动态 import 外移：entry 不静态携带合并/消毒实现。
+    // bindIndexItems 带 FIFO 补发队列，chunk resolve 前页面（同步首屏 effect）的上报不丢。
+    void import('./features/preferences/search-index').then(mod => {
+      if (cancelled) return;
+      unbind = bindIndexItems(detail => {
+        try {
+          setIndex(prev => mod.mergeIndexItems(prev, mod.sanitizeIndexPayload(detail)));
+        } catch {
+          // 监听器永不因恶意 detail 抛错。
+        }
+      });
+    }).catch(() => { /* chunk 异常时索引功能静默降级 */ });
+    return () => {
+      cancelled = true;
+      unbind?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (denied) { setIndex(EMPTY_INDEX); setPaletteOpen(false); }
+  }, [denied]);
+  /** 面板导航动作映射：不 eval、不拼 URL、不发请求，全部经 patch 守卫（脏草稿返回 false）。 */
+  const paletteNavigate = (action: Extract<CommandAction, { kind: 'goto' | 'security' | 'sector' }>): boolean => {
+    if (action.kind === 'goto') {
+      if (!paletteViews.includes(action.view as View)) return false;
+      return patch(destination(action.view as View));
+    }
+    if (action.kind === 'security') return patch({ view: 'stock', security: action.id });
+    return patch({ view: 'leaders', sector: action.id, security: '' });
+  };
+  const paletteFocusDate = () => {
+    document.getElementById('trade-date-input')?.focus();
+  };
+  // 触发按钮节点在 App 内按构建标志生成：非 reset/私人构建整体死代码消除，
+  // SnapshotHeader 只负责摆放（denied 时在其内隐藏），不静态持有按钮文案/class。
+  const paletteTrigger = resetEnabled ? (
+    <button
+      type="button"
+      className="command-palette-trigger"
+      onClick={() => setPaletteOpen(true)}
+      aria-haspopup="dialog"
+      aria-label="打开命令面板（Ctrl+K）"
+      title="打开命令面板（Ctrl+K）"
+    >命令搜索<kbd aria-hidden="true">Ctrl K</kbd></button>
+  ) : null;
+  // denied 时面板不提供 review 命令（规格 L108）；模块常量 paletteViews 保持不变。
+  const paletteAllowedViews = denied
+    ? paletteViews.filter(view => view !== 'review')
+    : paletteViews;
   const refresh = () => { if (denied) retry(); else setRefreshToken(v => v + 1); };
   const compare = (id: string) => {
     const result = toggleCompare(state.compare, id);
@@ -211,6 +319,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         refreshing={summary.loading || resetSummary.loading || list.loading}
         refreshToken={refreshToken}
         reset={resetEnabled}
+        paletteTrigger={paletteTrigger}
       />
       <main id="main" tabIndex={-1}>
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')}>关闭提示</button></div>}
@@ -291,6 +400,20 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         <button onClick={() => { if (patch({ compare: [] })) setNotice(''); }}>取消选择</button>
       </div>}
       <footer>只读研究 · 指标来自所选快照 · 数据缺失与排除单独披露</footer>
+      {CommandPalette && paletteOpen && (
+        <PaletteErrorBoundary onClose={() => setPaletteOpen(false)}>
+          <Suspense fallback={paletteFallback}>
+            <CommandPalette
+              onClose={() => setPaletteOpen(false)}
+              index={index}
+              allowedViews={paletteAllowedViews}
+              viewLabels={paletteViewLabels}
+              onNavigate={paletteNavigate}
+              onFocusDate={paletteFocusDate}
+            />
+          </Suspense>
+        </PaletteErrorBoundary>
+      )}
     </div>
   </div>;
 }

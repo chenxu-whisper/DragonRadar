@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, type ComponentType } from 'react';
+import { lazy, Suspense, useEffect, useMemo, type ComponentType } from 'react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
 import type { Envelope, Overview as Breadth, ResetHeatmap, ResetOverview, ResetSecurityIdentity, Securities, WorkbenchEnvelope } from '../types';
@@ -7,6 +7,7 @@ import { Chart } from '../components/Chart';
 import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, TableScroll, type Patch } from '../components/Common';
 import { LazyLoadBoundary } from '../components/LazyLoadBoundary';
 import { chartThemeColors } from '../features/preferences/settings';
+import { reportIndexItems } from '../features/preferences/commands';
 import { useThemeMode } from '../hooks/useThemeMode';
 
 const RealtimePanel = import.meta.env.VITE_RESET_WORKBENCH === '1'
@@ -50,6 +51,19 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
       { value: counts.unchanged, itemStyle: { color: breadthColors.muted } },
     ] : [] }],
   }), [counts, breadthColors]);
+  // reset 模式下把本页已加载的证券（涨跌成员全集）与题材（热门+板块流）上报给命令面板索引；不新增任何请求。
+  useEffect(() => {
+    if (!reset) return;
+    const overview = resetOverview.data?.data;
+    if (!overview) return;
+    const securities = memberDirections
+      .flatMap(group => overview.breadth.members[group])
+      .map(member => ({ id: member.security_id, name: member.name }));
+    const sectorFlow = resetSectors.data?.data.sectors ?? [];
+    const sectors = [...overview.hot_sectors, ...sectorFlow]
+      .map(sector => ({ id: sector.sector_id, name: sector.name }));
+    reportIndexItems({ securities, sectors });
+  }, [reset, resetOverview.data, resetSectors.data]);
   if (reset) {
     const overview = resetOverview.data?.data;
     const ratio = (value: number | null) => value === null ? '不适用' : `${(value * 100).toFixed(2)}%`;
