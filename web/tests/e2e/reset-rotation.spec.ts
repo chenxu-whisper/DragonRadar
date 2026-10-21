@@ -78,9 +78,16 @@ test('renders the deterministic two-sector rotation timeline pinned to serving s
   // 七个节点都带机器可读时间戳
   await expect(section.locator('time[datetime]')).toHaveCount(7);
 
-  // 五种变化文案齐全
-  for (const label of ['新观察段', '核心未变', '核心扩大', '核心缩小', '核心重组']) {
-    await expect(section.getByText(label, { exact: true }).first()).toBeVisible();
+  // 五种变化文案及次数由七事件确定性决定（新观察段/核心未变各 2，其余各 1）
+  const changeCounts: ReadonlyArray<readonly [string, number]> = [
+    ['新观察段', 2],
+    ['核心未变', 2],
+    ['核心扩大', 1],
+    ['核心缩小', 1],
+    ['核心重组', 1],
+  ];
+  for (const [label, count] of changeCounts) {
+    await expect(section.getByText(label, { exact: true })).toHaveCount(count);
   }
 
   // 可比 / 不可比徽章：5 个可比节点，2 个新观察段
@@ -154,6 +161,15 @@ test('refetches and re-paginates the window when the day selector changes', asyn
   await expect
     .poll(() => rotationRequests.at(-1)?.searchParams.get('days'))
     .toBe('30');
+
+  // 最大固定档位 120 同样触发重新请求与重分页：七个事件全部落在窗口内
+  await section.getByLabel('轮动窗口交易日数').selectOption('120');
+  await expect
+    .poll(() => rotationRequests.at(-1)?.searchParams.get('days'))
+    .toBe('120');
+  await expect(meta).toContainText('窗口 2026-05-14–2026-09-10');
+  await expect(lane(page, SECTOR_A).locator('li.rotation-node')).toHaveCount(4);
+  await expect(lane(page, SECTOR_B).locator('li.rotation-node')).toHaveCount(3);
 });
 
 test('filters lanes by sector and restores both lanes when the filter is cleared', async ({ page }) => {
@@ -202,7 +218,8 @@ test('opens historical evidence pinned to the serving snapshot and switches to t
   await expect.poll(() => evidenceRequests.some(
     url => url.searchParams.get('security_id') === 'TEST001'
       && url.searchParams.get('date') === '2026-09-09'
-      && url.searchParams.get('snapshot_id') === OLD,
+      && url.searchParams.get('snapshot_id') === OLD
+      && url.searchParams.get('sector') === SECTOR_A,
   )).toBe(true);
   const historical = evidenceRequests.filter(
     url => url.searchParams.get('security_id') === 'TEST001'
@@ -212,6 +229,7 @@ test('opens historical evidence pinned to the serving snapshot and switches to t
   for (const url of historical) {
     expect(url.searchParams.get('snapshot_id')).toBe(OLD);
     expect(url.searchParams.get('snapshot_id')).not.toBe(ID);
+    expect(url.searchParams.get('sector')).toBe(SECTOR_A);
   }
 
   // 再开锚点 09-10 TEST002：旧 region 卸载，证据改由当前发布 ID 提供
@@ -223,11 +241,12 @@ test('opens historical evidence pinned to the serving snapshot and switches to t
   await expect.poll(() => evidenceRequests.some(
     url => url.searchParams.get('security_id') === 'TEST002'
       && url.searchParams.get('date') === ANCHOR_DATE
-      && url.searchParams.get('snapshot_id') === ID,
+      && url.searchParams.get('snapshot_id') === ID
+      && url.searchParams.get('sector') === SECTOR_A,
   )).toBe(true);
 });
 
-test('clears the selected node on close, window change, sector change and anchor navigation', async ({ page }) => {
+test('clears the selected node on close, window change, sector change, in-app date change and anchor navigation', async ({ page }) => {
   const rotationRequests = trackRotationRequests(page);
   const evidenceRequests = trackEvidenceRequests(page);
   await mockRotation(page);
@@ -275,6 +294,15 @@ test('clears the selected node on close, window change, sector change and anchor
       && url.searchParams.get('date') === '2026-09-09'
       && url.searchParams.get('snapshot_id') === OLD,
   )).toBe(true);
+
+  // 应用内修改交易日期（同时清空待核验快照）不经过整页重载，也必须立即收起
+  // 已展开的证据：覆盖清空 effect 的 date/snapshot 依赖。快照重新核验前
+  // 轮动资源禁用，不得携带未核验日期发出请求。
+  await page.locator('.leaders-controls').getByLabel('交易日期').fill('2026-09-08');
+  await expect(page.locator(`#${regionId}`)).toHaveCount(0);
+  expect(rotationRequests.filter(
+    url => url.searchParams.get('date') === '2026-09-08',
+  )).toHaveLength(0);
 });
 
 test('opens and closes the evidence region entirely from the keyboard', async ({ page }) => {
@@ -373,9 +401,18 @@ test('is axe-clean without horizontal overflow at 375px with evidence open', asy
   });
   expect(metrics).toEqual({ pageFits: true, sectionFits: true, evidenceFits: true });
 
-  const firstNodeBox = await rotationSection(page).locator('li.rotation-node').first().boundingBox();
-  expect(firstNodeBox).not.toBeNull();
-  expect(firstNodeBox!.x).toBeGreaterThanOrEqual(0);
+  // 七个节点逐个做左右双缘 containment，右缘越界不能只靠滚动宽指标间接发现
+  const nodeEdges = await rotationSection(page).locator('li.rotation-node').evaluateAll(
+    nodes => nodes.map(node => {
+      const rect = node.getBoundingClientRect();
+      return { left: rect.left, right: rect.right };
+    }),
+  );
+  expect(nodeEdges).toHaveLength(7);
+  for (const edge of nodeEdges) {
+    expect(edge.left).toBeGreaterThanOrEqual(0);
+    expect(edge.right).toBeLessThanOrEqual(375);
+  }
 
   expect(consoleErrors).toEqual([]);
 });
