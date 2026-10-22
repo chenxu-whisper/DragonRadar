@@ -8,13 +8,23 @@ without DRAGON_TEST_DATABASE_URL.
 
 import hashlib
 import json
+import pathlib
 import unicodedata
+import uuid
 from datetime import date
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
+from dragon_radar.query import model_parser
+from dragon_radar.query.model_parser import (
+    QUERY_AI_DOMAINS,
+    ModelQueryParser,
+    QuerySnapshotMeta,
+    propose_model_ast,
+    query_model_parser_from_environment,
+)
 from dragon_radar.query.models import (
     AST_VERSION,
     PARSER_VERSION,
@@ -1607,3 +1617,636 @@ def test_comma_after_in_list_does_not_start_new_predicate_backlog():
     item = outcome.unsupported[0]
     assert item.code is UnsupportedCode.UNSUPPORTED_VALUE
     assert item.token == "代码是 B"
+
+
+# ===========================================================================
+# Slice 3 (spec 3.7 / QRY-BE 8): optional model-provider seam (model_parser)
+# ===========================================================================
+
+
+_META = QuerySnapshotMeta(
+    snapshot_id=uuid.UUID("12345678-1234-5678-1234-567812345678"),
+    trade_date=date(2026, 10, 22),
+    revision=3,
+)
+_UNSET = object()
+_ROLES_UNSET = object()
+
+
+class _FakeModelParser:
+    """Recording adapter: returns a configured proposal or raises."""
+
+    def __init__(
+        self,
+        *,
+        name: str = "fake-llm",
+        model_version: str = "fake-model-v1",
+        proposal=_UNSET,
+        raises: BaseException | None = None,
+    ) -> None:
+        self.name = name
+        self.model_version = model_version
+        self._proposal = proposal
+        self._raises = raises
+        self.calls: list[tuple[object, object]] = []
+
+    def propose(self, text: str, snapshot_meta: QuerySnapshotMeta):
+        self.calls.append((text, snapshot_meta))
+        if self._raises is not None:
+            raise self._raises
+        if self._proposal is _UNSET:
+            return None
+        return self._proposal
+
+
+def _ast_body(**overrides):
+    """Python-typed AST body (enums/Decimal/tuples), as model_validate accepts."""
+
+    body = _parse("涨幅大于5%的股票").ast.model_dump(mode="python")
+    body.update(overrides)
+    return body
+
+
+def _propose(
+    text="市值大于5%",
+    *,
+    adapter=None,
+    meta=_META,
+    licensed=True,
+    deterministic=None,
+    roles=None,
+):
+    deterministic = parse_query(text) if deterministic is None else deterministic
+    kwargs = {} if roles is _ROLES_UNSET else {"role_names": roles}
+    return propose_model_ast(
+        text,
+        deterministic=deterministic,
+        adapter=adapter,
+        ai_licensed=licensed,
+        snapshot_meta=meta,
+        **kwargs,
+    )
+
+
+# --- QuerySnapshotMeta -------------------------------------------------------
+
+
+def test_snapshot_meta_normalizes_str_uuid_and_freezes_three_keys():
+    meta = QuerySnapshotMeta(
+        snapshot_id="12345678-1234-5678-1234-567812345678",
+        trade_date=date(2026, 10, 22),
+        revision=0,
+    )
+    assert meta.snapshot_id == uuid.UUID("12345678-1234-5678-1234-567812345678")
+    assert set(meta.model_dump().keys()) == {"snapshot_id", "trade_date", "revision"}
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"snapshot_id": "not-a-uuid", "trade_date": date(2026, 10, 22), "revision": 0},
+        {
+            "snapshot_id": uuid.uuid4(),
+            "trade_date": "2026-10-22",
+            "revision": 0,
+        },  # strict: str date rejected
+        {"snapshot_id": uuid.uuid4(), "trade_date": date(2026, 10, 22), "revision": -1},
+        {
+            "snapshot_id": uuid.uuid4(),
+            "trade_date": date(2026, 10, 22),
+            "revision": True,
+        },
+        {
+            "snapshot_id": uuid.uuid4(),
+            "trade_date": date(2026, 10, 22),
+            "revision": 1.5,
+        },
+    ],
+)
+def test_snapshot_meta_rejects_illegal_shapes(kwargs):
+    with pytest.raises(ValidationError):
+        QuerySnapshotMeta(**kwargs)
+
+
+def test_snapshot_meta_forbids_context_payload_extra_keys():
+    # AC-X02: the model may never receive payload/names/market facts; the
+    # context object is exactly three closed keys.
+    with pytest.raises(ValidationError):
+        QuerySnapshotMeta(
+            snapshot_id=uuid.uuid4(),
+            trade_date=date(2026, 10, 22),
+            revision=0,
+            payload={"close": [1, 2, 3]},
+            name="某某股份",
+        )
+
+
+# --- QueryParsed kind / model_version invariants ----------------------------
+
+
+def test_deterministic_queryparsed_defaults_kind_without_model_version():
+    outcome = _parse("涨幅大于5%的股票")
+    assert outcome.parser_kind is ParserKind.DETERMINISTIC
+    assert outcome.model_version is None
+
+
+def test_model_kind_requires_safe_model_version_and_forbids_deterministic_version():
+    ast = _parse("涨幅大于5%的股票").ast
+    QueryParsed(
+        ast=ast,
+        ast_hash=ast_hash_of(ast),
+        explanation=explain_ast(ast),
+        parser_kind=ParserKind.MODEL,
+        model_version="model-2026.10:1",
+    )
+    # internal ASCII space is within the safe metadata alphabet
+    QueryParsed(
+        ast=ast,
+        ast_hash=ast_hash_of(ast),
+        explanation=explain_ast(ast),
+        parser_kind=ParserKind.MODEL,
+        model_version="model v1",
+    )
+    # validate_provider_metadata allows internal ASCII spaces but rejects
+    # empty/blank, leading/trailing whitespace, over-length and control chars.
+    for version in (None, "", " ", "x" * 101, " bad", "bad\n", "tab\t"):
+        with pytest.raises(ValidationError):
+            QueryParsed(
+                ast=ast,
+                ast_hash=ast_hash_of(ast),
+                explanation=explain_ast(ast),
+                parser_kind=ParserKind.MODEL,
+                model_version=version,
+            )
+    with pytest.raises(ValidationError):
+        QueryParsed(
+            ast=ast,
+            ast_hash=ast_hash_of(ast),
+            explanation=explain_ast(ast),
+            model_version="model-v1",
+        )
+
+
+# --- happy path --------------------------------------------------------------
+
+
+def test_compliant_model_proposal_is_accepted_as_model_kind():
+    body = _ast_body()
+    adapter = _FakeModelParser(proposal=body)
+    outcome = _propose(adapter=adapter)
+    assert isinstance(outcome, QueryParsed)
+    assert adapter.calls  # adapter was consulted
+    assert outcome.parser_kind is ParserKind.MODEL
+    assert outcome.model_version == "fake-model-v1"
+    assert outcome.unsupported == ()
+    # server-side rehash: never trust a model-supplied hash
+    expected_ast = QueryAst.model_validate(body)
+    assert outcome.ast == expected_ast
+    assert outcome.ast_hash == ast_hash_of(expected_ast)
+    fake_hash = hashlib.sha256(b"not-the-ast").hexdigest()
+    assert outcome.ast_hash != fake_hash
+    # deterministic explanation generator, verbatim; no snapshot line here
+    assert outcome.explanation == explain_ast(expected_ast)
+    assert "B000300" in outcome.explanation
+    assert "快照日期" not in outcome.explanation
+
+
+def test_model_proposal_carrying_ast_hash_or_extra_key_is_rejected():
+    for body in (
+        {**_ast_body(), "ast_hash": "0" * 64},
+        {**_ast_body(), "reasoning": "free text"},
+    ):
+        adapter = _FakeModelParser(proposal=body)
+        outcome = _propose(adapter=adapter)
+        assert isinstance(outcome, QueryUnsupported)
+        assert outcome.ast is None
+        codes = [item.code for item in outcome.unsupported]
+        assert codes[-1] is UnsupportedCode.MODEL_AST_REJECTED
+        # rejected outcomes carry no model kind (no parser_kind surface on
+        # QueryUnsupported: it exists only on an accepted QueryParsed)
+        assert not hasattr(outcome, "model_version")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _ast_body(version=2),
+        _ast_body(predicates=()),
+        _ast_body(predicates=tuple(_pred(Field.BOARDS, Op.EQ, n) for n in range(1, 7))),
+        _ast_body(limit=101),
+        # Illegal values must bypass the trusted Predicate constructor: they
+        # reach QueryAst.model_validate as raw dict entries and are rejected
+        # by the same matrix the model seam re-applies server-side.
+        _ast_body(
+            predicates=(
+                {"field": Field.RETURN_RATIO, "op": Op.GT, "value": Decimal("11")},
+            )
+        ),
+        _ast_body(
+            predicates=(
+                {"field": Field.RETURN_RATIO, "op": Op.GT, "value": Decimal("-2")},
+            )
+        ),
+        _ast_body(
+            predicates=(
+                {
+                    "field": Field.RETURN_RATIO,
+                    "op": Op.GT,
+                    "value": Decimal("0.1234567"),
+                },
+            )
+        ),
+        _ast_body(predicates=({"field": Field.ROLE, "op": Op.EQ, "value": "marshal"},)),
+        # enum-instance op/field swapped for illegal combinations
+        {
+            "version": 1,
+            "predicates": ({"field": "market_cap", "op": "eq", "value": "x"},),
+            "sort": None,
+            "limit": 50,
+        },
+        {
+            "version": 1,
+            "predicates": ({"field": "boards", "op": "like", "value": 3},),
+            "sort": None,
+            "limit": 50,
+        },
+    ],
+)
+def test_illegal_model_ast_shapes_are_not_adopted(body):
+    adapter = _FakeModelParser(proposal=body)
+    outcome = _propose(adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    assert outcome.ast is None
+    assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_AST_REJECTED
+    assert outcome.unsupported[-1].token is None
+
+
+@pytest.mark.parametrize("shape", [["not", "a", "dict"], "ast", 42])
+def test_non_dict_proposal_is_model_ast_rejected(shape):
+    adapter = _FakeModelParser(proposal=shape)
+    outcome = _propose(adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_AST_REJECTED
+
+
+def test_none_proposal_returns_deterministic_unsupported_unchanged():
+    # None is the legitimate "model has no proposal" signal (spec 3.7): the
+    # deterministic unsupported outcome is returned as-is, with no model code.
+    deterministic = parse_query("市值大于5%")
+    adapter = _FakeModelParser(proposal=None)
+    outcome = _propose(deterministic=deterministic, adapter=adapter)
+    assert outcome is deterministic
+    assert [item.code for item in outcome.unsupported] == [
+        UnsupportedCode.UNKNOWN_FIELD
+    ]
+
+
+def test_rejection_preserves_deterministic_items_by_appending():
+    deterministic = parse_query("涨幅像5%")
+    adapter = _FakeModelParser(proposal=_ast_body(limit=101))
+    outcome = _propose(deterministic=deterministic, adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    codes = [item.code for item in outcome.unsupported]
+    assert codes[:-1] == [item.code for item in deterministic.unsupported]
+    assert codes[-1] is UnsupportedCode.MODEL_AST_REJECTED
+
+
+# --- gates -------------------------------------------------------------------
+
+
+def test_deterministic_success_never_calls_adapter_even_when_licensed():
+    deterministic = _parse("涨幅大于5%的股票")
+    adapter = _FakeModelParser(proposal=_ast_body())
+    outcome = _propose(
+        "涨幅大于5%的股票",
+        adapter=adapter,
+        deterministic=deterministic,
+    )
+    assert outcome is deterministic
+    assert outcome.parser_kind is ParserKind.DETERMINISTIC
+    assert adapter.calls == []
+
+
+@pytest.mark.parametrize(
+    "adapter,licensed",
+    [
+        (_FakeModelParser(proposal=_ast_body()), False),
+        (None, True),
+        (None, False),
+    ],
+)
+def test_dual_gate_closure_never_calls_adapter(adapter, licensed):
+    deterministic = parse_query("市值大于5%")
+    outcome = _propose(deterministic=deterministic, adapter=adapter, licensed=licensed)
+    assert outcome is deterministic
+    if adapter is not None:
+        assert adapter.calls == []
+
+
+def test_adapter_receives_only_raw_text_and_snapshot_meta():
+    adapter = _FakeModelParser(proposal=_ast_body())
+    text = "市值大于5%"
+    _propose(text, adapter=adapter, meta=_META)
+    assert adapter.calls == [(text, _META)]
+    # the meta object itself exposes exactly the three closed fields
+    sent = adapter.calls[0][1]
+    assert set(sent.model_dump(mode="python").keys()) == {
+        "snapshot_id",
+        "trade_date",
+        "revision",
+    }
+
+
+# --- provider failures -------------------------------------------------------
+
+
+class _ProviderLikeUnavailable(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("SECRET_INTERNAL_TIMEOUT_DETAIL boom traceback"),
+        TimeoutError("deadline exceeded SECRET"),
+        _ProviderLikeUnavailable("provider down"),
+    ],
+)
+def test_provider_exception_degrades_to_deterministic_model_unavailable(error):
+    deterministic = parse_query("市值大于5%")
+    adapter = _FakeModelParser(raises=error)
+    outcome = _propose(deterministic=deterministic, adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    codes = [item.code for item in outcome.unsupported]
+    assert codes[:-1] == [item.code for item in deterministic.unsupported]
+    assert codes[-1] is UnsupportedCode.MODEL_UNAVAILABLE
+    item = outcome.unsupported[-1]
+    assert item.token is None
+    serialized = json.dumps(
+        [entry.model_dump(mode="json") for entry in outcome.unsupported],
+        ensure_ascii=False,
+    )
+    assert "SECRET_INTERNAL_TIMEOUT_DETAIL" not in serialized
+    assert "Traceback" not in serialized
+    assert error.__class__.__name__ not in item.reason
+
+
+def test_base_exception_from_adapter_is_not_swallowed():
+    # The orchestrator catches Exception, never BaseException.
+    adapter = _FakeModelParser(raises=KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _propose(adapter=adapter)
+
+
+def test_adapter_with_invalid_metadata_degrades_without_calling_propose():
+    adapter = _FakeModelParser(model_version="x" * 101, proposal=_ast_body())
+    outcome = _propose(adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_UNAVAILABLE
+    assert adapter.calls == []
+
+
+# --- module surface ----------------------------------------------------------
+
+
+def test_environment_factory_is_always_none():
+    assert query_model_parser_from_environment() is None
+
+
+def test_query_ai_domains_frozen_market_only():
+    assert QUERY_AI_DOMAINS == frozenset({"market"})
+    assert isinstance(QUERY_AI_DOMAINS, frozenset)
+
+
+def test_model_parser_is_protocol_and_fake_satisfies_it():
+    assert isinstance(_FakeModelParser(), ModelQueryParser)
+
+
+def test_model_parser_module_has_no_execute_or_db_runtime_surface():
+    # White-box (spec 3.7 / EX13): the model seam never gets an execute
+    # channel and this slice imports no DB driver/engine.
+    source = pathlib.Path(model_parser.__file__).read_text(encoding="utf-8")
+    forbidden = (
+        "psycopg",
+        "sqlalchemy.engine",
+        "def execute",
+        ".connect(",
+        "engine",
+        "insert",
+        "update",
+        "delete",
+    )
+    for token in forbidden:
+        assert token not in source, token
+    # no new third-party dependency beyond pydantic/domain/ai-provider check
+    for line in source.splitlines():
+        if line.startswith("import ") or line.startswith("from "):
+            assert "psycopg" not in line and "sqlalchemy" not in line
+
+
+# ===========================================================================
+# Slice 3 review closure (2026-10-22): five post-review fixes
+# ===========================================================================
+
+
+def _role_eq_body(role: str):
+    return {
+        "version": 1,
+        "predicates": (_pred(Field.ROLE, Op.EQ, role),),
+        "sort": None,
+        "limit": 50,
+    }
+
+
+def _role_in_body(roles: tuple[str, ...]):
+    return {
+        "version": 1,
+        "predicates": (_pred(Field.ROLE, Op.IN, roles),),
+        "sort": None,
+        "limit": 50,
+    }
+
+
+# --- fix 1: role subset is re-checked on the model channel -------------------
+
+
+def test_model_role_eq_rejected_when_subset_empty():
+    adapter = _FakeModelParser(proposal=_role_eq_body("zhongjun"))
+    outcome = _propose(adapter=adapter, roles=())
+    assert isinstance(outcome, QueryUnsupported)
+    assert outcome.ast is None
+    assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_AST_REJECTED
+    assert outcome.unsupported[-1].token is None
+    # adapter was consulted, but the snapshot enables no roles -> rejected
+    assert adapter.calls
+
+
+@pytest.mark.parametrize(
+    "subset,body_factory,accepted",
+    [
+        (frozenset({"trend_leader"}), lambda: _role_eq_body("zhongjun"), False),
+        (frozenset({"trend_leader"}), lambda: _role_eq_body("trend_leader"), True),
+        ({"trend_leader"}, lambda: _role_in_body(("zhongjun", "trend_leader")), False),
+        (
+            {"trend_leader", "zhongjun"},
+            lambda: _role_in_body(("zhongjun", "trend_leader")),
+            True,
+        ),
+        (tuple(ROLE_EXTERNAL_VALUES), lambda: _role_eq_body("buZhang"), True),
+    ],
+)
+def test_model_role_subset_matrix(subset, body_factory, accepted):
+    adapter = _FakeModelParser(proposal=body_factory())
+    outcome = _propose(adapter=adapter, roles=subset)
+    if accepted:
+        assert isinstance(outcome, QueryParsed)
+        assert outcome.parser_kind is ParserKind.MODEL
+    else:
+        assert isinstance(outcome, QueryUnsupported)
+        assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_AST_REJECTED
+
+
+def test_model_role_subset_none_accepts_all_six_enums():
+    for role in ROLE_EXTERNAL_VALUES:
+        adapter = _FakeModelParser(proposal=_role_eq_body(role))
+        outcome = _propose(adapter=adapter, roles=None)
+        assert isinstance(outcome, QueryParsed), role
+        assert outcome.parser_kind is ParserKind.MODEL
+
+
+def test_non_role_predicates_unaffected_by_empty_role_subset():
+    adapter = _FakeModelParser(proposal=_ast_body())
+    outcome = _propose(adapter=adapter, roles=())
+    assert isinstance(outcome, QueryParsed)
+    assert outcome.parser_kind is ParserKind.MODEL
+    assert outcome.ast.predicates[0].field is Field.RETURN_RATIO
+
+
+# --- fix 2: exotic adapter objects never escape as non-ValueError -----------
+
+
+class _EvilDecimal(Decimal):
+    def is_finite(self):  # type: ignore[override]
+        raise RuntimeError("SECRET_EVIL_DECIMAL_DETAIL")
+
+
+class _EvilTuple(tuple):
+    def __len__(self):  # type: ignore[override]
+        raise RuntimeError("SECRET_EVIL_TUPLE_DETAIL")
+
+
+@pytest.mark.parametrize(
+    "proposal",
+    [
+        _ast_body(
+            predicates=(
+                {
+                    "field": Field.RETURN_RATIO,
+                    "op": Op.GT,
+                    "value": _EvilDecimal("0.05"),
+                },
+            )
+        ),
+        {
+            "version": 1,
+            "predicates": _EvilTuple(
+                (
+                    {
+                        "field": "boards",
+                        "op": "eq",
+                        "value": 3,
+                    },
+                )
+            ),
+            "sort": None,
+            "limit": 50,
+        },
+    ],
+)
+def test_exotic_proposal_objects_degrade_to_rejected_without_leak(proposal):
+    adapter = _FakeModelParser(proposal=proposal)
+    outcome = _propose(adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_AST_REJECTED
+    serialized = json.dumps(
+        [entry.model_dump(mode="json") for entry in outcome.unsupported],
+        ensure_ascii=False,
+    )
+    assert "SECRET_EVIL_DECIMAL_DETAIL" not in serialized
+    assert "SECRET_EVIL_TUPLE_DETAIL" not in serialized
+    assert "Traceback" not in serialized
+
+
+# --- fix 3: ai_licensed is a hard bool gate ----------------------------------
+
+
+@pytest.mark.parametrize("truthy_non_bool", [1, -1, "yes", "true", [1], 2.0])
+def test_truthy_non_bool_license_never_opens_the_gate(truthy_non_bool):
+    deterministic = parse_query("市值大于5%")
+    adapter = _FakeModelParser(proposal=_ast_body())
+    outcome = propose_model_ast(
+        "市值大于5%",
+        deterministic=deterministic,
+        adapter=adapter,
+        ai_licensed=truthy_non_bool,
+        snapshot_meta=_META,
+    )
+    assert outcome is deterministic
+    assert adapter.calls == []
+
+
+# --- fix 4: proposals must be Python-native, not JSON round-trip -------------
+
+
+def test_json_roundtrip_body_is_model_ast_rejected():
+    compliant = _parse("涨幅大于5%的股票").ast
+    adapter = _FakeModelParser(proposal=compliant.model_dump(mode="json"))
+    outcome = _propose(adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_AST_REJECTED
+
+
+def test_float_return_ratio_is_model_ast_rejected():
+    adapter = _FakeModelParser(
+        proposal=_ast_body(
+            predicates=({"field": Field.RETURN_RATIO, "op": Op.GT, "value": 0.05},)
+        )
+    )
+    outcome = _propose(adapter=adapter)
+    assert isinstance(outcome, QueryUnsupported)
+    assert outcome.unsupported[-1].code is UnsupportedCode.MODEL_AST_REJECTED
+
+
+# --- fix 5: empty_input never escalates to the model -------------------------
+
+
+@pytest.mark.parametrize("blank", ["   ", "\u3000", "\t "])
+def test_empty_input_never_calls_adapter_even_through_both_gates(blank):
+    deterministic = parse_query(blank)
+    assert isinstance(deterministic, QueryUnsupported)
+    assert [item.code for item in deterministic.unsupported] == [
+        UnsupportedCode.EMPTY_INPUT
+    ]
+    adapter = _FakeModelParser(proposal=_ast_body())
+    outcome = _propose(
+        blank, adapter=adapter, deterministic=deterministic, licensed=True
+    )
+    assert outcome is deterministic
+    assert adapter.calls == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "涨幅大于5% 或 角色是中军",  # unsupported_logic
+        "市值大于5%",  # unknown_field
+    ],
+)
+def test_other_unsupported_codes_still_allow_model_rescue(text):
+    deterministic = parse_query(text)
+    assert isinstance(deterministic, QueryUnsupported)
+    adapter = _FakeModelParser(proposal=_ast_body())
+    outcome = _propose(text, adapter=adapter, deterministic=deterministic)
+    assert isinstance(outcome, QueryParsed)
+    assert outcome.parser_kind is ParserKind.MODEL
+    assert adapter.calls

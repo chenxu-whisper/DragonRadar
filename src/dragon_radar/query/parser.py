@@ -27,6 +27,7 @@ from pydantic import (
 )
 from pydantic import Field as PydanticField
 
+from dragon_radar.ai.provider import validate_provider_metadata
 from dragon_radar.domain.models import FrozenModel
 
 from .models import (
@@ -35,6 +36,7 @@ from .models import (
     ROLE_EXTERNAL_VALUES,
     Field,
     Op,
+    ParserKind,
     Predicate,
     QueryAst,
     SortDirection,
@@ -293,11 +295,25 @@ class QueryParsed(_StrictFrozenModel):
     ast_hash: str = PydanticField(pattern=r"^[0-9a-f]{64}$")
     explanation: StrictStr = PydanticField(min_length=1)
     unsupported: tuple[()] = ()
+    # Provenance (spec 3.5 line 209-210 / 3.7): deterministic parses never
+    # carry a model_version; model-proposed parses must carry the adapter's
+    # 1..100-char safe ASCII model_version. Mirrors the query_records CHECK
+    # constraint query_records_kind_model_version at the result-type layer.
+    parser_kind: ParserKind = ParserKind.DETERMINISTIC
+    model_version: StrictStr | None = None
 
     @model_validator(mode="after")
-    def _ast_hash_matches_body(self) -> "QueryParsed":
+    def _cross_field_invariants(self) -> "QueryParsed":
         if self.ast_hash != ast_hash_of(self.ast):
             raise ValueError("ast_hash must equal ast_hash_of(ast)")
+        if self.parser_kind is ParserKind.MODEL:
+            # Same single metadata gate as AI provider configuration:
+            # non-blank, stripped, 1..100 ASCII-safe characters.
+            validate_provider_metadata(
+                self.model_version, error="model parser_kind requires model_version"
+            )
+        elif self.model_version is not None:
+            raise ValueError("model_version must be null for deterministic parses")
         return self
 
 
