@@ -615,7 +615,9 @@ ROLE_NAMES = {
 
 **依赖：** 02、09、12、13、19；可选模型适配依赖17。**接口：** EX12-13。**生产输入：** 数据许可；模型可选，未配置不妨碍确定性语法。
 
-**文件：** 新建 `src/dragon_radar/query/{models,parser,executor}.py`、`src/dragon_radar/http/routes/query.py`、`web/src/features/query/QueryPanel.tsx`、`tests/test_reset_query.py`、`web/tests/e2e/reset-query.spec.ts`；修改 `owner/app.py`、`pages/Analysis.tsx`。无新包依赖。
+**文件：** 新建 `src/dragon_radar/query/{models,parser,executor,repository,model_parser}.py`、`src/dragon_radar/http/routes/query.py`、`src/dragon_radar/migrations/versions/0013_query.py`、`web/src/features/query/QueryPanel.tsx`、`tests/test_reset_query.py`、`web/tests/e2e/reset-query.spec.ts`；修改 `owner/app.py`、`owner/security.py`（新增 `/api/query/` gate 错误归一谓词）、`storage/schema_contract.json`、`migrations/release_manifest.json`、`web/scripts/check-default-bundle.mjs`、`pages/Analysis.tsx`。无新包依赖。
+
+> 2026-10-22 整合人修订（随 Task 26 规格提请批准）：EX12/13 的 query_id 两阶段确认需要服务端表，本任务新增 `0013_query`（parent=`0012_lhb`，downgrade 遵循 backup_restore_only 抛错）；Task 27 迁移号顺延为 `0014_research`，集成迁移链同步更新（见 Task 27 文件行与文末集成约束）。return_ratio 固定取 20 交易日/raw（未复权）/B000300 物化窗口（qfq/hfq 在物化契约中不可用）。
 
 **数据/函数：** `parse_query(text)`仅生成类型化AST；首版字段security_id/sector_id/return_ratio/boards/role，操作eq/in/gt/gte/lt/lte，排序仅同白名单字段、limit<=100；`execute_query(ast, repo, snapshot_id)`仅查授权发布读模型，不拼SQL、不读私人笔记。
 
@@ -627,7 +629,7 @@ ROLE_NAMES = {
 
 **依赖：** 04、07、08、13、17、22的迁移链。**接口：** EX14-15、本地simulation Repository。**生产输入：** PIT价格/成员/退市/ST/停牌、公司行动、费用/滑点与交易限制配置；未提供材料不得称真实策略已验证。
 
-**文件：** 新建 `src/dragon_radar/research/{models,repository,backtest,execution,walk_forward,ablation}.py`、`src/dragon_radar/http/routes/research.py`、`src/dragon_radar/migrations/versions/0013_research.py`、`web/src/repositories/local/simulation.ts`、`web/src/features/research/{BacktestPanel,SimulationPanel}.tsx`、`tests/test_reset_backtest.py`、`tests/test_reset_research_validation.py`、`web/tests/unit/reset-simulation.test.ts`、`web/tests/e2e/reset-research.spec.ts`；修改 `owner/app.py`、`storage/database.py`、`pages/Analysis.tsx`、`repositories/local/db.ts`。使用现有Decimal与IDB，不接券商SDK、不新增计算包。
+**文件：** 新建 `src/dragon_radar/research/{models,repository,backtest,execution,walk_forward,ablation}.py`、`src/dragon_radar/http/routes/research.py`、`src/dragon_radar/migrations/versions/0014_research.py`、`web/src/repositories/local/simulation.ts`、`web/src/features/research/{BacktestPanel,SimulationPanel}.tsx`、`tests/test_reset_backtest.py`、`tests/test_reset_research_validation.py`、`web/tests/unit/reset-simulation.test.ts`、`web/tests/e2e/reset-research.spec.ts`；修改 `owner/app.py`、`storage/database.py`、`pages/Analysis.tsx`、`repositories/local/db.ts`。使用现有Decimal与IDB，不接券商SDK、不新增计算包。
 
 **数据/函数：** `run_backtest(config, published_inputs)`保存config_hash、input_manifests、strategy/method/cost/execution版本，信号仅使用当时available_at可见信息，最早下一可成交时点执行。`simulate_fill(order, bar, rules)`返回fill或明确rejection；规则为显式研究配置而非法规声明。`walk_forward(folds)`只在训练段拟合阈值/权重，冻结后评价后段；`compare_ablation(baseline, ai_variant)`同池同窗同费用，不把推断当收益标签。
 
@@ -661,7 +663,7 @@ ROLE_NAMES = {
 
 **完成条件：** 完整必交功能有实现/验证证据；外部生产门禁逐项有真实材料。开发完成与生产就绪分开结论，不制造供应商、凭证、规则或测试结果。由主代理统一整合，不要求Task01作者提交。
 
-**扩展集成约束：** 0011_realtime→0012_lhb→0013_research承接0010_ai_tasks；所有迁移、readiness、依赖锁、app装配和前端入口由各阶段整合人单写者处理。新包包含`__init__.py`。Task21-28的服务可先纯函数/注入Repository实现，不为等待迁移而篡改其他代理文件。
+**扩展集成约束：** 0011_realtime→0012_lhb→0013_query→0014_research承接0010_ai_tasks（2026-10-22 整合人修订：Task 26 占用 0013_query，Task 27 顺延 0014_research，见 Task 26 修订注记）；所有迁移、readiness、依赖锁、app装配和前端入口由各阶段整合人单写者处理。新包包含`__init__.py`。Task21-28的服务可先纯函数/注入Repository实现，不为等待迁移而篡改其他代理文件。
 
 ## 7. 接口与需求到任务的覆盖表
 
