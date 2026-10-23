@@ -46,7 +46,7 @@ MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
 AUDIT_SCHEMA = "dragon-radar.release-migration-verification"
 AUDIT_SCHEMA_VERSION = 1
-RELEASE_HEAD = "0012_lhb"
+RELEASE_HEAD = "0013_query"
 ROLLBACK_MODE = "backup_restore_only"
 SUPPORTED_FROM = [
     "0001_foundation",
@@ -61,6 +61,7 @@ SUPPORTED_FROM = [
     "0010_ai_tasks",
     "0011_realtime",
     "0012_lhb",
+    "0013_query",
 ]
 MANIFEST_FIELDS = {
     "schema",
@@ -685,6 +686,7 @@ def _sentinel_values() -> dict[str, object]:
         "lhb_seat_id_b": f"LB{token[:12]}",
         "lhb_row_record_a": uuid4(),
         "lhb_row_record_b": uuid4(),
+        "query_record_id": uuid4(),
         "hash": hashlib.sha256(token.encode("ascii")).hexdigest(),
     }
 
@@ -1332,6 +1334,49 @@ def _insert_sentinel(
                 "row_b_completeness": "buy_unknown",
             },
         )
+    if revision == "0013_query":
+        _insert_market_archive(connection, values, with_idempotency_hash=True)
+        connection.execute(
+            text(
+                "INSERT INTO owner_principals (id, local_key, created_at) "
+                "VALUES (:owner_id, NULL, :now)"
+            ),
+            {**values, "now": now},
+        )
+        _insert_publication(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO query_records (
+                    id, owner_id, snapshot_id, idempotency_key, request_hash,
+                    ast, ast_hash, parser_version, parser_kind, model_version,
+                    created_at
+                ) VALUES (
+                    :query_record_id, :owner_id, :publication_id, :token,
+                    :hash, CAST(:ast_json AS jsonb), :hash, 'zh-whitelist-v1',
+                    'deterministic', NULL, :now
+                )
+                """
+            ),
+            {
+                **values,
+                "now": now,
+                "ast_json": json.dumps(
+                    {
+                        "version": 1,
+                        "predicates": [
+                            {"field": "security_id", "op": "eq", "value": "S000001"}
+                        ],
+                        "sort": None,
+                        "limit": 50,
+                    }
+                ),
+            },
+        )
+        return (
+            "query_record",
+            {"id": values["query_record_id"], "hash": values["hash"]},
+        )
     raise ValueError(f"unsupported upgrade baseline: {revision}")
 
 
@@ -1422,6 +1467,10 @@ def _sentinel_preserved(
         ),
         "ai_task": (
             "SELECT id, request_hash AS hash FROM ai_tasks WHERE id = :id",
+            expected,
+        ),
+        "query_record": (
+            "SELECT id, request_hash AS hash FROM query_records WHERE id = :id",
             expected,
         ),
         "realtime_evidence": (

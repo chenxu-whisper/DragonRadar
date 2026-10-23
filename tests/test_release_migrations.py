@@ -36,6 +36,7 @@ SUPPORTED_FROM = [
     "0010_ai_tasks",
     "0011_realtime",
     "0012_lhb",
+    "0013_query",
 ]
 
 
@@ -141,11 +142,11 @@ def test_release_manifest_matches_single_linear_graph(verifier):
     assert manifest["rollback_mode"] == "backup_restore_only"
     assert manifest["supported_from"] == SUPPORTED_FROM
     assert graph["bases"] == ["0001_foundation"]
-    assert graph["heads"] == ["0012_lhb"]
-    assert graph["revision_count"] == 20
+    assert graph["heads"] == ["0013_query"]
+    assert graph["revision_count"] == 21
     assert result == {
-        "head": "0012_lhb",
-        "revision_count": 20,
+        "head": "0013_query",
+        "revision_count": 21,
         "errors": [],
     }
 
@@ -523,8 +524,8 @@ def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "0012_lhb" in result.stdout
-    assert "20 revisions" in result.stdout
+    assert "0013_query" in result.stdout
+    assert "21 revisions" in result.stdout
 
 
 def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
@@ -726,7 +727,7 @@ def test_supported_revision_upgrades_with_sentinel(
     result = verifier["exercise_upgrade"](database_url, revision)
 
     assert result["from_revision"] == revision
-    assert result["to_revision"] == "0012_lhb"
+    assert result["to_revision"] == "0013_query"
     assert result["sentinel_preserved"] is True
     assert result["ready"] is True
 
@@ -778,7 +779,7 @@ def test_built_wheel_contains_all_release_migration_resources(built_wheel):
         f"dragon_radar/migrations/versions/{path.name}"
         for path in (MIGRATIONS / "versions").glob("*.py")
     }
-    assert len(migration_files) == 20
+    assert len(migration_files) == 21
     assert "dragon_radar/migrations/release_manifest.json" in names
     assert "dragon_radar/storage/schema_contract.json" in names
 
@@ -1235,7 +1236,7 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
     assert f"dragon_radar imported from {imported_from}" in result.stdout
     assert not imported_from.is_relative_to(ROOT)
     assert evidence["fresh"] == {
-        "to_revision": "0012_lhb",
+        "to_revision": "0013_query",
         "ready": True,
     }
     assert [item["from_revision"] for item in evidence["supported_upgrades"]] == (

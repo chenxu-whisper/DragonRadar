@@ -13,7 +13,7 @@ from dragon_radar.storage.schema_contract import (
     load_packaged_schema_contract,
 )
 
-SCHEMA_REVISION = "0012_lhb"
+SCHEMA_REVISION = "0013_query"
 
 
 class Database:
