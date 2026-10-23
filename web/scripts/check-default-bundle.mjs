@@ -29,7 +29,8 @@ while (pending.length) {
 const allScripts = readdirSync(resolve(dist, 'assets'))
   .filter(file => file.endsWith('.js'))
   .map(file => resolve(dist, 'assets', file));
-const forbidden = [
+// 私有 marker：默认/reset/sharing 镜像的任何产物（含懒 chunk）都不得包含。
+const privateMarkers = [
   '我的复盘',
   '人工验证',
   '.review-workspace',
@@ -39,8 +40,20 @@ const forbidden = [
 ];
 for (const file of new Set([...staticAssets, ...allScripts])) {
   const source = readFileSync(file, 'utf8');
-  for (const marker of forbidden) {
-    if (source.includes(marker)) throw new Error(`Default static asset contains private marker "${marker}": ${file}`);
+  for (const marker of privateMarkers) {
+    if (source.includes(marker)) throw new Error(`Asset contains private marker "${marker}": ${file}`);
+  }
+}
+// D5：/api/query/ 是 reset-only 白名单查询路径。任何构建下它都不得进入 entry
+// 静态闭包（只能以 env 折叠后的懒 chunk 存在）；默认构建（VITE_RESET_WORKBENCH
+// 不为 '1'）连该懒 chunk 都不得产出，因此对全部产物兜底扫描。
+const resetBuild = process.env.VITE_RESET_WORKBENCH === '1';
+const queryScope = resetBuild ? [...staticAssets] : allScripts;
+for (const file of queryScope) {
+  if (readFileSync(file, 'utf8').includes('/api/query/')) {
+    throw new Error(resetBuild
+      ? `Reset-only query path reached the entry static closure: ${file}`
+      : `Default build emitted a reset-only query asset: ${file}`);
   }
 }
 const entryBudget = process.env.VITE_PUBLIC_SHARING === '1' ? 320_000 : 315_500;

@@ -7,10 +7,19 @@ import { Exclusions, Pager, Percent, ResourceStatus, SearchForm, SortHead, Table
 import { IntervalForm } from '../components/IntervalForm';
 import { LazyLoadBoundary } from '../components/LazyLoadBoundary';
 import type { ResetAnalysisProps } from '../features/analysis/ResetAnalysis';
+import type { QueryPanelProps } from '../features/query/QueryPanel';
 
 const ResetAnalysis = lazy(async () => ({
   default: (await import('../features/analysis/ResetAnalysis')).ResetAnalysis as ComponentType<ResetAnalysisProps>,
 }));
+// 白名单查询面板仅 reset 构建接线：模块级 env 常量折叠，非 reset 构建下动态 import 死代码消除，
+// 不产出 query chunk（对照 App.tsx CommandPalette；勿学 ResetAnalysis 的无条件 lazy）。
+// 挂载点在 App 主区且不被 {snapshot && …} 门控卸载：结果绑定旧快照条必须在改日期/版本
+// （Analysis 整树会随 snapshot 短暂卸载重建）后继续保留，故由 Workbench 持久挂载。
+const resetQueryEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
+export const ResetQueryPanel = resetQueryEnabled
+  ? lazy(async () => ({ default: (await import('../features/query/QueryPanel')).QueryPanel as ComponentType<QueryPanelProps> }))
+  : null;
 
 export interface AnalysisProps {
   state: ResearchState; patch: Patch; refreshToken: number;

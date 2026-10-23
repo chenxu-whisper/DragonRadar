@@ -1,0 +1,43 @@
+/* Task26 白名单查询面板：仅使用既有全局 token，深色随 [data-theme] 自动切换；
+   本文件随 QueryPanel 懒 chunk 加载，不进入默认 entry。 */
+.query-panel { min-width: 0; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.query-heading h2 { margin: 0; }
+.query-form { display: grid; gap: 8px; min-width: 0; margin-bottom: 12px; }
+.query-input-label { display: grid; gap: 6px; font-weight: 600; min-width: 0; }
+.query-panel textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.6;
+  padding: 9px 10px;
+  border: 1px solid var(--border-textarea);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+.query-panel textarea:disabled { background: var(--bg-disabled); color: var(--text-secondary); }
+.query-hint { margin: 0; }
+.query-panel .toolbar { margin-bottom: 0; }
+.query-card {
+  min-width: 0;
+  margin-block: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  background: var(--bg-muted-panel);
+}
+.query-conditions { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.query-conditions li { display: flex; gap: 8px; align-items: baseline; min-width: 0; overflow-wrap: anywhere; }
+.query-connector { color: var(--muted); font-size: 12px; min-width: 1.5em; }
+.query-basis { margin: 4px 0; }
+.query-meta { margin: 0; color: var(--text-secondary); }
+.query-unsupported ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.query-result { min-width: 0; margin-top: 20px; }
+.query-result .table-scroll { margin-bottom: 12px; }
+.query-result .numeric { text-align: right; }
+.query-unavailable ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.query-count { margin: 0; }
+@media (max-width: 760px) {
+  .query-panel .toolbar button { width: 100%; }
+  .query-card { padding: 12px; }
+}

@@ -15,7 +15,7 @@ import type { ComparisonProps } from './components/Comparison';
 import type { Patch } from './components/Common';
 import { IntervalForm } from './components/IntervalForm';
 import { Overview } from './pages/Overview';
-import { Analysis } from './pages/Analysis';
+import { Analysis, ResetQueryPanel } from './pages/Analysis';
 import type { LeadersProps } from './pages/Leaders';
 import type { SecurityDrawerProps, SecurityPageProps } from './pages/SecurityDetail';
 
@@ -387,6 +387,15 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             </Suspense></LazyLoadBoundary>}
           </>}
         </>}
+        {/* Task 26 规格复审裁决（等效挂载；交叉引用见 pages/Analysis.tsx:15-22 折叠导出注释）：
+            白名单面板挂在 Workbench 主区而非 Analysis reset 分支内——Analysis 树随 snapshot
+            切换卸载重建，挂在分支内会使「结果绑定旧快照」漂移条无法存活；默认构建由 env 折叠
+            保证零 query chunk。裁决全文随 docs/acceptance/reset-query.md（切片 2 后补）留痕。 */}
+        {ResetQueryPanel && resetEnabled && !denied && state.view === 'analysis' && (
+          <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载白名单查询…</p>}>
+            <ResetQueryPanel state={state} patch={patch} snapshot={snapshot} open={open} />
+          </Suspense></LazyLoadBoundary>
+        )}
       </main>
       {!denied && snapshot && (resetEnabled ? ['overview', 'analysis'].includes(state.view) : state.view !== 'stock') && state.compare.length > 0 && <div className="compare-shortcut" aria-label="比较快捷操作">
         <span role="status">已选 {state.compare.length} / 5 个标的{notice.includes('最多比较') ? '，已达上限，请先移除一个' : ''}</span>
