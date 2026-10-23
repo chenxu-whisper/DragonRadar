@@ -50,6 +50,17 @@ async function mockHistoricalRegulation(page: Page) {
   });
 }
 
+async function mockNewsMissing(page: Page) {
+  // 该用例验证「消息」目的地在证据缺失时呈现诚实 404 状态。E2E 只能依赖虚构 mock
+  // （docs/workbench-testing.md：不连外部服务），不能隐式依赖本机 8020 空库后端——
+  // 未拦截的 /api 请求经 Vite 代理，后端缺席时返回 502，页面会显示通用失败文案而非
+  // 404 固定文案。列表与词云各发一个请求，统一以 404 兑现「无此快照证据」语义。
+  await page.route(
+    url => url.pathname === '/api/news' || url.pathname.startsWith('/api/news/'),
+    route => route.fulfill({ status: 404, json: {} }),
+  );
+}
+
 async function mockNavigationAnalysis(page: Page) {
   await page.route('**/api/rank/range?**', async route => {
     const url = new URL(route.request().url());
@@ -98,6 +109,7 @@ test.beforeEach(async ({}, testInfo) => {
 test('implemented reset destinations retain a fixed historical snapshot and honest evidence states', async ({ page }) => {
   await mockLeaders(page);
   await mockHistoricalRegulation(page);
+  await mockNewsMissing(page);
   await page.goto(`/?snapshot=${OLD}&date=2026-09-09`);
   const nav = page.getByRole('navigation', { name: '主导航' });
   await expect(nav.getByRole('link')).toHaveText(['总览', '消息', '梯队', '涨幅', '监管', '我的复盘']);

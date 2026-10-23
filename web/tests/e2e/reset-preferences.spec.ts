@@ -572,10 +572,20 @@ test.describe('命令面板', () => {
 
   test('打开/过滤/键盘导航期间不发起 /api/ 请求，且 localStorage 只允许出现两个偏好键', async ({ page }) => {
     await mockLeaders(page);
+    // 题材轮动时间轴是梯队矩阵之下的 lazy() 分区，且不在 mockLeaders 的拦截范围内。
+    // 所有 reset spec 共享同一个 dev server 并以 workers=2 运行，忙时该懒 chunk 与其
+    // /api/topics/rotation 请求可能晚于矩阵与主题按钮 settle，落入下面的零请求观察窗。
+    // 监听器必须在 goto 前注册；404 与代理 502 都触发 requestfinished，abort 触发 failed。
+    let rotationSettled = false;
+    const markRotationSettled = (url: string) => {
+      if (/\/api\/topics\/rotation/.test(url)) rotationSettled = true;
+    };
+    page.on('requestfinished', request => markRotationSettled(request.url()));
+    page.on('requestfailed', request => markRotationSettled(request.url()));
     await page.goto(LEADERS_URL);
     await waitForLeaders(page);
+    await expect.poll(() => rotationSettled, { timeout: 15000 }).toBe(true);
     // header 按钮可访问名为“切换到…”，面板内命令文案才是“切换为…”。
-    // waitForLeaders + 该按钮就绪后首屏 /api 均已 settle（mock 本地即时 fulfill），
     // 不使用 networkidle（dev HMR 长连接耦合、Playwright 明确不推荐用于断言等待）。
     await page.getByRole('button', { name: '切换到深色主题' }).waitFor();
     await expect.poll(() => page.evaluate(() => Object.keys(window.localStorage))).toEqual([]);
