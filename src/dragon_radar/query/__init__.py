@@ -40,6 +40,7 @@ from dragon_radar.query.parser import (
     parse_query,
     with_snapshot_line,
 )
+from dragon_radar.query.repository import QueryRepository
 
 __all__ = [
     "AST_VERSION",
@@ -54,6 +55,7 @@ __all__ = [
     "Predicate",
     "QueryAst",
     "QueryParsed",
+    "QueryRepository",
     "QuerySnapshotMeta",
     "QueryUnsupported",
     "SortDirection",
@@ -64,6 +66,7 @@ __all__ = [
     "ast_hash_of",
     "canonical_ast",
     "explain_ast",
+    "install_query_routes",
     "is_return_ratio_precision_supported",
     "parse_query",
     "propose_model_ast",
@@ -73,3 +76,14 @@ __all__ = [
     "with_snapshot_line",
     "wire_ast",
 ]
+
+
+def __getattr__(name: str):
+    # Lazy re-export: the route module imports query submodules, so an eager
+    # package-level import here cycles whenever http.routes.query is imported
+    # before the query package itself is initialized.
+    if name == "install_query_routes":
+        from dragon_radar.http.routes.query import install_query_routes
+
+        return install_query_routes
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

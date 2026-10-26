@@ -2250,3 +2250,2180 @@ def test_other_unsupported_codes_still_allow_model_rescue(text):
     assert isinstance(outcome, QueryParsed)
     assert outcome.parser_kind is ParserKind.MODEL
     assert adapter.calls
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: PG-backed 0013 repository, owner HTTP routes and the pure in-memory
+# executor (EX12/EX13). Every test below skips without DRAGON_TEST_DATABASE_URL.
+# No module-level pytestmark: slice 1 stays a pure-function module, so each
+# asynchronous test carries its own @pytest.mark.anyio.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+def _q2_headers(session):
+    return {
+        "Origin": "https://localhost:8030",
+        "X-CSRF-Token": session.csrf,
+        "Cookie": (
+            f"__Host-dragon-private-session={session.token}; "
+            f"__Host-dragon-private-csrf={session.csrf}"
+        ),
+    }
+
+
+def _q2_publish_market(
+    database,
+    repository,
+    market,
+    *,
+    key,
+    disabled=("topic", "news", "regulation", "role"),
+):
+    from factories import NOW
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+
+    snapshot = repository.publish(
+        repository.import_batch(market, key=f"{key}-snapshot").id
+    )
+    return PublicationService(database, repository, clock=lambda: NOW).publish(
+        PublicationCommand(
+            trade_date=market.trade_date,
+            market_snapshot_id=snapshot.id,
+            disabled_domains=disabled,
+        ),
+        key=key,
+    )
+
+
+def _q2_long_batch(securities=("A", "B")):
+    """A 61-session market batch so the real 20-day analysis window is available."""
+    from factories import bar, batch, state
+    from topic_factories import TOPIC_DAYS
+
+    from dragon_radar.domain.models import ExchangeCalendar
+
+    return batch(
+        trade_date=TOPIC_DAYS[-1],
+        calendar=ExchangeCalendar(exchange="TEST", version="c1", sessions=TOPIC_DAYS),
+        calendar_version="c1",
+        expected_security_ids=tuple(securities),
+        security_states=tuple(
+            state(security_id, effective_from=TOPIC_DAYS[0])
+            for security_id in securities
+        ),
+        bars=tuple(
+            bar(security_id, trade_date=day)
+            for day in TOPIC_DAYS
+            for security_id in securities
+        ),
+    )
+
+
+def _q2_patch_result(database, persisted, publication, domain, transform):
+    """Rewrite one archived domain payload with the immutability trigger disabled."""
+    from sqlalchemy import update
+
+    from dragon_radar.publication.tables import publication_results
+
+    result = next(
+        item for item in persisted.list_results(publication.id) if item.domain == domain
+    )
+    payload = result.model_dump(mode="json")["payload"]
+    transform(payload)
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results DISABLE TRIGGER USER"
+        )
+        connection.execute(
+            update(publication_results)
+            .where(
+                publication_results.c.publication_id == publication.id,
+                publication_results.c.domain == domain,
+            )
+            .values(payload=payload)
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results ENABLE TRIGGER USER"
+        )
+
+
+def _q2_window_20(payload):
+    return payload["analysis"]["windows"]["20"]
+
+
+def _q2_set_ratios(payload, values):
+    ranking = _q2_window_20(payload)["adjustments"]["raw"]["ranking"]
+    for row in ranking:
+        if row["security_id"] in values:
+            row["return_ratio"] = values[row["security_id"]]
+
+
+def _q2_event(security_id, trade_date, boards):
+    from datetime import UTC
+    from datetime import datetime as _datetime
+
+    from dragon_radar.domain.models import LimitUpEvent
+
+    return LimitUpEvent(
+        security_id=security_id,
+        trade_date=trade_date,
+        available_at=_datetime(2026, 9, 8, 16, tzinfo=UTC),
+        source_id="synthetic",
+        source_version="s1",
+        is_limit_up=True,
+        touched_limit=True,
+        continuous_boards=boards,
+    )
+
+
+def _q2_role_payload(run_id, trade_date):
+    """Minimal proven role materialization (mirrors test_reset_role_api)."""
+    from datetime import UTC, datetime
+
+    from factories import NOW
+
+    status = {
+        "role": "trend",
+        "capability": "ready",
+        "status": "ready",
+        "expected": 2,
+        "valid": 2,
+        "legal_excluded": 0,
+        "missing": 0,
+        "reasons": [],
+    }
+    other_statuses = [
+        {
+            "role": role,
+            "capability": capability,
+            "status": "no_candidate" if role == "core" else "insufficient",
+            "expected": 2,
+            "valid": 2 if role == "core" else 0,
+            "legal_excluded": 0,
+            "missing": 0 if role == "core" else 2,
+            "reasons": (
+                ["no_ranked_candidate"]
+                if role == "core"
+                else ["required_inputs_missing"]
+            ),
+        }
+        for role, capability in (
+            ("core", "ready"),
+            ("emotion", "simplified"),
+            ("catchup", "simplified"),
+            ("follower", "watch_only"),
+            ("relay", "pending_validation"),
+        )
+    ]
+    results = [
+        {
+            "id": str(uuid.uuid4()),
+            "security_id": security_id,
+            "role": "trend",
+            "rule_version": "role-v1",
+            "internal_status": "candidate",
+            "tie_rank": 1,
+            "factors": ["0.2", "0.1"],
+            "reasons": [f"persisted_support_{security_id.lower()}"],
+        }
+        for security_id in ("A", "B")
+    ]
+    factor = {
+        "security_id": "A",
+        "factor_id": "FAC-R01",
+        "metric": "relative_strength_20",
+        "window": "T-20..T",
+        "value": "0.2000",
+        "unit": "ratio",
+        "coverage": {"expected": 21, "valid": 21, "excluded": 0, "missing": 0},
+        "reasons": [],
+        "metadata": {"knowledge_cutoff": NOW.isoformat()},
+    }
+    observed_factor = {
+        **factor,
+        "factor_id": "FAC-C01",
+        "metric": "circulating_market_cap",
+        "window": "T",
+        "value": "100000000.00",
+        "unit": "CNY",
+        "coverage": {"expected": 1, "valid": 1, "excluded": 0, "missing": 0},
+        "metadata": {
+            "available_at": datetime(2026, 9, 8, 15, tzinfo=UTC).isoformat(),
+            "knowledge_cutoff": NOW.isoformat(),
+        },
+    }
+    topic_a = {
+        "topic_id": "topic-a",
+        "member_ids": ["A", "B"],
+        "statuses": [status, *other_statuses],
+        "results": results,
+        "factors": [factor, observed_factor],
+        "ladder": [
+            {
+                "security_id": "A",
+                "trade_date": trade_date.isoformat(),
+                "closing_limit_streak": 1,
+                "limit_hits_10": 1,
+                "broken_board": False,
+                "touched_not_sealed": False,
+                "reasons": [],
+            },
+            {
+                "security_id": "B",
+                "trade_date": trade_date.isoformat(),
+                "closing_limit_streak": 2,
+                "limit_hits_10": 2,
+                "broken_board": False,
+                "touched_not_sealed": False,
+                "reasons": [],
+            },
+        ],
+        "change_summaries": [],
+        "role_changes": [],
+        "pending_validations": [],
+        "role_validations": [],
+        "role_validation_inputs": [],
+    }
+    topic_b = {
+        **topic_a,
+        "topic_id": "topic-b",
+        "member_ids": ["A"],
+        "statuses": [
+            {**item, "expected": 1, "valid": 1, "missing": 0} for item in [status]
+        ]
+        + [
+            {
+                **item,
+                "expected": 1,
+                "valid": 1 if item["status"] == "no_candidate" else 0,
+                "legal_excluded": 0,
+                "missing": 0 if item["status"] == "no_candidate" else 1,
+            }
+            for item in other_statuses
+        ],
+        "results": [results[0]],
+        "factors": [factor, observed_factor],
+        "ladder": [topic_a["ladder"][0]],
+    }
+    return {
+        "role_run_id": str(run_id),
+        "trade_date": trade_date.isoformat(),
+        "rule_version": "role-v1",
+        "benchmark_id": "CSI300",
+        "topics": [topic_a, topic_b],
+    }
+
+
+def _q2_build_role_publication(world):
+    from factories import NOW
+    from sqlalchemy import update
+    from topic_factories import topic_batch
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.publication.tables import publication_results
+    from dragon_radar.roles.materialize import RoleMaterializer
+    from dragon_radar.topics.repository import TopicRepository
+
+    database, repository, persisted = (
+        world.database,
+        world.repository,
+        world.persisted,
+    )
+    topics = topic_batch()
+    market = _q2_role_market_batch(topics)
+    market_snapshot = repository.publish(
+        repository.import_batch(market, key="q2-role-market").id
+    )
+    topic_repository = TopicRepository(database, clock=lambda: NOW)
+    topic_snapshot = topic_repository.publish(
+        topic_repository.import_batch(topics, key="q2-role-topic").id
+    )
+    run = RoleMaterializer(database, repository, clock=lambda: NOW).materialize(
+        market_snapshot_id=market_snapshot.id,
+        topic_snapshot_id=topic_snapshot.id,
+        rule_version="role-test-v1",
+        benchmark_id="CSI300",
+        key="q2-role-run",
+    )
+    publication = PublicationService(database, repository, clock=lambda: NOW).publish(
+        PublicationCommand(
+            trade_date=market.trade_date,
+            market_snapshot_id=market_snapshot.id,
+            topic_snapshot_id=topic_snapshot.id,
+            role_input_id=run.id,
+            disabled_domains=("news", "regulation"),
+        ),
+        key="q2-role-publication",
+    )
+    market_result = next(
+        item
+        for item in persisted.list_results(publication.id)
+        if item.domain == "market"
+    )
+    market_payload = market_result.model_dump(mode="json")["payload"]
+    market_payload["search"]["securities"] = [
+        {
+            "security_id": "A",
+            "code": "000001",
+            "name": "Synthetic Alpha",
+            "exchange": "TEST",
+        },
+        {
+            "security_id": "B",
+            "code": "000002",
+            "name": "Synthetic Beta",
+            "exchange": "TEST",
+        },
+    ]
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results DISABLE TRIGGER USER"
+        )
+        connection.execute(
+            update(publication_results)
+            .where(
+                publication_results.c.publication_id == publication.id,
+                publication_results.c.domain == "market",
+            )
+            .values(payload=market_payload)
+        )
+        connection.execute(
+            update(publication_results)
+            .where(
+                publication_results.c.publication_id == publication.id,
+                publication_results.c.domain == "role",
+            )
+            .values(
+                payload=_q2_role_payload(run.id, market.trade_date),
+                coverage={
+                    "expected": 18,
+                    "valid": 3,
+                    "legal_excluded": 0,
+                    "missing": 15,
+                },
+            )
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE publication_results ENABLE TRIGGER USER"
+        )
+    return publication
+
+
+def _q2_role_market_batch(topics):
+    from factories import bar, batch, state
+
+    return batch(
+        trade_date=topics.trade_date,
+        calendar=topics.calendar,
+        calendar_version=topics.calendar_version,
+        expected_security_ids=("A", "B"),
+        security_states=(
+            state("A", effective_from=topics.calendar.sessions[0]),
+            state("B", effective_from=topics.calendar.sessions[0]),
+        ),
+        bars=tuple(
+            bar(security_id, trade_date=day)
+            for day in topics.calendar.sessions
+            for security_id in ("A", "B")
+        ),
+        limit_up_events=(
+            _q2_event("A", topics.calendar.sessions[-2], 2),
+            _q2_event("A", topics.trade_date, 1),
+            _q2_event("B", topics.trade_date, 2),
+        ),
+    )
+
+
+@pytest.fixture
+def _q2_world(database, repository):
+    from types import SimpleNamespace
+
+    from factories import NOW, batch
+
+    from dragon_radar.owner.app import create_owner_app
+    from dragon_radar.owner.repository import OwnerRepository
+    from dragon_radar.publication.repository import PublicationRepository
+
+    owners = OwnerRepository(database, clock=lambda: NOW)
+    owners.initialize()
+    code = owners.issue_pairing()
+    session = owners.exchange_pairing(code, "https://localhost:8030")
+    persisted = PublicationRepository(database, repository, clock=lambda: NOW)
+    simple = _q2_publish_market(
+        database, repository, batch(), key="q2-simple-publication"
+    )
+    app = create_owner_app(
+        repository=repository,
+        owner_repository=owners,
+        publication_repository=persisted,
+    )
+    return SimpleNamespace(
+        database=database,
+        repository=repository,
+        persisted=persisted,
+        owners=owners,
+        session=session,
+        app=app,
+        simple=simple,
+    )
+
+
+@pytest.fixture
+def _q2_role_world(_q2_world):
+    _q2_world.role = _q2_build_role_publication(_q2_world)
+    return _q2_world
+
+
+def _q2_client(world):
+    from httpx import ASGITransport, AsyncClient
+
+    return AsyncClient(
+        transport=ASGITransport(app=world.app),
+        base_url="https://localhost:8030",
+    )
+
+
+async def _q2_parse(
+    client, world, text, key, *, snapshot=None, session=None, url="/api/query/parse"
+):
+    target = snapshot or world.simple
+    return await client.post(
+        url,
+        json={
+            "text": text,
+            "snapshot_id": str(target.id),
+            "idempotency_key": key,
+        },
+        headers=_q2_headers(session or world.session),
+    )
+
+
+async def _q2_execute(
+    client,
+    world,
+    parsed,
+    key,
+    *,
+    snapshot=None,
+    session=None,
+    query_id=None,
+    ast_hash=None,
+    snapshot_id=None,
+    url="/api/query/execute",
+):
+    target = snapshot or world.simple
+    return await client.post(
+        url,
+        json={
+            "query_id": str(query_id or parsed["query_id"]),
+            "confirmed_ast_hash": ast_hash or parsed["typed_ast"]["ast_hash"],
+            "snapshot_id": snapshot_id or str(target.id),
+            "idempotency_key": key,
+        },
+        headers=_q2_headers(session or world.session),
+    )
+
+
+def _q2_second_session(world):
+    import secrets
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from factories import NOW
+    from sqlalchemy import insert
+
+    from dragon_radar.owner.models import owner_principals, owner_sessions
+    from dragon_radar.owner.repository import _hash
+
+    other_id = uuid4()
+    other_token = secrets.token_urlsafe(32)
+    other_csrf = secrets.token_urlsafe(32)
+    with world.database.engine.begin() as connection:
+        connection.execute(
+            insert(owner_principals).values(id=other_id, local_key=None, created_at=NOW)
+        )
+        connection.execute(
+            insert(owner_sessions).values(
+                id=uuid4(),
+                owner_id=other_id,
+                token_hash=_hash(other_token),
+                csrf_hash=_hash(other_csrf),
+                origin="https://localhost:8030",
+                created_at=NOW,
+                expires_at=NOW + timedelta(hours=1),
+            )
+        )
+    return SimpleNamespace(token=other_token, csrf=other_csrf)
+
+
+def _q2_revoke(world, publication):
+    from sqlalchemy import update
+
+    from dragon_radar.publication.tables import publications
+
+    with world.database.engine.begin() as connection:
+        connection.execute(
+            update(publications)
+            .where(publications.c.id == publication.id)
+            .values(status="revoked")
+        )
+
+
+def _q2_count_records(world):
+    from sqlalchemy import text
+
+    with world.database.engine.connect() as connection:
+        return connection.scalar(text("SELECT count(*) FROM query_records"))
+
+
+# --- QRY-BE 5: persistence, idempotency, ownership and revocation -----------
+
+
+@pytest.mark.anyio
+async def test_qry_be5_parse_persists_replays_and_execute_authorizes(_q2_world):
+    world = _q2_world
+    async with _q2_client(world) as client:
+        created = await _q2_parse(client, world, "代码属于 A", "q5-create")
+        assert created.status_code == 200
+        body = created.json()
+        assert set(body) == {"query_id", "typed_ast", "explanation", "unsupported"}
+        assert body["unsupported"] == []
+        assert isinstance(body["query_id"], str)
+        assert body["typed_ast"]["ast_hash"]
+        assert "快照日期：2026-09-08" in body["explanation"]
+        assert "快照版本：v1。" in body["explanation"]
+
+        replay = await _q2_parse(client, world, "代码属于 A", "q5-create")
+        assert replay.status_code == 200
+        assert replay.json()["query_id"] == body["query_id"]
+
+        conflict = await _q2_parse(client, world, "代码属于 B", "q5-create")
+        assert conflict.status_code == 409
+        assert conflict.json() == {
+            "code": "VERSION_CONFLICT",
+            "message": "Version conflict",
+        }
+
+        executed = await _q2_execute(client, world, body, "q5-create")
+        assert executed.status_code == 200
+        envelope = executed.json()
+        assert envelope["snapshot_id"] == str(world.simple.id)
+        assert envelope["data"]["total"] == 1
+        row = envelope["data"]["rows"][0]
+        assert row == {
+            "security_id": "A",
+            "name": "Synthetic A",
+            "sector_ids": [],
+            "roles": [],
+            "boards": None,
+            "return_ratio": None,
+        }
+        assert envelope["coverage"] == {
+            "expected": 1,
+            "valid": 1,
+            "excluded": 0,
+            "missing": 0,
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be5_execute_conflicts_missing_snapshot_and_owner_isolation(
+    _q2_world,
+):
+    from uuid import uuid4
+
+    world = _q2_world
+    second = _q2_publish_market(
+        world.database,
+        world.repository,
+        _q2_long_batch(("A",)),
+        key="q5-second-publication",
+    )
+    async with _q2_client(world) as client:
+        body = (await _q2_parse(client, world, "代码属于 A", "q5-own")).json()
+
+        tampered = await _q2_execute(client, world, body, "q5-own", ast_hash="0" * 64)
+        assert tampered.status_code == 409
+        assert tampered.json()["code"] == "VERSION_CONFLICT"
+
+        wrong_snapshot = await _q2_execute(
+            client, world, body, "q5-own", snapshot=second
+        )
+        assert wrong_snapshot.status_code == 409
+        assert wrong_snapshot.json()["code"] == "VERSION_CONFLICT"
+
+        missing_snapshot = await _q2_execute(
+            client,
+            world,
+            body,
+            "q5-own",
+            snapshot_id=str(uuid4()),
+        )
+        assert missing_snapshot.status_code == 404
+        assert missing_snapshot.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
+
+        other = _q2_second_session(world)
+        isolated = await _q2_execute(client, world, body, "q5-own", session=other)
+        assert isolated.status_code == 404
+        assert isolated.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be5_parse_rejects_missing_and_revoked_publications(_q2_world):
+    from uuid import uuid4
+
+    world = _q2_world
+    async with _q2_client(world) as client:
+        missing = await client.post(
+            "/api/query/parse",
+            json={
+                "text": "代码属于 A",
+                "snapshot_id": str(uuid4()),
+                "idempotency_key": "q5-missing",
+            },
+            headers=_q2_headers(world.session),
+        )
+        assert missing.status_code == 404
+        assert missing.json()["code"] == "NOT_FOUND"
+
+        body = (await _q2_parse(client, world, "代码属于 A", "q5-revoke")).json()
+        assert body["query_id"]
+        _q2_revoke(world, world.simple)
+
+        # Authorization precedes the idempotency cache and advisory lock, so a
+        # revoked publication blocks even the cache-hit replay path.
+        cached = await _q2_parse(client, world, "代码属于 A", "q5-revoke")
+        assert cached.status_code == 403
+        assert cached.json()["code"] == "FORBIDDEN"
+
+        executed = await _q2_execute(client, world, body, "q5-revoke")
+        assert executed.status_code == 403
+        assert executed.json()["code"] == "FORBIDDEN"
+
+
+@pytest.mark.anyio
+async def test_qry_be5_each_publication_replays_its_own_archived_value(_q2_world):
+    world = _q2_world
+    old_batch = _q2_long_batch(("A",))
+    old_snapshot = world.repository.publish(
+        world.repository.import_batch(old_batch, key="q5-old-snapshot").id
+    )
+    new_snapshot = world.repository.publish(
+        world.repository.import_batch(old_batch, key="q5-new-snapshot").id
+    )
+    from factories import NOW
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+
+    service = PublicationService(world.database, world.repository, clock=lambda: NOW)
+    old = service.publish(
+        PublicationCommand(
+            trade_date=old_batch.trade_date,
+            market_snapshot_id=old_snapshot.id,
+            disabled_domains=("topic", "news", "regulation", "role"),
+        ),
+        key="q5-old-publication",
+    )
+    new = service.publish(
+        PublicationCommand(
+            trade_date=old_batch.trade_date,
+            market_snapshot_id=new_snapshot.id,
+            disabled_domains=("topic", "news", "regulation", "role"),
+        ),
+        key="q5-new-publication",
+    )
+    # The shared fixture already published q2-simple-publication for the same
+    # trade date (version 1), so the per-trade-date sequence continues at 2.
+    assert old.version == 2
+    assert new.version == 3
+
+    def _set(payload, value):
+        _q2_set_ratios(payload, {"A": value})
+
+    _q2_patch_result(
+        world.database, world.persisted, old, "market", lambda p: _set(p, "0.100000")
+    )
+    _q2_patch_result(
+        world.database, world.persisted, new, "market", lambda p: _set(p, "0.200000")
+    )
+
+    async with _q2_client(world) as client:
+        old_parsed = await _q2_parse(
+            client, world, "涨幅大于5%的股票", "q5-old-query", snapshot=old
+        )
+        new_parsed = await _q2_parse(
+            client, world, "涨幅大于5%的股票", "q5-new-query", snapshot=new
+        )
+        assert old_parsed.status_code == new_parsed.status_code == 200
+        old_rows = (
+            await _q2_execute(
+                client, world, old_parsed.json(), "q5-old-query", snapshot=old
+            )
+        ).json()
+        new_rows = (
+            await _q2_execute(
+                client, world, new_parsed.json(), "q5-new-query", snapshot=new
+            )
+        ).json()
+        assert old_rows["snapshot_id"] == str(old.id)
+        assert new_rows["snapshot_id"] == str(new.id)
+        assert old_rows["data"]["rows"][0]["return_ratio"] == 0.1
+        assert new_rows["data"]["rows"][0]["return_ratio"] == 0.2
+
+
+# --- QRY-BE 6: D1 two-layer unavailability and decimal fidelity -------------
+
+
+@pytest.mark.anyio
+async def test_qry_be6_declared_short_window_is_200_empty_business_result(_q2_world):
+    world = _q2_world
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(client, world, "涨幅大于5%的股票", "q6-short")
+        assert parsed.status_code == 200
+        executed = await _q2_execute(client, world, parsed.json(), "q6-short")
+        assert executed.status_code == 200
+        envelope = executed.json()
+        assert envelope["data"]["rows"] == []
+        assert envelope["data"]["total"] == 0
+        assert envelope["data"]["unavailable"] == [
+            {
+                "code": "return_ratio_unavailable",
+                "reason": "insufficient_calendar_history",
+            }
+        ]
+        assert envelope["coverage"] == {
+            "expected": 1,
+            "valid": 0,
+            "excluded": 0,
+            "missing": 1,
+        }
+        assert envelope["basis"] == {
+            "unit": "ratio",
+            "currency": "CNY",
+            "price_type": "raw_close",
+            "benchmark": "B000300",
+            "adjustment_version": "a1",
+            "rounding": "ROUND_HALF_UP",
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be6_declared_raw_adjustment_unavailable_is_200_empty(_q2_world):
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database, world.repository, _q2_long_batch(), key="q6-raw-publication"
+    )
+
+    def _raw_off(payload):
+        payload["analysis"]["adjustments"]["raw"] = {
+            "available": False,
+            "reason": "q6_raw_layer_declared_unavailable",
+        }
+
+    _q2_patch_result(world.database, world.persisted, publication, "market", _raw_off)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "涨幅大于5%的股票", "q6-raw", snapshot=publication
+        )
+        executed = await _q2_execute(
+            client, world, parsed.json(), "q6-raw", snapshot=publication
+        )
+        assert executed.status_code == 200
+        envelope = executed.json()
+        assert envelope["data"]["rows"] == []
+        assert envelope["data"]["unavailable"] == [
+            {
+                "code": "return_ratio_unavailable",
+                "reason": "q6_raw_layer_declared_unavailable",
+            }
+        ]
+        assert envelope["coverage"]["missing"] == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "corruption",
+    ["sessions_drift", "projection_break", "wrong_benchmark"],
+)
+async def test_qry_be6_structural_corruption_fails_closed_503(corruption, _q2_world):
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database,
+        world.repository,
+        _q2_long_batch(),
+        key=f"q6-corrupt-{corruption}",
+    )
+
+    def _corrupt(payload):
+        window = _q2_window_20(payload)
+        if corruption == "sessions_drift":
+            window["sessions"] = window["sessions"][:-1]
+        elif corruption == "projection_break":
+            raw = window["adjustments"]["raw"]
+            raw["ranking"] = [
+                row for row in raw["ranking"] if row["security_id"] != "B"
+            ]
+        else:
+            window["benchmark_id"] = "CSI300"
+
+    _q2_patch_result(world.database, world.persisted, publication, "market", _corrupt)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "涨幅大于5%的股票", f"q6-{corruption}", snapshot=publication
+        )
+        executed = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            f"q6-{corruption}",
+            snapshot=publication,
+        )
+        assert executed.status_code == 503
+        assert executed.json() == {
+            "code": "DATA_UNAVAILABLE",
+            "message": "Data unavailable",
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be6_big_decimal_return_ratio_round_trips_exactly(_q2_world):
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database,
+        world.repository,
+        _q2_long_batch(),
+        key="q6-big-decimal-publication",
+    )
+
+    def _big(payload):
+        _q2_set_ratios(
+            payload,
+            {"A": "9007199254740993.01", "B": "0.010000"},
+        )
+
+    _q2_patch_result(world.database, world.persisted, publication, "market", _big)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "涨幅大于5%的股票", "q6-big", snapshot=publication
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q6-big", snapshot=publication
+        )
+        assert response.status_code == 200
+        assert "9007199254740993.01" in response.text
+        envelope = json.loads(response.text, parse_float=Decimal)
+        rows = envelope["data"]["rows"]
+        assert [row["security_id"] for row in rows] == ["A"]
+        assert rows[0]["return_ratio"] == Decimal("9007199254740993.01")
+        assert envelope["coverage"] == {
+            "expected": 2,
+            "valid": 1,
+            "excluded": 1,
+            "missing": 0,
+        }
+
+
+# --- QRY-BE 7: multi-topic pool, full sector/role projection, boards --------
+
+
+@pytest.mark.anyio
+async def test_qry_be7_sector_selects_one_topic_but_projects_full_membership(
+    _q2_role_world, monkeypatch
+):
+    monkeypatch.setattr(
+        "dragon_radar.query.executor.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    world = _q2_role_world
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "题材为 topic-b", "q7-topic-b", snapshot=world.role
+        )
+        assert parsed.status_code == 200
+        response = await _q2_execute(
+            client, world, parsed.json(), "q7-topic-b", snapshot=world.role
+        )
+        assert response.status_code == 200
+        envelope = response.json()
+        assert envelope["data"]["total"] == 1
+        assert envelope["data"]["rows"] == [
+            {
+                "security_id": "A",
+                "name": "Synthetic Alpha",
+                "sector_ids": ["topic-a", "topic-b"],
+                "roles": ["trend_leader"],
+                "boards": 1,
+                "return_ratio": None,
+            }
+        ]
+        assert envelope["coverage"] == {
+            "expected": 1,
+            "valid": 1,
+            "excluded": 0,
+            "missing": 0,
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be7_role_matches_unselected_topic_still_valid_full_projection(
+    _q2_role_world, monkeypatch
+):
+    # D4: a role predicate evaluates over EVERY topic ("satisfied in any
+    # topic"), even topics outside the sector selection. A is a trend
+    # candidate in topic-a only; selecting topic-b must still admit A and
+    # project the full membership/role sets onto the row.
+    monkeypatch.setattr(
+        "dragon_radar.query.executor.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    world = _q2_role_world
+
+    def _role_only_in_topic_a(payload):
+        topic_b = payload["topics"][1]
+        topic_b["results"] = []
+        # no_candidate still requires valid >= 1 (RoleTopicStatus invariant):
+        # member A is calculable yet yields no positive ranked output, so the
+        # legal partition is expected=1 = valid=1 + missing=0.
+        topic_b["statuses"][0].update(
+            status="no_candidate",
+            valid=1,
+            missing=0,
+            reasons=["no_ranked_candidate"],
+        )
+
+    _q2_patch_result(
+        world.database, world.persisted, world.role, "role", _role_only_in_topic_a
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "题材为 topic-b 且 角色是趋势",
+            "q7-global-role",
+            snapshot=world.role,
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            "q7-global-role",
+            snapshot=world.role,
+        )
+        assert response.status_code == 200
+        envelope = response.json()
+        assert envelope["data"]["total"] == 1
+        assert envelope["data"]["rows"] == [
+            {
+                "security_id": "A",
+                "name": "Synthetic Alpha",
+                "sector_ids": ["topic-a", "topic-b"],
+                "roles": ["trend_leader"],
+                "boards": 1,
+                "return_ratio": None,
+            }
+        ]
+        assert envelope["coverage"] == {
+            "expected": 1,
+            "valid": 1,
+            "excluded": 0,
+            "missing": 0,
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be7_role_absent_in_all_topics_is_excluded_with_fields_present(
+    _q2_role_world, monkeypatch
+):
+    # D4: when no topic grants the queried role, the security has all fields
+    # available yet fails the predicate -> excluded, never missing.
+    monkeypatch.setattr(
+        "dragon_radar.query.executor.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    world = _q2_role_world
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "题材为 topic-b 且 角色是中军",
+            "q7-topic-b-zhongjun",
+            snapshot=world.role,
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            "q7-topic-b-zhongjun",
+            snapshot=world.role,
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["rows"] == []
+        assert data["total"] == 0
+        assert response.json()["coverage"] == {
+            "expected": 1,
+            "valid": 0,
+            "excluded": 1,
+            "missing": 0,
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be7_cross_topic_board_streak_conflict_fails_closed(_q2_role_world):
+    world = _q2_role_world
+
+    def _conflict(payload):
+        # topic-a keeps A at streak 1; make topic-b disagree for the same member.
+        payload["topics"][1]["ladder"][0]["closing_limit_streak"] = 2
+
+    _q2_patch_result(world.database, world.persisted, world.role, "role", _conflict)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "板数为1", "q7-board-conflict", snapshot=world.role
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            "q7-board-conflict",
+            snapshot=world.role,
+        )
+        assert response.status_code == 503
+        assert response.json()["code"] == "DATA_UNAVAILABLE"
+
+
+# --- QRY-BE 9: business outcome shapes and closed request bodies ------------
+
+
+@pytest.mark.anyio
+async def test_qry_be9_blank_and_unsupported_never_persist(_q2_world):
+    world = _q2_world
+    assert _q2_count_records(world) == 0
+    async with _q2_client(world) as client:
+        blank = await _q2_parse(client, world, "   ", "q9-blank")
+        assert blank.status_code == 200
+        blank_body = blank.json()
+        assert blank_body["query_id"] is None
+        assert blank_body["typed_ast"] is None
+        assert blank_body["explanation"] is None
+        assert [item["code"] for item in blank_body["unsupported"]] == ["empty_input"]
+
+        unsupported = await _q2_parse(client, world, "市值大于5%", "q9-unsupported")
+        assert unsupported.status_code == 200
+        unsupported_body = unsupported.json()
+        assert unsupported_body["query_id"] is None
+        assert [item["code"] for item in unsupported_body["unsupported"]] == [
+            "unknown_field"
+        ]
+        assert _q2_count_records(world) == 0
+
+        supported = await _q2_parse(client, world, "代码属于 A", "q9-supported")
+        assert supported.status_code == 200
+        assert supported.json()["query_id"]
+        assert _q2_count_records(world) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path,body_factory,query_string",
+    [
+        (
+            "/api/query/parse",
+            lambda pub: {
+                "text": "代码属于 A",
+                "snapshot_id": str(pub.id),
+                "idempotency_key": "q9-extra",
+                "bogus": 1,
+            },
+            "",
+        ),
+        (
+            "/api/query/parse",
+            lambda pub: {
+                "text": 123,
+                "snapshot_id": str(pub.id),
+                "idempotency_key": "q9-nonstring",
+            },
+            "",
+        ),
+        ("/api/query/parse", None, "?x=1"),
+        (
+            "/api/query/execute",
+            lambda pub: {
+                "query_id": str(uuid.uuid4()),
+                "confirmed_ast_hash": "0" * 64,
+                "snapshot_id": str(pub.id),
+                "idempotency_key": "q9-exec-extra",
+                "bogus": 1,
+            },
+            "",
+        ),
+    ],
+)
+async def test_qry_be9_rejects_unknown_keys_non_strings_and_query_strings(
+    path, body_factory, query_string, _q2_world
+):
+    world = _q2_world
+    async with _q2_client(world) as client:
+        if body_factory is None:
+            response = await client.post(
+                path + query_string,
+                json={
+                    "text": "代码属于 A",
+                    "snapshot_id": str(world.simple.id),
+                    "idempotency_key": "q9-qs",
+                },
+                headers=_q2_headers(world.session),
+            )
+        else:
+            response = await client.post(
+                path + query_string,
+                json=body_factory(world.simple),
+                headers=_q2_headers(world.session),
+            )
+        assert response.status_code == 400
+        assert response.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be9_duplicate_json_keys_are_rejected(_q2_world):
+    world = _q2_world
+    raw = (
+        b'{"text":"\xe4\xbb\xa3\xe7\xa0\x81\xe5\xb1\x9e\xe4\xba\x8e A",'
+        b'"text":"\xe4\xbb\xa3\xe7\xa0\x81\xe5\xb1\x9e\xe4\xba\x8e B",'
+        b'"snapshot_id":"'
+        + str(world.simple.id).encode("ascii")
+        + b'","idempotency_key":"q9-duplicate"}'
+    )
+    async with _q2_client(world) as client:
+        response = await client.post(
+            "/api/query/parse",
+            content=raw,
+            headers={**_q2_headers(world.session), "Content-Type": "application/json"},
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "INVALID_PARAM"
+
+
+# --- QRY-BE 10: owner gate normalization (black box via the owner app) -------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("case_name", ["wrong_content_type", "no_session"])
+async def test_qry_be10_gate_rejects_content_type_and_missing_session(
+    case_name, _q2_world
+):
+    world = _q2_world
+    payload = (
+        b'{"text":"A","snapshot_id":"'
+        + str(world.simple.id).encode("ascii")
+        + b'","idempotency_key":"q10-gate"}'
+    )
+    async with _q2_client(world) as client:
+        expected_status = 400
+        expected_code = "INVALID_PARAM"
+        if case_name == "wrong_content_type":
+            headers = {
+                "Origin": "https://localhost:8030",
+                "Content-Type": "text/plain",
+                "Cookie": (
+                    f"__Host-dragon-private-session={world.session.token}; "
+                    f"__Host-dragon-private-csrf={world.session.csrf}"
+                ),
+            }
+        else:
+            expected_status = 403
+            expected_code = "FORBIDDEN"
+            headers = {
+                "Origin": "https://localhost:8030",
+                "Content-Type": "application/json",
+            }
+        response = await client.post(
+            "/api/query/parse", content=payload, headers=headers
+        )
+        assert response.status_code == expected_status
+        assert response.json()["code"] == expected_code
+
+
+@pytest.mark.anyio
+async def test_qry_be10_gate_rejects_csrf_mismatch(_q2_world):
+    world = _q2_world
+    async with _q2_client(world) as client:
+        response = await client.post(
+            "/api/query/parse",
+            json={
+                "text": "代码属于 A",
+                "snapshot_id": str(world.simple.id),
+                "idempotency_key": "q10-csrf",
+            },
+            headers={
+                "Origin": "https://localhost:8030",
+                "X-CSRF-Token": "not-the-csrf-token",
+                "Cookie": (
+                    f"__Host-dragon-private-session={world.session.token}; "
+                    f"__Host-dragon-private-csrf={world.session.csrf}"
+                ),
+            },
+        )
+        assert response.status_code == 403
+        assert response.json()["code"] == "FORBIDDEN"
+
+
+@pytest.mark.anyio
+async def test_qry_be10_gate_rejects_oversized_body_with_413(_q2_world):
+    world = _q2_world
+    oversized = (
+        b'{"text":"'
+        + b"x" * 140000
+        + b'","snapshot_id":"'
+        + str(world.simple.id).encode("ascii")
+        + b'","idempotency_key":"q10-oversized"}'
+    )
+    async with _q2_client(world) as client:
+        response = await client.post(
+            "/api/query/parse",
+            content=oversized,
+            headers={**_q2_headers(world.session), "Content-Type": "application/json"},
+        )
+        assert response.status_code == 413
+        assert response.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 double-review remediation: F1-F10 behavior locks (TDD)
+# ---------------------------------------------------------------------------
+
+
+def _q2_window_off(payload, reason="insufficient_calendar_history"):
+    payload["analysis"]["windows"]["20"] = {
+        "requested_offsets": 20,
+        "available": False,
+        "reason": reason,
+    }
+
+
+def _q2_top_raw_off(payload, *, available, reason=None):
+    if available is None:
+        del payload["analysis"]["adjustments"]["raw"]
+    else:
+        raw = {"available": available}
+        if reason is not None:
+            raw["reason"] = reason
+        payload["analysis"]["adjustments"]["raw"] = raw
+
+
+def _q2_delete_window(payload):
+    del payload["analysis"]["windows"]["20"]
+
+
+def _q2_corrupt_record_ast(world, query_id, ast_body):
+    """Overwrite one immutable AST row with the immutability trigger disabled."""
+    from sqlalchemy import text
+
+    from dragon_radar.query.models import query_records
+
+    with world.database.engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE query_records DISABLE TRIGGER USER")
+        connection.execute(
+            text(
+                f"UPDATE {query_records.name} SET ast = CAST(:ast AS JSONB) "
+                "WHERE id = :query_id"
+            ),
+            {"ast": json.dumps(ast_body), "query_id": uuid.UUID(str(query_id))},
+        )
+        connection.exec_driver_sql("ALTER TABLE query_records ENABLE TRIGGER USER")
+
+
+# --- F1 (cont.): global boards projection -----------------------------------
+
+
+@pytest.mark.anyio
+async def test_qry_be7_boards_predicate_uses_global_streak_from_unselected_topic(
+    _q2_role_world, monkeypatch
+):
+    # D4: boards are evaluated over every topic. Add B to topic-b members but
+    # give it a same-day streak only in topic-a; selecting topic-b must still
+    # admit B and report the global streak.
+    monkeypatch.setattr(
+        "dragon_radar.query.executor.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    world = _q2_role_world
+
+    def _streak_only_in_topic_a(payload):
+        topic_a, topic_b = payload["topics"]
+        topic_b["member_ids"] = ["A", "B"]
+        topic_a["ladder"][1]["closing_limit_streak"] = 1
+
+    _q2_patch_result(
+        world.database, world.persisted, world.role, "role", _streak_only_in_topic_a
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "题材为 topic-b 且 板数为1",
+            "q7-global-boards",
+            snapshot=world.role,
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            "q7-global-boards",
+            snapshot=world.role,
+        )
+        assert response.status_code == 200
+        envelope = response.json()
+        assert [row["security_id"] for row in envelope["data"]["rows"]] == ["A", "B"]
+        assert {row["boards"] for row in envelope["data"]["rows"]} == {1}
+        for row in envelope["data"]["rows"]:
+            assert row["sector_ids"] == ["topic-a", "topic-b"]
+            assert row["roles"] == ["trend_leader"]
+        assert envelope["coverage"] == {
+            "expected": 2,
+            "valid": 2,
+            "excluded": 0,
+            "missing": 0,
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be7_boards_conflict_in_unselected_topic_fails_closed(
+    _q2_role_world, monkeypatch
+):
+    # D4 + spec 3.4: the cross-topic streak agreement check is global, so a
+    # disagreement hidden inside an unselected topic is still corruption -> 503.
+    monkeypatch.setattr(
+        "dragon_radar.query.executor.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    world = _q2_role_world
+
+    def _conflict_outside_selection(payload):
+        topic_a, topic_b = payload["topics"]
+        topic_b["member_ids"] = ["A", "B"]
+        topic_b["ladder"].append(
+            {
+                **topic_a["ladder"][1],
+                "security_id": "B",
+                "closing_limit_streak": 1,
+            }
+        )
+
+    _q2_patch_result(
+        world.database,
+        world.persisted,
+        world.role,
+        "role",
+        _conflict_outside_selection,
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "题材为 topic-b 且 板数为1",
+            "q7-global-boards-conflict",
+            snapshot=world.role,
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            "q7-global-boards-conflict",
+            snapshot=world.role,
+        )
+        assert response.status_code == 503
+        assert response.json()["code"] == "DATA_UNAVAILABLE"
+
+
+# --- F2: strict D1 window/raw declaration ordering --------------------------
+
+
+@pytest.mark.anyio
+async def test_qry_be6_window_declared_false_short_circuits_malformed_top_raw(
+    _q2_world,
+):
+    # D1(a): an honest window stub decides the business result; the shape of
+    # the unrelated top-level raw flag must never be inspected afterwards.
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database, world.repository, _q2_long_batch(), key="q6r2-short-circuit"
+    )
+
+    def _patch(payload):
+        _q2_window_off(payload, reason="q6r2_window_off")
+        payload["analysis"]["adjustments"]["raw"] = ["malformed"]
+
+    _q2_patch_result(world.database, world.persisted, publication, "market", _patch)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "涨幅大于5%的股票", "q6r2-short", snapshot=publication
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q6r2-short", snapshot=publication
+        )
+        assert response.status_code == 200
+        envelope = response.json()
+        assert envelope["data"]["rows"] == []
+        assert envelope["data"]["unavailable"] == [
+            {"code": "return_ratio_unavailable", "reason": "q6r2_window_off"}
+        ]
+
+
+@pytest.mark.anyio
+async def test_qry_be6_missing_window_falls_back_to_declared_top_raw(_q2_world):
+    # D1(a): no "20" window key is a declarative window gap; an honest
+    # top-level raw=false declaration carries the business reason.
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database, world.repository, _q2_long_batch(), key="q6r2-missing-fallback"
+    )
+
+    def _patch(payload):
+        _q2_delete_window(payload)
+        _q2_top_raw_off(payload, available=False, reason="q6r2_raw_off")
+
+    _q2_patch_result(world.database, world.persisted, publication, "market", _patch)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "涨幅大于5%的股票", "q6r2-fallback", snapshot=publication
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q6r2-fallback", snapshot=publication
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["unavailable"] == [
+            {"code": "return_ratio_unavailable", "reason": "q6r2_raw_off"}
+        ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_window_raw_true",
+        "missing_window_raw_absent",
+        "window_not_dict",
+        "window_false_without_reason",
+        "window_false_empty_reason",
+    ],
+)
+async def test_qry_be6_declaration_contradictions_fail_closed_503(
+    corruption, _q2_world
+):
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database,
+        world.repository,
+        _q2_long_batch(),
+        key=f"q6r2-contradiction-{corruption}",
+    )
+
+    def _patch(payload):
+        if corruption == "missing_window_raw_true":
+            _q2_delete_window(payload)
+            _q2_top_raw_off(payload, available=True)
+        elif corruption == "missing_window_raw_absent":
+            _q2_delete_window(payload)
+            _q2_top_raw_off(payload, available=None)
+        elif corruption == "window_not_dict":
+            payload["analysis"]["windows"]["20"] = ["malformed"]
+        elif corruption == "window_false_without_reason":
+            payload["analysis"]["windows"]["20"] = {"available": False}
+        else:
+            payload["analysis"]["windows"]["20"] = {
+                "available": False,
+                "reason": "",
+            }
+
+    _q2_patch_result(world.database, world.persisted, publication, "market", _patch)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "涨幅大于5%的股票",
+            f"q6r2-{corruption}",
+            snapshot=publication,
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            f"q6r2-{corruption}",
+            snapshot=publication,
+        )
+        assert response.status_code == 503
+        assert response.json()["code"] == "DATA_UNAVAILABLE"
+
+
+# --- F3: declarative role-domain unavailability is a 200 business result -----
+
+
+def _q2_assert_role_disabled_item(envelope):
+    assert envelope["data"]["rows"] == []
+    assert envelope["data"]["unavailable"] == [
+        {"code": "role_materialization_unavailable", "reason": "role_disabled"}
+    ]
+    assert envelope["coverage"] == {
+        "expected": 1,
+        "valid": 0,
+        "excluded": 0,
+        "missing": 1,
+    }
+
+
+@pytest.mark.anyio
+async def test_qry_be3_role_disabled_boards_query_is_200_declared_missing(_q2_world):
+    world = _q2_world
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(client, world, "板数为1", "q3-disabled-boards")
+        response = await _q2_execute(client, world, parsed.json(), "q3-disabled-boards")
+        assert response.status_code == 200
+        _q2_assert_role_disabled_item(response.json())
+
+
+@pytest.mark.anyio
+async def test_qry_be3_role_disabled_sector_query_is_200_declared_missing(_q2_world):
+    world = _q2_world
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(client, world, "题材为 zzz", "q3-disabled-sector")
+        response = await _q2_execute(client, world, parsed.json(), "q3-disabled-sector")
+        assert response.status_code == 200
+        _q2_assert_role_disabled_item(response.json())
+
+
+@pytest.mark.anyio
+async def test_qry_be3_role_disabled_mixed_ratio_query_carries_both_unavailable_items(
+    _q2_world,
+):
+    # The market-only publication also declares the short window unavailable;
+    # every row is unknown on both sources and the item order is fixed.
+    world = _q2_world
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "板数为1 且 涨幅大于5%的股票", "q3-disabled-mixed"
+        )
+        response = await _q2_execute(client, world, parsed.json(), "q3-disabled-mixed")
+        assert response.status_code == 200
+        envelope = response.json()
+        assert [item["code"] for item in envelope["data"]["unavailable"]] == [
+            "role_materialization_unavailable",
+            "return_ratio_unavailable",
+        ]
+        assert envelope["coverage"] == {
+            "expected": 1,
+            "valid": 0,
+            "excluded": 0,
+            "missing": 1,
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be3_role_ready_boards_query_with_declared_unavailable_window(
+    _q2_role_world, monkeypatch
+):
+    # Boards stay decidable; a ratio SORT references the ratio source (F7),
+    # so the declared window gap is reported while boards rows still form.
+    monkeypatch.setattr(
+        "dragon_radar.query.executor.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    world = _q2_role_world
+    _q2_patch_result(
+        world.database, world.persisted, world.role, "market", _q2_window_off
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "板数为1的股票按涨幅从高到低",
+            "q3-ready-boards-sort",
+            snapshot=world.role,
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            "q3-ready-boards-sort",
+            snapshot=world.role,
+        )
+        assert response.status_code == 200
+        envelope = response.json()
+        assert envelope["data"]["unavailable"] == [
+            {
+                "code": "return_ratio_unavailable",
+                "reason": "insufficient_calendar_history",
+            }
+        ]
+        assert envelope["data"]["rows"] == [
+            {
+                "security_id": "A",
+                "name": "Synthetic Alpha",
+                "sector_ids": ["topic-a", "topic-b"],
+                "roles": ["trend_leader"],
+                "boards": 1,
+                "return_ratio": None,
+            }
+        ]
+        assert envelope["coverage"] == {
+            "expected": 2,
+            "valid": 1,
+            "excluded": 1,
+            "missing": 0,
+        }
+
+
+# --- F4: corrupt archived records fail closed as 503 -------------------------
+
+
+@pytest.mark.anyio
+async def test_qry_be4_corrupt_stored_ast_returns_503_not_500(_q2_world):
+    world = _q2_world
+    async with _q2_client(world) as client:
+        created = await _q2_parse(client, world, "代码属于 A", "q4-corrupt-ast")
+        assert created.status_code == 200
+        body = created.json()
+        _q2_corrupt_record_ast(world, body["query_id"], {"version": 1})
+        executed = await _q2_execute(client, world, body, "q4-corrupt-ast")
+        assert executed.status_code == 503
+        assert executed.json() == {
+            "code": "DATA_UNAVAILABLE",
+            "message": "Data unavailable",
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be4_role_topic_without_topic_id_fails_closed(_q2_role_world):
+    world = _q2_role_world
+
+    def _drop_topic_id(payload):
+        del payload["topics"][1]["topic_id"]
+
+    _q2_patch_result(
+        world.database, world.persisted, world.role, "role", _drop_topic_id
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "板数为1", "q4-no-topic-id", snapshot=world.role
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q4-no-topic-id", snapshot=world.role
+        )
+        assert response.status_code == 503
+        assert response.json()["code"] == "DATA_UNAVAILABLE"
+
+
+# --- F5: 0013 migration behavior lock (alembic-upgraded disposable schema) ---
+
+
+def _q2_upgrade_to_query(database_url):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    with database.engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "0012_lhb")
+        command.upgrade(config, "0013_query")
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0013_query"
+        )
+    return database
+
+
+def _q2_seed_query_record(database):
+    """Create one owner/publication parent chain and one immutable query row."""
+    from factories import NOW, batch, grant
+    from sqlalchemy import text
+
+    from dragon_radar.storage.repository import Repository
+
+    repository = Repository(database, clock=lambda: NOW)
+    repository.register_source(grant())
+    # Publications cannot be inserted directly as 'published' (the
+    # guard_publication_transition trigger only allows draft inserts), so the
+    # parent chain goes through the real publication service.
+    publication = _q2_publish_market(
+        database, repository, batch(), key="q5-mig-publication"
+    )
+    owner_id = uuid.uuid4()
+    query_id = uuid.uuid4()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO owner_principals (id, local_key, created_at)
+                VALUES (:owner_id, NULL, :now)
+                """
+            ),
+            {"owner_id": owner_id, "now": NOW},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO query_records (
+                    id, owner_id, snapshot_id, idempotency_key, request_hash,
+                    ast, ast_hash, parser_version, parser_kind, model_version,
+                    created_at
+                ) VALUES (
+                    :query_id, :owner_id, :publication_id, 'q5-mig-key', :hash,
+                    CAST(:ast AS JSONB), :hash, 'zh-whitelist-v1',
+                    'deterministic', NULL, :now
+                )
+                """
+            ),
+            {
+                "query_id": query_id,
+                "owner_id": owner_id,
+                "publication_id": publication.id,
+                "hash": "b" * 64,
+                "ast": json.dumps(
+                    {
+                        "version": 1,
+                        "predicates": [
+                            {"field": "security_id", "op": "eq", "value": "A"}
+                        ],
+                        "sort": None,
+                        "limit": 50,
+                    }
+                ),
+                "now": NOW,
+            },
+        )
+    return query_id
+
+
+def test_qry_be9_0013_query_records_has_row_and_statement_immutable_triggers(
+    database_url,
+):
+    from sqlalchemy import text
+
+    database = _q2_upgrade_to_query(database_url)
+    try:
+        with database.engine.connect() as connection:
+            triggers = connection.execute(
+                text(
+                    """
+                    SELECT trigger_record.tgname, function_record.proname,
+                           pg_get_triggerdef(trigger_record.oid, true)
+                    FROM pg_trigger trigger_record
+                    JOIN pg_class relation
+                      ON relation.oid = trigger_record.tgrelid
+                    JOIN pg_namespace namespace
+                      ON namespace.oid = relation.relnamespace
+                    JOIN pg_proc function_record
+                      ON function_record.oid = trigger_record.tgfoid
+                    WHERE namespace.nspname = current_schema()
+                      AND relation.relname = 'query_records'
+                      AND NOT trigger_record.tgisinternal
+                    """
+                )
+            ).all()
+        assert len(triggers) == 2
+        definitions = {
+            name: (function_name, definition)
+            for name, function_name, definition in triggers
+        }
+        assert set(definitions) == {"immutable_rows", "immutable_truncate"}
+        rows_function, rows_definition = definitions["immutable_rows"]
+        assert rows_function == "reject_immutable_mutation"
+        # pg_get_triggerdef always prints trigger events in PostgreSQL's
+        # canonical INSERT/DELETE/UPDATE order, regardless of the DDL order.
+        assert "BEFORE DELETE OR UPDATE ON query_records" in rows_definition
+        assert "FOR EACH ROW" in rows_definition
+        statement_function, statement_definition = definitions["immutable_truncate"]
+        assert statement_function == "reject_immutable_mutation"
+        assert "BEFORE TRUNCATE ON query_records" in statement_definition
+        assert "FOR EACH STATEMENT" in statement_definition
+    finally:
+        database.close()
+
+
+def test_qry_be9_0013_query_records_reject_update_delete_and_truncate(database_url):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database = _q2_upgrade_to_query(database_url)
+    try:
+        query_id = _q2_seed_query_record(database)
+        statements = (
+            "UPDATE query_records SET parser_kind = 'model' WHERE id = :query_id",
+            "DELETE FROM query_records WHERE id = :query_id",
+            "TRUNCATE TABLE query_records",
+        )
+        for statement in statements:
+            with pytest.raises(DBAPIError) as exc_info:
+                with database.engine.begin() as connection:
+                    connection.execute(text(statement), {"query_id": query_id})
+            assert "immutable records cannot be changed" in str(exc_info.value)
+        with database.engine.connect() as connection:
+            assert connection.scalar(text("SELECT count(*) FROM query_records")) == 1
+    finally:
+        database.close()
+
+
+def test_qry_be9_0013_query_downgrade_is_forbidden(database_url):
+    from alembic import command
+    from alembic.config import Config
+
+    database = _q2_upgrade_to_query(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with (
+            pytest.raises(
+                RuntimeError,
+                match="Query records cannot be downgraded",
+            ),
+            database.engine.begin() as connection,
+        ):
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0012_lhb")
+    finally:
+        database.close()
+
+
+# --- F6: concurrent parse idempotency under the advisory xact lock -----------
+
+
+@pytest.mark.anyio
+async def test_qry_be5_concurrent_parses_share_one_record_then_conflict(_q2_world):
+    import asyncio
+
+    world = _q2_world
+    headers = _q2_headers(world.session)
+    snapshot_id = str(world.simple.id)
+
+    async def _parse(client, text_value, key):
+        return await client.post(
+            "/api/query/parse",
+            json={
+                "text": text_value,
+                "snapshot_id": snapshot_id,
+                "idempotency_key": key,
+            },
+            headers=headers,
+        )
+
+    async with _q2_client(world) as client:
+        first, second = await asyncio.gather(
+            _parse(client, "代码属于 A", "q6-concurrent"),
+            _parse(client, "代码属于 A", "q6-concurrent"),
+        )
+        assert first.status_code == second.status_code == 200
+        assert first.json()["query_id"] == second.json()["query_id"]
+        assert _q2_count_records(world) == 1
+
+        replay, conflict = await asyncio.gather(
+            _parse(client, "代码属于 A", "q6-concurrent"),
+            _parse(client, "代码属于 B", "q6-concurrent"),
+        )
+        assert sorted((replay.status_code, conflict.status_code)) == [200, 409]
+        assert replay.json()["query_id"] == first.json()["query_id"]
+        assert conflict.json()["code"] == "VERSION_CONFLICT"
+        assert _q2_count_records(world) == 1
+
+
+# --- F7: sort references load the ratio source (spec 3.4 "reference = dep") --
+
+
+@pytest.mark.anyio
+async def test_qry_be7_ratio_sort_loads_window_and_falls_back_to_security_order(
+    _q2_world,
+):
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database, world.repository, _q2_long_batch(), key="q7-sort-fallback"
+    )
+    _q2_patch_result(
+        world.database, world.persisted, publication, "market", _q2_window_off
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "代码属于 A,B 的股票按涨幅从高到低",
+            "q7-ratio-sort",
+            snapshot=publication,
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q7-ratio-sort", snapshot=publication
+        )
+        assert response.status_code == 200
+        envelope = response.json()
+        assert envelope["data"]["unavailable"] == [
+            {
+                "code": "return_ratio_unavailable",
+                "reason": "insufficient_calendar_history",
+            }
+        ]
+        rows = envelope["data"]["rows"]
+        assert [row["security_id"] for row in rows] == ["A", "B"]
+        assert all(row["return_ratio"] is None for row in rows)
+        assert envelope["coverage"] == {
+            "expected": 2,
+            "valid": 2,
+            "excluded": 0,
+            "missing": 0,
+        }
+
+
+# --- F8: unknown predicates outrank explicit falsehoods ----------------------
+
+
+@pytest.mark.anyio
+async def test_qry_be8_unknown_predicate_outranks_explicit_false(
+    _q2_role_world, monkeypatch
+):
+    monkeypatch.setattr(
+        "dragon_radar.query.executor.RESET_APPROVED_RULE_VERSIONS",
+        frozenset({"role-v1"}),
+    )
+    world = _q2_role_world
+
+    def _ratios(payload):
+        _q2_set_ratios(payload, {"A": "0.200000", "B": "0.010000"})
+
+    def _drop_b_ladder(payload):
+        payload["topics"][0]["ladder"] = [
+            row for row in payload["topics"][0]["ladder"] if row["security_id"] != "B"
+        ]
+
+    _q2_patch_result(world.database, world.persisted, world.role, "market", _ratios)
+    _q2_patch_result(
+        world.database, world.persisted, world.role, "role", _drop_b_ladder
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "板数为1 且 涨幅大于5%的股票",
+            "q8-unknown-first",
+            snapshot=world.role,
+        )
+        response = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            "q8-unknown-first",
+            snapshot=world.role,
+        )
+        assert response.status_code == 200
+        # parse_float=Decimal preserves the wire number token (httpx .json()
+        # would collapse 0.200000 to a binary float), mirroring the big-decimal
+        # round-trip test above.
+        envelope = json.loads(response.text, parse_float=Decimal)
+        rows = envelope["data"]["rows"]
+        assert [row["security_id"] for row in rows] == ["A"]
+        assert rows[0]["boards"] == 1
+        assert rows[0]["return_ratio"] == Decimal("0.200000")
+        # B explicitly fails the ratio threshold but is unknown for boards:
+        # unknown wins, so B is missing, never excluded.
+        assert envelope["coverage"] == {
+            "expected": 2,
+            "valid": 1,
+            "excluded": 0,
+            "missing": 1,
+        }
+
+
+# --- F9: malformed search names degrade to null, never 503 -------------------
+
+
+@pytest.mark.anyio
+async def test_qry_be9_malformed_search_names_become_null(_q2_role_world):
+    world = _q2_role_world
+
+    def _malform_search(payload):
+        payload["search"]["securities"] = "broken"
+
+    _q2_patch_result(
+        world.database, world.persisted, world.role, "market", _malform_search
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "板数为1", "q9-null-name", snapshot=world.role
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q9-null-name", snapshot=world.role
+        )
+        assert response.status_code == 200
+        envelope = response.json()
+        rows = envelope["data"]["rows"]
+        assert len(rows) == 1
+        assert rows[0]["security_id"] == "A"
+        assert rows[0]["name"] is None
+
+
+# --- F10: board streak output domain is int 0..99 ----------------------------
+
+
+@pytest.mark.anyio
+async def test_qry_be7_board_streak_above_99_fails_closed(_q2_role_world):
+    world = _q2_role_world
+
+    def _huge_streak(payload):
+        payload["topics"][0]["ladder"][0]["closing_limit_streak"] = 100
+
+    _q2_patch_result(world.database, world.persisted, world.role, "role", _huge_streak)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "板数为1", "q7-streak-100", snapshot=world.role
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q7-streak-100", snapshot=world.role
+        )
+        assert response.status_code == 503
+        assert response.json()["code"] == "DATA_UNAVAILABLE"
+
+
+# --- F13: post-review hardening pins -----------------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "corruption",
+    ["ranking_null", "exclusions_number", "ranking_bool"],
+)
+async def test_qry_be6_projection_layer_wrong_scalar_type_fails_closed_503(
+    corruption, _q2_world
+):
+    # The projection key set alone does not prove iterability: JSON null /
+    # bool / number values make the ranking/exclusion consumers raise
+    # TypeError ("not iterable"), which bypasses the DATA_UNAVAILABLE mapping
+    # and surfaces as the wrong-code 503 STORAGE_UNAVAILABLE. They are
+    # structural corruption and must fail closed as 503 DATA_UNAVAILABLE.
+    world = _q2_world
+    publication = _q2_publish_market(
+        world.database,
+        world.repository,
+        _q2_long_batch(),
+        key=f"q6-projection-type-{corruption}",
+    )
+
+    def _corrupt(payload):
+        raw = _q2_window_20(payload)["adjustments"]["raw"]
+        if corruption == "ranking_null":
+            raw["ranking"] = None
+        elif corruption == "exclusions_number":
+            raw["exclusions"] = 1
+        else:
+            raw["ranking"] = True
+
+    _q2_patch_result(world.database, world.persisted, publication, "market", _corrupt)
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client,
+            world,
+            "涨幅大于5%的股票",
+            f"q6-projection-type-{corruption}",
+            snapshot=publication,
+        )
+        executed = await _q2_execute(
+            client,
+            world,
+            parsed.json(),
+            f"q6-projection-type-{corruption}",
+            snapshot=publication,
+        )
+        assert executed.status_code == 503
+        assert executed.json() == {
+            "code": "DATA_UNAVAILABLE",
+            "message": "Data unavailable",
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be4_null_return_ratio_value_in_stored_ast_is_stored_corrupt(
+    _q2_world,
+):
+    # Decimal(str(None)) raises decimal.InvalidOperation -- an ArithmeticError,
+    # not a ValueError -- so the hydration seam must normalize it into
+    # StoredRecordCorrupt (mapped to 503 DATA_UNAVAILABLE) instead of leaking
+    # the raw arithmetic exception.
+    from sqlalchemy import text as sql_text
+
+    from dragon_radar.query.repository import QueryRepository
+    from dragon_radar.storage.repository import StoredRecordCorrupt
+
+    world = _q2_world
+    async with _q2_client(world) as client:
+        created = await _q2_parse(
+            client, world, "涨幅大于5%的股票", "q4-null-ratio-value"
+        )
+        assert created.status_code == 200
+        body = created.json()
+        with world.database.engine.begin() as connection:
+            ast_body = connection.execute(
+                sql_text("SELECT ast FROM query_records WHERE id = :id"),
+                {"id": uuid.UUID(body["query_id"])},
+            ).scalar_one()
+        ratio_predicate = next(
+            item for item in ast_body["predicates"] if item["field"] == "return_ratio"
+        )
+        ratio_predicate["value"] = None
+
+        # The seam normalizes the ArithmeticError before any HTTP replay.
+        with pytest.raises(StoredRecordCorrupt) as exc_info:
+            QueryRepository._hydrate_ast(ast_body)
+        assert isinstance(exc_info.value.__cause__, ArithmeticError)
+
+        _q2_corrupt_record_ast(world, body["query_id"], ast_body)
+        executed = await _q2_execute(client, world, body, "q4-null-ratio-value")
+        assert executed.status_code == 503
+        assert executed.json() == {
+            "code": "DATA_UNAVAILABLE",
+            "message": "Data unavailable",
+        }
+
+
+@pytest.mark.anyio
+async def test_qry_be7_negative_board_streak_fails_closed(_q2_role_world):
+    # The streak wire domain is int 0..99: a same-date member row carrying -1
+    # is structural corruption (mirrors the streak=100 pin).
+    world = _q2_role_world
+
+    def _negative_streak(payload):
+        payload["topics"][0]["ladder"][0]["closing_limit_streak"] = -1
+
+    _q2_patch_result(
+        world.database, world.persisted, world.role, "role", _negative_streak
+    )
+    async with _q2_client(world) as client:
+        parsed = await _q2_parse(
+            client, world, "板数为1", "q7-streak-neg1", snapshot=world.role
+        )
+        response = await _q2_execute(
+            client, world, parsed.json(), "q7-streak-neg1", snapshot=world.role
+        )
+        assert response.status_code == 503
+        assert response.json()["code"] == "DATA_UNAVAILABLE"

@@ -44,6 +44,15 @@ class QualityRejected(Exception):
     pass
 
 
+class StoredRecordCorrupt(Exception):
+    """An immutable stored record cannot be rehydrated into its strict model.
+
+    Raised when an archived row (e.g. an immutable JSONB AST) was tampered
+    with or is otherwise structurally unreadable; callers map it to a
+    fail-closed data-unavailable response rather than a client error.
+    """
+
+
 def _identifier(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", value):
         raise ValueError("Identifier must contain 1-200 safe ASCII characters")

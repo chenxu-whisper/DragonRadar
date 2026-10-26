@@ -17,6 +17,7 @@ from dragon_radar.api import StorageUnavailable, create_app
 from dragon_radar.http.app import create_workbench_app
 from dragon_radar.http.routes.ai import install_ai_routes
 from dragon_radar.http.routes.news import install_news_review_routes
+from dragon_radar.http.routes.query import install_query_routes
 from dragon_radar.news.repository import NewsRepository
 from dragon_radar.owner.repository import (
     DEFAULT_ORIGIN,
@@ -40,6 +41,7 @@ from dragon_radar.owner.security import (
     validate_origin,
 )
 from dragon_radar.publication.repository import PublicationRepository
+from dragon_radar.query.repository import QueryRepository
 from dragon_radar.review.routes import install_review_routes
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
@@ -82,6 +84,7 @@ def create_owner_app(
     analysis_repository: AnalysisJobRepository | None = None,
     ai_service: AIService | None = None,
     news_repository: NewsRepository | None = None,
+    query_repository: QueryRepository | None = None,
     origin: str = DEFAULT_ORIGIN,
 ) -> FastAPI:
     """No implicit migration, initialization, dotenv, proxy trust or public routes."""
@@ -95,6 +98,7 @@ def create_owner_app(
             analysis_repository,
             ai_service,
             news_repository,
+            query_repository,
         )
     )
     if ai_service is not None:
@@ -152,6 +156,12 @@ def create_owner_app(
             repository,
             owner_repository=owner_repository,
         )
+    if query_repository is None and database is not None:
+        query_repository = QueryRepository(
+            database,
+            owner_repository,
+            publication_repository,
+        )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -176,6 +186,7 @@ def create_owner_app(
     app.state.analysis_repository = analysis_repository
     app.state.ai_service = ai_service
     app.state.news_repository = news_repository
+    app.state.query_repository = query_repository
     app.state.owner_origin = origin
     # Copy only explicit Reset read routes. Do not mount a second application whose
     # lifecycle, exception handlers or request.app state could bypass this gate.
@@ -284,5 +295,6 @@ def create_owner_app(
     install_analysis_job_routes(app)
     install_ai_routes(app)
     install_news_review_routes(app)
+    install_query_routes(app)
     app.add_middleware(OwnerGate, origin=origin, owner_repository=owner_repository)
     return app

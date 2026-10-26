@@ -2069,6 +2069,25 @@
       "key_expressions": [],
       "kind": "primary_key",
       "match_type": null,
+      "name": "query_records_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "query_records"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
       "name": "realtime_import_attempts_pkey",
       "on_delete": null,
       "on_update": null,
@@ -3535,6 +3554,26 @@
     {
       "columns": [
         "owner_id",
+        "idempotency_key"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "query_records_owner_id_idempotency_key_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "query_records"
+    },
+    {
+      "columns": [
+        "owner_id",
         "key"
       ],
       "deferrable": false,
@@ -3975,6 +4014,27 @@
       "key_expressions": [],
       "kind": "foreign_key",
       "match_type": "simple",
+      "name": "query_records_owner_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "owner_principals",
+      "table": "query_records"
+    },
+    {
+      "columns": [
+        "owner_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
       "name": "review_note_revisions_owner_id_fkey",
       "on_delete": "no_action",
       "on_update": "no_action",
@@ -4048,6 +4108,45 @@
       "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "watch_entries"
+    },
+    {
+      "columns": [
+        "parser_kind",
+        "model_version"
+      ],
+      "deferrable": false,
+      "expression": "(((parser_kind)::text = 'deterministic'::text) OR (model_version IS NOT NULL))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "query_records_kind_model_version",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "query_records"
+    },
+    {
+      "columns": [
+        "parser_kind"
+      ],
+      "deferrable": false,
+      "expression": "((parser_kind)::text = ANY ((ARRAY['deterministic'::character varying, 'model'::character varying])::text[]))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "query_records_parser_kind_check",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "query_records"
     },
     {
       "columns": [
@@ -6078,6 +6177,27 @@
       "referenced_schema": "current_schema",
       "referenced_table": "news_snapshots",
       "table": "news_snapshot_items"
+    },
+    {
+      "columns": [
+        "snapshot_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "query_records_snapshot_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "publications",
+      "table": "query_records"
     },
     {
       "columns": [
@@ -9658,6 +9778,17 @@
       "key_expressions": [
         "id"
       ],
+      "name": "query_records_pkey",
+      "predicate": null,
+      "table": "query_records",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
       "name": "realtime_import_attempts_pkey",
       "predicate": null,
       "table": "realtime_import_attempts",
@@ -10243,6 +10374,18 @@
       "name": "news_review_commands_owner_id_idempotency_key_key",
       "predicate": null,
       "table": "news_review_commands",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "owner_id",
+        "idempotency_key"
+      ],
+      "name": "query_records_owner_id_idempotency_key_key",
+      "predicate": null,
+      "table": "query_records",
       "unique": true,
       "valid": true
     },
@@ -14668,6 +14811,88 @@
         {
           "generated": null,
           "identity": null,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "request_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "ast",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "ast_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "parser_version",
+          "nullable": false,
+          "type": "character varying(40)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "parser_kind",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "model_version",
+          "nullable": true,
+          "type": "character varying(100)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "query_records"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "owner_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "snapshot_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
           "name": "trade_date",
           "nullable": false,
           "type": "date"
@@ -18408,6 +18633,25 @@
       "initially_deferred": false,
       "level": "STATEMENT",
       "name": "immutable_truncate",
+      "table": "query_records",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "immutable_truncate",
       "table": "realtime_anomaly_events",
       "timing": "BEFORE",
       "update_of_columns": [],
@@ -19671,6 +19915,26 @@
       "level": "ROW",
       "name": "immutable_rows",
       "table": "lhb_seats",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "immutable_rows",
+      "table": "query_records",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null

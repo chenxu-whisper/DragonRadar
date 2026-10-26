@@ -27,6 +27,7 @@ MAX_BODY_BYTES = 131072
 ANALYSIS_JOBS_PATH = "/api/analysis/jobs"
 AI_TASKS_PATH = "/api/ai/"
 NEWS_PATH = "/api/news/"
+QUERY_PATH = "/api/query/"
 PAIR_PATH = "/api/owner/v1/pair"
 SESSION_PATH = "/api/owner/v1/session"
 OWNER_ERRORS = (CsrfForbidden, InvalidPairing, PairingRateLimited, SessionUnauthorized)
@@ -63,6 +64,10 @@ def _analysis_path(path: str) -> bool:
 
 def _news_review_path(path: str) -> bool:
     return path.startswith(NEWS_PATH) and path.endswith("/associations/review")
+
+
+def _query_path(path: str) -> bool:
+    return path.startswith(QUERY_PATH)
 
 
 def _analysis_error(exc: Exception) -> BoundaryError:
@@ -246,7 +251,11 @@ class OwnerGate:
         except (*OWNER_ERRORS, BoundaryError) as exc:
             if started:
                 raise
-            if _analysis_path(scope["path"]) or _news_review_path(scope["path"]):
+            if (
+                _analysis_path(scope["path"])
+                or _news_review_path(scope["path"])
+                or _query_path(scope["path"])
+            ):
                 exc = _analysis_error(exc)
             await JSONResponse(
                 {"code": exc.code, "message": exc.message}, status_code=exc.status_code
@@ -256,7 +265,9 @@ class OwnerGate:
                 raise
             exc = (
                 _analysis_error(exc)
-                if _analysis_path(scope["path"]) or _news_review_path(scope["path"])
+                if _analysis_path(scope["path"])
+                or _news_review_path(scope["path"])
+                or _query_path(scope["path"])
                 else storage_unavailable()
             )
             await JSONResponse(
