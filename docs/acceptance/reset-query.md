@@ -164,6 +164,7 @@ data to stay egress-bound. The model-seam QRY-BE cases cover this:
 | Frontend unit suite (`vitest --no-fileParallelism`) | 32 files, 982 passed (reset-query: 169 tests) |
 | Frontend type check (`tsc --noEmit`) | passed |
 | Node script tests (production-isolation, reset contract support, test runner) | 6 passed |
+| Production-isolation Docker E2E (`test:e2e:production-isolation`, fresh private+public images, msedge) | passed; private pairing/owner/reset routes served and disallowed owner routes 404; public edge denied owner/AI with 404/405 and empty bodies; images rebuilt from this source and migrated at head `0013_query`; stacks torn down |
 | Independent specification and code-quality reviews | approved (all findings closed) |
 
 ### Build isolation (four production variants)
