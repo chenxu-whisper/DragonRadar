@@ -2900,13 +2900,13 @@ def test_representative_regulation_table_families_reject_truncate(
         connection.execute(text(f"TRUNCATE TABLE {table_name}"))
 
 
-def test_schema_revision_advances_to_lhb_after_realtime():
+def test_schema_revision_advances_to_query_after_lhb():
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0012_lhb"
+    assert SCHEMA_REVISION == "0013_query"
 
 
-def test_lhb_migration_head_descends_from_realtime_and_earlier_revisions():
+def test_query_migration_head_descends_from_lhb_and_earlier_revisions():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -2914,10 +2914,11 @@ def test_lhb_migration_head_descends_from_realtime_and_earlier_revisions():
     config.set_main_option("script_location", "dragon_radar:migrations")
 
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0012_lhb"]
+    assert script.get_heads() == ["0013_query"]
     assert "0011_ai_task_gap_fixes" not in {
         migration.revision for migration in script.walk_revisions()
     }
+    assert script.get_revision("0013_query").down_revision == "0012_lhb"
     assert script.get_revision("0012_lhb").down_revision == "0011_realtime"
     assert script.get_revision("0011_realtime").down_revision == "0010_ai_tasks"
     assert script.get_revision("0010_ai_tasks").down_revision == (
@@ -3208,7 +3209,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0012_lhb"
+    assert SCHEMA_REVISION == "0013_query"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {

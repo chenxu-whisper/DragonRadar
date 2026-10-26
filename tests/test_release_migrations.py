@@ -2786,7 +2786,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 
         def scalar(self, statement):
             events.append(str(statement))
-            return "0012_lhb"
+            return "0013_query"
 
     class FakeEngine:
         @contextmanager
@@ -2847,7 +2847,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 @pytest.mark.parametrize(
     ("revision", "close_fails", "expected_error"),
     [
-        ("0012_lhb", False, "capture failed"),
+        ("0013_query", False, "capture failed"),
         ("wrong_revision", False, "generated database revision"),
     ],
     ids=["capture", "revision"],
@@ -2985,7 +2985,7 @@ def _configure_generation_failures(
                 raise RuntimeError("drop failed")
 
         def scalar(self, _statement):
-            return "0012_lhb"
+            return "0013_query"
 
     class FakeEngine:
         @contextmanager

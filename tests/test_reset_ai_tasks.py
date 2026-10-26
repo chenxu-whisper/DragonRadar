@@ -299,10 +299,10 @@ def _submit(service, session, publication, **changes):
     return service.submit(session.token, session.csrf, **values)
 
 
-def test_ai_schema_remains_ready_at_lhb_migration_head(database):
+def test_ai_schema_remains_ready_at_query_migration_head(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0012_lhb"
+    assert SCHEMA_REVISION == "0013_query"
     assert database.ready()
     tables = set(inspect(database.engine).get_table_names())
     assert {
