@@ -31,7 +31,7 @@
 
 		@publishedRead {
 			method GET HEAD
-			path_regexp publishedRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment|heatmap)|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
+			path_regexp publishedRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment/research|sentiment|heatmap)|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
 		}
 		reverse_proxy @publishedRead public-api:8000 {
 			header_up -Forwarded

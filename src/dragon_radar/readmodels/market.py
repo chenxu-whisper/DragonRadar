@@ -1,6 +1,7 @@
 """Deterministic market observations materialized from publication-bound inputs."""
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
@@ -8,6 +9,14 @@ from typing import Any
 from dragon_radar.analytics.metrics import _decimal_context, _index, _observation
 from dragon_radar.domain.models import LimitUpEvent, MarketBatch
 from dragon_radar.domain.quality import state_at
+from dragon_radar.readmodels.sentiment_research import (
+    REASON_NO_LIMIT_EVENTS,
+    REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET,
+    REASON_NO_VALID_DAILY_RETURNS,
+    build_component,
+    build_research_point,
+    materialize_sentiment_research,
+)
 from dragon_radar.topics.models import TopicBatch
 
 RATIO_SCALE = Decimal("0.0001")
@@ -328,79 +337,156 @@ def _market_factors(
     }
 
 
+@dataclass(frozen=True)
+class _DailySentimentFacts:
+    """Same-publication, same-day facts shared by raw sentiment and research."""
+
+    trade_date: date
+    sealed: frozenset[str]
+    limit_up_count: int
+    limit_down_count: int
+    max_boards: int
+    prior_limit_up: frozenset[str]
+    prior_ge2: frozenset[str]
+    tradable: frozenset[str]
+    promote_excluded: int
+    promote_missing: int
+    promoted_sealed: int
+    returns: dict[str, Decimal]
+    return_coverage: dict
+
+
+def _daily_sentiment_facts(
+    batch: MarketBatch,
+    bars: dict,
+    events: dict[tuple[date, str], LimitUpEvent],
+    sessions: tuple[date, ...],
+    day: date,
+    current_returns: tuple[dict[str, Decimal], dict],
+) -> _DailySentimentFacts:
+    day_position = sessions.index(day)
+    prior_day = sessions[day_position - 1] if day_position else None
+    day_events = {
+        security_id: event
+        for (event_day, security_id), event in events.items()
+        if event_day == day and security_id in batch.expected_security_ids
+    }
+    sealed = frozenset(
+        security_id for security_id, event in day_events.items() if event.is_limit_up
+    )
+    current_bars = _daily_observations(batch, day)[0]
+    limit_down = sum(
+        bar.limit_status == "limited"
+        and bar.limit_date == day
+        and bar.limit_down is not None
+        and bar.close == bar.limit_down
+        for bar in current_bars.values()
+    )
+    prior_limit_up = frozenset(
+        security_id
+        for (event_day, security_id), event in events.items()
+        if event_day == prior_day
+        and event.is_limit_up
+        and security_id in batch.expected_security_ids
+    )
+    prior_ge2 = frozenset(
+        security_id
+        for security_id in prior_limit_up
+        if events[(prior_day, security_id)].continuous_boards >= 2
+    )
+    tradable: set[str] = set()
+    excluded = 0
+    missing = 0
+    for security_id in prior_ge2:
+        current_state = state_at(batch, security_id, day)
+        if current_state is not None and current_state.suspended:
+            excluded += 1
+            continue
+        observation, reasons = _observation(batch, bars, security_id, day)
+        if observation is None or reasons:
+            missing += 1
+        else:
+            tradable.add(security_id)
+    day_returns, return_coverage = (
+        current_returns if day == batch.trade_date else _daily_returns(batch, day)
+    )
+    return _DailySentimentFacts(
+        trade_date=day,
+        sealed=sealed,
+        limit_up_count=len(sealed),
+        limit_down_count=limit_down,
+        max_boards=max(
+            (
+                event.continuous_boards
+                for event in day_events.values()
+                if event.is_limit_up
+            ),
+            default=0,
+        ),
+        prior_limit_up=prior_limit_up,
+        prior_ge2=prior_ge2,
+        tradable=frozenset(tradable),
+        promote_excluded=excluded,
+        promote_missing=missing,
+        promoted_sealed=len(tradable & sealed),
+        returns=day_returns,
+        return_coverage=return_coverage,
+    )
+
+
+def _research_point(day: date, facts: _DailySentimentFacts) -> dict:
+    breadth = build_component(
+        sum(value > 0 for value in facts.returns.values()),
+        len(facts.returns),
+        REASON_NO_VALID_DAILY_RETURNS,
+        coverage=facts.return_coverage,
+    )
+    limit_balance = build_component(
+        facts.limit_up_count,
+        facts.limit_up_count + facts.limit_down_count,
+        REASON_NO_LIMIT_EVENTS,
+    )
+    promotion = build_component(
+        facts.promoted_sealed,
+        len(facts.tradable),
+        REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET,
+        coverage=_coverage(
+            len(facts.prior_ge2),
+            len(facts.tradable),
+            facts.promote_excluded,
+            facts.promote_missing,
+        ),
+    )
+    return build_research_point(
+        day,
+        {
+            "breadth": breadth,
+            "limit_balance": limit_balance,
+            "promotion": promotion,
+        },
+    )
+
+
 def _sentiment(
     batch: MarketBatch,
     returns: dict[str, Decimal],
     events: dict[tuple[date, str], LimitUpEvent],
-) -> tuple[dict, list[dict], list[dict]]:
+    return_coverage: dict,
+) -> tuple[dict, list[dict], list[dict], list[dict]]:
     sessions = batch.calendar.sessions
     position = sessions.index(batch.trade_date)
     bars = _index(batch)
+    current_returns = (returns, return_coverage)
 
-    def daily(day: date) -> dict:
-        day_position = sessions.index(day)
-        prior_day = sessions[day_position - 1] if day_position else None
-        day_events = {
-            security_id: event
-            for (event_day, security_id), event in events.items()
-            if event_day == day and security_id in batch.expected_security_ids
-        }
-        sealed = {
-            security_id
-            for security_id, event in day_events.items()
-            if event.is_limit_up
-        }
-        current_bars = _daily_observations(batch, day)[0]
-        limit_down = sum(
-            bar.limit_status == "limited"
-            and bar.limit_date == day
-            and bar.limit_down is not None
-            and bar.close == bar.limit_down
-            for bar in current_bars.values()
-        )
-        prior_limit_up = {
-            security_id
-            for (event_day, security_id), event in events.items()
-            if event_day == prior_day
-            and event.is_limit_up
-            and security_id in batch.expected_security_ids
-        }
-        prior_ge2 = {
-            security_id
-            for security_id in prior_limit_up
-            if events[(prior_day, security_id)].continuous_boards >= 2
-        }
-        tradable = set()
-        excluded = 0
-        missing = 0
-        for security_id in prior_ge2:
-            current_state = state_at(batch, security_id, day)
-            if current_state is not None and current_state.suspended:
-                excluded += 1
-                continue
-            observation, reasons = _observation(batch, bars, security_id, day)
-            if observation is None or reasons:
-                missing += 1
-            else:
-                tradable.add(security_id)
-        promote = _ratio(
-            len(tradable & sealed),
-            len(tradable),
-            "no_tradable_members_from_yesterday_ge2_set",
-        )
-        promote.update(
-            yesterday_ge2=len(prior_ge2),
-            excluded=excluded,
-            missing=missing,
-        )
-        day_returns = (
-            returns if day == batch.trade_date else _daily_returns(batch, day)[0]
-        )
-        feedback_ids, feedback_excluded, feedback_missing = _return_subset_coverage(
-            batch, prior_limit_up, day_returns, day
-        )
+    def daily(day: date, facts: _DailySentimentFacts) -> dict:
+        day_returns = facts.returns
+        (
+            feedback_ids,
+            feedback_excluded,
+            feedback_missing,
+        ) = _return_subset_coverage(batch, set(facts.prior_limit_up), day_returns, day)
         feedback_values = [day_returns[item] for item in sorted(feedback_ids)]
-        if not prior_limit_up:
+        if not facts.prior_limit_up:
             feedback_reason = "no_yesterday_limit_up_members"
         elif not feedback_values:
             feedback_reason = "no_valid_returns_for_yesterday_limit_up_members"
@@ -408,22 +494,25 @@ def _sentiment(
             feedback_reason = "partial_yesterday_limit_up_return_coverage"
         else:
             feedback_reason = None
+        promote = _ratio(
+            facts.promoted_sealed,
+            len(facts.tradable),
+            REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET,
+        )
+        promote.update(
+            yesterday_ge2=len(facts.prior_ge2),
+            excluded=facts.promote_excluded,
+            missing=facts.promote_missing,
+        )
         return {
             "trade_date": day,
-            "limit_up_count": len(sealed),
-            "limit_down_count": limit_down,
-            "max_boards": max(
-                (
-                    event.continuous_boards
-                    for event in day_events.values()
-                    if event.is_limit_up
-                ),
-                default=0,
-            ),
+            "limit_up_count": facts.limit_up_count,
+            "limit_down_count": facts.limit_down_count,
+            "max_boards": facts.max_boards,
             "promote_rate": promote,
             "yesterday_limit_up_median_return": _median(feedback_values),
             "yesterday_limit_up_return_coverage": {
-                "expected": len(prior_limit_up),
+                "expected": len(facts.prior_limit_up),
                 "valid": len(feedback_values),
                 "excluded": feedback_excluded,
                 "missing": feedback_missing,
@@ -433,27 +522,37 @@ def _sentiment(
 
     series = []
     heatmap = []
+    research_series = []
+    current = None
     for day in sessions[: position + 1]:
+        facts = _daily_sentiment_facts(
+            batch, bars, events, sessions, day, current_returns
+        )
+        research_series.append(_research_point(day, facts))
         daily_events = [
             event
             for (event_day, security_id), event in events.items()
             if event_day == day and security_id in batch.expected_security_ids
         ]
-        if not daily_events:
-            continue
-        sealed_events = [event for event in daily_events if event.is_limit_up]
-        counts: dict[int, int] = defaultdict(int)
-        for event in sealed_events:
-            if event.continuous_boards >= 1:
-                counts[event.continuous_boards] += 1
-        heatmap.extend(
-            {"trade_date": day, "boards": boards, "count": count}
-            for boards, count in sorted(counts.items())
-        )
-        series.append(daily(day))
-    current = daily(batch.trade_date)
-    current.pop("trade_date")
-    return current, series, heatmap
+        point = daily(day, facts) if daily_events else None
+        if point is not None:
+            sealed_events = [event for event in daily_events if event.is_limit_up]
+            counts: dict[int, int] = defaultdict(int)
+            for event in sealed_events:
+                if event.continuous_boards >= 1:
+                    counts[event.continuous_boards] += 1
+            heatmap.extend(
+                {"trade_date": day, "boards": boards, "count": count}
+                for boards, count in sorted(counts.items())
+            )
+            series.append(point)
+        if day == batch.trade_date:
+            current = point if point is not None else daily(day, facts)
+    assert current is not None
+    # The current day also lives in ``series``; drop its date on a fresh dict
+    # so the materialized series point keeps its trade_date key.
+    current = {key: value for key, value in current.items() if key != "trade_date"}
+    return current, series, heatmap, research_series
 
 
 def _topics(
@@ -625,7 +724,9 @@ def materialize_market(
     """Build every Task09 read model once, while publication inputs are bound."""
     returns, return_coverage = _daily_returns(batch, batch.trade_date)
     events = _valid_events(batch)
-    sentiment, sentiment_series, heatmap = _sentiment(batch, returns, events)
+    sentiment, sentiment_series, heatmap, research_series = _sentiment(
+        batch, returns, events, return_coverage
+    )
     factors = _market_factors(batch, returns, return_coverage)
     sectors, historical_topics, topic_basis = _topics(
         batch, topic_batch, returns, events
@@ -766,6 +867,7 @@ def materialize_market(
         },
         "sector_flow": {"sectors": sectors, "topic_basis": topic_basis},
         "sentiment": {"series": sentiment_series},
+        "sentiment_research": materialize_sentiment_research(research_series),
         "heatmap": {
             "columns": sorted({cell["boards"] for cell in heatmap}),
             "cells": heatmap,

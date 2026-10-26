@@ -710,6 +710,7 @@ async def test_publication_materializes_all_market_views_and_routes_only_read_th
         "overview",
         "sector_flow",
         "sentiment",
+        "sentiment_research",
         "heatmap",
         "search",
         "stocks",

@@ -24,6 +24,10 @@ from dragon_radar.readmodels.market import (
     MARKET_READ_MODEL_SCHEMA,
     MARKET_READ_MODEL_SCHEMA_VERSION,
 )
+from dragon_radar.readmodels.sentiment_research import (
+    ResearchBlockError,
+    parse_archived_research_block,
+)
 
 router = APIRouter()
 
@@ -182,6 +186,43 @@ def sentiment(request: Request):
         )
     series = list(payload["sentiment"]["series"])[-days:]
     return _published_response(snapshot, {"series": series}, coverage)
+
+
+@router.get("/api/market/sentiment/research")
+def sentiment_research(request: Request):
+    query, trade_date, snapshot_id = _selection(request, {"days"})
+    days = query_integer(query.get("days", "20"), 1, 120)
+    snapshot = select_snapshot(_repository(request), trade_date, snapshot_id)
+    if snapshot is None or not isinstance(snapshot, PublishedSnapshot):
+        return DecimalJSONResponse(empty_envelope(trade_date))
+    payload, coverage, materialized = _published_payload(snapshot)
+    if not materialized or "sentiment_research" not in payload:
+        # Legacy/partial publications honestly report the research view as
+        # unavailable; read routes never recompute publication-bound blocks.
+        return _published_response(
+            snapshot, None, coverage, materialization_unavailable=True
+        )
+    try:
+        block = parse_archived_research_block(payload["sentiment_research"])
+    except ResearchBlockError:
+        raise DataUnavailable from None
+    headline = block["series"][-1]
+    # The publication loop appends one research point per calendar session
+    # through the snapshot trade date, so the headline must be bound to this
+    # snapshot; a drift means the stored block belongs to another publication.
+    if headline["trade_date"] != snapshot.trade_date:
+        raise DataUnavailable
+    data = {
+        "method_version": block["method_version"],
+        "research_only": block["research_only"],
+        "trade_date": headline["trade_date"],
+        "score": headline["score"],
+        "phase": headline["phase"],
+        "components": headline["components"],
+        "reasons": headline["reasons"],
+        "series": block["series"][-days:],
+    }
+    return _published_response(snapshot, data, coverage)
 
 
 @router.get("/api/market/heatmap")
