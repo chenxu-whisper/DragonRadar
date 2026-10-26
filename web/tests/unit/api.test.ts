@@ -20,6 +20,17 @@ describe('read-only request boundary', () => {
     await expect(request('https://example.com/api')).rejects.toThrow('同源');
     await expect(request('//example.com/api')).rejects.toThrow('同源');
   });
+  it('admits the sentiment research read path while rejecting near-miss segments', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(resetEnvelope(null))),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    await expect(request(
+      '/api/market/sentiment/research?snapshot_id=snapshot-a&days=20&date=2026-09-10',
+      { snapshot: 'snapshot-a' },
+    )).resolves.toMatchObject({ data: null });
+    await expect(request('/api/market/sentiment/research-x')).rejects.toThrow('同源');
+  });
   it.each([403, 404, 422, 503])('retains HTTP %s error identity', async status => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status })));
     await expect(request('/api/v1/snapshots')).rejects.toMatchObject({ status });

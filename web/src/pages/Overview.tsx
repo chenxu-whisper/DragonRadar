@@ -13,6 +13,9 @@ import { useThemeMode } from '../hooks/useThemeMode';
 const RealtimePanel = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(() => import('../features/realtime/RealtimePanel'))
   : null;
+const SentimentPanel = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(() => import('../features/research/SentimentPanel'))
+  : null;
 interface Props {
   state: ResearchState; patch: Patch; refreshToken: number; open: (id: string, sector: string | undefined, trigger: HTMLElement) => void;
   compare: (id: string) => void; ReviewActions?: ComponentType<{ snapshot: string; security: string }>; reset?: boolean;
@@ -128,12 +131,12 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
             <dl className="market-observations">
               <div><dt>涨停 / 跌停</dt><dd>{overview.sentiment.limit_up_count} / {overview.sentiment.limit_down_count}</dd></div>
               <div><dt>最高板</dt><dd>{overview.sentiment.max_boards}</dd></div>
-              <div><dt>晋级率</dt><dd>{overview.sentiment.promote_rate.numerator}/{overview.sentiment.promote_rate.denominator} · {ratio(overview.sentiment.promote_rate.value)}</dd>
+              <div><dt>晋级率</dt><dd>{overview.sentiment.promote_rate.numerator}/{overview.sentiment.promote_rate.denominator} · {ratio(overview.sentiment.promote_rate.value)}
                 <small>覆盖 {overview.sentiment.promote_rate.denominator}/{overview.sentiment.promote_rate.yesterday_ge2} · 排除 {overview.sentiment.promote_rate.excluded} · 缺失 {overview.sentiment.promote_rate.missing}{overview.sentiment.promote_rate.reason && ` · ${overview.sentiment.promote_rate.reason}`}</small>
-              </div>
-              <div><dt>昨涨停今收益中位数</dt><dd>{ratio(overview.sentiment.yesterday_limit_up_median_return)}</dd>
+              </dd></div>
+              <div><dt>昨涨停今收益中位数</dt><dd>{ratio(overview.sentiment.yesterday_limit_up_median_return)}
                 <small>{coverage(overview.sentiment.yesterday_limit_up_return_coverage)}{overview.sentiment.yesterday_limit_up_return_reason && ` · ${overview.sentiment.yesterday_limit_up_return_reason}`}</small>
-              </div>
+              </dd></div>
             </dl>
           </div>
         </section>
@@ -168,9 +171,9 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
             <div>
               <strong>FAC-M03 指数趋势与波动</strong>
               {overview.factors['FAC-M03'].indexes.map(item => <dl className="factor-index" key={item.security_id}>
-                <div><dt>{item.name} C/MA20-1</dt><dd>{ratio(item.close_over_ma20)}</dd><small>窗口 20 日 · {coverage(item.coverage.ma20)}{item.close_over_ma20_reason && ` · ${item.close_over_ma20_reason}`}</small></div>
-                <div><dt>C/MA60-1</dt><dd>{ratio(item.close_over_ma60)}</dd><small>窗口 60 日 · {coverage(item.coverage.ma60)}{item.close_over_ma60_reason && ` · ${item.close_over_ma60_reason}`}</small></div>
-                <div><dt>20 日收益波动</dt><dd>{ratio(item.volatility_20)}</dd><small>20 个相邻收益，非年化样本标准差 · {coverage(item.coverage.return20)}{item.volatility_20_reason && ` · ${item.volatility_20_reason}`}</small></div>
+                <div><dt>{item.name} C/MA20-1</dt><dd>{ratio(item.close_over_ma20)}<small>窗口 20 日 · {coverage(item.coverage.ma20)}{item.close_over_ma20_reason && ` · ${item.close_over_ma20_reason}`}</small></dd></div>
+                <div><dt>C/MA60-1</dt><dd>{ratio(item.close_over_ma60)}<small>窗口 60 日 · {coverage(item.coverage.ma60)}{item.close_over_ma60_reason && ` · ${item.close_over_ma60_reason}`}</small></dd></div>
+                <div><dt>20 日收益波动</dt><dd>{ratio(item.volatility_20)}<small>20 个相邻收益，非年化样本标准差 · {coverage(item.coverage.return20)}{item.volatility_20_reason && ` · ${item.volatility_20_reason}`}</small></dd></div>
               </dl>)}
             </div>
           </div>
@@ -200,6 +203,12 @@ export function Overview({ state, patch, refreshToken, open, compare, ReviewActi
           <p>来源 {resetOverview.data?.source} / {resetOverview.data?.source_version} · 截至 {resetOverview.data?.as_of} · 比率单位为小数，页面按百分数展示。</p>
         </details>
       </>}
+      {import.meta.env.VITE_RESET_WORKBENCH === '1' && SentimentPanel && state.date &&
+        <LazyLoadBoundary>
+          <Suspense fallback={<p role="status" className="status">正在加载情绪研究分区…</p>}>
+            <SentimentPanel snapshot={state.snapshot} date={state.date} refreshToken={refreshToken} />
+          </Suspense>
+        </LazyLoadBoundary>}
       <ResourceStatus resource={resetSectors} name="题材统计" />
       <ResourceStatus resource={resetSentiment} name="情绪序列" />
     </>;

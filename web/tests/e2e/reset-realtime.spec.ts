@@ -49,6 +49,13 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
   const isNull = (name: RealtimeResourceName) => options.nullResources?.includes(name);
   await page.route('**/api/realtime/**', route => respond(route));
   await page.route('**/api/market/sector-flow/intraday?**', route => respond(route));
+  // Task 28 overview-only research section: stub its sole request so the
+  // visual/console-clean tests do not see an unstubbed 404.
+  await page.route('**/api/market/sentiment/research?**', route =>
+    route.fulfill({ json: envelope(null, {
+      snapshot_id: ID,
+      quality_flags: ['materialization_unavailable'],
+    }) }));
 
   async function respond(route: Route) {
     const request = route.request();

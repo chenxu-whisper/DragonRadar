@@ -56,6 +56,17 @@ for (const file of queryScope) {
       : `Default build emitted a reset-only query asset: ${file}`);
   }
 }
+// Task 28：/api/market/sentiment/research 与 query 同构：reset-only 研究分区懒
+// chunk 不得进入 entry 静态闭包；默认构建（VITE_RESET_WORKBENCH 不为 '1'）连该
+// 懒 chunk 都不得产出，因此对全部产物兜底扫描。
+const researchScope = resetBuild ? [...staticAssets] : allScripts;
+for (const file of researchScope) {
+  if (readFileSync(file, 'utf8').includes('/api/market/sentiment/research')) {
+    throw new Error(resetBuild
+      ? `Reset-only research path reached the entry static closure: ${file}`
+      : `Default build emitted a reset-only research asset: ${file}`);
+  }
+}
 const entryBudget = process.env.VITE_PUBLIC_SHARING === '1' ? 320_000 : 315_500;
 if (entryBytes > entryBudget) {
   throw new Error(`Entry is ${entryBytes} bytes; budget is ${entryBudget} bytes`);

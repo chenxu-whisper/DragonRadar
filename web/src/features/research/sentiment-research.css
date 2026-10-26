@@ -1,0 +1,56 @@
+/* Task28 情绪研究分区：仅使用既有全局 token，深色随 [data-theme] 自动切换；
+   本文件随 SentimentPanel 懒 chunk 加载，不进入默认 entry。 */
+.research-panel { min-width: 0; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.research-heading { align-items: flex-start; gap: 8px; }
+.research-heading h2 { margin: 0; }
+.research-headline { display: grid; gap: 12px; min-width: 0; margin-top: 8px; }
+.research-score {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-muted-panel);
+}
+.research-score-value { font-size: 30px; font-weight: 700; color: var(--text-primary); }
+.research-phase { font-size: 16px; font-weight: 600; color: var(--accent); }
+.research-components {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+.research-component {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.research-component h3 { margin: 0; font-size: 14px; }
+.research-component p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.research-ratio { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.research-ratio strong { font-size: 20px; color: var(--text-primary); }
+.research-missing { color: var(--text-secondary); }
+.research-reasons { margin: 0; }
+.research-formula { margin: 0; }
+.research-series { min-width: 0; }
+.research-series summary { cursor: pointer; font-weight: 600; }
+.research-series .table-scroll { margin-top: 10px; }
+.research-series .numeric { text-align: right; }
+.research-meta { margin: 8px 0 0; }
+.research-empty { display: grid; gap: 4px; }
+.research-empty small { color: var(--text-secondary); }
+@media (max-width: 760px) {
+  .research-components { grid-template-columns: minmax(0, 1fr); }
+  .research-score-value { font-size: 26px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .research-panel * { transition: none !important; }
+}
