@@ -121,7 +121,7 @@ Recorded: 2026-10-26
 | Frontend type check (`tsc --noEmit`) | passed |
 | New reset E2E spec (`reset-sentiment-research.spec.ts`) | 8 passed; `--repeat-each 3` → 24 passed |
 | Reset E2E full suite (`playwright.reset.config.ts`) | 157 passed (4.9m) |
-| Independent read-only review | PASS — AC13 2/2, AC14 2/2, no BLOCKER/MAJOR; all follow-up nits closed |
+| Independent read-only review | PASS — AC13 2/2, AC14 2/2, no BLOCKER/MAJOR; all follow-up nits closed. A post-fix re-review of the hardening in `1004729` confirmed MINOR1/MINOR2/NIT3/NIT4 all PASS with no new findings and empirically verified each new test discriminates (old predicates accept, new checks reject) |
 
 ### Build isolation (four production variants, final code)
 
