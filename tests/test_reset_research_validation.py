@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, getcontext, localcontext
@@ -31,6 +32,8 @@ from dragon_radar.research.models import (
     validate_config,
 )
 from dragon_radar.research.report import (
+    _jsonable,
+    _quantize,
     assemble_report,
     parse_archived_report,
     serialize_report,
@@ -1395,3 +1398,210 @@ def test_archive_roundtrip_restores_calendar_hole_dates():
     assert holes == [calendar[1]]
     assert all(type(day) is date for day in holes)
     assert serialize_report(restored) == serialize_report(report)
+
+
+def _roundtrip_json(value):
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+def _canonical_archive():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    return _roundtrip_json(serialize_report(report))
+
+
+def _forge_archived_report_id(archived):
+    # Reproduce the production identity convention (report_id/generated_at
+    # excluded) over the already JSON-native archived dict.
+    identity = {
+        key: value
+        for key, value in archived.items()
+        if key not in ("report_id", "generated_at")
+    }
+    archived["report_id"] = canonical_payload_hash(identity)
+    return archived
+
+
+def test_archived_parse_wraps_malformed_tokens_and_scalar_lists_as_rve():
+    # Every structural failure at the archive boundary must surface as
+    # ResearchValidationError with no chained builtin: never a leaked
+    # ValueError/InvalidOperation/TypeError (spec L236-238; T3 frozen_at).
+    archived = _canonical_archive()
+
+    def expect_rve(mutate, message):
+        blob = _roundtrip_json(archived)
+        mutate(blob)
+        with pytest.raises(ResearchValidationError, match=message) as excinfo:
+            parse_archived_report(blob)
+        assert type(excinfo.value) is ResearchValidationError
+        assert not isinstance(excinfo.value, TypeError)
+        assert excinfo.value.__cause__ is None
+
+    bad_date = r"archived date token is not a valid ISO date"
+    bad_decimal = r"archived decimal token is not a valid decimal"
+    non_finite = r"archived decimal is not finite"
+    expect_rve(
+        lambda blob: blob["health"].__setitem__("calendar_holes", ["not-a-date"]),
+        bad_date,
+    )
+    # A scalar date slot (observations[0].trade_date) shares the same seam.
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"]["observations"][0].__setitem__(
+            "trade_date", "not-a-date"
+        ),
+        bad_date,
+    )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"]["observations"][0].__setitem__(
+            "score", "abc"
+        ),
+        bad_decimal,
+    )
+    for token in ("Infinity", "NaN"):
+        expect_rve(
+            lambda blob, token=token: blob["health"].__setitem__(
+                "coverage_ratio", token
+            ),
+            non_finite,
+        )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"].__setitem__("observations", 5),
+        r"observations must be a list",
+    )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"].__setitem__("folds", None),
+        r"folds must be a list",
+    )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"]["quintiles"].__setitem__("buckets", 5),
+        r"quintile buckets must be a list",
+    )
+
+
+def test_real_pack_constant_scores_enumerates_score_zero_variance():
+    # G2 reachability: a real (non-synthetic) pack whose rebuilt method
+    # scores are constant enumerates ('global','score_zero_variance') while
+    # staying insufficient_real_sample; full coverage keeps G1 silent.
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (50, 100), (50, 100), (50, 100)) for day in calendar]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+        synthetic=False,
+    )
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    assert report["evidence_status"] == "insufficient_real_sample"
+    pairs = [(item["scope"], item["code"]) for item in report["evidence_reasons"]]
+    assert ("global", "score_zero_variance") in pairs
+    assert [code for scope, code in pairs if scope == "global"] == [
+        "score_zero_variance"
+    ]
+
+
+def test_small_real_pack_enumerates_exact_eleven_gate_failures():
+    # n_days=30 real pack: as_of is index 8, so horizon windows see
+    # n = 9 (h1), 2 (h5), 1 (h20) observations. G3/G4/G5 fire for all three
+    # horizons; G6 (pooled IC) fires only for h20's singleton; G1 fires once.
+    report = assemble_report(_varying_long_pack(n_days=30, synthetic=False))
+    assert report["evidence_status"] == "insufficient_real_sample"
+    codes = Counter(
+        (item["scope"], item["code"]) for item in report["evidence_reasons"]
+    )
+    expected = Counter(
+        {
+            ("global", "coverage_below_threshold"): 1,
+            ("h1", "insufficient_observations"): 1,
+            ("h1", "insufficient_folds"): 1,
+            ("h1", "quintile_too_small"): 1,
+            ("h5", "insufficient_observations"): 1,
+            ("h5", "insufficient_folds"): 1,
+            ("h5", "quintile_too_small"): 1,
+            ("h20", "insufficient_observations"): 1,
+            ("h20", "insufficient_folds"): 1,
+            ("h20", "quintile_too_small"): 1,
+            ("h20", "pooled_ic_unavailable"): 1,
+        }
+    )
+    assert codes == expected
+    assert sum(codes.values()) == 11
+    assert report["evaluation"]["1"]["pooled"]["n"] == 9
+    assert report["evaluation"]["1"]["pooled"]["rank_ic"] is not None
+    assert report["evaluation"]["20"]["pooled"]["n"] == 1
+    assert report["evaluation"]["20"]["pooled"]["rank_ic"] is None
+
+
+def test_parse_archived_report_rejects_shape_mutation_matrix():
+    archived = _canonical_archive()
+    mutations = (
+        lambda blob: blob.update(unknown_top_level_key=1),
+        lambda blob: blob.pop("evidence_status"),
+        lambda blob: blob["health"].update(unknown_health_key=1),
+        lambda blob: blob["config"].pop("min_folds"),
+        lambda blob: blob["input_manifests"][0].update(unknown_manifest_key=1),
+        lambda blob: blob.update(report_type="not-a-real-report-type"),
+        lambda blob: blob.update(validator_version="not-a-real-validator"),
+        lambda blob: blob.update(research_only=False),
+        lambda blob: blob.update(research_only=0),
+        lambda blob: blob.update(research_only="true"),
+        lambda blob: blob.update(evidence_status="effective"),
+    )
+    for mutate in mutations:
+        blob = _roundtrip_json(archived)
+        mutate(blob)
+        with pytest.raises(ResearchValidationError):
+            parse_archived_report(blob)
+    for non_mapping in ([], "not-a-report", 5, None):
+        with pytest.raises(ResearchValidationError):
+            parse_archived_report(non_mapping)
+
+
+def test_parse_rejects_shape_tamper_even_when_report_id_is_forged():
+    archived = _canonical_archive()
+    # Control: an untouched archive whose id is recomputed with the
+    # production convention parses cleanly -- proving the forged id below
+    # really does satisfy the hash check and only shape revalidation rejects.
+    parse_archived_report(_forge_archived_report_id(dict(archived)))
+
+    tampers = (
+        ("research_only", lambda blob: blob.update(research_only=False)),
+        ("health key", lambda blob: blob["health"].update(unknown=1)),
+        ("config key", lambda blob: blob["config"].pop("min_folds")),
+    )
+    for label, tamper in tampers:
+        blob = dict(archived)
+        tamper(blob)
+        _forge_archived_report_id(blob)
+        with pytest.raises(ResearchValidationError) as excinfo:
+            parse_archived_report(blob)
+        assert "report_id" not in str(excinfo.value), label
+
+
+def test_quantize_pins_six_decimal_round_half_up_under_any_context():
+    assert _quantize(Decimal("0.1234565")) == Decimal("0.123457")
+    # The half-even tie would instead land on 0.123456; pin the direction.
+    assert _quantize(Decimal("0.123456")) == Decimal("0.123456")
+    assert _quantize({"score": Decimal("0.1234565")}) == {"score": Decimal("0.123457")}
+    # The pinned 34-digit context keeps a prec=2 ambient caller safe.
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        quantized = _quantize(Decimal("0.1234565"))
+    finally:
+        getcontext().prec = previous_prec
+    assert quantized == Decimal("0.123457")
+
+
+def test_jsonable_rejects_floats_and_parse_rejects_json_number_decimal_slot():
+    for payload in ({"score": 1.5}, [1.5], {"nested": {"value": 1.5}}):
+        with pytest.raises(ResearchValidationError, match="non-serializable"):
+            _jsonable(payload)
+    # A JSON number smuggled into a Decimal-typed archive slot is rejected by
+    # the exact-type shape guard rather than silently accepted as a float.
+    archived = _canonical_archive()
+    archived["health"]["coverage_ratio"] = 0.5
+    with pytest.raises(ResearchValidationError, match="coverage Decimal"):
+        parse_archived_report(archived)

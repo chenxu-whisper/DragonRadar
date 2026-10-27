@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from typing import Any
 
 import dragon_radar.readmodels.sentiment_research as method
@@ -149,11 +149,23 @@ def _quantize(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_quantize(item) for item in value]
     if isinstance(value, Decimal):
+        if not value.is_finite():
+            # "NaN" survives Decimal() construction and quantize() (quiet
+            # NaN propagates without signalling), so reject it explicitly
+            # rather than letting a non-finite value through the shape.
+            raise ResearchValidationError("archived decimal is not finite")
         # A six-decimal result (e.g. 100.000000) needs more significant
         # digits than a polluted ambient context (prec=2) allows; pin the
         # fixed 34-digit context so output is caller-context independent.
         with localcontext(_decimal_context()):
-            return value.quantize(METRIC_SCALE, rounding=ROUND_HALF_UP)
+            try:
+                return value.quantize(METRIC_SCALE, rounding=ROUND_HALF_UP)
+            except InvalidOperation:
+                # "Infinity"/sNaN signal InvalidOperation under the pinned
+                # trapping context: translate the builtin into RVE.
+                raise ResearchValidationError(
+                    "archived decimal is not finite"
+                ) from None
     return value
 
 
@@ -245,9 +257,21 @@ def _restore(value: Any, key: str | None) -> Any:
     if isinstance(value, list):
         return [_restore(item, key) for item in value]
     if key in _DATE_KEYS and isinstance(value, str):
-        return date.fromisoformat(value)
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            # Archive boundary: never leak datetime's builtin ValueError.
+            raise ResearchValidationError(
+                f"archived date token is not a valid ISO date: {key}"
+            ) from None
     if key in _DECIMAL_KEYS and isinstance(value, str):
-        return Decimal(value)
+        try:
+            return Decimal(value)
+        except InvalidOperation:
+            # Decimal("abc") raises decimal.InvalidOperation/ConversionSyntax.
+            raise ResearchValidationError(
+                f"archived decimal token is not a valid decimal: {key}"
+            ) from None
     return value
 
 
@@ -496,7 +520,9 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
         _require(_is_date_or_none(block["grid_origin_date"]), "grid origin")
         _require(type(block["as_of"]) is date, "block as_of")
         _validate_grid(block["grid"])
-        for observation in block["observations"]:
+        observations = block["observations"]  # type: ignore[index]
+        _require(isinstance(observations, list), "observations must be a list")
+        for observation in observations:
             _require_keys(
                 observation,
                 frozenset(
@@ -513,7 +539,9 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
                 "observation",
             )
             _require(type(observation["trade_date"]) is date, "obs date")
-        for fold in block["folds"]:
+        folds = block["folds"]  # type: ignore[index]
+        _require(isinstance(folds, list), "folds must be a list")
+        for fold in folds:
             _require_keys(
                 fold,
                 frozenset(
@@ -557,7 +585,9 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
             ),
             "quintiles",
         )
-        for bucket in block["quintiles"]["buckets"]:
+        buckets = block["quintiles"]["buckets"]  # type: ignore[index]
+        _require(isinstance(buckets, list), "quintile buckets must be a list")
+        for bucket in buckets:
             _require_keys(
                 bucket,
                 frozenset({"index", "n", "mean_excess", "mean_target"}),
