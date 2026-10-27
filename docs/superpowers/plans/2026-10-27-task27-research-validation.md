@@ -3221,3 +3221,106 @@ strictness. Spec wording memo: spec L333 says drop reason
 grid validation) is `missing_close`; harmonize the spec text before T8.
 Suite at T5 close: research 37 passed; combined with full-scope
 50 passed / 2 skipped; ruff clean.
+
+### Execution log — Task 6 review outcomes
+
+Task 6 (implementation `a3333d7`, spec fix `c4a5845`, quality fixes
+`9864309`): three approved deviations carried into the report layer —
+D1 the controlled method-import form; D2 `_quantize`'s Decimal branch
+runs inside `localcontext(_decimal_context())` because a bare
+`quantize` raises `InvalidOperation` at `prec=2` (the explicit
+`ROUND_HALF_UP` argument overrides the context's HALF_EVEN, proven at
+runtime); D3 the context-immunity discriminating test exercises the
+serialize-to-parse seam under `prec=2`, since `assemble_report`'s
+internal `validate_pack` rebuild necessarily trips at `prec <= 3` on
+the out-of-slice method-module fragility. Evidence state-machine
+measured values pinned by tests: n=30 real → 9 valid, 9/30 = 0.30 →
+`insufficient_real_sample`, global carries exactly
+`coverage_below_threshold`, eleven gate failures total; n=830 real →
+809/830 = 0.974699 → `real_sample_descriptive`, reasons empty
+(h1 n=809 / 101 folds, h5 n=162 / 20 folds, h20 n=41 — exactly one
+above the G3 n=40 gate — / 5 folds, every bucket ≥ 5); n=830
+synthetic → `synthetic_only`.
+
+Spec review of `a3333d7` returned "needs changes" for one mandatory
+defect: `_restore` propagates parent keys into list elements, but
+`health.calendar_holes` is a scalar `list[date]` and
+`"calendar_holes"` was absent from `_DATE_KEYS`, so archived ISO
+strings were not restored and `_validate_report_shape` rejected legal
+archives containing intermediate missing days ("holes dates"). Fix
+`c4a5845` adds the single token; all other list paths were enumerated
+(`horizons` list[int]; `input_manifests`/`observations`/`folds`/
+`buckets` list[mapping] with per-scalar-key restoration;
+`evidence_reasons`/`gate_failures` list[str]) — no sibling gap, and no
+list[datetime] path exists. Discriminating test
+`test_archive_roundtrip_restores_calendar_hole_dates` (six-day
+calendar, components on days 0/2/3/4, constant closes; pins
+holes == [calendar[1]], `type is date` elements, report_id stability
+and serialize idempotence through sort_keys JSON); spec re-review
+APPROVED.
+
+Quality review (fresh reviewer) APPROVED with no blockers after a
+50+ point tamper matrix (every top-level and nested mutation rejected
+except the two designed exceptions — `generated_at` excluded from
+identity, and requantize-equivalent tokens such as 2.2199996
+normalize to the same report) — then required five important items
+plus one suggestion under the slice's standing "explicit contract
+without discriminating test blocks closure" rule, all fixed in
+`9864309`: I1 archive structural violations now uniformly raise
+`ResearchValidationError ... from None` — `date.fromisoformat`
+`ValueError`, Decimal `InvalidOperation`, non-finite quantize tokens,
+and three explicit `isinstance(..., list)` guards for
+observations/folds/buckets (previously leaked TypeError); runtime
+note: in the trapping decimal34 context a quiet NaN quantizes
+silently back to NaN (only sNaN/±Infinity signal), so an explicit
+`is_finite()` guard precedes quantize. I2 the reachable G2
+`score_zero_variance` enumeration (constant-score real pack, G1 kept
+silent at coverage 1.0) is now pinned. I3 the exact eleven-entry
+(scope, code) gate-failure multiset for n=30 is Counter-pinned after
+independent G1–G6 recomputation (h1 n=9 / 1 fold → G3,G4,G5;
+h5 n=2 → G3,G4,G5; h20 n=1 / pooled None → G3,G4,G5,G6; global G1);
+fan-out truncation mutates the test. I4 a parse-side malformed-
+archive matrix (eleven dict tamperings incl. false/0/"true"
+pseudo-bools, four non-mappings) plus a forged report-id seam test:
+tamper then recompute the id with the producer's canonical
+convention — only the parse-side `_validate_report_shape` call can
+reject it, which makes that call load-bearing (the plain matrix is
+backstopped by report_id mismatch / the first Mapping guard). I5
+ROUND_HALF_UP direction pinned (`0.1234565 → 0.123457`; half-even
+would give `0.123456`) including under `prec=2`. S3 `_jsonable`
+float rejection ("non-serializable") and JSON-number-into-Decimal-
+slot rejection ("coverage Decimal") are pinned. Every addition is
+backed by a recorded mutation kill; the prior 45 tests untouched.
+Final quality re-review APPROVED, T6 closed.
+
+Logged without code changes (none participate in gating unless
+noted): S1 `_quantize(report)` also requantizes the echoed config
+block (a custom `min_coverage=0.1234567` echoes `0.123457`; the
+default config stays numerically equal) — restrict quantization to
+health/evaluation subtrees or constrain threshold granularity if a
+non-default config is ever exposed. S2 the spec's absolute
+forbidden-word ban ("anywhere") conflicts with opaque metadata
+fields (generator / pack_id / target_name / manifest adjustments
+carry arbitrary strings through) — requires a spec-level scope
+ruling; the guard surface is Task 3's. S5 `generated_at` accepts
+whitespace/non-ISO caller strings (trusted injected clock, excluded
+from identity) — align with the T3 `.strip()` precedent if hardened.
+N4 `ruff format --check` at repo root flags three docs/*.md files
+(including this slice's spec/plan code blocks and a historical
+task21 doc) — T8's static gate must scope format checks to code
+paths or explicitly exempt markdown. N6 synthetic packs also carry
+gate-failure reasons (the spec does not forbid it; `synthetic_only`
+dominates the status). Two wording/test-polish residuals to pick up
+opportunistically: the `from None` tests assert `__cause__ is None`,
+which lacks discriminating power (it stays None without `from None`;
+`__suppress_context__ is True` is the load-bearing predicate) —
+scheduled with Task 7; the now-partly-unreachable
+`except InvalidOperation` comment and the "archived"-worded finite
+guard message are wording-only. Confirmed at the report layer: the
+m-3 zero-value sign semantics (deferred since Task 5) pass through
+transparently and introduce no new report-level issue. Pre-T8 spec
+text harmonization remains open: L333 `label_unavailable` vs the
+implemented closed set `missing_close`, and the "16 forbidden
+subpackages" prose vs 15 enumerated. Suite at T6 close: research
+52 passed; combined with full-scope 65 passed / 2 skipped; ruff,
+ruff format and compileall clean.
