@@ -43,9 +43,10 @@ def _score_distribution(scores: list[Decimal]) -> dict[str, object]:
     if scores:
         base = stats.decimal_distribution(scores)
         multiplicity = Counter(scores)
-        top_tie_share = Decimal(max(multiplicity.values())) / Decimal(len(scores))
+        with localcontext(_decimal_context()):
+            top_tie_share = Decimal(max(multiplicity.values())) / Decimal(len(scores))
     else:
-        base = _empty_distribution()
+        base: dict[str, object] = _empty_distribution()
         # ``n`` is a count: an empty sample carries zero observations even
         # though every moment (min/max/mean/median/quantiles) is unavailable.
         base["n"] = 0
@@ -66,7 +67,7 @@ def _component_blocks(points: tuple[dict[str, object], ...]) -> dict[str, object
         ratios: list[Decimal] = []
         zero_denominator = 0
         for point in points:
-            component = cast(dict[str, object], cast(dict, point["components"])[key])
+            component = cast(dict[str, object], point["components"])[key]
             if cast(int, component["denominator"]) == 0:
                 zero_denominator += 1
             else:
@@ -157,7 +158,7 @@ def build_factor_health(validated: ValidatedPack) -> dict[str, object]:
         "calendar_holes": holes,
         "score_distribution": _score_distribution(scores),
         "components": _component_blocks(points),
-        "rank_correlations": _rank_correlations(cast(list, valid_points)),
+        "rank_correlations": _rank_correlations(valid_points),
         "sample_window": {
             "first": valid_points[0]["trade_date"] if valid_points else None,
             "last": valid_points[-1]["trade_date"] if valid_points else None,

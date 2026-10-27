@@ -724,8 +724,17 @@ def test_factor_health_counts_coverage_reasons_and_holes():
 
 def test_factor_health_distribution_and_perfect_rank_correlations():
     start = date(2026, 2, 2)
-    calendar = calendar_days(start, 5)
-    ratios = ((1, 10), (2, 10), (3, 10), (4, 10), (5, 10))
+    calendar = calendar_days(start, 8)
+    ratios = (
+        (0, 100),
+        (1, 10),
+        (2, 10),
+        (3, 10),
+        (4, 10),
+        (5, 10),
+        (5, 10),
+        (100, 100),
+    )
     components = [
         daily(day, ratios[i], ratios[i], ratios[i]) for i, day in enumerate(calendar)
     ]
@@ -738,21 +747,21 @@ def test_factor_health_distribution_and_perfect_rank_correlations():
     )
     health = build_factor_health(validate_pack(pack))
     distribution = health["score_distribution"]
-    assert distribution["n"] == 5
-    assert distribution["zero_count"] == 0
-    assert distribution["hundred_count"] == 0
-    # scores are 10,20,30,40,50
-    assert distribution["min"] == Decimal("10.00")
-    assert distribution["max"] == Decimal("50.00")
-    assert distribution["median"] == Decimal("30.00")
-    assert distribution["top_tie_share"] == Decimal("1") / Decimal("5")
+    assert distribution["n"] == 8
+    assert distribution["zero_count"] == 1
+    assert distribution["hundred_count"] == 1
+    # scores are 0,10,20,30,40,50,50,100
+    assert distribution["min"] == Decimal("0.00")
+    assert distribution["max"] == Decimal("100.00")
+    assert distribution["median"] == Decimal("35.00")
+    assert distribution["top_tie_share"] == Decimal("2") / Decimal("8")
     for key in method.COMPONENT_KEYS:
         block = health["components"][key]
-        assert block["available_days"] == 5
+        assert block["available_days"] == 8
         assert block["zero_denominator_days"] == 0
-        assert block["distribution"]["n"] == 5
-        assert block["distribution"]["min"] == Decimal("0.1")
-        assert block["distribution"]["max"] == Decimal("0.5")
+        assert block["distribution"]["n"] == 8
+        assert block["distribution"]["min"] == Decimal("0")
+        assert block["distribution"]["max"] == Decimal("1")
     correlations = health["rank_correlations"]
     for name in (
         "breadth_limit_balance",
@@ -780,3 +789,86 @@ def test_factor_health_empty_sample_degrades_without_raising():
     assert health["coverage_ratio"] == Decimal("0")
     assert health["score_distribution"]["n"] == 0
     assert health["sample_window"] == {"first": None, "last": None}
+    correlations = health["rank_correlations"]
+    assert set(correlations) == {
+        "breadth_limit_balance",
+        "breadth_promotion",
+        "limit_balance_promotion",
+        "breadth_score",
+        "limit_balance_score",
+        "promotion_score",
+    }
+    assert all(
+        item == {"value": None, "reason": REASON_INSUFFICIENT_SAMPLE}
+        for item in correlations.values()
+    )
+
+
+def test_factor_health_is_independent_of_caller_decimal_context():
+    start = date(2026, 2, 2)
+    # Two of the three days tie at score 0: top_tie_share is the infinite
+    # decimal 2/3, which a 2-digit ambient context would round to 0.67.
+    calendar = calendar_days(start, 3)
+    ratios = ((0, 100), (0, 100), (2, 10))
+    components = [
+        daily(day, ratios[i], ratios[i], ratios[i]) for i, day in enumerate(calendar)
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    # Validate once under the default context: point rebuilding runs through
+    # the real method module, which is outside this block's context contract.
+    # The unit under test is build_factor_health, invoked twice below.
+    validated = validate_pack(pack)
+
+    def build():
+        return build_factor_health(validated)
+
+    default = build()
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        low_precision = build()
+    finally:
+        getcontext().prec = previous_prec
+    assert (
+        low_precision["score_distribution"]["top_tie_share"]
+        == default["score_distribution"]["top_tie_share"]
+    )
+    assert low_precision["coverage_ratio"] == default["coverage_ratio"]
+    # Asymmetric zero/hundred counts keep the two predicates distinguishable:
+    # swapping them flips the pair (2, 0) into (0, 2).
+    assert default["score_distribution"]["zero_count"] == 2
+    assert default["score_distribution"]["hundred_count"] == 0
+
+
+def test_factor_health_unknown_null_reason_fails_closed():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 3)
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=[],
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    base = validate_pack(pack)
+    # ValidatedPack is directly constructible; a null point whose reason is
+    # outside the method's closed three-code vocabulary must fail loudly
+    # rather than be silently dropped from the null_reasons totals.
+    tampered_point = {
+        "trade_date": calendar[0],
+        "score": None,
+        "phase": None,
+        "components": {
+            key: {"numerator": 0, "denominator": 0} for key in method.COMPONENT_KEYS
+        },
+        "reasons": ["not_a_method_reason_code"],
+    }
+    tampered = replace(base, points=(tampered_point,))
+    with pytest.raises(KeyError):
+        build_factor_health(tampered)
