@@ -80,7 +80,14 @@ def _imported_modules(path):
         if isinstance(node, ast.Import):
             names.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names.append(node.module)
+            if node.module == "dragon_radar":
+                # Expand the bare-package from-import (``from dragon_radar
+                # import cli``) into the concrete name dragon_radar.cli so the
+                # purity scan cannot be bypassed via the "dragon_radar" root
+                # exception. Origin is the alias name, not asname.
+                names.extend(f"dragon_radar.{alias.name}" for alias in node.names)
+            else:
+                names.append(node.module)
     return names
 
 
@@ -1704,6 +1711,7 @@ def test_forbidden_subpackage_closed_set_matches_spec_and_rejects_cli_api(tmp_pa
         "api",
     }
     assert set(FORBIDDEN_DRAGON_SUBPACKAGES) == spec_forbidden_subpackages
+    assert len(FORBIDDEN_DRAGON_SUBPACKAGES) == len(set(FORBIDDEN_DRAGON_SUBPACKAGES))
 
     forbidden_roots = {f"dragon_radar.{sub}" for sub in FORBIDDEN_DRAGON_SUBPACKAGES}
 
@@ -1737,3 +1745,66 @@ def test_forbidden_subpackage_closed_set_matches_spec_and_rejects_cli_api(tmp_pa
     assert all(
         ".".join(name.split(".")[:2]) not in forbidden_roots for name in allowed_names
     )
+
+
+def test_from_dragon_radar_root_imports_are_expanded_and_enforced(tmp_path):
+    # A bare-package from-import (``from dragon_radar import cli``) must not
+    # slip through as the trusted "dragon_radar" root name. The helper expands
+    # it to the concrete submodule and the production scan predicates reject
+    # it; mirror both predicates from test_research_package_imports_stay_pure.
+    forbidden_roots = {f"dragon_radar.{sub}" for sub in FORBIDDEN_DRAGON_SUBPACKAGES}
+
+    def scan_rejects(name: str) -> bool:
+        if name.startswith(FORBIDDEN_IMPORTS):
+            return True
+        if name.startswith("dragon_radar."):
+            if not (
+                name == "dragon_radar"
+                or name.startswith("dragon_radar.research")
+                or name.startswith(ALLOWED_DRAGON_IMPORTS)
+            ):
+                return True
+            root = ".".join(name.split(".")[:2])
+            return root in forbidden_roots
+        return False
+
+    def names_from(filename: str, source: str) -> list[str]:
+        fake_module = tmp_path / filename
+        fake_module.write_text(source, encoding="utf-8")
+        return _imported_modules(fake_module)
+
+    # Forbidden entry points via the bare-root form must be rejected...
+    assert names_from("cli_root.py", "from dragon_radar import cli\n") == [
+        "dragon_radar.cli"
+    ]
+    assert scan_rejects("dragon_radar.cli")
+    assert names_from("api_root.py", "from dragon_radar import api\n") == [
+        "dragon_radar.api"
+    ]
+    assert scan_rejects("dragon_radar.api")
+    # ...including the aliased form: origin is the alias name, not asname.
+    aliased_names = names_from("cli_alias.py", "from dragon_radar import cli as c\n")
+    assert aliased_names == ["dragon_radar.cli"]
+    assert "c" not in aliased_names
+    assert scan_rejects("dragon_radar.cli")
+
+    # Allowed root: the in-slice research subdomain passes.
+    research_names = names_from(
+        "research_root.py", "from dragon_radar import research\n"
+    )
+    assert research_names == ["dragon_radar.research"]
+    assert not any(scan_rejects(name) for name in research_names)
+
+    # Allowlist precision: only dragon_radar.analytics.metrics is permitted,
+    # not the analytics package root itself.
+    analytics_names = names_from(
+        "analytics_root.py", "from dragon_radar import analytics\n"
+    )
+    assert analytics_names == ["dragon_radar.analytics"]
+    assert any(scan_rejects(name) for name in analytics_names)
+
+    # Regression control: a plain ``import dragon_radar`` still records the
+    # bare root and remains trusted (expansion applies only to from-imports).
+    bare_names = names_from("bare_import.py", "import dragon_radar\n")
+    assert bare_names == ["dragon_radar"]
+    assert not any(scan_rejects(name) for name in bare_names)
