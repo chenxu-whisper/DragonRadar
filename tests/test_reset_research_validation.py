@@ -1428,7 +1428,7 @@ def test_archived_parse_wraps_malformed_tokens_and_scalar_lists_as_rve():
     # ValueError/InvalidOperation/TypeError (spec L236-238; T3 frozen_at).
     archived = _canonical_archive()
 
-    def expect_rve(mutate, message):
+    def expect_rve(mutate, message, *, suppressed=False):
         blob = _roundtrip_json(archived)
         mutate(blob)
         with pytest.raises(ResearchValidationError, match=message) as excinfo:
@@ -1436,6 +1436,11 @@ def test_archived_parse_wraps_malformed_tokens_and_scalar_lists_as_rve():
         assert type(excinfo.value) is ResearchValidationError
         assert not isinstance(excinfo.value, TypeError)
         assert excinfo.value.__cause__ is None
+        if suppressed:
+            # ``raise ... from None`` is the discriminating seam: __cause__
+            # alone stays None even when the builtin context leaks, whereas
+            # suppressing the implicit context sets __suppress_context__.
+            assert excinfo.value.__suppress_context__ is True
 
     bad_date = r"archived date token is not a valid ISO date"
     bad_decimal = r"archived decimal token is not a valid decimal"
@@ -1443,6 +1448,7 @@ def test_archived_parse_wraps_malformed_tokens_and_scalar_lists_as_rve():
     expect_rve(
         lambda blob: blob["health"].__setitem__("calendar_holes", ["not-a-date"]),
         bad_date,
+        suppressed=True,
     )
     # A scalar date slot (observations[0].trade_date) shares the same seam.
     expect_rve(
@@ -1450,12 +1456,14 @@ def test_archived_parse_wraps_malformed_tokens_and_scalar_lists_as_rve():
             "trade_date", "not-a-date"
         ),
         bad_date,
+        suppressed=True,
     )
     expect_rve(
         lambda blob: blob["evaluation"]["1"]["observations"][0].__setitem__(
             "score", "abc"
         ),
         bad_decimal,
+        suppressed=True,
     )
     for token in ("Infinity", "NaN"):
         expect_rve(
