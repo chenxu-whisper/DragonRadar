@@ -66,7 +66,10 @@ def _require(condition: bool, message: str) -> None:
 
 
 def _require_text(value: object, label: str) -> None:
-    _require(type(value) is str and value != "", f"{label} must be a non-empty string")
+    _require(
+        type(value) is str and value.strip() != "",
+        f"{label} must be a non-empty string",
+    )
 
 
 def _components_payload(
@@ -127,7 +130,10 @@ def _validate_manifests(
     by_name: dict[str, InputManifest] = {}
     for manifest in manifests:
         _require(type(manifest) is InputManifest, "manifest must be InputManifest")
-        _require(manifest.name in STREAM_NAMES, "manifest name is unknown")
+        _require(
+            manifest.name in STREAM_NAMES,
+            f"manifest name is unknown: {manifest.name!r}",
+        )
         _require(manifest.name not in by_name, "manifest names must be unique")
         _require_text(manifest.source_version, "source_version")
         _require_text(manifest.adjustment, "adjustment")
@@ -145,12 +151,22 @@ def _validate_manifests(
             "manifest as_of must equal pack as_of",
         )
         _require(type(manifest.frozen_at) is str, "frozen_at must be a string")
-        parsed = datetime.fromisoformat(manifest.frozen_at)
+        try:
+            parsed = datetime.fromisoformat(manifest.frozen_at)
+        except (TypeError, ValueError):
+            # Fail closed in the module's own error vocabulary.
+            raise ResearchValidationError(
+                "frozen_at must be an ISO-8601 timestamp"
+            ) from None
         _require(
             parsed.tzinfo is not None and parsed.utcoffset() is not None,
             "frozen_at must be timezone aware",
         )
         by_name[manifest.name] = manifest
+    _require(
+        tuple(manifest.name for manifest in manifests) == STREAM_NAMES,
+        "manifests must be ordered as components, target_closes, benchmark_closes",
+    )
     payloads = {
         STREAM_COMPONENTS: _components_payload(components),
         STREAM_TARGET_CLOSES: _closes_payload(target),
@@ -170,6 +186,11 @@ def _validate_manifests(
 
 
 def _rebuild_point(item: DailyComponents) -> dict[str, object]:
+    """Rebuild a method point from integer counts.
+
+    The rebuilt points intentionally carry no ``coverage`` field (the frozen
+    pack has no coverage inputs); downstream tasks must not assert it.
+    """
     return method.build_research_point(
         item.trade_date,
         {
@@ -256,7 +277,9 @@ def validate_pack(pack: SamplePack) -> ValidatedPack:
     _validate_manifests(pack.manifests, as_of, components, target, benchmark)
 
     points = tuple(_rebuild_point(item) for item in components)
-    method.materialize_sentiment_research(list(points))
+    # Shape-only self-check against the real method contract; the method
+    # validates a shallow copy and never mutates the points, so discard.
+    _ = method.materialize_sentiment_research(list(points))
     points_by_date = {
         point["trade_date"]: point
         for point in points  # type: ignore[index]

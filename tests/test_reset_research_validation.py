@@ -6,7 +6,7 @@ import ast
 import hashlib
 import json
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, getcontext
 from pathlib import Path
 
@@ -487,10 +487,10 @@ def test_manifest_tampering_and_row_count_mismatch_raise():
         sha256="a" * 64,
     )
     # Slotted frozen dataclasses expose no __dict__: copy with replace().
-    with pytest.raises(ResearchValidationError, match="sha256"):
+    with pytest.raises(ResearchValidationError, match="sha256 mismatch"):
         validate_pack(replace(pack, manifests=(tampered, *pack.manifests[1:])))
     wrong_rows = replace(pack.manifests[0], row_count=9)
-    with pytest.raises(ResearchValidationError, match="row_count"):
+    with pytest.raises(ResearchValidationError, match="row_count mismatch"):
         validate_pack(replace(pack, manifests=(wrong_rows, *pack.manifests[1:])))
 
 
@@ -573,3 +573,73 @@ def test_pack_structure_and_pit_violations_raise():
 def test_canonical_payload_hash_matches_analysis_jobs_convention():
     assert canonical_payload_hash({"b": 2, "a": 1}) == _canonical_hash({"b": 2, "a": 1})
     assert len(canonical_payload_hash([])) == 64
+
+
+def test_malformed_frozen_at_raises_research_validation_error():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    for bad_value in ("not-a-date", "2026-10-27T25:00:00+00:00", "   "):
+        manifests = tuple(
+            replace(m, frozen_at=bad_value) if m.name == "components" else m
+            for m in base.manifests
+        )
+        with pytest.raises(ResearchValidationError, match="frozen_at"):
+            validate_pack(replace(base, manifests=manifests))
+
+
+def test_datetime_subclass_keys_are_rejected_everywhere():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    # datetime is a date subclass: exact-type checks must reject it.
+    with pytest.raises(ResearchValidationError, match="as_of must be a date"):
+        validate_pack(replace(base, as_of=datetime(2026, 1, 5, 9, 30)))
+    tampered_closes = dict(closes)
+    tampered_closes[datetime(2026, 1, 5, 9, 30)] = Decimal("100.00")
+    with pytest.raises(ResearchValidationError, match="target_closes keys"):
+        validate_pack(replace(base, target_closes=tampered_closes))
+
+
+def test_close_stream_tampering_and_manifest_ordering_are_enforced():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    # Changing one close without refreshing manifests breaks the hash chain.
+    tampered_prices = dict(closes)
+    tampered_prices[calendar[0]] = Decimal("999.99")
+    with pytest.raises(ResearchValidationError, match="target_closes sha256 mismatch"):
+        validate_pack(replace(base, target_closes=tampered_prices))
+    # Duplicate manifest names are rejected.
+    duplicate_manifests = (
+        base.manifests[0],
+        base.manifests[0],
+        base.manifests[2],
+    )
+    with pytest.raises(ResearchValidationError, match="unique"):
+        validate_pack(replace(base, manifests=duplicate_manifests))
+    # Manifests must arrive in the canonical stream order.
+    shuffled = (base.manifests[1], base.manifests[0], base.manifests[2])
+    with pytest.raises(ResearchValidationError, match="ordered"):
+        validate_pack(replace(base, manifests=shuffled))
