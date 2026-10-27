@@ -3647,4 +3647,82 @@ exactly eleven paths: seven research modules, two test files, spec,
 plan — nothing under web/, migrations, CI, README, scripts/, or
 docs/acceptance/; reset-final.md blob unchanged; B01/B02/EX14/EX15
 blocked-registry guards pass with no fabricated evidence.
-Development complete; not claimed production-ready.
+
+### Execution log — Final whole-implementation review outcomes
+
+After Task 8 closure a fresh reviewer (no prior task context) ran the
+final whole-implementation review against the full chain
+`4d08fcf..b5b49b1` and returned **APPROVE with no blocking findings**.
+Beyond re-reading the seven modules against the spec, the reviewer
+built an independent reference implementation and cross-checked it
+with 900 randomized probes (300 packs × each allowed horizon): grid
+origin math, non-overlapping fold windows with the [9,9,9,8,8]
+balance, both drop-accounting identities, bucket counts and
+signal/slot ledgers all matched; windows verified interior-disjoint.
+The two "ugly" pinned decimals were reproduced in closed form — the
+tied-rank Spearman value ending …29359 equals √3/2 and the fold IC
+−43/85 last digits …6469 are deterministic 34-digit
+double-square-root artifacts that collapse to one value after the
+six-place report quantization, so neither is a defect. The n=830
+synthetic long-pack fixture's gate ledger was independently
+re-derived (9/30 = 0.30 → insufficient_real_sample with its 11
+reasons; 809/830 = 0.974699 → real_sample_descriptive with reasons
+empty, h20 n=41 just over the G3 floor of 40; synthetic →
+synthetic_only), every report leaf was audited JSON-float-free, and
+a 50+-mutation tamper matrix was applied to archived reports.
+
+Logged without code changes (all non-blocking; F1/F2 require a
+spec-level ruling before real-data intake, F3/F6 are future-ticket
+candidates):
+
+- **F1 (equals T6's S2):** spec L468–471 bans the nine forbidden
+  words in "string values anywhere", yet opaque metadata
+  (`pack_id`, `generator`, `target_name`, `benchmark_name`,
+  `manifest.source_version/adjustment`; `_require_text` checks only
+  non-emptiness) demonstrably carries e.g. `effective`/`profitable`
+  into a serialized report. Metadata participates in no score, gate
+  or evidence state and the report-id hash chain anchors its bytes,
+  so risk is low; the spec must either carve out a metadata
+  exception or require a forbidden-word scan in `validate_pack`
+  before real packs arrive.
+- **F2 (equals the m-3 caliber note deferred since Task 5):** with
+  negative pooled IC, zero excess return counts as same-direction in
+  `direction_hit_rate` and zero adjacent difference counts as
+  agreement in `adjacent_agreement`; `monotonic` uses strict
+  inequalities (demonstrated at IC = −1: hit 2/3 vs strict 1/3).
+  None of these feed a gate; the tie-direction caliber stays open
+  pending the real-data review.
+- **F3:** the third-party purity check is a blacklist
+  (fastapi/sqlalchemy/httpx/requests), not the stdlib allowlist the
+  guard prose implies; numpy/scipy are not project dependencies and
+  cannot enter via the current surfaces, but migrating the test to a
+  `sys.stdlib_module_names` allowlist would make it fail-closed.
+- **F4 (equals S1):** the echoed config block is quantized like
+  report metrics (custom `min_coverage=0.1234567` echoes `0.123457`);
+  gate comparisons provably run on pre-quantization originals, so
+  this is cosmetic.
+- **F5 (equals S5):** `generated_at` is not ISO/whitespace-validated
+  (trusted injected clock, excluded from report identity).
+- **F6:** the archive threat model needs one sentence of
+  documentation: `parse_archived_report` rejects non-canonical tokens
+  even under a forged `report_id` (restore → requantize → rehash),
+  but a forger who knows the format can substitute canonical
+  different-value tokens (coverage `0.500000` → `0.900000`) and
+  re-stamp the id; `report_id` protects against accidental
+  corruption and naive forgery, while authenticity of real archives
+  rests on the manifest sha256 chain.
+- **F7:** the coexistence test name says `..._remain_collected`
+  while the assertion proves `..._remain_defined` (already noted at
+  Task 7 close); the test-side purity predicate mirrors production
+  under append-only discipline, with zero truth-table divergence
+  today.
+
+Slice boundary restated: zero migrations (head `0013_query`), zero
+HTTP routes, zero web/CI/README/acceptance-doc changes, no
+numpy/scipy or float financial math; every emitted statistic is
+descriptive (`research_only=true`) — no effectiveness, profitability
+or prediction claim is made. B01/B02/EX14/EX15 remain blocked
+pending real inputs, the official rule set and model evaluation.
+Development complete; not claimed production-ready; no merge, tag,
+push, version bump, image release or deployment is authorized from
+this branch.
