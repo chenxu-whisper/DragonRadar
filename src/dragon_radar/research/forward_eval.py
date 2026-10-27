@@ -21,6 +21,7 @@ from dragon_radar.research.models import (
     REASON_POOLED_IC_UNAVAILABLE,
     REASON_SLOT_WITHOUT_SIGNAL,
     REASON_ZERO_VARIANCE,
+    ResearchValidationError,
     ValidationConfig,
     validate_config,
 )
@@ -130,9 +131,7 @@ def _fold_summary(folds) -> dict[str, object]:
     }
 
 
-def _quintile_block(
-    observations, pooled_ic, min_quintile_size: int
-) -> dict[str, object]:
+def _quintile_block(observations, pooled_ic) -> dict[str, object]:
     buckets = [
         {"index": index, "n": 0, "sum_excess": _ZERO, "sum_target": _ZERO}
         for index in range(1, 6)
@@ -199,6 +198,10 @@ def evaluate_horizon(
     validated: ValidatedPack, config: ValidationConfig, horizon: int
 ) -> dict[str, object]:
     cfg = validate_config(config)
+    if type(horizon) is not int or horizon not in cfg.horizons:
+        raise ResearchValidationError(
+            "horizon must be an int listed in config.horizons"
+        )
     calendar = validated.calendar
     as_of_index = validated.as_of_index
     points_by_date = validated.points_by_date
@@ -303,9 +306,7 @@ def evaluate_horizon(
         "rank_ic": pooled_correlation.value,
         "reason": pooled_correlation.reason,
     }
-    quintiles = _quintile_block(
-        observations, pooled_correlation.value, cfg.min_quintile_size
-    )
+    quintiles = _quintile_block(observations, pooled_correlation.value)
 
     if pooled_correlation.value is None or pooled_correlation.value == 0:
         direction_hit_rate = None

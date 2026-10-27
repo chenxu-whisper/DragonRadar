@@ -19,6 +19,7 @@ from dragon_radar.research.factor_health import build_factor_health
 from dragon_radar.research.forward_eval import evaluate_all, evaluate_horizon
 from dragon_radar.research.models import (
     DEFAULT_CONFIG,
+    REASON_EMPTY_BUCKET,
     REASON_INSUFFICIENT_SAMPLE,
     REASON_ZERO_VARIANCE,
     ComponentCounts,
@@ -889,6 +890,7 @@ def _monotone_forward_pack(n_days=45, *, horizon=1):
     PIT discipline: component records stop at ``as_of``; the calendar (and
     closes) extend past it solely to provide forward labels.
     """
+    assert n_days > horizon + 2
     start = date(2026, 3, 2)
     calendar = calendar_days(start, n_days)
     as_of_index = n_days - horizon - 2
@@ -1031,6 +1033,19 @@ def test_drops_accounting_out_of_window_missing_close_and_skips():
         + block["grid"]["slots_skipped"]["slot_without_signal"]
         + block["grid"]["drops"]["missing_close"]
     )
+    # This fixture has every signal either on the h=1 grid or out of window.
+    assert block["grid"]["off_grid_signals"] == 0
+    # Full signal accounting partitions the seven signals:
+    # 7 == 3 accepted + 2 missing_close + 2 out_of_window + 0 off_grid.
+    # slot_without_signal is a *slot* disposition (index 2 is an empty grid
+    # position, not a signal) and belongs to the slot identity above rather
+    # than this signal partition.
+    assert block["grid"]["signals_total"] == (
+        block["grid"]["slots_accepted"]
+        + block["grid"]["drops"]["missing_close"]
+        + block["grid"]["drops"]["out_of_window"]
+        + block["grid"]["off_grid_signals"]
+    )
 
 
 def test_balanced_fold_sizes_and_insufficiency_gates():
@@ -1055,6 +1070,15 @@ def test_balanced_fold_sizes_and_insufficiency_gates():
     # Gate failures never suppress computable statistics (spec): the pooled
     # RankIC stays exactly 1; G6 fires only when the pooled IC itself is null.
     assert tiny["pooled"]["rank_ic"] == Decimal("1")
+    # h=5 over the 10-day pack leaves a single slot (origin 0; the next slot
+    # 5 is out of window): n<2 must degrade the pooled IC with the
+    # insufficient_sample reason rather than zero_variance.
+    h5 = evaluate_horizon(
+        validate_pack(_monotone_forward_pack(n_days=10)[0]), DEFAULT_CONFIG, 5
+    )
+    assert len(h5["observations"]) == 1
+    assert h5["pooled"]["rank_ic"] is None
+    assert h5["pooled"]["reason"] == REASON_INSUFFICIENT_SAMPLE
 
 
 def test_evaluate_all_respects_horizon_subset_and_constant_score_degrades():
@@ -1078,6 +1102,9 @@ def test_evaluate_all_respects_horizon_subset_and_constant_score_degrades():
     assert block["pooled"]["rank_ic"] is None
     assert block["pooled"]["reason"] == "zero_variance"
     assert block["quintiles"]["monotonic"] is None
+    # Tied scores collapse into one non-empty bucket, so the empty-bucket
+    # branch takes priority over the pooled-IC-unavailable branch.
+    assert block["quintiles"]["monotonic_reason"] == REASON_EMPTY_BUCKET
     assert block["direction_hit_rate"] is None
     assert "pooled_ic_unavailable" in block["gate_failures"]
 
@@ -1113,3 +1140,54 @@ def test_forward_eval_is_independent_of_caller_decimal_context():
         )
 
     assert fingerprint(low_precision_block) == fingerprint(default_block)
+
+
+def test_fold_rank_ic_is_computed_within_fold_not_pooled():
+    # Sixteen signals with strictly increasing scores and a return series
+    # that rises within each block of 8 but whose second block (0.001..0.008)
+    # sits entirely below the first (0.009..0.016). Score ranks are 1..16;
+    # pooled return ranks are 9..16,1..8, so every rank difference d is +-8:
+    # sum(d^2) = 16 * 64 = 1024 and the pooled Spearman equals
+    # 1 - 6*1024/(16*(16^2-1)) = -43/85 (the fixed 34-digit sqrt path lands
+    # on ...6469 rather than the direct-division ...6471; the production
+    # output is pinned below), whereas each 8-member fold is co-monotone and
+    # must report fold IC exactly 1. Computing a fold IC over the full sample
+    # would surface the pooled value here and is killed by this test.
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, 18)
+    components = [
+        daily(calendar[i], (i + 1, 18), (i + 1, 18), (i + 1, 18)) for i in range(16)
+    ]
+    benchmark = const_closes(calendar, "100.00")
+    values = [100.0] * 18
+    values[1] = 100.0
+    for i in range(16):
+        r_i = 0.008 + (i + 1) / 1000 if i < 8 else (i - 7) / 1000
+        values[i + 2] = round(values[i + 1] * (1 + r_i), 12)
+    target = _closes_from_values(calendar, values)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[15],
+    )
+    block = evaluate_horizon(validate_pack(pack), DEFAULT_CONFIG, 1)
+    assert len(block["observations"]) == 16
+    assert len(block["folds"]) == 2
+    assert [fold["n"] for fold in block["folds"]] == [8, 8]
+    for fold in block["folds"]:
+        assert fold["rank_ic"] == Decimal("1")
+    assert block["pooled"]["rank_ic"] < 0
+    assert block["pooled"]["rank_ic"] == Decimal(
+        "-0.5058823529411764705882352941176469"
+    )
+
+
+def test_evaluate_horizon_rejects_horizon_outside_config():
+    validated = validate_pack(_monotone_forward_pack()[0])
+    with pytest.raises(ResearchValidationError, match="config.horizons"):
+        evaluate_horizon(validated, DEFAULT_CONFIG, 7)
+    with pytest.raises(ResearchValidationError, match="config.horizons"):
+        # bool must be rejected by the exact-type int check, not truthiness.
+        evaluate_horizon(validated, DEFAULT_CONFIG, True)
