@@ -30,6 +30,11 @@ from dragon_radar.research.models import (
     ValidationConfig,
     validate_config,
 )
+from dragon_radar.research.report import (
+    assemble_report,
+    parse_archived_report,
+    serialize_report,
+)
 from dragon_radar.research.samples import (
     ValidatedPack,
     canonical_payload_hash,
@@ -1191,3 +1196,166 @@ def test_evaluate_horizon_rejects_horizon_outside_config():
     with pytest.raises(ResearchValidationError, match="config.horizons"):
         # bool must be rejected by the exact-type int check, not truthiness.
         evaluate_horizon(validated, DEFAULT_CONFIG, True)
+
+
+def _varying_long_pack(n_days=830, *, synthetic):
+    start = date(2024, 1, 1)
+    calendar = calendar_days(start, n_days)
+    as_of = calendar[-22]
+    # Components (signals) stop at as_of; the 21 remaining calendar days and
+    # their closes exist solely to build h=20 forward labels.
+    history_end = calendar.index(as_of) + 1
+    components = [
+        daily(
+            day,
+            (20 + (i % 61), 100),
+            (20 + ((i * 3) % 61), 100),
+            (20 + ((i * 7) % 61), 100),
+        )
+        for i, day in enumerate(calendar[:history_end])
+    ]
+    target = {
+        day: Decimal(10000 + (i % 7) * 100 + (i * 13) % 97)
+        for i, day in enumerate(calendar)
+    }
+    benchmark = const_closes(calendar, "10000")
+    return make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        synthetic=synthetic,
+        generator="test-fixture:deterministic_pattern",
+        as_of=as_of,
+    )
+
+
+def test_report_shape_versions_and_research_only():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    assert report["report_type"] == "research-method-validation"
+    assert report["method_version"] == method.METHOD_VERSION
+    assert report["validator_version"] == "research-validation-v1"
+    assert report["research_only"] is True
+    assert report["evidence_status"] == "synthetic_only"
+    assert set(report) == {
+        "report_type",
+        "method_version",
+        "validator_version",
+        "research_only",
+        "config",
+        "pack",
+        "input_manifests",
+        "health",
+        "evaluation",
+        "evidence_status",
+        "evidence_reasons",
+        "report_id",
+        "generated_at",
+    }
+    serialized = serialize_report(report)
+    forbidden = (
+        "effective",
+        "validated",
+        "profitable",
+        "profit",
+        "win_probability",
+        "forecast",
+        "prediction",
+        "recommendation",
+        "guaranteed",
+    )
+    blob = json.dumps(serialized, sort_keys=True, ensure_ascii=True).lower()
+    assert not any(token in blob for token in forbidden)
+
+
+def test_report_id_is_deterministic_and_clock_excluded():
+    pack, _ = _monotone_forward_pack()
+    first = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    second = assemble_report(pack, generated_at="2026-10-28T08:30:00+00:00")
+    third = assemble_report(pack, generated_at=None)
+    assert first["report_id"] == second["report_id"] == third["report_id"]
+    assert len(first["report_id"]) == 64
+
+
+def test_archive_roundtrip_restores_types_and_recomputes_id():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    serialized = serialize_report(report)
+    json_blob = json.dumps(serialized, sort_keys=True)  # archive form is JSON
+    restored = parse_archived_report(json.loads(json_blob))
+    assert restored["report_id"] == report["report_id"]
+    observation = restored["evaluation"]["1"]["observations"][0]
+    assert type(observation["trade_date"]) is date
+    assert isinstance(observation["score"], Decimal)
+    assert isinstance(observation["r_excess"], Decimal)
+    assert restored["pack"]["as_of"] == pack.as_of
+
+
+def test_tampered_archive_id_is_rejected():
+    pack, _ = _monotone_forward_pack()
+    archived = serialize_report(assemble_report(pack))
+    archived["health"]["calendar_days"] = 999
+    with pytest.raises(ResearchValidationError, match="report_id"):
+        parse_archived_report(archived)
+
+
+def test_research_only_false_and_unknown_status_cannot_enter_shape():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack)
+    report["research_only"] = False
+    with pytest.raises(ResearchValidationError):
+        serialize_report(report)
+    report["research_only"] = True
+    report["evidence_status"] = "effective"
+    with pytest.raises(ResearchValidationError):
+        serialize_report(report)
+
+
+def test_evidence_statuses_are_reachable_for_real_packs():
+    short = _varying_long_pack(n_days=30, synthetic=False)
+    short_report = assemble_report(short)
+    assert short_report["evidence_status"] == "insufficient_real_sample"
+    codes_by_scope = {
+        item["scope"]: item["code"] for item in short_report["evidence_reasons"]
+    }
+    scopes = set(codes_by_scope)
+    # Spec denominator is valid_days / calendar_days: the 21-day label tail
+    # makes 9/30 < 0.80, so G1 honestly fires at global scope; G2 (>=2 distinct
+    # scores) does not. Every per-horizon gate family also enumerates.
+    assert codes_by_scope["global"] == "coverage_below_threshold"
+    assert {"h1", "h5", "h20"} <= scopes
+    assert "score_zero_variance" not in codes_by_scope.values()
+
+    long_report = assemble_report(_varying_long_pack(n_days=830, synthetic=False))
+    assert long_report["evidence_status"] == "real_sample_descriptive"
+    assert long_report["evidence_reasons"] == []
+
+    synthetic_long = assemble_report(_varying_long_pack(n_days=830, synthetic=True))
+    assert synthetic_long["evidence_status"] == "synthetic_only"
+
+
+def test_report_assembly_is_independent_of_caller_decimal_context():
+    pack, _ = _monotone_forward_pack()
+    # Score rebuilding runs through the sentiment_research readmodel, whose
+    # display quantize lives outside a fixed context and is fragile under a
+    # prec=2 ambient context (the same seam documented by the factor_health
+    # and forward_eval context tests): perform the one full assembly -- which
+    # includes point rebuilding -- under the default context, then rerun the
+    # slice-owned serialize -> archive-parse path under the polluted context.
+    # Parsing re-quantizes every Decimal in the report and recomputes the
+    # report_id, so both the fixed-context _quantize discipline and fingerprint
+    # stability are exercised without rebuilding method points twice.
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        restored = parse_archived_report(serialize_report(report))
+    finally:
+        getcontext().prec = previous_prec
+    assert restored["report_id"] == report["report_id"]
+    assert restored["health"]["coverage_ratio"] == report["health"]["coverage_ratio"]
+    assert (
+        restored["evaluation"]["1"]["pooled"]["rank_ic"]
+        == report["evaluation"]["1"]["pooled"]["rank_ic"]
+    )
