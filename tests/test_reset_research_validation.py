@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
+from dataclasses import replace
+from datetime import date, timedelta
 from decimal import Decimal, getcontext
 from pathlib import Path
 
 import pytest
 
+from dragon_radar.readmodels import sentiment_research as method
 from dragon_radar.research import statistics as stats
 from dragon_radar.research.models import (
     DEFAULT_CONFIG,
     REASON_INSUFFICIENT_SAMPLE,
     REASON_ZERO_VARIANCE,
     ComponentCounts,
+    DailyComponents,
+    InputManifest,
     ResearchValidationError,
+    SamplePack,
     ValidationConfig,
     validate_config,
+)
+from dragon_radar.research.samples import (
+    ValidatedPack,
+    canonical_payload_hash,
+    validate_pack,
 )
 
 D = Decimal
@@ -303,3 +316,260 @@ def test_statistics_fail_closed_branches_value_shapes_and_closed_distribution():
         stats.average_ranks(iter([D("1"), D("2")]))
     with pytest.raises(ResearchValidationError):
         stats.average_ranks("12")
+
+
+def calendar_days(start: date, n: int) -> tuple[date, ...]:
+    return tuple(start + timedelta(days=i) for i in range(n))
+
+
+def daily(
+    day: date,
+    breadth: tuple[int, int],
+    limit_balance: tuple[int, int],
+    promotion: tuple[int, int],
+) -> DailyComponents:
+    return DailyComponents(
+        day,
+        ComponentCounts(*breadth),
+        ComponentCounts(*limit_balance),
+        ComponentCounts(*promotion),
+    )
+
+
+def _canonical_hash(payload) -> str:
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _components_payload(components):
+    return [
+        [
+            item.trade_date.isoformat(),
+            item.breadth.numerator,
+            item.breadth.denominator,
+            item.limit_balance.numerator,
+            item.limit_balance.denominator,
+            item.promotion.numerator,
+            item.promotion.denominator,
+        ]
+        for item in components
+    ]
+
+
+def _closes_payload(closes):
+    return [
+        [day.isoformat(), str(price.normalize())]
+        for day, price in sorted(closes.items())
+    ]
+
+
+def _manifest(
+    name, rows, as_of, *, adjustment="raw", frozen_at="2026-10-27T00:00:00+00:00"
+):
+    return InputManifest(
+        name=name,
+        source_version="fixture-v1",
+        frozen_at=frozen_at,
+        as_of=as_of,
+        row_count=len(rows),
+        adjustment=adjustment,
+        sha256=_canonical_hash(rows),
+    )
+
+
+def make_manifests(components, target_closes, benchmark_closes, as_of):
+    return (
+        _manifest("components", _components_payload(components), as_of),
+        _manifest("target_closes", _closes_payload(target_closes), as_of),
+        _manifest("benchmark_closes", _closes_payload(benchmark_closes), as_of),
+    )
+
+
+def make_pack(
+    *,
+    calendar,
+    components,
+    target_closes,
+    benchmark_closes,
+    as_of=None,
+    synthetic=True,
+    seed=None,
+    pack_id="fixture-pack",
+    generator="test-fixture:hand_built",
+    target_name="fixture-target",
+    benchmark_name="csi300",
+):
+    if as_of is None:
+        as_of = calendar[-1]
+    return SamplePack(
+        pack_id=pack_id,
+        synthetic=synthetic,
+        generator=generator,
+        seed=seed,
+        as_of=as_of,
+        calendar=calendar,
+        components=tuple(components),
+        target_name=target_name,
+        benchmark_name=benchmark_name,
+        target_closes=dict(target_closes),
+        benchmark_closes=dict(benchmark_closes),
+        manifests=make_manifests(
+            tuple(components), target_closes, benchmark_closes, as_of
+        ),
+    )
+
+
+def const_closes(calendar, value="100.00"):
+    return {day: Decimal(value) for day in calendar}
+
+
+def test_validate_pack_rebuilds_method_scores():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 4)
+    components = [
+        daily(calendar[0], (60, 100), (100, 100), (50, 100)),
+        # Zero DENOMINATOR on every component -> unavailable -> null score.
+        # (Numerator 0 with a positive denominator would be a valid ratio 0.)
+        daily(calendar[1], (0, 0), (0, 0), (0, 0)),
+        daily(calendar[2], (20, 40), (2, 8), (3, 6)),
+        daily(calendar[3], (100, 100), (100, 100), (100, 100)),
+    ]
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=const_closes(calendar),
+        benchmark_closes=const_closes(calendar),
+    )
+    validated = validate_pack(pack)
+    assert isinstance(validated, ValidatedPack)
+    assert validated.valid_dates == tuple(
+        point["trade_date"] for point in validated.points if point["score"] is not None
+    )
+    first = validated.points_by_date[calendar[0]]
+    # (0.6 + 1.0 + 0.5) / 3 * 100 = 70.00 -> repair phase from the real method.
+    assert first["score"] == Decimal("70.00")
+    assert first["phase"] == method.PHASE_REPAIR
+    missing = validated.points_by_date[calendar[1]]
+    assert missing["score"] is None
+    assert set(missing["reasons"]) == {
+        method.REASON_NO_VALID_DAILY_RETURNS,
+        method.REASON_NO_LIMIT_EVENTS,
+        method.REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET,
+    }
+    assert validated.points_by_date[calendar[3]]["score"] == Decimal("100.00")
+    assert validated.as_of_index == len(calendar) - 1
+
+
+def test_manifest_tampering_and_row_count_mismatch_raise():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    tampered = InputManifest(
+        name="components",
+        source_version="fixture-v1",
+        frozen_at="2026-10-27T00:00:00+00:00",
+        as_of=pack.as_of,
+        row_count=3,
+        adjustment="raw",
+        sha256="a" * 64,
+    )
+    # Slotted frozen dataclasses expose no __dict__: copy with replace().
+    with pytest.raises(ResearchValidationError, match="sha256"):
+        validate_pack(replace(pack, manifests=(tampered, *pack.manifests[1:])))
+    wrong_rows = replace(pack.manifests[0], row_count=9)
+    with pytest.raises(ResearchValidationError, match="row_count"):
+        validate_pack(replace(pack, manifests=(wrong_rows, *pack.manifests[1:])))
+
+
+def test_pack_structure_and_pit_violations_raise():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    good = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+
+    # Non-ascending calendar.
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=(calendar[1], calendar[0]),
+                components=good[:2],
+                target_closes=closes,
+                benchmark_closes=closes,
+                as_of=calendar[1],
+            )
+        )
+    # Components after as_of are a look-ahead violation.
+    with pytest.raises(ResearchValidationError, match="components_after_as_of"):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=good,
+                target_closes=closes,
+                benchmark_closes=closes,
+                as_of=calendar[1],
+            )
+        )
+    # Duplicate component dates.
+    dup = [good[0], good[0]]
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=dup,
+                target_closes=closes,
+                benchmark_closes=closes,
+            )
+        )
+    # Zero or negative close rejected.
+    bad_closes = {day: Decimal("0") for day in calendar}
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=good,
+                target_closes=bad_closes,
+                benchmark_closes=closes,
+            )
+        )
+    # Counts violating 0 <= numerator <= denominator.
+    bad_counts = [daily(calendar[0], (3, 2), (1, 2), (1, 2))]
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=bad_counts,
+                target_closes=closes,
+                benchmark_closes=closes,
+            )
+        )
+    # Naive frozen_at rejected.
+    base = make_pack(
+        calendar=calendar,
+        components=good,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    manifests = tuple(
+        replace(m, frozen_at="2026-10-27T00:00:00") if m.name == "components" else m
+        for m in base.manifests
+    )
+    with pytest.raises(ResearchValidationError, match="timezone"):
+        validate_pack(replace(base, manifests=manifests))
+
+
+def test_canonical_payload_hash_matches_analysis_jobs_convention():
+    assert canonical_payload_hash({"b": 2, "a": 1}) == _canonical_hash({"b": 2, "a": 1})
+    assert len(canonical_payload_hash([])) == 64
