@@ -14,6 +14,7 @@ import pytest
 
 from dragon_radar.readmodels import sentiment_research as method
 from dragon_radar.research import statistics as stats
+from dragon_radar.research.factor_health import build_factor_health
 from dragon_radar.research.models import (
     DEFAULT_CONFIG,
     REASON_INSUFFICIENT_SAMPLE,
@@ -685,3 +686,97 @@ def test_validate_pack_rejects_whitespace_only_text_fields():
                 match=rf"{field} must be a non-empty string",
             ):
                 validate_pack(bad_pack)
+
+
+def test_factor_health_counts_coverage_reasons_and_holes():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 6)
+    components = [
+        daily(calendar[0], (50, 100), (50, 100), (50, 100)),
+        # calendar[1] absent entirely -> present gap
+        daily(calendar[2], (50, 100), (0, 0), (50, 100)),  # null score day
+        daily(calendar[3], (50, 100), (50, 100), (50, 100)),
+        daily(calendar[4], (50, 100), (50, 100), (50, 100)),
+        # calendar[5] absent tail (not a hole between present days)
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    health = build_factor_health(validate_pack(pack))
+    assert health["calendar_days"] == 6
+    assert health["present_days"] == 4
+    assert health["valid_days"] == 3
+    assert health["absent_days"] == 2
+    assert health["null_days"] == 1
+    assert health["coverage_ratio"] == Decimal("3") / Decimal("6")
+    assert health["null_reasons"] == {
+        method.REASON_NO_VALID_DAILY_RETURNS: 0,
+        method.REASON_NO_LIMIT_EVENTS: 1,
+        method.REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET: 0,
+    }
+    assert health["calendar_holes"] == [calendar[1]]
+    assert health["sample_window"] == {"first": calendar[0], "last": calendar[4]}
+
+
+def test_factor_health_distribution_and_perfect_rank_correlations():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 5)
+    ratios = ((1, 10), (2, 10), (3, 10), (4, 10), (5, 10))
+    components = [
+        daily(day, ratios[i], ratios[i], ratios[i]) for i, day in enumerate(calendar)
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    health = build_factor_health(validate_pack(pack))
+    distribution = health["score_distribution"]
+    assert distribution["n"] == 5
+    assert distribution["zero_count"] == 0
+    assert distribution["hundred_count"] == 0
+    # scores are 10,20,30,40,50
+    assert distribution["min"] == Decimal("10.00")
+    assert distribution["max"] == Decimal("50.00")
+    assert distribution["median"] == Decimal("30.00")
+    assert distribution["top_tie_share"] == Decimal("1") / Decimal("5")
+    for key in method.COMPONENT_KEYS:
+        block = health["components"][key]
+        assert block["available_days"] == 5
+        assert block["zero_denominator_days"] == 0
+        assert block["distribution"]["n"] == 5
+        assert block["distribution"]["min"] == Decimal("0.1")
+        assert block["distribution"]["max"] == Decimal("0.5")
+    correlations = health["rank_correlations"]
+    for name in (
+        "breadth_limit_balance",
+        "breadth_promotion",
+        "limit_balance_promotion",
+        "breadth_score",
+        "limit_balance_score",
+        "promotion_score",
+    ):
+        assert correlations[name] == {"value": Decimal("1"), "reason": None}
+
+
+def test_factor_health_empty_sample_degrades_without_raising():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 3)
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=[],
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    health = build_factor_health(validate_pack(pack))
+    assert health["valid_days"] == 0
+    assert health["coverage_ratio"] == Decimal("0")
+    assert health["score_distribution"]["n"] == 0
+    assert health["sample_window"] == {"first": None, "last": None}
