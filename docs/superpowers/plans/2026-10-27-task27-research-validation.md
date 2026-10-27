@@ -478,7 +478,7 @@ def test_spearman_degenerate_inputs_report_closed_reasons():
 
 
 def test_statistics_reject_bad_types_and_lengths():
-    for bad in ([1.0], [True], [float("nan")], [D("NaN")])):
+    for bad in ([1.0], [True], [float("nan")], [D("NaN")]):
         with pytest.raises(ResearchValidationError):
             stats.average_ranks(bad)
     with pytest.raises(ResearchValidationError):
@@ -3072,3 +3072,29 @@ names (`validate_config`, `validate_pack`/`ValidatedPack`,
 `evaluate_horizon`, `assemble_report`/`serialize_report`/
 `parse_archived_report`) and the two guard test names are consistent at every
 definition, call, and assertion site.
+
+### Execution log — Task 1 and Task 2 review outcomes
+
+Task 1 (commits `ac6cdbd`, guard hardening `f7f76b8`): two-stage review added
+three test-only hardenings beyond the plan text — bool/NaN/Infinity/coverage=1
+boundary assertions for `validate_config`; a `level >= 2` relative-import
+escape guard for the AST purity scan (level 1 within-package stays legal);
+and an `rglob` nested-module closed-set guard. All were proven to discriminate
+by semantic mutation.
+
+Task 2 (commits `f3170ee`, context fix `eb94b66`, discriminating probe
+`d3a4633`): the tied Spearman hand case resolves to
+`0.8660254037844386467637231707529359` under the fixed 34-digit context
+(2.8347e-34 below the 80-digit `sqrt(3)/2`), so the plan's two-literal `or`
+assertion was replaced by that single verbatim pin per plan note 3. Review
+found `decimal_quantile` position/fraction arithmetic and `_snap_unit`
+running outside the fixed context (caller-precision dependent); both are now
+wrapped in `localcontext(_decimal_context())` — the outer `abs(...)` in
+`_snap_unit` is load-bearing and must stay. The context-independence test
+uses quantile probes `q = 0.25/0.34/0.75` expecting `(1.75, 2.02, 3.25)`;
+`q = 0.25` alone is exact at `prec=2` and does not discriminate. Additional
+appended tests pin bad-`q`/quintile-out-of-range rejection, n=2 extremes and
+RankCorrelation value/reason shapes, the closed distribution key set, and
+generator/str input rejection. A typo in this plan's Task 2 test line (one
+extra closing parenthesis in the `for bad in ...` loop) was corrected
+in-place.
