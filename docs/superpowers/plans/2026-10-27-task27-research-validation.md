@@ -3574,3 +3574,77 @@ Future hardening suggestion: unify the two
 a future sibling pulling a bound symbol from the partially
 initialized package would break; pre-existing Task 4/5 code, not
 re-touched in this slice.
+
+### Execution log — Task 8 review outcomes
+
+Task 8 (verification-only plus two coordinator-authorized pre-gate
+reconciliations, then one quality-finding fix; commits `c5d84d9`,
+`9a7a1a0`, `31e1ab5`, `d38aed7`):
+
+Spec errata `c5d84d9` harmonized the single label-accounting prose
+mismatch — spec L333 said `label_unavailable`, the implemented and
+tested closed vocabulary (models constants, T5 accounting) is
+`missing_close` (signal on-grid, label close absent); `out_of_window`
+is the past-window case. The "16 forbidden subpackages" memo from the
+handoff was itself a miscount: spec L176 enumerates 17, the T1 guard
+tuple had 15 (`cli`/`api` both correspond to real entry-point
+modules `dragon_radar/cli.py`, `dragon_radar/api.py`). Spec is
+authority, so `9a7a1a0` extended `FORBIDDEN_DRAGON_SUBPACKAGES` to
+the exact 17-name ordered set with a discriminating test (tmp-path
+fake module through the real `_imported_modules` extractor,
+analytics.metrics allow-counterpart; mutation kills delete/add).
+
+`31e1ab5` ran `ruff format` on exactly the two slice-owned markdown
+files (never `.`): an audit proved every changed hunk sits inside
+python fences, all changed fences are AST-equivalent to their
+parents, outside-fence prose is byte-identical (including this
+execution log), fence counts unchanged, and no pseudo-code snippet
+was reformatted. The third finding —
+`docs/superpowers/plans/2026-10-09-task21-release-audit.md:195` — is
+byte-identical to base `4d08fcf` and fails identically with the
+locked ruff 0.16.6: a pre-existing mainline red for CI's whole-tree
+`ruff format --check .` (ci.yml L40), deliberately not touched per
+"never reformat unrelated files"; the branch inherits that baseline
+red and the markdown-scope decision (exemption or a standalone
+historical-doc fix) is deferred to the maintainer.
+
+Quality review then found a guard blind spot: `from dragon_radar
+import cli` (level-0 ImportFrom rooted exactly at `dragon_radar`) was
+recorded as the bare root and passed the `name == "dragon_radar"`
+allowance, although spec L175–177 say any such import must fail —
+not exploitable in the seven current modules (all use fully
+qualified forms) but a fail-closed gap nonetheless. `d38aed7` makes
+the extractor expand aliases to `dragon_radar.<alias.name>` (origin,
+not asname) only for that exact shape; the new test pins cli/api
+denial, asname/multi-line/mixed forms, `from dragon_radar import
+research` allowed, `from dragon_radar import analytics` denied (only
+`analytics.metrics` is allowlisted), and bare `import dragon_radar`
+unchanged; a no-duplicate-names assertion was added to the closed-set
+test. Relative forms were audited: level-1 can only name research
+siblings (seven-file closed set guards them), level-2 is rejected by
+the pre-existing escape guard. Residual low-risk note: the new test
+mirrors the scan predicate rather than sharing it (append-only test
+discipline forbids refactoring the T1 scan function); truth-table
+comparison shows zero divergence today, and the load-bearing
+extractor itself is real code exercised daily.
+
+Gate evidence (independently reproduced by both reviewers):
+`compileall -q src tests` clean; `ruff check .` passes whole tree;
+`ruff format --check .` passes 283 files with the single historical
+md baseline failure; `ruff format --check src tests` 216 files clean.
+Focused slice suites: 69 passed / 2 skipped (the two skips are
+pre-existing PostgreSQL full-scope tests). Migration heads
+`['0013_query']`; public app has no `/api/research/backtests` route
+(no `/api/research` prefix at all). Full suite `uv run pytest -q
+-rs`: **2728 passed, 1286 skipped** (~70s), zero failures; skips
+are entirely environmental — 1272 `DRAGON_TEST_DATABASE_URL`
+(including the single reset P95 performance gate
+tests/performance/test_reset_queries.py:504, which was therefore
+SKIPPED, not passed — CI Ubuntu Postgres remains the sole
+authoritative evidence for that gate), 10 live-TLS, 2 POSIX-only,
+2 Windows symlink-privilege. Diff whitelist `4d08fcf..HEAD` is
+exactly eleven paths: seven research modules, two test files, spec,
+plan — nothing under web/, migrations, CI, README, scripts/, or
+docs/acceptance/; reset-final.md blob unchanged; B01/B02/EX14/EX15
+blocked-registry guards pass with no fabricated evidence.
+Development complete; not claimed production-ready.
