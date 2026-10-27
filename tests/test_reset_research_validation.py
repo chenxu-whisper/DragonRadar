@@ -643,3 +643,45 @@ def test_close_stream_tampering_and_manifest_ordering_are_enforced():
     shuffled = (base.manifests[1], base.manifests[0], base.manifests[2])
     with pytest.raises(ResearchValidationError, match="ordered"):
         validate_pack(replace(base, manifests=shuffled))
+
+
+def test_validate_pack_rejects_whitespace_only_text_fields():
+    # _require_text must reject whitespace-only strings, not merely "": the
+    # .strip() guard previously had no regression test. The matrix covers all
+    # six text fields reachable through validate_pack -- the four pack-level
+    # fields plus source_version/adjustment on each nested InputManifest -- and
+    # is kept in one case so the suite count moves by exactly one test.
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    manifest_fields = ("source_version", "adjustment")
+    for field in (
+        "pack_id",
+        "generator",
+        "target_name",
+        "benchmark_name",
+        *manifest_fields,
+    ):
+        for whitespace in ("   ", "\t"):
+            if field in manifest_fields:
+                bad_pack = replace(
+                    base,
+                    manifests=tuple(
+                        replace(manifest, **{field: whitespace})
+                        for manifest in base.manifests
+                    ),
+                )
+            else:
+                bad_pack = replace(base, **{field: whitespace})
+            with pytest.raises(
+                ResearchValidationError,
+                match=rf"{field} must be a non-empty string",
+            ):
+                validate_pack(bad_pack)
