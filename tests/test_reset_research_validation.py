@@ -1613,3 +1613,67 @@ def test_jsonable_rejects_floats_and_parse_rejects_json_number_decimal_slot():
     archived["health"]["coverage_ratio"] = 0.5
     with pytest.raises(ResearchValidationError, match="coverage Decimal"):
         parse_archived_report(archived)
+
+
+def test_public_api_surface():
+    import dragon_radar.research as research_api
+    from dragon_radar.research import (  # noqa: F401
+        DEFAULT_CONFIG,
+        EVIDENCE_INSUFFICIENT_REAL_SAMPLE,
+        EVIDENCE_REAL_SAMPLE_DESCRIPTIVE,
+        EVIDENCE_SYNTHETIC_ONLY,
+        ComponentCounts,
+        DailyComponents,
+        InputManifest,
+        ResearchValidationError,
+        SamplePack,
+        ValidationConfig,
+        assemble_report,
+        parse_archived_report,
+        serialize_report,
+        validate_config,
+    )
+
+    assert research_api.__all__ == [
+        "DEFAULT_CONFIG",
+        "ComponentCounts",
+        "DailyComponents",
+        "EVIDENCE_INSUFFICIENT_REAL_SAMPLE",
+        "EVIDENCE_REAL_SAMPLE_DESCRIPTIVE",
+        "EVIDENCE_SYNTHETIC_ONLY",
+        "InputManifest",
+        "ResearchValidationError",
+        "SamplePack",
+        "ValidatedPack",
+        "ValidationConfig",
+        "assemble_report",
+        "build_factor_health",
+        "evaluate_all",
+        "evaluate_horizon",
+        "parse_archived_report",
+        "serialize_report",
+        "validate_config",
+        "validate_pack",
+    ]
+    for name in research_api.__all__:
+        assert getattr(research_api, name) is not None
+
+
+def test_reset_scope_guard_tests_remain_collected():
+    # The refined Task 29 guard functions must coexist with the new slice
+    # tests. Read the sibling source and inspect it with AST: tests/ has no
+    # __init__.py and the repo root is not on sys.path under the pytest
+    # entry point, so a package import (``import tests.x``) is unreliable.
+    guard_path = Path(__file__).resolve().parent / "test_reset_full_scope.py"
+    tree = ast.parse(guard_path.read_text(encoding="utf-8"))
+    function_names = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert (
+        "test_task27_backtest_and_simulation_artifacts_remain_absent" in function_names
+    )
+    assert (
+        "test_task27_research_validation_is_a_closed_pure_subdomain" in function_names
+    )
