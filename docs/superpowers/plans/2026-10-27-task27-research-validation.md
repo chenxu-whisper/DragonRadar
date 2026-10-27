@@ -1001,7 +1001,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from dragon_radar.readmodels import sentiment_research as method
+import dragon_radar.readmodels.sentiment_research as method
 from dragon_radar.research.models import (
     STREAM_BENCHMARK_CLOSES,
     STREAM_COMPONENTS,
@@ -3098,3 +3098,38 @@ RankCorrelation value/reason shapes, the closed distribution key set, and
 generator/str input rejection. A typo in this plan's Task 2 test line (one
 extra closing parenthesis in the `for bad in ...` loop) was corrected
 in-place.
+
+### Execution log — Task 3 review outcomes
+
+Task 3 (implementation `2670093`, review fixes `89acb8b`, missing regression
+test `e2486a1`): the plan's production import
+`from dragon_radar.readmodels import sentiment_research as method` is a
+controlled deviation in `samples.py` — the AST module name of that
+from-import is `dragon_radar.readmodels`, which the Task 1 purity guard's
+exact-prefix allowlist (`dragon_radar.readmodels.sentiment_research`)
+rejects, so the production module uses
+`import dragon_radar.readmodels.sentiment_research as method` (the Task 3
+code block at line 1004 is updated in place). The guard is not weakened;
+test files keep from-imports because the AST scan only covers
+`src/dragon_radar/research/`.
+
+Quality review of `2670093` required six production fixes, all landed in
+`89acb8b`: `frozen_at` parsing is wrapped to raise `ResearchValidationError`
+with `from None` (the built-in `ValueError` must never leak); `_require_text`
+rejects whitespace-only strings via `.strip()`; unknown manifest names echo
+the offending value; manifests must appear in `STREAM_NAMES` order
+(out-of-order input is rejected, never silently reordered); the
+`materialize_sentiment_research` self-check result is explicitly discarded
+with a comment; `_rebuild_point` documents that rebuilt points carry no
+`coverage` field (T4+ must not assert it). Re-review of `89acb8b` found the
+`.strip()` guard lacked a discriminating test (mutation left all 22 tests
+green); `e2486a1` appended
+`test_validate_pack_rejects_whitespace_only_text_fields` — one test with an
+internal 6 reachable text fields × 2 whitespace values (`"   "`, `"\t"`)
+matrix. A flat double `@pytest.mark.parametrize` would add 12 collected
+items and break the planned count gate; the matrix adds exactly one while
+keeping identical coverage. All three new guards (frozen_at wrap, manifest
+ordering, strip) were proven to discriminate by semantic mutation. Downstream
+memo from review: pack-level metadata fields are intentionally not bound by
+the manifest payload hashes; the T6 report block cross-checks them. Suite at
+T3 close: research 23 passed; full-scope 13 passed / 2 skipped; ruff clean.
