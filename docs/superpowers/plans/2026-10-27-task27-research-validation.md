@@ -3168,3 +3168,56 @@ its localcontext and raises under `prec <= 3` pollution — not actionable in
 this slice; the research package itself is context-immune. Suite at T4
 close: research 28 passed; combined with full-scope 41 passed / 2 skipped;
 ruff clean.
+
+### Execution log — Task 5 review outcomes
+
+Task 5 (implementation `3fc10bd`, guard/test fixes `50d9782`): the verbatim
+plan text contained five defects found and proven at runtime before the
+first commit. A — the test recomputes `spread == means[4] - means[0]` at the
+ambient 28-digit context while production computes under fixed decimal34
+(the values diverge at digit 29); the assertion now runs inside
+`localcontext(_decimal_context())` (the test file imports `localcontext` and
+`_decimal_context`; test files are outside the AST purity scan). B — the
+monotone fixture `(i + 1, 100)` violates the pack validator's
+`0 <= numerator <= denominator` rule once `i + 1 > 100` (the h=1/5/20,
+n=120 disjointness case); denominator is now `n_days`; only ranks/returns
+are consumed, so every expected count (43 obs, folds `[9,9,9,8,8]`, tiny
+gates) is unchanged. C — `zip(intervals, intervals[1:], strict=True)`
+always raises (lengths L vs L-1); now `strict=False`. D — the plan's dead
+`on_slots` local was removed (ruff F841). E — the fixture zip now passes
+`strict=True` (ruff B905). P1: the constant-score test indexed
+`pack.as_of_index` on a raw `SamplePack` (that attribute lives on
+`ValidatedPack`); now `pack.calendar[: pack.calendar.index(pack.as_of) + 1]`.
+P2: six naked Decimal computations (ICIR, positive share, bucket
+accumulators/finalized means, spread/agreement block, direction hit rate)
+were wrapped in the fixed context per the spec's decimal34 rule and the
+T2/T4 precedent, pinned by `test_forward_eval_is_independent_of_caller_decimal_context`.
+
+Quality review of `3fc10bd` added: a fold-local RankIC discriminating test
+(mutation to pooled observations passed the whole suite) using a 16-signal
+block-swap design — within-fold ascending, second block lower — giving
+folds `1, 1` vs pooled `-0.5058823529411764705882352941176469` (the
+sqrt double-rounding path; closed form `-43/85` ends `...6471`, 2e-34
+apart, same pin precedent as the tied Spearman); an `evaluate_horizon`
+fail-closed guard `type(horizon) is int and horizon in cfg.horizons`
+(rejecting `7` and `True`; membership is per the passed config); the
+signal-side accounting identity `signals_total == accepted +
+missing_close + out_of_window + off_grid_signals` (`slot_without_signal`
+belongs to the SLOT identity `slots_total == accepted +
+slot_without_signal + missing_close`, never mix the two decompositions);
+pinned pooled `insufficient_sample` at n=1; pinned empty-bucket precedence
+for `monotonic_reason` (`empty_bucket` wins over `pooled_ic_unavailable`,
+bucket counts `[0,0,58,0,0]`); removed the unused `_quintile_block` size
+parameter; fixture precondition `assert n_days > horizon + 2`.
+
+Deferred for spec reconciliation (NOT changed, no test pins current
+behavior): under a negative pooled IC a zero excess return counts as
+same-direction in `direction_hit_rate` and a zero adjacent difference
+counts in `adjacent_agreement`, while `monotonic` uses strict inequalities
+— plan-verbatim modeling wart, participates in no gate; resolve before
+T6 consumes the block if the spec's `sign()` reading intends symmetric
+strictness. Spec wording memo: spec L333 says drop reason
+`label_unavailable`, but the closed vocabulary (models constants, T6
+grid validation) is `missing_close`; harmonize the spec text before T8.
+Suite at T5 close: research 37 passed; combined with full-scope
+50 passed / 2 skipped; ruff clean.
