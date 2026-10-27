@@ -64,6 +64,8 @@ FORBIDDEN_DRAGON_SUBPACKAGES = (
     "topics",
     "roles",
     "ingestion",
+    "cli",
+    "api",
 )
 ALLOWED_DRAGON_IMPORTS = (
     "dragon_radar.analytics.metrics",
@@ -1676,4 +1678,62 @@ def test_reset_scope_guard_tests_remain_collected():
     )
     assert (
         "test_task27_research_validation_is_a_closed_pure_subdomain" in function_names
+    )
+
+
+def test_forbidden_subpackage_closed_set_matches_spec_and_rejects_cli_api(tmp_path):
+    # The spec's Import purity clause enumerates the authoritative closed
+    # set of 17 forbidden dragon_radar subpackages; pin adds/deletes here.
+    spec_forbidden_subpackages = {
+        "http",
+        "storage",
+        "owner",
+        "publication",
+        "analysis_jobs",
+        "query",
+        "realtime",
+        "ai",
+        "lhb",
+        "news",
+        "review",
+        "regulation",
+        "topics",
+        "roles",
+        "ingestion",
+        "cli",
+        "api",
+    }
+    assert set(FORBIDDEN_DRAGON_SUBPACKAGES) == spec_forbidden_subpackages
+
+    forbidden_roots = {f"dragon_radar.{sub}" for sub in FORBIDDEN_DRAGON_SUBPACKAGES}
+
+    # cli.py / api.py are real application entry points; a research module
+    # importing either must be rejected by the same root construction the
+    # package-wide purity scan uses.
+    fake_module = tmp_path / "fake_research_module.py"
+    fake_module.write_text(
+        "import dragon_radar.cli\nimport dragon_radar.api\n",
+        encoding="utf-8",
+    )
+    imported_names = _imported_modules(fake_module)
+    assert "dragon_radar.cli" in imported_names
+    assert "dragon_radar.api" in imported_names
+    rejected = {
+        name
+        for name in imported_names
+        if ".".join(name.split(".")[:2]) in forbidden_roots
+    }
+    assert rejected == {"dragon_radar.cli", "dragon_radar.api"}
+
+    # Allowed control: the one explicitly permitted dragon_radar dependency
+    # passes the identical construction.
+    allowed_module = tmp_path / "allowed_research_module.py"
+    allowed_module.write_text(
+        "import dragon_radar.analytics.metrics\n",
+        encoding="utf-8",
+    )
+    allowed_names = _imported_modules(allowed_module)
+    assert allowed_names == ["dragon_radar.analytics.metrics"]
+    assert all(
+        ".".join(name.split(".")[:2]) not in forbidden_roots for name in allowed_names
     )
