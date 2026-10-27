@@ -233,7 +233,10 @@ def test_statistics_are_independent_of_caller_decimal_context():
             "mean": stats.decimal_mean(values),
             "std": stats.decimal_sample_std(values),
             "median": stats.decimal_median(values),
-            "quantile": stats.decimal_quantile(values, D("0.25")),
+            "quantiles": tuple(
+                stats.decimal_quantile(values, q)
+                for q in (D("0.25"), D("0.34"), D("0.75"))
+            ),
             "rho": stats.spearman(values, others).value,
         }
         getcontext().prec = 34
@@ -241,14 +244,19 @@ def test_statistics_are_independent_of_caller_decimal_context():
             "mean": stats.decimal_mean(values),
             "std": stats.decimal_sample_std(values),
             "median": stats.decimal_median(values),
-            "quantile": stats.decimal_quantile(values, D("0.25")),
+            "quantiles": tuple(
+                stats.decimal_quantile(values, q)
+                for q in (D("0.25"), D("0.34"), D("0.75"))
+            ),
             "rho": stats.spearman(values, others).value,
         }
     finally:
         getcontext().prec = previous_prec
     assert low_precision == high_precision
-    # Type-7 interpolation: position 0.75 between 1 and 2 -> 1.75 exactly.
-    assert high_precision["quantile"] == D("1.75")
+    # Type-7 anchors: 0.25 -> 1.75 and 0.75 -> 3.25 are exact at any
+    # precision; q=0.34 -> position 1.02 -> 2.02 diverges at caller prec=2
+    # unless arithmetic runs inside the fixed 34-digit context.
+    assert high_precision["quantiles"] == (D("1.75"), D("2.02"), D("3.25"))
 
 
 def test_statistics_fail_closed_branches_value_shapes_and_closed_distribution():
