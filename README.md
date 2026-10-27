@@ -51,6 +51,7 @@
 $env:PYTHONPYCACHEPREFIX = "$PWD/.temp/pycache"
 $env:UV_CACHE_DIR = "$PWD/.temp/uv-cache"
 uv sync --locked
+uv run python scripts/check_prd_contracts.py
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
@@ -82,7 +83,7 @@ $env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-lo
 uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
 ```
 
-`--mode focused` 只运行 CSV、Reset 验收、恢复、性能与 Python 静态门禁，
+`--mode focused` 只运行 PRD 契约、CSV、Reset 验收、恢复、性能与 Python 静态门禁，
 缺少完整门禁时必然返回阻塞。已有证据只能使用
 `--validate-existing <path>` 校验 v2 封闭证据结构；即使完整性校验通过也返回
 exit 3，且 integrity-only (`INTEGRITY_ONLY`) evidence cannot satisfy automated
@@ -95,6 +96,18 @@ argv/cwd/环境类别、正通过数、零失败与零跳过、日志及性能�
 实测合成结果、恢复演练和独立阻塞门禁见
 [Reset 基础验收](docs/acceptance/reset-base.md)。真实输入、正式规则、真实模型评测、
 公网分享许可及至少 20 个交易日影子运行未由自动化结果替代。
+
+Task29 全范围终验在编排器首位新增 `prd_contracts` 门禁
+（`uv run python scripts/check_prd_contracts.py`，同时纳入 full 与 focused），
+并新增 `tests/test_reset_full_scope.py`（57 项 REQ 与 EX01-16 逐项追溯、只读应用面
+与 Task 27 缺件边界）和 `web/tests/e2e/reset-full-scope.spec.ts`（固定快照跨导航、
+实时批次独立、龙虎榜合成授权、词云、轮动、NL 查询、离线笔记、授权撤回、主题/密度/
+命令面板；Task 27 段为通过性边界断言，不使用 `test.skip()`）。七个独立状态台账与
+真实门禁退出码见 [Reset 全范围终验](docs/acceptance/reset-final.md)。
+**开发完成不等于生产就绪**：Task 27（B01/B02、EX14/EX15）未实现，真实输入、官方
+规则、真实模型评测、公开部署许可、≥20 交易日影子运行五项外部门禁保持 `blocked`，
+不以合成回归替代。Windows 本地无法执行 Linux-only 私有 TLS、Linux Docker 生产隔离
+与完整编排器（既有平台 skip），这些项以 CI（Ubuntu）结果为准。
 
 ## 第二批工作台
 
