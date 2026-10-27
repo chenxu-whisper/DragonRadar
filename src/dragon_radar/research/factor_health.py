@@ -1,0 +1,1 @@
+"""Contemporaneous factor health block."""
