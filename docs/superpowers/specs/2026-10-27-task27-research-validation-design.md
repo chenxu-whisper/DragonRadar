@@ -330,7 +330,7 @@ Per horizon independently:
 3. Grid slots are `s, s+h, s+2h, ...` while the slot index is `<= as_of`
   index and `slot + 1 + h < len(calendar)`.
 4. A slot without a valid signal is skipped (`slot_without_signal`); a slot
-  with a signal but unavailable labels is dropped (`label_unavailable`);
+  with a signal but unavailable labels is dropped (`missing_close`);
   every accepted slot becomes one observation. Adjacent accepted windows
   share at most the boundary close; interiors are always disjoint, and
   non-adjacent accepted windows are separated by gaps — this is asserted
