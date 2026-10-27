@@ -3324,3 +3324,58 @@ implemented closed set `missing_close`, and the "16 forbidden
 subpackages" prose vs 15 enumerated. Suite at T6 close: research
 52 passed; combined with full-scope 65 passed / 2 skipped; ruff,
 ruff format and compileall clean.
+
+### Execution log — Task 7 review outcomes
+
+Task 7 (test-polish precursor `abec0d4`, implementation `2d8520f`):
+the Task 6 quality residual landed first as a test-only commit — the
+I1 archive-parse helper gained a keyword-only `suppressed` flag and the
+two wrapped `_restore` branches (date, Decimal) now pin
+`__suppress_context__ is True`. Mutation proved the old
+`__cause__ is None` assertion stays green after deleting `from None`
+(only `__suppress_context__` flips False→True), confirming the logged
+discrimination gap; direct-raise paths (the `is_finite()` guard and
+the three list `_require` guards) correctly stay unpinned, verified
+against all six exception sites.
+
+The verbatim plan snippet did not pass the repo's own ruff gate
+(I001 order-by-type: constants before classes, in both `__init__` and
+the function-local smoke import; E501 on the two 89/90-column
+assertions). It was normalized via `ruff check --fix` + `ruff format`;
+spec review independently reproduced both violations against the
+repo config and byte-/AST-compared the normalized result to the commit
+— the 19-name set, `__all__` order, the 14-name smoke import set with
+`# noqa: F401`, the two guard-name assertions (parenthesized wrap
+only), and the verbatim docstring are all preserved. Coordinator
+authorized one strengthening inside `test_public_api_surface`: an
+order-sensitive exact `__all__` list plus a getattr-per-name loop,
+because the plan's 14-name import left five re-exports
+(ValidatedPack, build_factor_health, evaluate_all, evaluate_horizon,
+validate_pack) untested; reorder/delete/unbind mutations all kill the
+test. The coexistence test reads the sibling via AST as planned; both
+guard functions exist verbatim (full-scope L755/L776); `__init__.py`
+is inside the seven-file closed set and the purity glob scan
+(injecting `import fastapi` into `__init__` fails the scan).
+Cold-import review: no import cycle — factor_health/forward_eval use
+`from dragon_radar.research import statistics as stats`, which
+resolves via importlib fromlist fallback while `__init__` is only
+partially initialized; cold process import in three submodule-first
+orders succeeds, importtime shows no sqlalchemy/fastapi/httpx, and
+`from dragon_radar.research import *` binds exactly `__all__`.
+Suite at T7 close: research 54 passed; combined with full-scope
+67 passed / 2 skipped; ruff, ruff format and compileall clean.
+
+Logged without code changes: the plan-verbatim test name
+`test_reset_scope_guard_tests_remain_collected` overstates the AST
+check (it proves the two defs exist in the sibling source, not that
+pytest collects them — actual collection is backed by the combined
+runs and the Task 8 full regression); renaming to
+`..._remain_defined` is deferred to keep plan/code lockstep. Nit:
+a missing sibling file surfaces FileNotFoundError rather than an
+assertion failure (`assert guard_path.is_file()` would polish it).
+Future hardening suggestion: unify the two
+`from dragon_radar.research import statistics as stats` sites to
+`import dragon_radar.research.statistics as stats` — safe today, but
+a future sibling pulling a bound symbol from the partially
+initialized package would break; pre-existing Task 4/5 code, not
+re-touched in this slice.
