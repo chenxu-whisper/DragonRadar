@@ -3133,3 +3133,38 @@ ordering, strip) were proven to discriminate by semantic mutation. Downstream
 memo from review: pack-level metadata fields are intentionally not bound by
 the manifest payload hashes; the T6 report block cross-checks them. Suite at
 T3 close: research 23 passed; full-scope 13 passed / 2 skipped; ruff clean.
+
+### Execution log — Task 4 review outcomes
+
+Task 4 (implementation `a80f5d3`, discriminating-test fixes `f48b6f1`):
+spec review approved three deviations from the plan text — D1 the same
+controlled method-import form as Task 3; D2 the empty score distribution
+sets `n = 0` (the plan's `_empty_distribution()` yields `n = None`, which
+contradicts the verbatim test asserting `n == 0`; moments stay `None`); D3
+`_rank_correlations` early-returns six `{"value": None, "reason":
+REASON_INSUFFICIENT_SAMPLE}` items for an empty valid-point set because
+`stats.spearman([], [])` raises at the primitive layer while the verbatim
+test requires degrade-without-raising. Component-block empty distributions
+keep the plan's all-`None` shape (their count lives in `available_days`).
+
+Quality review required two blocking test additions (same fail-closed
+precedent as Task 3): the unknown-null-reason `KeyError` guard had no
+discriminating test (`test_factor_health_unknown_null_reason_fails_closed`
+constructs a `ValidatedPack` directly), and the empty-sample six-correlation
+payload is now pinned. M1: the non-empty `top_tie_share` division was
+running outside the fixed Decimal context (ambient `prec=2` produced `0.67`
+vs `0.6666…`, irrecoverable by T6 quantize) — now wrapped like `_ratio` and
+coverage, pinned by `test_factor_health_is_independent_of_caller_decimal_context`
+(validate once at default context, call `build_factor_health` under both
+contexts; try/finally restores precision). M2: the perfect-correlation
+fixture was extended to eight days `(0,100),(1,10)…(5,10),(5,10),(100,100)`
+so zero/hundred counts, tie share, and rank-1 extremes all discriminate;
+predicate-swap discrimination additionally relies on the context test's
+asymmetric `(2, 0)` zero/hundred fixture (the symmetric eight-day fixture
+cannot distinguish the swap mathematically). N1/N2/N4 cast/typing nits
+landed; N3 (the `__name` pop pattern) was intentionally kept verbatim.
+Out-of-slice memo: `sentiment_research.build_component` quantizes outside
+its localcontext and raises under `prec <= 3` pollution — not actionable in
+this slice; the research package itself is context-immune. Suite at T4
+close: research 28 passed; combined with full-scope 41 passed / 2 skipped;
+ruff clean.
