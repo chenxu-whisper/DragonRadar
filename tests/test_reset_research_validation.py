@@ -1359,3 +1359,39 @@ def test_report_assembly_is_independent_of_caller_decimal_context():
         restored["evaluation"]["1"]["pooled"]["rank_ic"]
         == report["evaluation"]["1"]["pooled"]["rank_ic"]
     )
+
+
+def test_archive_roundtrip_restores_calendar_hole_dates():
+    # health.calendar_holes is the report's only scalar list[date] path:
+    # _restore propagates a list's parent key to its elements, so without
+    # "calendar_holes" in _DATE_KEYS the archived ISO strings survived parse
+    # and the closed-shape "holes dates" guard rejected a legitimate archive
+    # carrying an interior gap between component days.
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 6)
+    components = [
+        daily(calendar[0], (50, 100), (50, 100), (50, 100)),
+        # calendar[1] absent: the single interior hole between component days.
+        daily(calendar[2], (50, 100), (0, 0), (50, 100)),  # null-score day
+        daily(calendar[3], (50, 100), (50, 100), (50, 100)),
+        daily(calendar[4], (50, 100), (50, 100), (50, 100)),
+        # calendar[5] sits after the last component day, so it is no hole.
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    assert report["health"]["calendar_holes"] == [calendar[1]]
+
+    restored = parse_archived_report(
+        json.loads(json.dumps(serialize_report(report), sort_keys=True))
+    )
+    assert restored["report_id"] == report["report_id"]
+    holes = restored["health"]["calendar_holes"]
+    assert holes == [calendar[1]]
+    assert all(type(day) is date for day in holes)
+    assert serialize_report(restored) == serialize_report(report)

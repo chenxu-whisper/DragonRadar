@@ -60,6 +60,7 @@ _DATE_KEYS = frozenset(
         "start_date",
         "end_date",
         "grid_origin_date",
+        "calendar_holes",
     }
 )
 _DECIMAL_KEYS = frozenset(
