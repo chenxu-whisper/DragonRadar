@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_SCHEMA = "dragon-radar.task20-evidence"
 EVIDENCE_SCHEMA_VERSION = 3
 REQUIRED_GATES = (
+    "prd_contracts",
     "csv_units",
     "reset_acceptance_e2e",
     "recovery_drills",
@@ -141,6 +142,12 @@ def _spec(
 
 
 _GATE_SPECS: dict[str, list[CommandSpec]] = {
+    "prd_contracts": [
+        _spec(
+            ["uv", "run", "python", "scripts/check_prd_contracts.py"],
+            requires_test_counts=False,
+        )
+    ],
     "csv_units": [
         _spec(
             [
@@ -276,6 +283,7 @@ GATE_SPECS: Mapping[str, tuple[CommandSpec, ...]] = MappingProxyType(
 )
 del _GATE_SPECS
 FOCUSED_GATES = {
+    "prd_contracts",
     "csv_units",
     "reset_acceptance_e2e",
     "recovery_drills",
