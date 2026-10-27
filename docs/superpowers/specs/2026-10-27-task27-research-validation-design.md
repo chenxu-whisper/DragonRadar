@@ -186,8 +186,9 @@ numeric fields, exactly as the method's own validators do).
 
 ```python
 class ComponentCounts:
-    numerator: int   # >= 0
-    denominator: int # >= numerator; denominator == 0 means unavailable
+    numerator: int  # >= 0
+    denominator: int  # >= numerator; denominator == 0 means unavailable
+
 
 class DailyComponents:
     trade_date: date
@@ -195,35 +196,38 @@ class DailyComponents:
     limit_balance: ComponentCounts
     promotion: ComponentCounts
 
+
 class InputManifest:
-    name: str            # one of the three STREAM_NAMES, unique
+    name: str  # one of the three STREAM_NAMES, unique
     source_version: str  # non-empty
-    frozen_at: str       # ISO 8601 with timezone offset/designator
-    as_of: date          # must equal pack.as_of
-    row_count: int       # >= 0, must equal payload length
-    adjustment: str      # non-empty declared policy ("raw", "qfq", ...); opaque
-    sha256: str          # exactly 64 lowercase hex chars
+    frozen_at: str  # ISO 8601 with timezone offset/designator
+    as_of: date  # must equal pack.as_of
+    row_count: int  # >= 0, must equal payload length
+    adjustment: str  # non-empty declared policy ("raw", "qfq", ...); opaque
+    sha256: str  # exactly 64 lowercase hex chars
+
 
 class SamplePack:
-    pack_id: str                  # non-empty
+    pack_id: str  # non-empty
     synthetic: bool
-    generator: str                # non-empty provenance tag
+    generator: str  # non-empty provenance tag
     seed: int | None
-    as_of: date                   # signal knowledge cutoff; must be in calendar
-    calendar: tuple[date, ...]    # strictly ascending, unique, non-empty
+    as_of: date  # signal knowledge cutoff; must be in calendar
+    calendar: tuple[date, ...]  # strictly ascending, unique, non-empty
     components: tuple[DailyComponents, ...]  # ascending, dates subset of calendar
-    target_name: str              # non-empty
-    benchmark_name: str           # non-empty; real packs conventionally "csi300"
-    target_closes: Mapping[date, Decimal]    # keys subset of calendar
-    benchmark_closes: Mapping[date, Decimal] # keys subset of calendar
-    manifests: tuple[InputManifest, ...]     # exactly the three streams
+    target_name: str  # non-empty
+    benchmark_name: str  # non-empty; real packs conventionally "csi300"
+    target_closes: Mapping[date, Decimal]  # keys subset of calendar
+    benchmark_closes: Mapping[date, Decimal]  # keys subset of calendar
+    manifests: tuple[InputManifest, ...]  # exactly the three streams
+
 
 class ValidationConfig:
-    horizons: tuple[int, ...]            # default (1, 5, 20); any non-empty subset
-    min_coverage: Decimal                # default Decimal("0.80")
-    min_signals_per_fold: int            # default 8
-    min_folds: int                       # default 5
-    min_quintile_size: int               # default 5
+    horizons: tuple[int, ...]  # default (1, 5, 20); any non-empty subset
+    min_coverage: Decimal  # default Decimal("0.80")
+    min_signals_per_fold: int  # default 8
+    min_folds: int  # default 5
+    min_quintile_size: int  # default 5
 ```
 
 `STREAM_NAMES = ("components", "target_closes", "benchmark_closes")`.

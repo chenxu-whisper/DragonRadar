@@ -301,12 +301,7 @@ from dragon_radar.research.models import (
     validate_config,
 )
 
-PACKAGE_ROOT = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "dragon_radar"
-    / "research"
-)
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "dragon_radar" / "research"
 FORBIDDEN_IMPORTS = ("fastapi", "sqlalchemy", "httpx", "requests")
 FORBIDDEN_DRAGON_SUBPACKAGES = (
     "http",
@@ -347,9 +342,11 @@ def test_research_package_imports_stay_pure():
         for name in _imported_modules(path):
             assert not name.startswith(FORBIDDEN_IMPORTS), (path.name, name)
             if name.startswith("dragon_radar."):
-                assert name == "dragon_radar" or name.startswith(
-                    "dragon_radar.research"
-                ) or name.startswith(ALLOWED_DRAGON_IMPORTS), (path.name, name)
+                assert (
+                    name == "dragon_radar"
+                    or name.startswith("dragon_radar.research")
+                    or name.startswith(ALLOWED_DRAGON_IMPORTS)
+                ), (path.name, name)
                 root = ".".join(name.split(".")[:2])
                 assert root not in {
                     f"dragon_radar.{sub}" for sub in FORBIDDEN_DRAGON_SUBPACKAGES
@@ -452,12 +449,12 @@ def test_average_ranks_handles_ties_exactly():
 
 
 def test_spearman_extremes_and_hand_computed_tie_case():
-    assert stats.spearman([D("1"), D("2"), D("3")], [D("4"), D("5"), D("6")]).value == D(
-        "1"
-    )
-    assert stats.spearman([D("1"), D("2"), D("3")], [D("6"), D("5"), D("4")]).value == D(
-        "-1"
-    )
+    assert stats.spearman(
+        [D("1"), D("2"), D("3")], [D("4"), D("5"), D("6")]
+    ).value == D("1")
+    assert stats.spearman(
+        [D("1"), D("2"), D("3")], [D("6"), D("5"), D("4")]
+    ).value == D("-1")
     # ranks x = 1,2,3 ; ranks y = 2,1,3 -> covariance form yields 0.5 exactly.
     result = stats.spearman([D("1"), D("2"), D("3")], [D("2"), D("1"), D("3")])
     assert result.value == D("0.5")
@@ -623,9 +620,7 @@ def _pearson(xs: list[Decimal], ys: list[Decimal]) -> Decimal | None:
     return _snap_unit(value)
 
 
-def spearman(
-    x: Sequence[Decimal], y: Sequence[Decimal]
-) -> RankCorrelation:
+def spearman(x: Sequence[Decimal], y: Sequence[Decimal]) -> RankCorrelation:
     xs, ys = _paired(x, y)
     if len(xs) < 2:
         return RankCorrelation(None, REASON_INSUFFICIENT_SAMPLE)
@@ -770,8 +765,12 @@ def calendar_days(start: date, n: int) -> tuple[date, ...]:
     return tuple(start + timedelta(days=i) for i in range(n))
 
 
-def daily(day: date, breadth: tuple[int, int], limit_balance: tuple[int, int],
-          promotion: tuple[int, int]) -> DailyComponents:
+def daily(
+    day: date,
+    breadth: tuple[int, int],
+    limit_balance: tuple[int, int],
+    promotion: tuple[int, int],
+) -> DailyComponents:
     return DailyComponents(
         day,
         Counts(*breadth),
@@ -813,8 +812,9 @@ def _closes_payload(closes):
     ]
 
 
-def _manifest(name, rows, as_of, *, adjustment="raw",
-              frozen_at="2026-10-27T00:00:00+00:00"):
+def _manifest(
+    name, rows, as_of, *, adjustment="raw", frozen_at="2026-10-27T00:00:00+00:00"
+):
     return InputManifest(
         name=name,
         source_version="fixture-v1",
@@ -834,10 +834,20 @@ def make_manifests(components, target_closes, benchmark_closes, as_of):
     )
 
 
-def make_pack(*, calendar, components, target_closes, benchmark_closes,
-              as_of=None, synthetic=True, seed=None, pack_id="fixture-pack",
-              generator="test-fixture:hand_built", target_name="fixture-target",
-              benchmark_name="csi300"):
+def make_pack(
+    *,
+    calendar,
+    components,
+    target_closes,
+    benchmark_closes,
+    as_of=None,
+    synthetic=True,
+    seed=None,
+    pack_id="fixture-pack",
+    generator="test-fixture:hand_built",
+    target_name="fixture-target",
+    benchmark_name="csi300",
+):
     if as_of is None:
         as_of = calendar[-1]
     return SamplePack(
@@ -873,15 +883,16 @@ def test_validate_pack_rebuilds_method_scores():
         daily(calendar[2], (20, 40), (2, 8), (3, 6)),
         daily(calendar[3], (100, 100), (100, 100), (100, 100)),
     ]
-    pack = make_pack(calendar=calendar, components=components,
-                     target_closes=const_closes(calendar),
-                     benchmark_closes=const_closes(calendar))
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=const_closes(calendar),
+        benchmark_closes=const_closes(calendar),
+    )
     validated = validate_pack(pack)
     assert isinstance(validated, ValidatedPack)
     assert validated.valid_dates == tuple(
-        point["trade_date"]
-        for point in validated.points
-        if point["score"] is not None
+        point["trade_date"] for point in validated.points if point["score"] is not None
     )
     first = validated.points_by_date[calendar[0]]
     # (0.6 + 1.0 + 0.5) / 3 * 100 = 70.00 -> repair phase from the real method.
@@ -903,8 +914,12 @@ def test_manifest_tampering_and_row_count_mismatch_raise():
     calendar = calendar_days(start, 3)
     components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
     closes = const_closes(calendar)
-    pack = make_pack(calendar=calendar, components=components,
-                     target_closes=closes, benchmark_closes=closes)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
     tampered = InputManifest(
         name="components",
         source_version="fixture-v1",
@@ -916,14 +931,10 @@ def test_manifest_tampering_and_row_count_mismatch_raise():
     )
     # Slotted frozen dataclasses expose no __dict__: copy with replace().
     with pytest.raises(ResearchValidationError, match="sha256"):
-        validate_pack(
-            replace(pack, manifests=(tampered, *pack.manifests[1:]))
-        )
+        validate_pack(replace(pack, manifests=(tampered, *pack.manifests[1:])))
     wrong_rows = replace(pack.manifests[0], row_count=9)
     with pytest.raises(ResearchValidationError, match="row_count"):
-        validate_pack(
-            replace(pack, manifests=(wrong_rows, *pack.manifests[1:]))
-        )
+        validate_pack(replace(pack, manifests=(wrong_rows, *pack.manifests[1:])))
 
 
 def test_pack_structure_and_pit_violations_raise():
@@ -934,30 +945,59 @@ def test_pack_structure_and_pit_violations_raise():
 
     # Non-ascending calendar.
     with pytest.raises(ResearchValidationError):
-        validate_pack(make_pack(calendar=(calendar[1], calendar[0]),
-                                components=good[:2],
-                                target_closes=closes, benchmark_closes=closes,
-                                as_of=calendar[1]))
+        validate_pack(
+            make_pack(
+                calendar=(calendar[1], calendar[0]),
+                components=good[:2],
+                target_closes=closes,
+                benchmark_closes=closes,
+                as_of=calendar[1],
+            )
+        )
     # Components after as_of are a look-ahead violation.
     with pytest.raises(ResearchValidationError, match="components_after_as_of"):
-        validate_pack(make_pack(calendar=calendar, components=good,
-                                target_closes=closes, benchmark_closes=closes,
-                                as_of=calendar[1]))
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=good,
+                target_closes=closes,
+                benchmark_closes=closes,
+                as_of=calendar[1],
+            )
+        )
     # Duplicate component dates.
     dup = [good[0], good[0]]
     with pytest.raises(ResearchValidationError):
-        validate_pack(make_pack(calendar=calendar, components=dup,
-                                target_closes=closes, benchmark_closes=closes))
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=dup,
+                target_closes=closes,
+                benchmark_closes=closes,
+            )
+        )
     # Zero or negative close rejected.
     bad_closes = {day: Decimal("0") for day in calendar}
     with pytest.raises(ResearchValidationError):
-        validate_pack(make_pack(calendar=calendar, components=good,
-                                target_closes=bad_closes, benchmark_closes=closes))
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=good,
+                target_closes=bad_closes,
+                benchmark_closes=closes,
+            )
+        )
     # Counts violating 0 <= numerator <= denominator.
     bad_counts = [daily(calendar[0], (3, 2), (1, 2), (1, 2))]
     with pytest.raises(ResearchValidationError):
-        validate_pack(make_pack(calendar=calendar, components=bad_counts,
-                                target_closes=closes, benchmark_closes=closes))
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=bad_counts,
+                target_closes=closes,
+                benchmark_closes=closes,
+            )
+        )
     # Naive frozen_at rejected.
     base = make_pack(
         calendar=calendar,
@@ -966,9 +1006,7 @@ def test_pack_structure_and_pit_violations_raise():
         benchmark_closes=closes,
     )
     manifests = tuple(
-        replace(m, frozen_at="2026-10-27T00:00:00")
-        if m.name == "components"
-        else m
+        replace(m, frozen_at="2026-10-27T00:00:00") if m.name == "components" else m
         for m in base.manifests
     )
     with pytest.raises(ResearchValidationError, match="timezone"):
@@ -1201,8 +1239,7 @@ def validate_pack(pack: SamplePack) -> ValidatedPack:
     for day in calendar:
         _require(type(day) is date, "calendar dates must be dates")
     _require(
-        len(set(calendar)) == len(calendar)
-        and calendar == tuple(sorted(calendar)),
+        len(set(calendar)) == len(calendar) and calendar == tuple(sorted(calendar)),
         "calendar must be strictly ascending dates",
     )
     as_of = pack.as_of
@@ -1250,7 +1287,8 @@ def validate_pack(pack: SamplePack) -> ValidatedPack:
     points = tuple(_rebuild_point(item) for item in components)
     method.materialize_sentiment_research(list(points))
     points_by_date = {
-        point["trade_date"]: point for point in points  # type: ignore[index]
+        point["trade_date"]: point
+        for point in points  # type: ignore[index]
     }
     valid_dates = tuple(
         point["trade_date"]  # type: ignore[index]
@@ -1308,8 +1346,12 @@ def test_factor_health_counts_coverage_reasons_and_holes():
         # calendar[5] absent tail (not a hole between present days)
     ]
     closes = const_closes(calendar)
-    pack = make_pack(calendar=calendar, components=components,
-                     target_closes=closes, benchmark_closes=closes)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
     health = build_factor_health(validate_pack(pack))
     assert health["calendar_days"] == 6
     assert health["present_days"] == 4
@@ -1337,8 +1379,12 @@ def test_factor_health_distribution_and_perfect_rank_correlations():
         daily(day, ratios[i], ratios[i], ratios[i]) for i, day in enumerate(calendar)
     ]
     closes = const_closes(calendar)
-    pack = make_pack(calendar=calendar, components=components,
-                     target_closes=closes, benchmark_closes=closes)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
     health = build_factor_health(validate_pack(pack))
     distribution = health["score_distribution"]
     assert distribution["n"] == 5
@@ -1372,8 +1418,9 @@ def test_factor_health_empty_sample_degrades_without_raising():
     start = date(2026, 2, 2)
     calendar = calendar_days(start, 3)
     closes = const_closes(calendar)
-    pack = make_pack(calendar=calendar, components=[],
-                     target_closes=closes, benchmark_closes=closes)
+    pack = make_pack(
+        calendar=calendar, components=[], target_closes=closes, benchmark_closes=closes
+    )
     health = build_factor_health(validate_pack(pack))
     assert health["valid_days"] == 0
     assert health["coverage_ratio"] == Decimal("0")
@@ -1499,9 +1546,7 @@ def build_factor_health(validated: ValidatedPack) -> dict[str, object]:
     present_dates = [cast(date, point["trade_date"]) for point in points]
     present = set(present_dates)
     valid_points = [
-        point
-        for point in points
-        if cast(Decimal | None, point["score"]) is not None
+        point for point in points if cast(Decimal | None, point["score"]) is not None
     ]
     scores = [cast(Decimal, point["score"]) for point in valid_points]
 
@@ -1608,9 +1653,13 @@ def _monotone_forward_pack(n_days=45, *, horizon=1):
         entry = values[i + 1]
         values[i + 1 + horizon] = round(entry * (1 + 0.0005 * (i + 1)), 12)
     target = _closes_from_values(calendar, values)
-    pack = make_pack(calendar=calendar, components=components,
-                     target_closes=target, benchmark_closes=benchmark,
-                     as_of=as_of)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=as_of,
+    )
     return pack, calendar
 
 
@@ -1649,9 +1698,13 @@ def test_hand_computed_returns_and_entry_at_next_tradable_point():
     # Signal calendar[2] enters at C3=98.98, exits at C4=100.9596 -> r = +0.02
     target = _closes_from_values(calendar, [100, 100, 101, 98.98, 100.9596])
     benchmark = const_closes(calendar, "100.00")
-    pack = make_pack(calendar=calendar, components=components,
-                     target_closes=target, benchmark_closes=benchmark,
-                     as_of=calendar[2])
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[2],
+    )
     validated = validate_pack(pack)
     block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
     first = block["observations"][0]
@@ -1691,8 +1744,7 @@ def test_drops_accounting_out_of_window_missing_close_and_skips():
     # Signals exist every day except index 2 (slot gap when h=2-ish via h=1 grid);
     # h=1 grid origin is index 0; index 2 slot has no signal.
     components = [
-        daily(calendar[i], (50, 100), (50, 100), (50, 100))
-        for i in (0, 1, 3, 4, 5)
+        daily(calendar[i], (50, 100), (50, 100), (50, 100)) for i in (0, 1, 3, 4, 5)
     ]
     target = dict(const_closes(calendar, "100"))
     benchmark = dict(const_closes(calendar, "100"))
@@ -1705,18 +1757,25 @@ def test_drops_accounting_out_of_window_missing_close_and_skips():
         daily(calendar[6], (50, 100), (50, 100), (50, 100)),
         daily(calendar[7], (50, 100), (50, 100), (50, 100)),
     ]
-    pack = make_pack(calendar=calendar, components=sorted(components, key=lambda d: d.trade_date),
-                     target_closes=target, benchmark_closes=benchmark,
-                     as_of=calendar[7])
+    pack = make_pack(
+        calendar=calendar,
+        components=sorted(components, key=lambda d: d.trade_date),
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[7],
+    )
     validated = validate_pack(pack)
     block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
     assert block["grid"]["slots_skipped"]["slot_without_signal"] == 1
     assert block["grid"]["drops"]["missing_close"] >= 1
     assert block["grid"]["drops"]["out_of_window"] >= 1
     assert block["grid"]["signals_total"] == 7
-    assert block["grid"]["slots_total"] == block["grid"]["slots_accepted"] + block[
-        "grid"
-    ]["slots_skipped"]["slot_without_signal"] + block["grid"]["drops"]["missing_close"]
+    assert (
+        block["grid"]["slots_total"]
+        == block["grid"]["slots_accepted"]
+        + block["grid"]["slots_skipped"]["slot_without_signal"]
+        + block["grid"]["drops"]["missing_close"]
+    )
 
 
 def test_balanced_fold_sizes_and_insufficiency_gates():
@@ -1753,10 +1812,13 @@ def test_evaluate_all_respects_horizon_subset_and_constant_score_degrades():
         daily(day, (50, 100), (50, 100), (50, 100))
         for day in pack.calendar[: pack.as_of_index + 1]
     ]
-    flat_pack = make_pack(calendar=pack.calendar, components=constant,
-                          target_closes=pack.target_closes,
-                          benchmark_closes=pack.benchmark_closes,
-                          as_of=pack.as_of)
+    flat_pack = make_pack(
+        calendar=pack.calendar,
+        components=constant,
+        target_closes=pack.target_closes,
+        benchmark_closes=pack.benchmark_closes,
+        as_of=pack.as_of,
+    )
     block = evaluate_horizon(validate_pack(flat_pack), DEFAULT_CONFIG, 1)
     assert block["pooled"]["rank_ic"] is None
     assert block["pooled"]["reason"] == "zero_variance"
@@ -1822,9 +1884,7 @@ def _entry_exit_return(closes, calendar, entry_index: int, exit_index: int):
     # ``closes`` is keyed by calendar date, so map grid indices through the
     # calendar; labels_ready() already guaranteed both dates are present.
     with localcontext(_decimal_context()):
-        return (
-            closes[calendar[exit_index]] / closes[calendar[entry_index]] - _ONE
-        )
+        return closes[calendar[exit_index]] / closes[calendar[entry_index]] - _ONE
 
 
 def _fold_partition(n: int, min_size: int) -> list[tuple[int, int]]:
@@ -1851,7 +1911,8 @@ def _fold_records(observations, min_size: int):
         scores = [cast(Decimal, item["score"]) for item in members]
         excess = [cast(Decimal, item["r_excess"]) for item in members]
         correlation = (
-            stats.spearman(scores, excess) if len(members) >= 2
+            stats.spearman(scores, excess)
+            if len(members) >= 2
             else RankCorrelation(None, REASON_INSUFFICIENT_SAMPLE)
         )
         folds.append(
@@ -1868,7 +1929,9 @@ def _fold_records(observations, min_size: int):
 
 
 def _fold_summary(folds) -> dict[str, object]:
-    values = [cast(Decimal, fold["rank_ic"]) for fold in folds if fold["rank_ic"] is not None]
+    values = [
+        cast(Decimal, fold["rank_ic"]) for fold in folds if fold["rank_ic"] is not None
+    ]
     if not values:
         mean = None
         std = None
@@ -1903,7 +1966,9 @@ def _fold_summary(folds) -> dict[str, object]:
     }
 
 
-def _quintile_block(observations, pooled_ic, min_quintile_size: int) -> dict[str, object]:
+def _quintile_block(
+    observations, pooled_ic, min_quintile_size: int
+) -> dict[str, object]:
     buckets = [
         {"index": index, "n": 0, "sum_excess": _ZERO, "sum_target": _ZERO}
         for index in range(1, 6)
@@ -1941,21 +2006,17 @@ def _quintile_block(observations, pooled_ic, min_quintile_size: int) -> dict[str
     else:
         means_decimal = cast(list[Decimal], means)
         spread = means_decimal[4] - means_decimal[0]
-        differences = [
-            means_decimal[i + 1] - means_decimal[i] for i in range(4)
-        ]
+        differences = [means_decimal[i + 1] - means_decimal[i] for i in range(4)]
         positive = pooled_ic > 0
         monotonic = all(
-            difference > 0 if positive else difference < 0
-            for difference in differences
+            difference > 0 if positive else difference < 0 for difference in differences
         )
-        agreement = Decimal(
-            sum(
-                1
-                for difference in differences
-                if (difference > 0) == positive
+        agreement = (
+            Decimal(
+                sum(1 for difference in differences if (difference > 0) == positive)
             )
-        ) / _FOUR
+            / _FOUR
+        )
         monotonic_reason = None
     return {
         "buckets": finalized,
@@ -2032,9 +2093,7 @@ def evaluate_horizon(
         entry_index = index + 1
         exit_index = index + 1 + horizon
         r_target = _entry_exit_return(target, calendar, entry_index, exit_index)
-        r_benchmark = _entry_exit_return(
-            benchmark, calendar, entry_index, exit_index
-        )
+        r_benchmark = _entry_exit_return(benchmark, calendar, entry_index, exit_index)
         with localcontext(_decimal_context()):
             r_excess = r_target - r_benchmark
         observations.append(
@@ -2085,13 +2144,18 @@ def evaluate_horizon(
         direction_hit_rate = None
     else:
         positive = pooled_correlation.value > 0
-        direction_hit_rate = Decimal(
-            sum(
-                1
-                for item in observations
-                if (cast(Decimal, item["r_excess"]) > 0) == positive
+        direction_hit_rate = (
+            Decimal(
+                sum(
+                    1
+                    for item in observations
+                    if (cast(Decimal, item["r_excess"]) > 0) == positive
+                )
             )
-        ) / Decimal(n) if n else None
+            / Decimal(n)
+            if n
+            else None
+        )
 
     gate_failures = []
     if n < cfg.min_folds * cfg.min_signals_per_fold:
@@ -2203,14 +2267,31 @@ def test_report_shape_versions_and_research_only():
     assert report["research_only"] is True
     assert report["evidence_status"] == "synthetic_only"
     assert set(report) == {
-        "report_type", "method_version", "validator_version", "research_only",
-        "config", "pack", "input_manifests", "health", "evaluation",
-        "evidence_status", "evidence_reasons", "report_id", "generated_at",
+        "report_type",
+        "method_version",
+        "validator_version",
+        "research_only",
+        "config",
+        "pack",
+        "input_manifests",
+        "health",
+        "evaluation",
+        "evidence_status",
+        "evidence_reasons",
+        "report_id",
+        "generated_at",
     }
     serialized = serialize_report(report)
     forbidden = (
-        "effective", "validated", "profitable", "profit", "win_probability",
-        "forecast", "prediction", "recommendation", "guaranteed",
+        "effective",
+        "validated",
+        "profitable",
+        "profit",
+        "win_probability",
+        "forecast",
+        "prediction",
+        "recommendation",
+        "guaranteed",
     )
     blob = json.dumps(serialized, sort_keys=True, ensure_ascii=True).lower()
     assert not any(token in blob for token in forbidden)
@@ -2326,24 +2407,60 @@ METRIC_SCALE = Decimal("0.000001")
 
 _TOP_KEYS = frozenset(
     {
-        "report_type", "method_version", "validator_version", "research_only",
-        "config", "pack", "input_manifests", "health", "evaluation",
-        "evidence_status", "evidence_reasons", "report_id", "generated_at",
+        "report_type",
+        "method_version",
+        "validator_version",
+        "research_only",
+        "config",
+        "pack",
+        "input_manifests",
+        "health",
+        "evaluation",
+        "evidence_status",
+        "evidence_reasons",
+        "report_id",
+        "generated_at",
     }
 )
 _DATE_KEYS = frozenset(
     {
-        "as_of", "first", "last", "trade_date", "entry_date", "exit_date",
-        "start_date", "end_date", "grid_origin_date",
+        "as_of",
+        "first",
+        "last",
+        "trade_date",
+        "entry_date",
+        "exit_date",
+        "start_date",
+        "end_date",
+        "grid_origin_date",
     }
 )
 _DECIMAL_KEYS = frozenset(
     {
-        "min_coverage", "coverage_ratio", "score", "r_target", "r_benchmark",
-        "r_excess", "rank_ic", "ic_mean", "ic_std", "icir", "positive_share",
-        "mean_excess", "mean_target", "spread", "adjacent_agreement",
-        "direction_hit_rate", "value", "min", "max", "mean", "median", "p25",
-        "p75", "top_tie_share",
+        "min_coverage",
+        "coverage_ratio",
+        "score",
+        "r_target",
+        "r_benchmark",
+        "r_excess",
+        "rank_ic",
+        "ic_mean",
+        "ic_std",
+        "icir",
+        "positive_share",
+        "mean_excess",
+        "mean_target",
+        "spread",
+        "adjacent_agreement",
+        "direction_hit_rate",
+        "value",
+        "min",
+        "max",
+        "mean",
+        "median",
+        "p25",
+        "p75",
+        "top_tie_share",
     }
 )
 
@@ -2445,7 +2562,9 @@ def assemble_report(
     reasons: list[dict[str, str]] = []
     if health["coverage_ratio"] < cfg.min_coverage:
         reasons.append({"scope": "global", "code": GATE_COVERAGE_BELOW_THRESHOLD})
-    distinct_scores = len({point["score"] for point in validated.points if point["score"] is not None})
+    distinct_scores = len(
+        {point["score"] for point in validated.points if point["score"] is not None}
+    )
     if distinct_scores < 2:
         reasons.append({"scope": "global", "code": GATE_SCORE_ZERO_VARIANCE})
     for horizon in cfg.horizons:
@@ -2479,7 +2598,8 @@ def assemble_report(
     }
     report = _quantize(report)
     identity = {
-        key: value for key, value in report.items()
+        key: value
+        for key, value in report.items()
         if key not in ("report_id", "generated_at")
     }
     report["report_id"] = canonical_payload_hash(_jsonable(identity))
@@ -2518,11 +2638,11 @@ def parse_archived_report(archived: Mapping[str, object]) -> dict[str, object]:
 # Closed-shape validation
 # ---------------------------------------------------------------------------
 
-_DISTRIBUTION_KEYS = frozenset(
-    {"n", "min", "max", "mean", "median", "p25", "p75"}
-)
+_DISTRIBUTION_KEYS = frozenset({"n", "min", "max", "mean", "median", "p25", "p75"})
 _SCORE_DISTRIBUTION_KEYS = _DISTRIBUTION_KEYS | {
-    "zero_count", "hundred_count", "top_tie_share"
+    "zero_count",
+    "hundred_count",
+    "top_tie_share",
 }
 _NULL_REASON_KEYS = frozenset(
     {
@@ -2575,7 +2695,10 @@ def _validate_config_block(config: object) -> None:
         config,
         frozenset(
             {
-                "horizons", "min_coverage", "min_signals_per_fold", "min_folds",
+                "horizons",
+                "min_coverage",
+                "min_signals_per_fold",
+                "min_folds",
                 "min_quintile_size",
             }
         ),
@@ -2594,9 +2717,17 @@ def _validate_pack_block(pack: object) -> None:
         pack,
         frozenset(
             {
-                "pack_id", "synthetic", "generator", "seed", "as_of",
-                "target_name", "benchmark_name", "component_rows", "target_rows",
-                "benchmark_rows", "sample_window",
+                "pack_id",
+                "synthetic",
+                "generator",
+                "seed",
+                "as_of",
+                "target_name",
+                "benchmark_name",
+                "component_rows",
+                "target_rows",
+                "benchmark_rows",
+                "sample_window",
             }
         ),
         "pack",
@@ -2616,8 +2747,13 @@ def _validate_manifests_block(manifests: object) -> None:
             manifest,
             frozenset(
                 {
-                    "name", "source_version", "frozen_at", "as_of", "row_count",
-                    "adjustment", "sha256",
+                    "name",
+                    "source_version",
+                    "frozen_at",
+                    "as_of",
+                    "row_count",
+                    "adjustment",
+                    "sha256",
                 }
             ),
             "manifest",
@@ -2632,9 +2768,17 @@ def _validate_health(health: object) -> None:
         health,
         frozenset(
             {
-                "calendar_days", "present_days", "valid_days", "absent_days",
-                "null_days", "coverage_ratio", "null_reasons", "calendar_holes",
-                "score_distribution", "components", "rank_correlations",
+                "calendar_days",
+                "present_days",
+                "valid_days",
+                "absent_days",
+                "null_days",
+                "coverage_ratio",
+                "null_reasons",
+                "calendar_holes",
+                "score_distribution",
+                "components",
+                "rank_correlations",
                 "sample_window",
             }
         ),
@@ -2643,10 +2787,14 @@ def _validate_health(health: object) -> None:
     _require(isinstance(health["coverage_ratio"], Decimal), "coverage Decimal")  # type: ignore[index]
     _require_keys(health["null_reasons"], _NULL_REASON_KEYS, "null_reasons")  # type: ignore[index]
     _require_keys(
-        health["score_distribution"], _SCORE_DISTRIBUTION_KEYS, "score_distribution"  # type: ignore[index]
+        health["score_distribution"],
+        _SCORE_DISTRIBUTION_KEYS,
+        "score_distribution",  # type: ignore[index]
     )
     _require_keys(
-        health["components"], frozenset(method.COMPONENT_KEYS), "components"  # type: ignore[index]
+        health["components"],
+        frozenset(method.COMPONENT_KEYS),
+        "components",  # type: ignore[index]
     )
     for block in health["components"].values():  # type: ignore[union-attr]
         _require_keys(
@@ -2658,14 +2806,22 @@ def _validate_health(health: object) -> None:
             block["distribution"], _DISTRIBUTION_KEYS, "component distribution"
         )  # type: ignore[index]
     expected_correlations = {
-        "breadth_limit_balance", "breadth_promotion", "limit_balance_promotion",
-        "breadth_score", "limit_balance_score", "promotion_score",
+        "breadth_limit_balance",
+        "breadth_promotion",
+        "limit_balance_promotion",
+        "breadth_score",
+        "limit_balance_score",
+        "promotion_score",
     }
-    _require_keys(health["rank_correlations"], expected_correlations, "rank_correlations")  # type: ignore[index]
+    _require_keys(
+        health["rank_correlations"], expected_correlations, "rank_correlations"
+    )  # type: ignore[index]
     for pair in health["rank_correlations"].values():  # type: ignore[union-attr]
         _require_keys(pair, frozenset({"value", "reason"}), "correlation")
         _require(_is_decimal_or_none(pair["value"]), "correlation value")
-    _require_keys(health["sample_window"], frozenset({"first", "last"}), "health window")  # type: ignore[index]
+    _require_keys(
+        health["sample_window"], frozenset({"first", "last"}), "health window"
+    )  # type: ignore[index]
     _require(_is_date_or_none(health["sample_window"]["first"]), "health window first")  # type: ignore[index]
     _require(_is_date_or_none(health["sample_window"]["last"]), "health window last")
     _require(isinstance(health["calendar_holes"], list), "calendar holes list")
@@ -2682,9 +2838,18 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
             block,
             frozenset(
                 {
-                    "horizon", "evaluation_kind", "grid_origin_date", "as_of",
-                    "grid", "observations", "folds", "fold_summary", "pooled",
-                    "quintiles", "direction_hit_rate", "gate_failures",
+                    "horizon",
+                    "evaluation_kind",
+                    "grid_origin_date",
+                    "as_of",
+                    "grid",
+                    "observations",
+                    "folds",
+                    "fold_summary",
+                    "pooled",
+                    "quintiles",
+                    "direction_hit_rate",
+                    "gate_failures",
                 }
             ),
             "evaluation block",
@@ -2698,8 +2863,13 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
                 observation,
                 frozenset(
                     {
-                        "trade_date", "entry_date", "exit_date", "score",
-                        "r_target", "r_benchmark", "r_excess",
+                        "trade_date",
+                        "entry_date",
+                        "exit_date",
+                        "score",
+                        "r_target",
+                        "r_benchmark",
+                        "r_excess",
                     }
                 ),
                 "observation",
@@ -2710,7 +2880,11 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
                 fold,
                 frozenset(
                     {
-                        "fold_index", "start_date", "end_date", "n", "rank_ic",
+                        "fold_index",
+                        "start_date",
+                        "end_date",
+                        "n",
+                        "rank_ic",
                         "reason",
                     }
                 ),
@@ -2720,8 +2894,13 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
             block["fold_summary"],
             frozenset(
                 {
-                    "folds_total", "nonnull_ic", "ic_mean", "ic_std", "icir",
-                    "icir_reason", "positive_share",
+                    "folds_total",
+                    "nonnull_ic",
+                    "ic_mean",
+                    "ic_std",
+                    "icir",
+                    "icir_reason",
+                    "positive_share",
                 }
             ),
             "fold summary",
@@ -2730,8 +2909,13 @@ def _validate_evaluation(evaluation: object, config: object) -> None:
         _require_keys(
             block["quintiles"],
             frozenset(
-                {"buckets", "spread", "monotonic", "monotonic_reason",
-                 "adjacent_agreement"}
+                {
+                    "buckets",
+                    "spread",
+                    "monotonic",
+                    "monotonic_reason",
+                    "adjacent_agreement",
+                }
             ),
             "quintiles",
         )
@@ -2757,15 +2941,22 @@ def _validate_grid(grid: object) -> None:
         grid,
         frozenset(
             {
-                "step_trading_days", "slots_total", "slots_accepted",
-                "slots_skipped", "drops", "signals_total", "off_grid_signals",
+                "step_trading_days",
+                "slots_total",
+                "slots_accepted",
+                "slots_skipped",
+                "drops",
+                "signals_total",
+                "off_grid_signals",
             }
         ),
         "grid",
     )
     _require_keys(grid["slots_skipped"], frozenset({"slot_without_signal"}), "skips")  # type: ignore[index]
     _require_keys(
-        grid["drops"], frozenset({"missing_close", "out_of_window"}), "drops"  # type: ignore[index]
+        grid["drops"],
+        frozenset({"missing_close", "out_of_window"}),
+        "drops",  # type: ignore[index]
     )
 
 
@@ -2844,8 +3035,12 @@ def test_reset_scope_guard_tests_remain_collected():
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    assert "test_task27_backtest_and_simulation_artifacts_remain_absent" in function_names
-    assert "test_task27_research_validation_is_a_closed_pure_subdomain" in function_names
+    assert (
+        "test_task27_backtest_and_simulation_artifacts_remain_absent" in function_names
+    )
+    assert (
+        "test_task27_research_validation_is_a_closed_pure_subdomain" in function_names
+    )
 ```
 
 - [ ] **Step 2: Run and verify RED.**
