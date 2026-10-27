@@ -7,14 +7,16 @@ import hashlib
 import json
 from dataclasses import replace
 from datetime import date, datetime, timedelta
-from decimal import Decimal, getcontext
+from decimal import Decimal, getcontext, localcontext
 from pathlib import Path
 
 import pytest
 
+from dragon_radar.analytics.metrics import _decimal_context
 from dragon_radar.readmodels import sentiment_research as method
 from dragon_radar.research import statistics as stats
 from dragon_radar.research.factor_health import build_factor_health
+from dragon_radar.research.forward_eval import evaluate_all, evaluate_horizon
 from dragon_radar.research.models import (
     DEFAULT_CONFIG,
     REASON_INSUFFICIENT_SAMPLE,
@@ -872,3 +874,242 @@ def test_factor_health_unknown_null_reason_fails_closed():
     tampered = replace(base, points=(tampered_point,))
     with pytest.raises(KeyError):
         build_factor_health(tampered)
+
+
+def _closes_from_values(calendar, values):
+    assert len(values) == len(calendar)
+    return {
+        day: Decimal(str(value)) for day, value in zip(calendar, values, strict=True)
+    }
+
+
+def _monotone_forward_pack(n_days=45, *, horizon=1):
+    """Closes engineered so every on-grid h-step forward return strictly ascends.
+
+    PIT discipline: component records stop at ``as_of``; the calendar (and
+    closes) extend past it solely to provide forward labels.
+    """
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, n_days)
+    as_of_index = n_days - horizon - 2
+    as_of = calendar[as_of_index]
+    components = [
+        daily(day, (i + 1, n_days), (i + 1, n_days), (i + 1, n_days))
+        for i, day in enumerate(calendar[: as_of_index + 1])
+    ]
+    benchmark = const_closes(calendar, "100.00")
+    # Every close exists (no None -> Decimal tokens). Only on-grid entry/exit
+    # closes matter; flat 100 elsewhere keeps the mapping complete.
+    values = [100.0] * n_days
+    # On the h-spaced grid: slot i enters at C[i+1], exits at C[i+1+h], and
+    # r = C[i+1+h]/C[i+1] - 1 = 0.0005 * (i+1), strictly ascending in slot i.
+    for i in range(0, n_days - horizon - 1, horizon):
+        entry = values[i + 1]
+        values[i + 1 + horizon] = round(entry * (1 + 0.0005 * (i + 1)), 12)
+    target = _closes_from_values(calendar, values)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=as_of,
+    )
+    return pack, calendar
+
+
+def test_monotone_construction_yields_unit_rank_ic_and_strict_quintiles():
+    pack, _calendar = _monotone_forward_pack()
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    assert block["horizon"] == 1
+    assert block["evaluation_kind"] == "time_serial_non_overlapping"
+    assert block["pooled"]["rank_ic"] == Decimal("1")
+    assert block["direction_hit_rate"] == Decimal("1")
+    buckets = block["quintiles"]["buckets"]
+    means = [bucket["mean_excess"] for bucket in buckets]
+    assert all(bucket["n"] > 0 for bucket in buckets)
+    assert all(means[i + 1] > means[i] for i in range(4))
+    assert block["quintiles"]["monotonic"] is True
+    assert block["quintiles"]["adjacent_agreement"] == Decimal("1")
+    with localcontext(_decimal_context()):
+        assert block["quintiles"]["spread"] == means[4] - means[0]
+    for fold in block["folds"]:
+        assert fold["rank_ic"] == Decimal("1")
+    assert block["fold_summary"]["positive_share"] == Decimal("1")
+    assert block["fold_summary"]["icir"] is None
+    assert block["fold_summary"]["icir_reason"] == "zero_variance"
+
+
+def test_hand_computed_returns_and_entry_at_next_tradable_point():
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, 5)
+    # Strictly increasing scores (40, 41, 42) so the pooled rank IC is defined.
+    components = [
+        daily(day, (40 + i, 100), (40 + i, 100), (40 + i, 100))
+        for i, day in enumerate(calendar[:3])
+    ]
+    # Signal calendar[0] enters at C1=100, exits at C2=101   -> r = +0.01
+    # Signal calendar[1] enters at C2=101, exits at C3=98.98 -> r = -0.02
+    # Signal calendar[2] enters at C3=98.98, exits at C4=100.9596 -> r = +0.02
+    target = _closes_from_values(calendar, [100, 100, 101, 98.98, 100.9596])
+    benchmark = const_closes(calendar, "100.00")
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[2],
+    )
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    first = block["observations"][0]
+    assert first["trade_date"] == calendar[0]
+    assert first["entry_date"] == calendar[1]
+    assert first["exit_date"] == calendar[2]
+    assert first["r_target"] == Decimal("101") / Decimal("100") - 1
+    assert first["r_benchmark"] == 0
+    assert first["r_excess"] == first["r_target"]
+    # Off-by-one reversal: shifting the signal one day changes the label.
+    second = block["observations"][1]
+    assert second["r_target"] == Decimal("98.98") / Decimal("101") - 1
+    assert second["r_target"] != first["r_target"]
+    # Score ranks 1,2,3 vs excess ranks [0.01,-0.02,0.02] -> [2,1,3] -> 0.5.
+    assert block["pooled"]["rank_ic"] == Decimal("0.5")
+
+
+def test_grid_windows_are_interior_disjoint_for_all_horizons():
+    pack, calendar = _monotone_forward_pack(n_days=120)
+    validated = validate_pack(pack)
+    for horizon in (1, 5, 20):
+        block = evaluate_horizon(validated, DEFAULT_CONFIG, horizon)
+        intervals = [
+            (
+                calendar.index(obs["entry_date"]),
+                calendar.index(obs["exit_date"]),
+            )
+            for obs in block["observations"]
+        ]
+        for earlier, later in zip(intervals, intervals[1:], strict=False):
+            assert later[0] >= earlier[1], (horizon, earlier, later)
+
+
+def test_drops_accounting_out_of_window_missing_close_and_skips():
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, 8)
+    # Signals exist every day except index 2 (slot gap when h=2-ish via h=1 grid);
+    # h=1 grid origin is index 0; index 2 slot has no signal.
+    components = [
+        daily(calendar[i], (50, 100), (50, 100), (50, 100)) for i in (0, 1, 3, 4, 5)
+    ]
+    target = dict(const_closes(calendar, "100"))
+    benchmark = dict(const_closes(calendar, "100"))
+    # Remove the exit close needed for the signal at index 5 (exit index 7? h=1
+    # needs index 6): drop target close at index 6 to force missing_close.
+    del target[calendar[6]]
+    # as_of at the final day: signals at 5..7 that would need future closes are
+    # out-of-window; give components at 6 and 7 too.
+    components += [
+        daily(calendar[6], (50, 100), (50, 100), (50, 100)),
+        daily(calendar[7], (50, 100), (50, 100), (50, 100)),
+    ]
+    pack = make_pack(
+        calendar=calendar,
+        components=sorted(components, key=lambda d: d.trade_date),
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[7],
+    )
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    assert block["grid"]["slots_skipped"]["slot_without_signal"] == 1
+    assert block["grid"]["drops"]["missing_close"] >= 1
+    assert block["grid"]["drops"]["out_of_window"] >= 1
+    assert block["grid"]["signals_total"] == 7
+    assert (
+        block["grid"]["slots_total"]
+        == block["grid"]["slots_accepted"]
+        + block["grid"]["slots_skipped"]["slot_without_signal"]
+        + block["grid"]["drops"]["missing_close"]
+    )
+
+
+def test_balanced_fold_sizes_and_insufficiency_gates():
+    pack, _ = _monotone_forward_pack(n_days=45)
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    sizes = [fold["n"] for fold in block["folds"]]
+    assert sum(sizes) == len(block["observations"])
+    assert max(sizes) - min(sizes) <= 1
+    # n_days=45 -> as_of index 42 -> 43 accepted observations; 43 >= 40 and
+    # K = 43 // 8 = 5 folds, so no observation/fold gate fires.
+    assert block["gate_failures"] == []
+    short = evaluate_horizon(
+        validated, ValidationConfig(horizons=(1,), min_signals_per_fold=8), 1
+    )
+    assert short["fold_summary"]["folds_total"] == 5
+    tiny_pack, _ = _monotone_forward_pack(n_days=10)
+    tiny = evaluate_horizon(validate_pack(tiny_pack), DEFAULT_CONFIG, 1)
+    assert "insufficient_observations" in tiny["gate_failures"]
+    assert "insufficient_folds" in tiny["gate_failures"]
+    assert "quintile_too_small" in tiny["gate_failures"]
+    # Gate failures never suppress computable statistics (spec): the pooled
+    # RankIC stays exactly 1; G6 fires only when the pooled IC itself is null.
+    assert tiny["pooled"]["rank_ic"] == Decimal("1")
+
+
+def test_evaluate_all_respects_horizon_subset_and_constant_score_degrades():
+    pack, _ = _monotone_forward_pack(n_days=60)
+    validated = validate_pack(pack)
+    subset = ValidationConfig(horizons=(1, 5))
+    evaluation = evaluate_all(validated, subset)
+    assert set(evaluation) == {"1", "5"}
+    constant = [
+        daily(day, (50, 100), (50, 100), (50, 100))
+        for day in pack.calendar[: pack.calendar.index(pack.as_of) + 1]
+    ]
+    flat_pack = make_pack(
+        calendar=pack.calendar,
+        components=constant,
+        target_closes=pack.target_closes,
+        benchmark_closes=pack.benchmark_closes,
+        as_of=pack.as_of,
+    )
+    block = evaluate_horizon(validate_pack(flat_pack), DEFAULT_CONFIG, 1)
+    assert block["pooled"]["rank_ic"] is None
+    assert block["pooled"]["reason"] == "zero_variance"
+    assert block["quintiles"]["monotonic"] is None
+    assert block["direction_hit_rate"] is None
+    assert "pooled_ic_unavailable" in block["gate_failures"]
+
+
+def test_forward_eval_is_independent_of_caller_decimal_context():
+    pack, _calendar = _monotone_forward_pack(n_days=45)
+    # Validate once under the default context: point rebuilding runs through
+    # the real method module, whose quantize is fragile under prec=2. The
+    # unit under test is evaluate_horizon, invoked twice below.
+    validated = validate_pack(pack)
+
+    def evaluate():
+        return evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+
+    default_block = evaluate()
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        low_precision_block = evaluate()
+    finally:
+        getcontext().prec = previous_prec
+
+    def fingerprint(block):
+        return (
+            tuple(
+                (bucket["mean_excess"], bucket["mean_target"])
+                for bucket in block["quintiles"]["buckets"]
+            ),
+            block["quintiles"]["spread"],
+            block["quintiles"]["adjacent_agreement"],
+            block["direction_hit_rate"],
+            block["fold_summary"]["positive_share"],
+        )
+
+    assert fingerprint(low_precision_block) == fingerprint(default_block)
