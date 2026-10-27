@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from decimal import Decimal
+from decimal import Decimal, getcontext
 from pathlib import Path
 
 import pytest
@@ -221,3 +221,77 @@ def test_quintile_buckets_never_split_ties():
     tied = stats.quintile_buckets([D("1.5"), D("1.5"), D("3"), D("4"), D("5")])
     assert tied[0] == tied[1]
     assert 1 <= tied[0] <= 5
+
+
+def test_statistics_are_independent_of_caller_decimal_context():
+    values = [D("1"), D("2"), D("3"), D("4")]
+    others = [D("4"), D("2"), D("1"), D("3")]
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        low_precision = {
+            "mean": stats.decimal_mean(values),
+            "std": stats.decimal_sample_std(values),
+            "median": stats.decimal_median(values),
+            "quantile": stats.decimal_quantile(values, D("0.25")),
+            "rho": stats.spearman(values, others).value,
+        }
+        getcontext().prec = 34
+        high_precision = {
+            "mean": stats.decimal_mean(values),
+            "std": stats.decimal_sample_std(values),
+            "median": stats.decimal_median(values),
+            "quantile": stats.decimal_quantile(values, D("0.25")),
+            "rho": stats.spearman(values, others).value,
+        }
+    finally:
+        getcontext().prec = previous_prec
+    assert low_precision == high_precision
+    # Type-7 interpolation: position 0.75 between 1 and 2 -> 1.75 exactly.
+    assert high_precision["quantile"] == D("1.75")
+
+
+def test_statistics_fail_closed_branches_value_shapes_and_closed_distribution():
+    for bad_q in (True, D("NaN"), D("-0.1"), D("1.1"), 0.5):
+        with pytest.raises(ResearchValidationError):
+            stats.decimal_quantile([D("1"), D("2")], bad_q)
+    # Ranks outside 1..n cannot map into buckets 1..5.
+    with pytest.raises(ResearchValidationError):
+        stats.quintile_buckets([D("0")])
+    with pytest.raises(ResearchValidationError):
+        stats.quintile_buckets([D("2")])
+    # Two points give exact extremes; success shape carries no reason.
+    perfect = stats.spearman([D("1"), D("2")], [D("1"), D("2")])
+    assert perfect.value == D("1")
+    assert perfect.reason is None
+    inverse = stats.spearman([D("1"), D("2")], [D("2"), D("1")])
+    assert inverse.value == D("-1")
+    # Degenerate shape carries a reason and no value.
+    degenerate = stats.spearman([D("1"), D("1")], [D("1"), D("2")])
+    assert degenerate.value is None
+    assert degenerate.reason == REASON_ZERO_VARIANCE
+    assert stats.average_ranks([D("7")]) == (D("1"),)
+    distribution = stats.decimal_distribution([D("1"), D("3")])
+    assert set(distribution) == {
+        "n",
+        "min",
+        "max",
+        "mean",
+        "median",
+        "p25",
+        "p75",
+    }
+    assert distribution == {
+        "n": 2,
+        "min": D("1"),
+        "max": D("3"),
+        "mean": D("2"),
+        "median": D("2"),
+        "p25": D("1.5"),
+        "p75": D("2.5"),
+    }
+    # Generators are not Sequences and strings are not numeric vectors.
+    with pytest.raises(ResearchValidationError):
+        stats.average_ranks(iter([D("1"), D("2")]))
+    with pytest.raises(ResearchValidationError):
+        stats.average_ranks("12")

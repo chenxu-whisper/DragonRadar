@@ -71,9 +71,10 @@ def average_ranks(values: Sequence[Decimal]) -> tuple[Decimal, ...]:
 
 
 def _snap_unit(value: Decimal) -> Decimal:
-    gap = abs(value.copy_abs() - ONE)
-    if gap <= _UNIT_SNAP:
-        return ONE if value > 0 else -ONE
+    with localcontext(_decimal_context()):
+        gap = abs(value.copy_abs() - ONE)
+        if gap <= _UNIT_SNAP:
+            return ONE if value > 0 else -ONE
     return value
 
 
@@ -142,12 +143,12 @@ def decimal_quantile(values: Sequence[Decimal], q: Decimal) -> Decimal:
         raise ResearchValidationError("q must be a finite Decimal")
     if not ZERO <= q <= ONE:
         raise ResearchValidationError("q must be within [0, 1]")
-    position = q * Decimal(len(data) - 1)
-    low = int(position)
-    fraction = position - Decimal(low)
-    if fraction == 0 or low == len(data) - 1:
-        return data[low]
     with localcontext(_decimal_context()):
+        position = q * Decimal(len(data) - 1)
+        low = int(position)
+        fraction = position - Decimal(low)
+        if fraction == 0 or low == len(data) - 1:
+            return data[low]
         return data[low] + fraction * (data[low + 1] - data[low])
 
 
