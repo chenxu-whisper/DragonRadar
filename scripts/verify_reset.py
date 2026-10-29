@@ -25,11 +25,14 @@ EVIDENCE_SCHEMA_VERSION = 3
 REQUIRED_GATES = (
     "prd_contracts",
     "csv_units",
-    "reset_acceptance_e2e",
-    "recovery_drills",
+    # The performance trio must run before the browser-heavy Playwright gates:
+    # their residual CPU/IO load perturbs the P95 measurement. Derived gates
+    # reuse performance's commands, so performance stays first of the three.
     "performance",
     "public_no_write",
     "async_over_five_seconds",
+    "reset_acceptance_e2e",
+    "recovery_drills",
     "full_backend",
     "ruff_lint",
     "ruff_format",
@@ -220,7 +223,22 @@ _GATE_SPECS: dict[str, list[CommandSpec]] = {
             timeout=1200,
         )
     ],
-    "full_backend": [_spec(["uv", "run", "pytest", "-q", "-rs"], timeout=2400)],
+    "full_backend": [
+        _spec(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "-q",
+                "-rs",
+                # Measured by the dedicated performance gate; avoid a second,
+                # load-perturbed measurement inside the 30+ minute suite.
+                "--deselect",
+                "tests/performance/test_reset_queries.py",
+            ],
+            timeout=2400,
+        )
+    ],
     "ruff_lint": [
         _spec(["uv", "run", "ruff", "check", "."], requires_test_counts=False)
     ],

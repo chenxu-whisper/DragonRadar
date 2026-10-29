@@ -287,10 +287,7 @@ def test_release_manifest_rejects_symlink_root_before_import(
     assert not marker.exists()
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32" or not hasattr(os.path, "isjunction"),
-    reason="Windows junctions require os.path.isjunction",
-)
+@pytest.mark.windows_only
 def test_release_manifest_rejects_junction_before_import(
     verifier, copied_migrations, tmp_path
 ):
@@ -315,10 +312,7 @@ def test_release_manifest_rejects_junction_before_import(
     assert not marker.exists()
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32" or not hasattr(os.path, "isjunction"),
-    reason="Windows junctions require os.path.isjunction",
-)
+@pytest.mark.windows_only
 def test_release_manifest_rejects_junction_root_before_import(
     verifier, copied_migrations, tmp_path
 ):
@@ -3743,10 +3737,13 @@ def test_backup_restore_has_no_source_thaw_path():
     assert "_restore_source_writable" not in source
 
 
+@pytest.mark.requires_restore_container
 def test_actual_named_container_backup_restore_drill(verifier, tmp_path):
     container = os.environ.get("DRAGON_TEST_POSTGRES_CONTAINER")
     database_url = os.environ.get("DRAGON_TEST_DATABASE_URL")
     if not container or not database_url:
+        # Defense in depth; conftest deselects this item when the named
+        # container environment is absent so zero-skip gates stay exact.
         pytest.skip(
             "DRAGON_TEST_POSTGRES_CONTAINER and DRAGON_TEST_DATABASE_URL "
             "are required for the restore integration"
