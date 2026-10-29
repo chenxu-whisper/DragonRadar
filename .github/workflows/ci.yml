@@ -347,6 +347,37 @@ jobs:
       - name: Verify Reset startup validation
         shell: powershell
         run: .\tests\test_reset_start_script.ps1
+      - name: Diagnose Windows private ACL environment
+        shell: powershell
+        run: |
+          . (Join-Path $PWD "scripts/private-common.ps1")
+          $probe = Join-Path $PWD (".temp/acl-diag-" + [Guid]::NewGuid().ToString("N"))
+          $cursor = $probe
+          while ($cursor) {
+            if (Test-Path -LiteralPath $cursor) {
+              $item = Get-Item -LiteralPath $cursor -Force
+              $reparse = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+              Write-Output ("::warning title=acl-ancestor::path=" + $cursor + " reparse=" + $reparse + " attrs=" + $item.Attributes)
+            }
+            $parent = [System.IO.Path]::GetDirectoryName($cursor)
+            if ($parent -eq $cursor) { break }
+            $cursor = $parent
+          }
+          Initialize-PrivateDirectory $probe | Out-Null
+          $dacl = Get-Acl -LiteralPath $probe
+          Write-Output ("::error title=acl-dacl::protected=" + $dacl.AreAccessRulesProtected + " count=" + $dacl.Access.Count + " owner=" + $dacl.Owner)
+          foreach ($rule in $dacl.Access) {
+            $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+            Write-Output ("::error title=acl-ace::" + $sid + " rights=" + $rule.FileSystemRights + " type=" + $rule.AccessControlType)
+          }
+          try {
+            . (Join-Path $PWD "tests/test_private_scripts.ps1")
+          } catch {
+            $message = ($_.Exception.Message -replace "`r?`n", " / ")
+            $line = $_.InvocationInfo.ScriptLineNumber
+            Write-Output ("::error title=private-script-exception::line=" + $line + " message=" + $message)
+            throw
+          }
       - name: Verify Windows private-file protections
         shell: powershell
         run: .\tests\test_private_scripts.ps1
