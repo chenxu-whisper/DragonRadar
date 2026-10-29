@@ -123,7 +123,9 @@ jobs:
           path: .temp/acceptance/
 
   reset_performance:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19; the
+    # P95 <= 2.0s gate was validated on the 24.04 runner generation.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
@@ -157,7 +159,9 @@ jobs:
           path: .temp/acceptance/reset-performance.json
 
   task20_acceptance:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19; the
+    # Task 20 private-TLS drill was validated on the 24.04 generation.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       postgres:
@@ -333,7 +337,11 @@ jobs:
       - run: npm run test:contract-runtime
 
   private_scripts:
-    runs-on: windows-latest
+    # Pinned: windows-latest now resolves to the windows-2025 image,
+    # where tests/test_private_scripts.ps1 fails (baseline CI run on
+    # 2026-10-29) while passing locally; the DACL behavior was
+    # originally validated on the windows-2022 runner generation.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Verify Reset startup validation
