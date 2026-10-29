@@ -20,6 +20,7 @@ if (-not (Test-Path -LiteralPath $secret)) {
         )
         $stream.Write($content, 0, $content.Length)
     } finally { $stream.Dispose() }
+    Set-PrivateFileAcl $secret | Out-Null
 }
 Assert-PrivateFile $secret
 $portLine = @(Select-String -LiteralPath $secret -Pattern '^DRAGON_PRIVATE_PORT=([0-9]+)$')

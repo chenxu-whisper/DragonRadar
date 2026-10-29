@@ -33,6 +33,33 @@ function Initialize-PrivateDirectory {
     return $full
 }
 
+function Set-PrivateFileAcl {
+    # Elevated administrator tokens default a newly created file's owner to the
+    # Administrators group (S-1-5-32-544) even when the parent directory was
+    # created with an explicit owner. Normalize the file DACL immediately after
+    # writing so Assert-PrivateFile enforces the same contract in every token.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $item = Get-Item -LiteralPath $full -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "Expected a regular private file."
+    }
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $system = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-18")
+    $acl.SetOwner($owner)
+    foreach ($sid in @($owner, $system)) {
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $sid, "FullControl", "None", "None", "Allow"
+        )
+        $acl.AddAccessRule($rule)
+    }
+    # Persist only the owner/DACL sections changed above, not the audit SACL.
+    $item.SetAccessControl($acl)
+    return $full
+}
+
 function Assert-PrivateFile {
     param([Parameter(Mandatory = $true)][string]$Path)
     $item = Get-Item -LiteralPath $Path -Force
@@ -76,6 +103,7 @@ function Save-PrivatePublicFile {
     }
     $stream = [System.IO.File]::Open($Path, "CreateNew", "Write", "None")
     try { $stream.Write($Bytes, 0, $Bytes.Length) } finally { $stream.Dispose() }
+    Set-PrivateFileAcl $Path | Out-Null
     Assert-PrivateFile $Path
 }
 
