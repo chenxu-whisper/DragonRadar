@@ -192,8 +192,7 @@ def capture_schema_contract(connection: Connection) -> dict[str, object]:
 def compare_schema_contract(
     expected: Mapping[str, object],
     actual: Mapping[str, object],
-) -> list[str]:
-    ...
+) -> list[str]: ...
 ```
 
 Catalog records must use stable structural fields:
