@@ -22,8 +22,15 @@ def tls_gateway():
     "path,host,expected",
     [
         ("/health/ready", "localhost:8030", 200),
-        ("/api/v1/snapshots", "localhost:8030", 401),
-        ("/api/owner/v1/notes", "localhost:8030", 401),
+        # The private edge closes the legacy read API and the server-side
+        # review surface (private review data is local-only); the static
+        # Caddyfile contract and the production-isolation E2E pin these to an
+        # edge-level 404 even with a paired session, so unpaired callers must
+        # be rejected fail-closed at the edge rather than by OwnerGate.
+        ("/api/v1/snapshots", "localhost:8030", 404),
+        ("/api/owner/v1/notes", "localhost:8030", 404),
+        # Whitelisted routes still reach OwnerGate, which rejects unpaired
+        # callers with 401: the app-layer defense behind the edge is exercised.
         ("/api/owner/v1/session", "localhost:8030", 401),
         ("/api/owner/v1/not-open", "localhost:8030", 404),
         ("/health/ready", "evil.test", 403),
