@@ -162,7 +162,9 @@ jobs:
     # Pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19; the
     # Task 20 private-TLS drill was validated on the 24.04 generation.
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Full verify_reset runs 21 gates (a ~30 min backend suite plus browser
+    # E2E); 60 minutes killed otherwise-passing runs before the report write.
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
@@ -337,47 +339,16 @@ jobs:
       - run: npm run test:contract-runtime
 
   private_scripts:
-    # Pinned: windows-latest now resolves to the windows-2025 image,
-    # where tests/test_private_scripts.ps1 fails (baseline CI run on
-    # 2026-10-29) while passing locally; the DACL behavior was
-    # originally validated on the windows-2022 runner generation.
+    # Pinned to the validated runner generation. Elevated built-in
+    # Administrator tokens assign the Administrators group (S-1-5-32-544)
+    # as the owner of newly created files; the starters normalize file DACLs
+    # via Set-PrivateFileAcl so the contract holds under every token.
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Verify Reset startup validation
         shell: powershell
         run: .\tests\test_reset_start_script.ps1
-      - name: Diagnose Windows private ACL environment
-        shell: powershell
-        run: |
-          . (Join-Path $PWD "scripts/private-common.ps1")
-          $probe = Join-Path $PWD (".temp/acl-diag-" + [Guid]::NewGuid().ToString("N"))
-          $cursor = $probe
-          while ($cursor) {
-            if (Test-Path -LiteralPath $cursor) {
-              $item = Get-Item -LiteralPath $cursor -Force
-              $reparse = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
-              Write-Output ("::warning title=acl-ancestor::path=" + $cursor + " reparse=" + $reparse + " attrs=" + $item.Attributes)
-            }
-            $parent = [System.IO.Path]::GetDirectoryName($cursor)
-            if ($parent -eq $cursor) { break }
-            $cursor = $parent
-          }
-          Initialize-PrivateDirectory $probe | Out-Null
-          $dacl = Get-Acl -LiteralPath $probe
-          Write-Output ("::error title=acl-dacl::protected=" + $dacl.AreAccessRulesProtected + " count=" + $dacl.Access.Count + " owner=" + $dacl.Owner)
-          foreach ($rule in $dacl.Access) {
-            $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-            Write-Output ("::error title=acl-ace::" + $sid + " rights=" + $rule.FileSystemRights + " type=" + $rule.AccessControlType)
-          }
-          try {
-            . (Join-Path $PWD "tests/test_private_scripts.ps1")
-          } catch {
-            $message = ($_.Exception.Message -replace "`r?`n", " / ")
-            $line = $_.InvocationInfo.ScriptLineNumber
-            Write-Output ("::error title=private-script-exception::line=" + $line + " message=" + $message)
-            throw
-          }
       - name: Verify Windows private-file protections
         shell: powershell
         run: .\tests\test_private_scripts.ps1
