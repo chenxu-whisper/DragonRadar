@@ -507,7 +507,7 @@ def _counts(
     for number, label in SUMMARY_COUNT.findall(output):
         counts[label] = max(counts[label], int(number))
     for label, number in TAP_COUNT.findall(output):
-        normalized = "failed" if label == "fail" else label
+        normalized = {"pass": "passed", "fail": "failed", "skipped": "skipped"}[label]
         counts[normalized] = max(counts[normalized], int(number))
     for line in output.splitlines():
         try:

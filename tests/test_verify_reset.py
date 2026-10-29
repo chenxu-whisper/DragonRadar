@@ -344,6 +344,34 @@ def test_count_parser_uses_test_count_from_ansi_colored_output():
     assert count_output(output, 0)["passed"] == 14
 
 
+def test_count_parser_maps_node_test_tap_block_without_key_error():
+    # `npm test` ends with the node:test gates, whose TAP summary emits
+    # "# pass" / "# fail" rather than pytest's "passed" / "failed"; the
+    # parser must normalize both aliases (regression: KeyError "pass"
+    # crashed the harness after the frontend_tests gate).
+    count_output = VERIFIER["_counts"]
+    output = "\n".join(
+        [
+            "Test Files  32 passed",
+            "Tests  1025 passed",
+            "1..10",
+            "# tests 10",
+            "# pass 10",
+            "# fail 0",
+            "# cancelled 0",
+            "# skipped 0",
+            "# todo 0",
+            "# duration_ms 88.294201",
+        ]
+    )
+
+    counts = count_output(output, 0, fallback_from_exit=False)
+
+    assert counts["passed"] == 1025
+    assert counts["failed"] == 0
+    assert counts["skipped"] == 0
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
