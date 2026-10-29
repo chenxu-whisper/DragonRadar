@@ -1,0 +1,1810 @@
+"""Task 27 Slice A tests: research-method validation (synthetic only)."""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+from collections import Counter
+from dataclasses import replace
+from datetime import date, datetime, timedelta
+from decimal import Decimal, getcontext, localcontext
+from pathlib import Path
+
+import pytest
+
+from dragon_radar.analytics.metrics import _decimal_context
+from dragon_radar.readmodels import sentiment_research as method
+from dragon_radar.research import statistics as stats
+from dragon_radar.research.factor_health import build_factor_health
+from dragon_radar.research.forward_eval import evaluate_all, evaluate_horizon
+from dragon_radar.research.models import (
+    DEFAULT_CONFIG,
+    REASON_EMPTY_BUCKET,
+    REASON_INSUFFICIENT_SAMPLE,
+    REASON_ZERO_VARIANCE,
+    ComponentCounts,
+    DailyComponents,
+    InputManifest,
+    ResearchValidationError,
+    SamplePack,
+    ValidationConfig,
+    validate_config,
+)
+from dragon_radar.research.report import (
+    _jsonable,
+    _quantize,
+    assemble_report,
+    parse_archived_report,
+    serialize_report,
+)
+from dragon_radar.research.samples import (
+    ValidatedPack,
+    canonical_payload_hash,
+    validate_pack,
+)
+
+D = Decimal
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "dragon_radar" / "research"
+FORBIDDEN_IMPORTS = ("fastapi", "sqlalchemy", "httpx", "requests")
+FORBIDDEN_DRAGON_SUBPACKAGES = (
+    "http",
+    "storage",
+    "owner",
+    "publication",
+    "analysis_jobs",
+    "query",
+    "realtime",
+    "ai",
+    "lhb",
+    "news",
+    "review",
+    "regulation",
+    "topics",
+    "roles",
+    "ingestion",
+    "cli",
+    "api",
+)
+ALLOWED_DRAGON_IMPORTS = (
+    "dragon_radar.analytics.metrics",
+    "dragon_radar.readmodels.sentiment_research",
+)
+
+
+def _imported_modules(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module == "dragon_radar":
+                # Expand the bare-package from-import (``from dragon_radar
+                # import cli``) into the concrete name dragon_radar.cli so the
+                # purity scan cannot be bypassed via the "dragon_radar" root
+                # exception. Origin is the alias name, not asname.
+                names.extend(f"dragon_radar.{alias.name}" for alias in node.names)
+            else:
+                names.append(node.module)
+    return names
+
+
+def test_research_package_imports_stay_pure():
+    for path in sorted(PACKAGE_ROOT.glob("*.py")):
+        for name in _imported_modules(path):
+            assert not name.startswith(FORBIDDEN_IMPORTS), (path.name, name)
+            if name.startswith("dragon_radar."):
+                assert (
+                    name == "dragon_radar"
+                    or name.startswith("dragon_radar.research")
+                    or name.startswith(ALLOWED_DRAGON_IMPORTS)
+                ), (path.name, name)
+                root = ".".join(name.split(".")[:2])
+                assert root not in {
+                    f"dragon_radar.{sub}" for sub in FORBIDDEN_DRAGON_SUBPACKAGES
+                }, (path.name, name)
+
+
+def test_default_config_is_valid_and_frozen():
+    assert validate_config(DEFAULT_CONFIG) is DEFAULT_CONFIG
+    assert DEFAULT_CONFIG.horizons == (1, 5, 20)
+    assert DEFAULT_CONFIG.min_coverage == Decimal("0.80")
+    with pytest.raises(AttributeError):
+        DEFAULT_CONFIG.min_folds = 9  # type: ignore[misc]
+
+
+def test_validate_config_rejects_bad_horizons_and_thresholds():
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(horizons=(3,)))
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(horizons=(1, 1)))
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(horizons=()))  # type: ignore[arg-type]
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(min_coverage=Decimal("0")))
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(min_signals_per_fold=0))
+
+
+def test_component_counts_are_frozen_value_holders():
+    counts = ComponentCounts(3, 5)
+    assert (counts.numerator, counts.denominator) == (3, 5)
+    with pytest.raises(AttributeError):
+        counts.numerator = 4  # type: ignore[misc]
+
+
+def test_validate_config_is_fail_closed_for_bool_nan_infinity_and_boundary():
+    # bool must never sneak through the exact-type int/Decimal checks.
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(horizons=(True,)))  # type: ignore[arg-type]
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(min_signals_per_fold=True))  # type: ignore[arg-type]
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(min_coverage=True))  # type: ignore[arg-type]
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(min_coverage=Decimal("NaN")))
+    with pytest.raises(ResearchValidationError):
+        validate_config(ValidationConfig(min_coverage=Decimal("Infinity")))
+    # Upper boundary is inclusive: coverage of exactly one is accepted.
+    accepted = validate_config(ValidationConfig(min_coverage=Decimal("1")))
+    assert accepted.min_coverage == Decimal("1")
+
+
+def test_research_package_rejects_relative_imports_beyond_package_root():
+    # Level 1 stays inside dragon_radar.research; level >= 2 escapes the
+    # package boundary (e.g. ``from ..storage import x``) and is forbidden.
+    for path in sorted(PACKAGE_ROOT.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level >= 2
+        ]
+        assert offenders == [], (path.name, [node.level for node in offenders])
+
+
+def test_research_package_has_no_nested_modules():
+    assert {
+        path.relative_to(PACKAGE_ROOT).as_posix() for path in PACKAGE_ROOT.rglob("*.py")
+    } == {
+        "__init__.py",
+        "models.py",
+        "samples.py",
+        "statistics.py",
+        "factor_health.py",
+        "forward_eval.py",
+        "report.py",
+    }
+
+
+def test_average_ranks_handles_ties_exactly():
+    assert stats.average_ranks([D("3"), D("1"), D("2"), D("3")]) == (
+        D("3.5"),
+        D("1"),
+        D("2"),
+        D("3.5"),
+    )
+    assert stats.average_ranks([D("5"), D("5"), D("5")]) == (
+        D("2"),
+        D("2"),
+        D("2"),
+    )
+
+
+def test_spearman_extremes_and_hand_computed_tie_case():
+    assert stats.spearman(
+        [D("1"), D("2"), D("3")], [D("4"), D("5"), D("6")]
+    ).value == D("1")
+    assert stats.spearman(
+        [D("1"), D("2"), D("3")], [D("6"), D("5"), D("4")]
+    ).value == D("-1")
+    # ranks x = 1,2,3 ; ranks y = 2,1,3 -> covariance form yields 0.5 exactly.
+    result = stats.spearman([D("1"), D("2"), D("3")], [D("2"), D("1"), D("3")])
+    assert result.value == D("0.5")
+    # 34-digit sqrt(3)/2 pinned verbatim: 34-context rank Pearson lands
+    # 2.9e-34 below the 80-digit reference 0.8660...2936183... (plan note 3).
+    tied = stats.spearman([D("1"), D("1"), D("2")], [D("1"), D("2"), D("3")])
+    assert tied.value == D("0.8660254037844386467637231707529359")
+
+
+def test_spearman_degenerate_inputs_report_closed_reasons():
+    assert stats.spearman([D("1")], [D("1")]).reason == REASON_INSUFFICIENT_SAMPLE
+    assert stats.spearman([D("1"), D("1")], [D("1"), D("2")]).reason == (
+        REASON_ZERO_VARIANCE
+    )
+    assert stats.spearman([D("1"), D("2")], [D("3"), D("3")]).reason == (
+        REASON_ZERO_VARIANCE
+    )
+
+
+def test_statistics_reject_bad_types_and_lengths():
+    for bad in ([1.0], [True], [float("nan")], [D("NaN")]):
+        with pytest.raises(ResearchValidationError):
+            stats.average_ranks(bad)
+    with pytest.raises(ResearchValidationError):
+        stats.spearman([D("1")], [D("1"), D("2")])
+    with pytest.raises(ResearchValidationError):
+        stats.average_ranks([])
+
+
+def test_mean_std_median_quantile_distribution():
+    assert stats.decimal_mean([D("1"), D("2"), D("3"), D("4")]) == D("2.5")
+    assert stats.decimal_median([D("4"), D("1"), D("3"), D("2")]) == D("2.5")
+    assert stats.decimal_median([D("3"), D("1"), D("2")]) == D("2")
+    assert stats.decimal_sample_std([D("1")]) is None
+    # Sample (n-1) std: mean 2, squared deviations 4+0+4=8, /2=4, sqrt=2.
+    assert stats.decimal_sample_std([D("0"), D("2"), D("4")]) == D("2")
+    assert stats.decimal_quantile([D("1"), D("2"), D("3"), D("4")], D("0")) == D("1")
+    assert stats.decimal_quantile([D("1"), D("2"), D("3"), D("4")], D("1")) == D("4")
+    assert stats.decimal_quantile([D("1"), D("2"), D("3"), D("4")], D("0.5")) == D(
+        "2.5"
+    )
+    distribution = stats.decimal_distribution([D("1"), D("3")])
+    assert distribution["n"] == 2
+    assert distribution["p25"] == D("1.5")
+    assert distribution["p75"] == D("2.5")
+
+
+def test_quintile_buckets_never_split_ties():
+    # 10 distinct ranks -> two observations per bucket.
+    ranks = tuple(D(i) for i in range(1, 11))
+    assert stats.quintile_buckets(ranks) == (1, 1, 2, 2, 3, 3, 4, 4, 5, 5)
+    # Two equal ranks share one bucket.
+    tied = stats.quintile_buckets([D("1.5"), D("1.5"), D("3"), D("4"), D("5")])
+    assert tied[0] == tied[1]
+    assert 1 <= tied[0] <= 5
+
+
+def test_statistics_are_independent_of_caller_decimal_context():
+    values = [D("1"), D("2"), D("3"), D("4")]
+    others = [D("4"), D("2"), D("1"), D("3")]
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        low_precision = {
+            "mean": stats.decimal_mean(values),
+            "std": stats.decimal_sample_std(values),
+            "median": stats.decimal_median(values),
+            "quantiles": tuple(
+                stats.decimal_quantile(values, q)
+                for q in (D("0.25"), D("0.34"), D("0.75"))
+            ),
+            "rho": stats.spearman(values, others).value,
+        }
+        getcontext().prec = 34
+        high_precision = {
+            "mean": stats.decimal_mean(values),
+            "std": stats.decimal_sample_std(values),
+            "median": stats.decimal_median(values),
+            "quantiles": tuple(
+                stats.decimal_quantile(values, q)
+                for q in (D("0.25"), D("0.34"), D("0.75"))
+            ),
+            "rho": stats.spearman(values, others).value,
+        }
+    finally:
+        getcontext().prec = previous_prec
+    assert low_precision == high_precision
+    # Type-7 anchors: 0.25 -> 1.75 and 0.75 -> 3.25 are exact at any
+    # precision; q=0.34 -> position 1.02 -> 2.02 diverges at caller prec=2
+    # unless arithmetic runs inside the fixed 34-digit context.
+    assert high_precision["quantiles"] == (D("1.75"), D("2.02"), D("3.25"))
+
+
+def test_statistics_fail_closed_branches_value_shapes_and_closed_distribution():
+    for bad_q in (True, D("NaN"), D("-0.1"), D("1.1"), 0.5):
+        with pytest.raises(ResearchValidationError):
+            stats.decimal_quantile([D("1"), D("2")], bad_q)
+    # Ranks outside 1..n cannot map into buckets 1..5.
+    with pytest.raises(ResearchValidationError):
+        stats.quintile_buckets([D("0")])
+    with pytest.raises(ResearchValidationError):
+        stats.quintile_buckets([D("2")])
+    # Two points give exact extremes; success shape carries no reason.
+    perfect = stats.spearman([D("1"), D("2")], [D("1"), D("2")])
+    assert perfect.value == D("1")
+    assert perfect.reason is None
+    inverse = stats.spearman([D("1"), D("2")], [D("2"), D("1")])
+    assert inverse.value == D("-1")
+    # Degenerate shape carries a reason and no value.
+    degenerate = stats.spearman([D("1"), D("1")], [D("1"), D("2")])
+    assert degenerate.value is None
+    assert degenerate.reason == REASON_ZERO_VARIANCE
+    assert stats.average_ranks([D("7")]) == (D("1"),)
+    distribution = stats.decimal_distribution([D("1"), D("3")])
+    assert set(distribution) == {
+        "n",
+        "min",
+        "max",
+        "mean",
+        "median",
+        "p25",
+        "p75",
+    }
+    assert distribution == {
+        "n": 2,
+        "min": D("1"),
+        "max": D("3"),
+        "mean": D("2"),
+        "median": D("2"),
+        "p25": D("1.5"),
+        "p75": D("2.5"),
+    }
+    # Generators are not Sequences and strings are not numeric vectors.
+    with pytest.raises(ResearchValidationError):
+        stats.average_ranks(iter([D("1"), D("2")]))
+    with pytest.raises(ResearchValidationError):
+        stats.average_ranks("12")
+
+
+def calendar_days(start: date, n: int) -> tuple[date, ...]:
+    return tuple(start + timedelta(days=i) for i in range(n))
+
+
+def daily(
+    day: date,
+    breadth: tuple[int, int],
+    limit_balance: tuple[int, int],
+    promotion: tuple[int, int],
+) -> DailyComponents:
+    return DailyComponents(
+        day,
+        ComponentCounts(*breadth),
+        ComponentCounts(*limit_balance),
+        ComponentCounts(*promotion),
+    )
+
+
+def _canonical_hash(payload) -> str:
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _components_payload(components):
+    return [
+        [
+            item.trade_date.isoformat(),
+            item.breadth.numerator,
+            item.breadth.denominator,
+            item.limit_balance.numerator,
+            item.limit_balance.denominator,
+            item.promotion.numerator,
+            item.promotion.denominator,
+        ]
+        for item in components
+    ]
+
+
+def _closes_payload(closes):
+    return [
+        [day.isoformat(), str(price.normalize())]
+        for day, price in sorted(closes.items())
+    ]
+
+
+def _manifest(
+    name, rows, as_of, *, adjustment="raw", frozen_at="2026-10-27T00:00:00+00:00"
+):
+    return InputManifest(
+        name=name,
+        source_version="fixture-v1",
+        frozen_at=frozen_at,
+        as_of=as_of,
+        row_count=len(rows),
+        adjustment=adjustment,
+        sha256=_canonical_hash(rows),
+    )
+
+
+def make_manifests(components, target_closes, benchmark_closes, as_of):
+    return (
+        _manifest("components", _components_payload(components), as_of),
+        _manifest("target_closes", _closes_payload(target_closes), as_of),
+        _manifest("benchmark_closes", _closes_payload(benchmark_closes), as_of),
+    )
+
+
+def make_pack(
+    *,
+    calendar,
+    components,
+    target_closes,
+    benchmark_closes,
+    as_of=None,
+    synthetic=True,
+    seed=None,
+    pack_id="fixture-pack",
+    generator="test-fixture:hand_built",
+    target_name="fixture-target",
+    benchmark_name="csi300",
+):
+    if as_of is None:
+        as_of = calendar[-1]
+    return SamplePack(
+        pack_id=pack_id,
+        synthetic=synthetic,
+        generator=generator,
+        seed=seed,
+        as_of=as_of,
+        calendar=calendar,
+        components=tuple(components),
+        target_name=target_name,
+        benchmark_name=benchmark_name,
+        target_closes=dict(target_closes),
+        benchmark_closes=dict(benchmark_closes),
+        manifests=make_manifests(
+            tuple(components), target_closes, benchmark_closes, as_of
+        ),
+    )
+
+
+def const_closes(calendar, value="100.00"):
+    return {day: Decimal(value) for day in calendar}
+
+
+def test_validate_pack_rebuilds_method_scores():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 4)
+    components = [
+        daily(calendar[0], (60, 100), (100, 100), (50, 100)),
+        # Zero DENOMINATOR on every component -> unavailable -> null score.
+        # (Numerator 0 with a positive denominator would be a valid ratio 0.)
+        daily(calendar[1], (0, 0), (0, 0), (0, 0)),
+        daily(calendar[2], (20, 40), (2, 8), (3, 6)),
+        daily(calendar[3], (100, 100), (100, 100), (100, 100)),
+    ]
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=const_closes(calendar),
+        benchmark_closes=const_closes(calendar),
+    )
+    validated = validate_pack(pack)
+    assert isinstance(validated, ValidatedPack)
+    assert validated.valid_dates == tuple(
+        point["trade_date"] for point in validated.points if point["score"] is not None
+    )
+    first = validated.points_by_date[calendar[0]]
+    # (0.6 + 1.0 + 0.5) / 3 * 100 = 70.00 -> repair phase from the real method.
+    assert first["score"] == Decimal("70.00")
+    assert first["phase"] == method.PHASE_REPAIR
+    missing = validated.points_by_date[calendar[1]]
+    assert missing["score"] is None
+    assert set(missing["reasons"]) == {
+        method.REASON_NO_VALID_DAILY_RETURNS,
+        method.REASON_NO_LIMIT_EVENTS,
+        method.REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET,
+    }
+    assert validated.points_by_date[calendar[3]]["score"] == Decimal("100.00")
+    assert validated.as_of_index == len(calendar) - 1
+
+
+def test_manifest_tampering_and_row_count_mismatch_raise():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    tampered = InputManifest(
+        name="components",
+        source_version="fixture-v1",
+        frozen_at="2026-10-27T00:00:00+00:00",
+        as_of=pack.as_of,
+        row_count=3,
+        adjustment="raw",
+        sha256="a" * 64,
+    )
+    # Slotted frozen dataclasses expose no __dict__: copy with replace().
+    with pytest.raises(ResearchValidationError, match="sha256 mismatch"):
+        validate_pack(replace(pack, manifests=(tampered, *pack.manifests[1:])))
+    wrong_rows = replace(pack.manifests[0], row_count=9)
+    with pytest.raises(ResearchValidationError, match="row_count mismatch"):
+        validate_pack(replace(pack, manifests=(wrong_rows, *pack.manifests[1:])))
+
+
+def test_pack_structure_and_pit_violations_raise():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    good = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+
+    # Non-ascending calendar.
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=(calendar[1], calendar[0]),
+                components=good[:2],
+                target_closes=closes,
+                benchmark_closes=closes,
+                as_of=calendar[1],
+            )
+        )
+    # Components after as_of are a look-ahead violation.
+    with pytest.raises(ResearchValidationError, match="components_after_as_of"):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=good,
+                target_closes=closes,
+                benchmark_closes=closes,
+                as_of=calendar[1],
+            )
+        )
+    # Duplicate component dates.
+    dup = [good[0], good[0]]
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=dup,
+                target_closes=closes,
+                benchmark_closes=closes,
+            )
+        )
+    # Zero or negative close rejected.
+    bad_closes = {day: Decimal("0") for day in calendar}
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=good,
+                target_closes=bad_closes,
+                benchmark_closes=closes,
+            )
+        )
+    # Counts violating 0 <= numerator <= denominator.
+    bad_counts = [daily(calendar[0], (3, 2), (1, 2), (1, 2))]
+    with pytest.raises(ResearchValidationError):
+        validate_pack(
+            make_pack(
+                calendar=calendar,
+                components=bad_counts,
+                target_closes=closes,
+                benchmark_closes=closes,
+            )
+        )
+    # Naive frozen_at rejected.
+    base = make_pack(
+        calendar=calendar,
+        components=good,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    manifests = tuple(
+        replace(m, frozen_at="2026-10-27T00:00:00") if m.name == "components" else m
+        for m in base.manifests
+    )
+    with pytest.raises(ResearchValidationError, match="timezone"):
+        validate_pack(replace(base, manifests=manifests))
+
+
+def test_canonical_payload_hash_matches_analysis_jobs_convention():
+    assert canonical_payload_hash({"b": 2, "a": 1}) == _canonical_hash({"b": 2, "a": 1})
+    assert len(canonical_payload_hash([])) == 64
+
+
+def test_malformed_frozen_at_raises_research_validation_error():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    for bad_value in ("not-a-date", "2026-10-27T25:00:00+00:00", "   "):
+        manifests = tuple(
+            replace(m, frozen_at=bad_value) if m.name == "components" else m
+            for m in base.manifests
+        )
+        with pytest.raises(ResearchValidationError, match="frozen_at"):
+            validate_pack(replace(base, manifests=manifests))
+
+
+def test_datetime_subclass_keys_are_rejected_everywhere():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    # datetime is a date subclass: exact-type checks must reject it.
+    with pytest.raises(ResearchValidationError, match="as_of must be a date"):
+        validate_pack(replace(base, as_of=datetime(2026, 1, 5, 9, 30)))
+    tampered_closes = dict(closes)
+    tampered_closes[datetime(2026, 1, 5, 9, 30)] = Decimal("100.00")
+    with pytest.raises(ResearchValidationError, match="target_closes keys"):
+        validate_pack(replace(base, target_closes=tampered_closes))
+
+
+def test_close_stream_tampering_and_manifest_ordering_are_enforced():
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    # Changing one close without refreshing manifests breaks the hash chain.
+    tampered_prices = dict(closes)
+    tampered_prices[calendar[0]] = Decimal("999.99")
+    with pytest.raises(ResearchValidationError, match="target_closes sha256 mismatch"):
+        validate_pack(replace(base, target_closes=tampered_prices))
+    # Duplicate manifest names are rejected.
+    duplicate_manifests = (
+        base.manifests[0],
+        base.manifests[0],
+        base.manifests[2],
+    )
+    with pytest.raises(ResearchValidationError, match="unique"):
+        validate_pack(replace(base, manifests=duplicate_manifests))
+    # Manifests must arrive in the canonical stream order.
+    shuffled = (base.manifests[1], base.manifests[0], base.manifests[2])
+    with pytest.raises(ResearchValidationError, match="ordered"):
+        validate_pack(replace(base, manifests=shuffled))
+
+
+def test_validate_pack_rejects_whitespace_only_text_fields():
+    # _require_text must reject whitespace-only strings, not merely "": the
+    # .strip() guard previously had no regression test. The matrix covers all
+    # six text fields reachable through validate_pack -- the four pack-level
+    # fields plus source_version/adjustment on each nested InputManifest -- and
+    # is kept in one case so the suite count moves by exactly one test.
+    start = date(2026, 1, 5)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (1, 2), (1, 2), (1, 2)) for day in calendar]
+    closes = const_closes(calendar)
+    base = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    manifest_fields = ("source_version", "adjustment")
+    for field in (
+        "pack_id",
+        "generator",
+        "target_name",
+        "benchmark_name",
+        *manifest_fields,
+    ):
+        for whitespace in ("   ", "\t"):
+            if field in manifest_fields:
+                bad_pack = replace(
+                    base,
+                    manifests=tuple(
+                        replace(manifest, **{field: whitespace})
+                        for manifest in base.manifests
+                    ),
+                )
+            else:
+                bad_pack = replace(base, **{field: whitespace})
+            with pytest.raises(
+                ResearchValidationError,
+                match=rf"{field} must be a non-empty string",
+            ):
+                validate_pack(bad_pack)
+
+
+def test_factor_health_counts_coverage_reasons_and_holes():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 6)
+    components = [
+        daily(calendar[0], (50, 100), (50, 100), (50, 100)),
+        # calendar[1] absent entirely -> present gap
+        daily(calendar[2], (50, 100), (0, 0), (50, 100)),  # null score day
+        daily(calendar[3], (50, 100), (50, 100), (50, 100)),
+        daily(calendar[4], (50, 100), (50, 100), (50, 100)),
+        # calendar[5] absent tail (not a hole between present days)
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    health = build_factor_health(validate_pack(pack))
+    assert health["calendar_days"] == 6
+    assert health["present_days"] == 4
+    assert health["valid_days"] == 3
+    assert health["absent_days"] == 2
+    assert health["null_days"] == 1
+    assert health["coverage_ratio"] == Decimal("3") / Decimal("6")
+    assert health["null_reasons"] == {
+        method.REASON_NO_VALID_DAILY_RETURNS: 0,
+        method.REASON_NO_LIMIT_EVENTS: 1,
+        method.REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET: 0,
+    }
+    assert health["calendar_holes"] == [calendar[1]]
+    assert health["sample_window"] == {"first": calendar[0], "last": calendar[4]}
+
+
+def test_factor_health_distribution_and_perfect_rank_correlations():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 8)
+    ratios = (
+        (0, 100),
+        (1, 10),
+        (2, 10),
+        (3, 10),
+        (4, 10),
+        (5, 10),
+        (5, 10),
+        (100, 100),
+    )
+    components = [
+        daily(day, ratios[i], ratios[i], ratios[i]) for i, day in enumerate(calendar)
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    health = build_factor_health(validate_pack(pack))
+    distribution = health["score_distribution"]
+    assert distribution["n"] == 8
+    assert distribution["zero_count"] == 1
+    assert distribution["hundred_count"] == 1
+    # scores are 0,10,20,30,40,50,50,100
+    assert distribution["min"] == Decimal("0.00")
+    assert distribution["max"] == Decimal("100.00")
+    assert distribution["median"] == Decimal("35.00")
+    assert distribution["top_tie_share"] == Decimal("2") / Decimal("8")
+    for key in method.COMPONENT_KEYS:
+        block = health["components"][key]
+        assert block["available_days"] == 8
+        assert block["zero_denominator_days"] == 0
+        assert block["distribution"]["n"] == 8
+        assert block["distribution"]["min"] == Decimal("0")
+        assert block["distribution"]["max"] == Decimal("1")
+    correlations = health["rank_correlations"]
+    for name in (
+        "breadth_limit_balance",
+        "breadth_promotion",
+        "limit_balance_promotion",
+        "breadth_score",
+        "limit_balance_score",
+        "promotion_score",
+    ):
+        assert correlations[name] == {"value": Decimal("1"), "reason": None}
+
+
+def test_factor_health_empty_sample_degrades_without_raising():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 3)
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=[],
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    health = build_factor_health(validate_pack(pack))
+    assert health["valid_days"] == 0
+    assert health["coverage_ratio"] == Decimal("0")
+    assert health["score_distribution"]["n"] == 0
+    assert health["sample_window"] == {"first": None, "last": None}
+    correlations = health["rank_correlations"]
+    assert set(correlations) == {
+        "breadth_limit_balance",
+        "breadth_promotion",
+        "limit_balance_promotion",
+        "breadth_score",
+        "limit_balance_score",
+        "promotion_score",
+    }
+    assert all(
+        item == {"value": None, "reason": REASON_INSUFFICIENT_SAMPLE}
+        for item in correlations.values()
+    )
+
+
+def test_factor_health_is_independent_of_caller_decimal_context():
+    start = date(2026, 2, 2)
+    # Two of the three days tie at score 0: top_tie_share is the infinite
+    # decimal 2/3, which a 2-digit ambient context would round to 0.67.
+    calendar = calendar_days(start, 3)
+    ratios = ((0, 100), (0, 100), (2, 10))
+    components = [
+        daily(day, ratios[i], ratios[i], ratios[i]) for i, day in enumerate(calendar)
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    # Validate once under the default context: point rebuilding runs through
+    # the real method module, which is outside this block's context contract.
+    # The unit under test is build_factor_health, invoked twice below.
+    validated = validate_pack(pack)
+
+    def build():
+        return build_factor_health(validated)
+
+    default = build()
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        low_precision = build()
+    finally:
+        getcontext().prec = previous_prec
+    assert (
+        low_precision["score_distribution"]["top_tie_share"]
+        == default["score_distribution"]["top_tie_share"]
+    )
+    assert low_precision["coverage_ratio"] == default["coverage_ratio"]
+    # Asymmetric zero/hundred counts keep the two predicates distinguishable:
+    # swapping them flips the pair (2, 0) into (0, 2).
+    assert default["score_distribution"]["zero_count"] == 2
+    assert default["score_distribution"]["hundred_count"] == 0
+
+
+def test_factor_health_unknown_null_reason_fails_closed():
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 3)
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=[],
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    base = validate_pack(pack)
+    # ValidatedPack is directly constructible; a null point whose reason is
+    # outside the method's closed three-code vocabulary must fail loudly
+    # rather than be silently dropped from the null_reasons totals.
+    tampered_point = {
+        "trade_date": calendar[0],
+        "score": None,
+        "phase": None,
+        "components": {
+            key: {"numerator": 0, "denominator": 0} for key in method.COMPONENT_KEYS
+        },
+        "reasons": ["not_a_method_reason_code"],
+    }
+    tampered = replace(base, points=(tampered_point,))
+    with pytest.raises(KeyError):
+        build_factor_health(tampered)
+
+
+def _closes_from_values(calendar, values):
+    assert len(values) == len(calendar)
+    return {
+        day: Decimal(str(value)) for day, value in zip(calendar, values, strict=True)
+    }
+
+
+def _monotone_forward_pack(n_days=45, *, horizon=1):
+    """Closes engineered so every on-grid h-step forward return strictly ascends.
+
+    PIT discipline: component records stop at ``as_of``; the calendar (and
+    closes) extend past it solely to provide forward labels.
+    """
+    assert n_days > horizon + 2
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, n_days)
+    as_of_index = n_days - horizon - 2
+    as_of = calendar[as_of_index]
+    components = [
+        daily(day, (i + 1, n_days), (i + 1, n_days), (i + 1, n_days))
+        for i, day in enumerate(calendar[: as_of_index + 1])
+    ]
+    benchmark = const_closes(calendar, "100.00")
+    # Every close exists (no None -> Decimal tokens). Only on-grid entry/exit
+    # closes matter; flat 100 elsewhere keeps the mapping complete.
+    values = [100.0] * n_days
+    # On the h-spaced grid: slot i enters at C[i+1], exits at C[i+1+h], and
+    # r = C[i+1+h]/C[i+1] - 1 = 0.0005 * (i+1), strictly ascending in slot i.
+    for i in range(0, n_days - horizon - 1, horizon):
+        entry = values[i + 1]
+        values[i + 1 + horizon] = round(entry * (1 + 0.0005 * (i + 1)), 12)
+    target = _closes_from_values(calendar, values)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=as_of,
+    )
+    return pack, calendar
+
+
+def test_monotone_construction_yields_unit_rank_ic_and_strict_quintiles():
+    pack, _calendar = _monotone_forward_pack()
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    assert block["horizon"] == 1
+    assert block["evaluation_kind"] == "time_serial_non_overlapping"
+    assert block["pooled"]["rank_ic"] == Decimal("1")
+    assert block["direction_hit_rate"] == Decimal("1")
+    buckets = block["quintiles"]["buckets"]
+    means = [bucket["mean_excess"] for bucket in buckets]
+    assert all(bucket["n"] > 0 for bucket in buckets)
+    assert all(means[i + 1] > means[i] for i in range(4))
+    assert block["quintiles"]["monotonic"] is True
+    assert block["quintiles"]["adjacent_agreement"] == Decimal("1")
+    with localcontext(_decimal_context()):
+        assert block["quintiles"]["spread"] == means[4] - means[0]
+    for fold in block["folds"]:
+        assert fold["rank_ic"] == Decimal("1")
+    assert block["fold_summary"]["positive_share"] == Decimal("1")
+    assert block["fold_summary"]["icir"] is None
+    assert block["fold_summary"]["icir_reason"] == "zero_variance"
+
+
+def test_hand_computed_returns_and_entry_at_next_tradable_point():
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, 5)
+    # Strictly increasing scores (40, 41, 42) so the pooled rank IC is defined.
+    components = [
+        daily(day, (40 + i, 100), (40 + i, 100), (40 + i, 100))
+        for i, day in enumerate(calendar[:3])
+    ]
+    # Signal calendar[0] enters at C1=100, exits at C2=101   -> r = +0.01
+    # Signal calendar[1] enters at C2=101, exits at C3=98.98 -> r = -0.02
+    # Signal calendar[2] enters at C3=98.98, exits at C4=100.9596 -> r = +0.02
+    target = _closes_from_values(calendar, [100, 100, 101, 98.98, 100.9596])
+    benchmark = const_closes(calendar, "100.00")
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[2],
+    )
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    first = block["observations"][0]
+    assert first["trade_date"] == calendar[0]
+    assert first["entry_date"] == calendar[1]
+    assert first["exit_date"] == calendar[2]
+    assert first["r_target"] == Decimal("101") / Decimal("100") - 1
+    assert first["r_benchmark"] == 0
+    assert first["r_excess"] == first["r_target"]
+    # Off-by-one reversal: shifting the signal one day changes the label.
+    second = block["observations"][1]
+    assert second["r_target"] == Decimal("98.98") / Decimal("101") - 1
+    assert second["r_target"] != first["r_target"]
+    # Score ranks 1,2,3 vs excess ranks [0.01,-0.02,0.02] -> [2,1,3] -> 0.5.
+    assert block["pooled"]["rank_ic"] == Decimal("0.5")
+
+
+def test_grid_windows_are_interior_disjoint_for_all_horizons():
+    pack, calendar = _monotone_forward_pack(n_days=120)
+    validated = validate_pack(pack)
+    for horizon in (1, 5, 20):
+        block = evaluate_horizon(validated, DEFAULT_CONFIG, horizon)
+        intervals = [
+            (
+                calendar.index(obs["entry_date"]),
+                calendar.index(obs["exit_date"]),
+            )
+            for obs in block["observations"]
+        ]
+        for earlier, later in zip(intervals, intervals[1:], strict=False):
+            assert later[0] >= earlier[1], (horizon, earlier, later)
+
+
+def test_drops_accounting_out_of_window_missing_close_and_skips():
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, 8)
+    # Signals exist every day except index 2 (slot gap when h=2-ish via h=1 grid);
+    # h=1 grid origin is index 0; index 2 slot has no signal.
+    components = [
+        daily(calendar[i], (50, 100), (50, 100), (50, 100)) for i in (0, 1, 3, 4, 5)
+    ]
+    target = dict(const_closes(calendar, "100"))
+    benchmark = dict(const_closes(calendar, "100"))
+    # Remove the exit close needed for the signal at index 5 (exit index 7? h=1
+    # needs index 6): drop target close at index 6 to force missing_close.
+    del target[calendar[6]]
+    # as_of at the final day: signals at 5..7 that would need future closes are
+    # out-of-window; give components at 6 and 7 too.
+    components += [
+        daily(calendar[6], (50, 100), (50, 100), (50, 100)),
+        daily(calendar[7], (50, 100), (50, 100), (50, 100)),
+    ]
+    pack = make_pack(
+        calendar=calendar,
+        components=sorted(components, key=lambda d: d.trade_date),
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[7],
+    )
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    assert block["grid"]["slots_skipped"]["slot_without_signal"] == 1
+    assert block["grid"]["drops"]["missing_close"] >= 1
+    assert block["grid"]["drops"]["out_of_window"] >= 1
+    assert block["grid"]["signals_total"] == 7
+    assert (
+        block["grid"]["slots_total"]
+        == block["grid"]["slots_accepted"]
+        + block["grid"]["slots_skipped"]["slot_without_signal"]
+        + block["grid"]["drops"]["missing_close"]
+    )
+    # This fixture has every signal either on the h=1 grid or out of window.
+    assert block["grid"]["off_grid_signals"] == 0
+    # Full signal accounting partitions the seven signals:
+    # 7 == 3 accepted + 2 missing_close + 2 out_of_window + 0 off_grid.
+    # slot_without_signal is a *slot* disposition (index 2 is an empty grid
+    # position, not a signal) and belongs to the slot identity above rather
+    # than this signal partition.
+    assert block["grid"]["signals_total"] == (
+        block["grid"]["slots_accepted"]
+        + block["grid"]["drops"]["missing_close"]
+        + block["grid"]["drops"]["out_of_window"]
+        + block["grid"]["off_grid_signals"]
+    )
+
+
+def test_balanced_fold_sizes_and_insufficiency_gates():
+    pack, _ = _monotone_forward_pack(n_days=45)
+    validated = validate_pack(pack)
+    block = evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+    sizes = [fold["n"] for fold in block["folds"]]
+    assert sum(sizes) == len(block["observations"])
+    assert max(sizes) - min(sizes) <= 1
+    # n_days=45 -> as_of index 42 -> 43 accepted observations; 43 >= 40 and
+    # K = 43 // 8 = 5 folds, so no observation/fold gate fires.
+    assert block["gate_failures"] == []
+    short = evaluate_horizon(
+        validated, ValidationConfig(horizons=(1,), min_signals_per_fold=8), 1
+    )
+    assert short["fold_summary"]["folds_total"] == 5
+    tiny_pack, _ = _monotone_forward_pack(n_days=10)
+    tiny = evaluate_horizon(validate_pack(tiny_pack), DEFAULT_CONFIG, 1)
+    assert "insufficient_observations" in tiny["gate_failures"]
+    assert "insufficient_folds" in tiny["gate_failures"]
+    assert "quintile_too_small" in tiny["gate_failures"]
+    # Gate failures never suppress computable statistics (spec): the pooled
+    # RankIC stays exactly 1; G6 fires only when the pooled IC itself is null.
+    assert tiny["pooled"]["rank_ic"] == Decimal("1")
+    # h=5 over the 10-day pack leaves a single slot (origin 0; the next slot
+    # 5 is out of window): n<2 must degrade the pooled IC with the
+    # insufficient_sample reason rather than zero_variance.
+    h5 = evaluate_horizon(
+        validate_pack(_monotone_forward_pack(n_days=10)[0]), DEFAULT_CONFIG, 5
+    )
+    assert len(h5["observations"]) == 1
+    assert h5["pooled"]["rank_ic"] is None
+    assert h5["pooled"]["reason"] == REASON_INSUFFICIENT_SAMPLE
+
+
+def test_evaluate_all_respects_horizon_subset_and_constant_score_degrades():
+    pack, _ = _monotone_forward_pack(n_days=60)
+    validated = validate_pack(pack)
+    subset = ValidationConfig(horizons=(1, 5))
+    evaluation = evaluate_all(validated, subset)
+    assert set(evaluation) == {"1", "5"}
+    constant = [
+        daily(day, (50, 100), (50, 100), (50, 100))
+        for day in pack.calendar[: pack.calendar.index(pack.as_of) + 1]
+    ]
+    flat_pack = make_pack(
+        calendar=pack.calendar,
+        components=constant,
+        target_closes=pack.target_closes,
+        benchmark_closes=pack.benchmark_closes,
+        as_of=pack.as_of,
+    )
+    block = evaluate_horizon(validate_pack(flat_pack), DEFAULT_CONFIG, 1)
+    assert block["pooled"]["rank_ic"] is None
+    assert block["pooled"]["reason"] == "zero_variance"
+    assert block["quintiles"]["monotonic"] is None
+    # Tied scores collapse into one non-empty bucket, so the empty-bucket
+    # branch takes priority over the pooled-IC-unavailable branch.
+    assert block["quintiles"]["monotonic_reason"] == REASON_EMPTY_BUCKET
+    assert block["direction_hit_rate"] is None
+    assert "pooled_ic_unavailable" in block["gate_failures"]
+
+
+def test_forward_eval_is_independent_of_caller_decimal_context():
+    pack, _calendar = _monotone_forward_pack(n_days=45)
+    # Validate once under the default context: point rebuilding runs through
+    # the real method module, whose quantize is fragile under prec=2. The
+    # unit under test is evaluate_horizon, invoked twice below.
+    validated = validate_pack(pack)
+
+    def evaluate():
+        return evaluate_horizon(validated, DEFAULT_CONFIG, 1)
+
+    default_block = evaluate()
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        low_precision_block = evaluate()
+    finally:
+        getcontext().prec = previous_prec
+
+    def fingerprint(block):
+        return (
+            tuple(
+                (bucket["mean_excess"], bucket["mean_target"])
+                for bucket in block["quintiles"]["buckets"]
+            ),
+            block["quintiles"]["spread"],
+            block["quintiles"]["adjacent_agreement"],
+            block["direction_hit_rate"],
+            block["fold_summary"]["positive_share"],
+        )
+
+    assert fingerprint(low_precision_block) == fingerprint(default_block)
+
+
+def test_fold_rank_ic_is_computed_within_fold_not_pooled():
+    # Sixteen signals with strictly increasing scores and a return series
+    # that rises within each block of 8 but whose second block (0.001..0.008)
+    # sits entirely below the first (0.009..0.016). Score ranks are 1..16;
+    # pooled return ranks are 9..16,1..8, so every rank difference d is +-8:
+    # sum(d^2) = 16 * 64 = 1024 and the pooled Spearman equals
+    # 1 - 6*1024/(16*(16^2-1)) = -43/85 (the fixed 34-digit sqrt path lands
+    # on ...6469 rather than the direct-division ...6471; the production
+    # output is pinned below), whereas each 8-member fold is co-monotone and
+    # must report fold IC exactly 1. Computing a fold IC over the full sample
+    # would surface the pooled value here and is killed by this test.
+    start = date(2026, 3, 2)
+    calendar = calendar_days(start, 18)
+    components = [
+        daily(calendar[i], (i + 1, 18), (i + 1, 18), (i + 1, 18)) for i in range(16)
+    ]
+    benchmark = const_closes(calendar, "100.00")
+    values = [100.0] * 18
+    values[1] = 100.0
+    for i in range(16):
+        r_i = 0.008 + (i + 1) / 1000 if i < 8 else (i - 7) / 1000
+        values[i + 2] = round(values[i + 1] * (1 + r_i), 12)
+    target = _closes_from_values(calendar, values)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        as_of=calendar[15],
+    )
+    block = evaluate_horizon(validate_pack(pack), DEFAULT_CONFIG, 1)
+    assert len(block["observations"]) == 16
+    assert len(block["folds"]) == 2
+    assert [fold["n"] for fold in block["folds"]] == [8, 8]
+    for fold in block["folds"]:
+        assert fold["rank_ic"] == Decimal("1")
+    assert block["pooled"]["rank_ic"] < 0
+    assert block["pooled"]["rank_ic"] == Decimal(
+        "-0.5058823529411764705882352941176469"
+    )
+
+
+def test_evaluate_horizon_rejects_horizon_outside_config():
+    validated = validate_pack(_monotone_forward_pack()[0])
+    with pytest.raises(ResearchValidationError, match="config.horizons"):
+        evaluate_horizon(validated, DEFAULT_CONFIG, 7)
+    with pytest.raises(ResearchValidationError, match="config.horizons"):
+        # bool must be rejected by the exact-type int check, not truthiness.
+        evaluate_horizon(validated, DEFAULT_CONFIG, True)
+
+
+def _varying_long_pack(n_days=830, *, synthetic):
+    start = date(2024, 1, 1)
+    calendar = calendar_days(start, n_days)
+    as_of = calendar[-22]
+    # Components (signals) stop at as_of; the 21 remaining calendar days and
+    # their closes exist solely to build h=20 forward labels.
+    history_end = calendar.index(as_of) + 1
+    components = [
+        daily(
+            day,
+            (20 + (i % 61), 100),
+            (20 + ((i * 3) % 61), 100),
+            (20 + ((i * 7) % 61), 100),
+        )
+        for i, day in enumerate(calendar[:history_end])
+    ]
+    target = {
+        day: Decimal(10000 + (i % 7) * 100 + (i * 13) % 97)
+        for i, day in enumerate(calendar)
+    }
+    benchmark = const_closes(calendar, "10000")
+    return make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=target,
+        benchmark_closes=benchmark,
+        synthetic=synthetic,
+        generator="test-fixture:deterministic_pattern",
+        as_of=as_of,
+    )
+
+
+def test_report_shape_versions_and_research_only():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    assert report["report_type"] == "research-method-validation"
+    assert report["method_version"] == method.METHOD_VERSION
+    assert report["validator_version"] == "research-validation-v1"
+    assert report["research_only"] is True
+    assert report["evidence_status"] == "synthetic_only"
+    assert set(report) == {
+        "report_type",
+        "method_version",
+        "validator_version",
+        "research_only",
+        "config",
+        "pack",
+        "input_manifests",
+        "health",
+        "evaluation",
+        "evidence_status",
+        "evidence_reasons",
+        "report_id",
+        "generated_at",
+    }
+    serialized = serialize_report(report)
+    forbidden = (
+        "effective",
+        "validated",
+        "profitable",
+        "profit",
+        "win_probability",
+        "forecast",
+        "prediction",
+        "recommendation",
+        "guaranteed",
+    )
+    blob = json.dumps(serialized, sort_keys=True, ensure_ascii=True).lower()
+    assert not any(token in blob for token in forbidden)
+
+
+def test_report_id_is_deterministic_and_clock_excluded():
+    pack, _ = _monotone_forward_pack()
+    first = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    second = assemble_report(pack, generated_at="2026-10-28T08:30:00+00:00")
+    third = assemble_report(pack, generated_at=None)
+    assert first["report_id"] == second["report_id"] == third["report_id"]
+    assert len(first["report_id"]) == 64
+
+
+def test_archive_roundtrip_restores_types_and_recomputes_id():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    serialized = serialize_report(report)
+    json_blob = json.dumps(serialized, sort_keys=True)  # archive form is JSON
+    restored = parse_archived_report(json.loads(json_blob))
+    assert restored["report_id"] == report["report_id"]
+    observation = restored["evaluation"]["1"]["observations"][0]
+    assert type(observation["trade_date"]) is date
+    assert isinstance(observation["score"], Decimal)
+    assert isinstance(observation["r_excess"], Decimal)
+    assert restored["pack"]["as_of"] == pack.as_of
+
+
+def test_tampered_archive_id_is_rejected():
+    pack, _ = _monotone_forward_pack()
+    archived = serialize_report(assemble_report(pack))
+    archived["health"]["calendar_days"] = 999
+    with pytest.raises(ResearchValidationError, match="report_id"):
+        parse_archived_report(archived)
+
+
+def test_research_only_false_and_unknown_status_cannot_enter_shape():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack)
+    report["research_only"] = False
+    with pytest.raises(ResearchValidationError):
+        serialize_report(report)
+    report["research_only"] = True
+    report["evidence_status"] = "effective"
+    with pytest.raises(ResearchValidationError):
+        serialize_report(report)
+
+
+def test_evidence_statuses_are_reachable_for_real_packs():
+    short = _varying_long_pack(n_days=30, synthetic=False)
+    short_report = assemble_report(short)
+    assert short_report["evidence_status"] == "insufficient_real_sample"
+    codes_by_scope = {
+        item["scope"]: item["code"] for item in short_report["evidence_reasons"]
+    }
+    scopes = set(codes_by_scope)
+    # Spec denominator is valid_days / calendar_days: the 21-day label tail
+    # makes 9/30 < 0.80, so G1 honestly fires at global scope; G2 (>=2 distinct
+    # scores) does not. Every per-horizon gate family also enumerates.
+    assert codes_by_scope["global"] == "coverage_below_threshold"
+    assert {"h1", "h5", "h20"} <= scopes
+    assert "score_zero_variance" not in codes_by_scope.values()
+
+    long_report = assemble_report(_varying_long_pack(n_days=830, synthetic=False))
+    assert long_report["evidence_status"] == "real_sample_descriptive"
+    assert long_report["evidence_reasons"] == []
+
+    synthetic_long = assemble_report(_varying_long_pack(n_days=830, synthetic=True))
+    assert synthetic_long["evidence_status"] == "synthetic_only"
+
+
+def test_report_assembly_is_independent_of_caller_decimal_context():
+    pack, _ = _monotone_forward_pack()
+    # Score rebuilding runs through the sentiment_research readmodel, whose
+    # display quantize lives outside a fixed context and is fragile under a
+    # prec=2 ambient context (the same seam documented by the factor_health
+    # and forward_eval context tests): perform the one full assembly -- which
+    # includes point rebuilding -- under the default context, then rerun the
+    # slice-owned serialize -> archive-parse path under the polluted context.
+    # Parsing re-quantizes every Decimal in the report and recomputes the
+    # report_id, so both the fixed-context _quantize discipline and fingerprint
+    # stability are exercised without rebuilding method points twice.
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        restored = parse_archived_report(serialize_report(report))
+    finally:
+        getcontext().prec = previous_prec
+    assert restored["report_id"] == report["report_id"]
+    assert restored["health"]["coverage_ratio"] == report["health"]["coverage_ratio"]
+    assert (
+        restored["evaluation"]["1"]["pooled"]["rank_ic"]
+        == report["evaluation"]["1"]["pooled"]["rank_ic"]
+    )
+
+
+def test_archive_roundtrip_restores_calendar_hole_dates():
+    # health.calendar_holes is the report's only scalar list[date] path:
+    # _restore propagates a list's parent key to its elements, so without
+    # "calendar_holes" in _DATE_KEYS the archived ISO strings survived parse
+    # and the closed-shape "holes dates" guard rejected a legitimate archive
+    # carrying an interior gap between component days.
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 6)
+    components = [
+        daily(calendar[0], (50, 100), (50, 100), (50, 100)),
+        # calendar[1] absent: the single interior hole between component days.
+        daily(calendar[2], (50, 100), (0, 0), (50, 100)),  # null-score day
+        daily(calendar[3], (50, 100), (50, 100), (50, 100)),
+        daily(calendar[4], (50, 100), (50, 100), (50, 100)),
+        # calendar[5] sits after the last component day, so it is no hole.
+    ]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+    )
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    assert report["health"]["calendar_holes"] == [calendar[1]]
+
+    restored = parse_archived_report(
+        json.loads(json.dumps(serialize_report(report), sort_keys=True))
+    )
+    assert restored["report_id"] == report["report_id"]
+    holes = restored["health"]["calendar_holes"]
+    assert holes == [calendar[1]]
+    assert all(type(day) is date for day in holes)
+    assert serialize_report(restored) == serialize_report(report)
+
+
+def _roundtrip_json(value):
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+def _canonical_archive():
+    pack, _ = _monotone_forward_pack()
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    return _roundtrip_json(serialize_report(report))
+
+
+def _forge_archived_report_id(archived):
+    # Reproduce the production identity convention (report_id/generated_at
+    # excluded) over the already JSON-native archived dict.
+    identity = {
+        key: value
+        for key, value in archived.items()
+        if key not in ("report_id", "generated_at")
+    }
+    archived["report_id"] = canonical_payload_hash(identity)
+    return archived
+
+
+def test_archived_parse_wraps_malformed_tokens_and_scalar_lists_as_rve():
+    # Every structural failure at the archive boundary must surface as
+    # ResearchValidationError with no chained builtin: never a leaked
+    # ValueError/InvalidOperation/TypeError (spec L236-238; T3 frozen_at).
+    archived = _canonical_archive()
+
+    def expect_rve(mutate, message, *, suppressed=False):
+        blob = _roundtrip_json(archived)
+        mutate(blob)
+        with pytest.raises(ResearchValidationError, match=message) as excinfo:
+            parse_archived_report(blob)
+        assert type(excinfo.value) is ResearchValidationError
+        assert not isinstance(excinfo.value, TypeError)
+        assert excinfo.value.__cause__ is None
+        if suppressed:
+            # ``raise ... from None`` is the discriminating seam: __cause__
+            # alone stays None even when the builtin context leaks, whereas
+            # suppressing the implicit context sets __suppress_context__.
+            assert excinfo.value.__suppress_context__ is True
+
+    bad_date = r"archived date token is not a valid ISO date"
+    bad_decimal = r"archived decimal token is not a valid decimal"
+    non_finite = r"archived decimal is not finite"
+    expect_rve(
+        lambda blob: blob["health"].__setitem__("calendar_holes", ["not-a-date"]),
+        bad_date,
+        suppressed=True,
+    )
+    # A scalar date slot (observations[0].trade_date) shares the same seam.
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"]["observations"][0].__setitem__(
+            "trade_date", "not-a-date"
+        ),
+        bad_date,
+        suppressed=True,
+    )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"]["observations"][0].__setitem__(
+            "score", "abc"
+        ),
+        bad_decimal,
+        suppressed=True,
+    )
+    for token in ("Infinity", "NaN"):
+        expect_rve(
+            lambda blob, token=token: blob["health"].__setitem__(
+                "coverage_ratio", token
+            ),
+            non_finite,
+        )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"].__setitem__("observations", 5),
+        r"observations must be a list",
+    )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"].__setitem__("folds", None),
+        r"folds must be a list",
+    )
+    expect_rve(
+        lambda blob: blob["evaluation"]["1"]["quintiles"].__setitem__("buckets", 5),
+        r"quintile buckets must be a list",
+    )
+
+
+def test_real_pack_constant_scores_enumerates_score_zero_variance():
+    # G2 reachability: a real (non-synthetic) pack whose rebuilt method
+    # scores are constant enumerates ('global','score_zero_variance') while
+    # staying insufficient_real_sample; full coverage keeps G1 silent.
+    start = date(2026, 2, 2)
+    calendar = calendar_days(start, 3)
+    components = [daily(day, (50, 100), (50, 100), (50, 100)) for day in calendar]
+    closes = const_closes(calendar)
+    pack = make_pack(
+        calendar=calendar,
+        components=components,
+        target_closes=closes,
+        benchmark_closes=closes,
+        synthetic=False,
+    )
+    report = assemble_report(pack, generated_at="2026-10-27T12:00:00+00:00")
+    assert report["evidence_status"] == "insufficient_real_sample"
+    pairs = [(item["scope"], item["code"]) for item in report["evidence_reasons"]]
+    assert ("global", "score_zero_variance") in pairs
+    assert [code for scope, code in pairs if scope == "global"] == [
+        "score_zero_variance"
+    ]
+
+
+def test_small_real_pack_enumerates_exact_eleven_gate_failures():
+    # n_days=30 real pack: as_of is index 8, so horizon windows see
+    # n = 9 (h1), 2 (h5), 1 (h20) observations. G3/G4/G5 fire for all three
+    # horizons; G6 (pooled IC) fires only for h20's singleton; G1 fires once.
+    report = assemble_report(_varying_long_pack(n_days=30, synthetic=False))
+    assert report["evidence_status"] == "insufficient_real_sample"
+    codes = Counter(
+        (item["scope"], item["code"]) for item in report["evidence_reasons"]
+    )
+    expected = Counter(
+        {
+            ("global", "coverage_below_threshold"): 1,
+            ("h1", "insufficient_observations"): 1,
+            ("h1", "insufficient_folds"): 1,
+            ("h1", "quintile_too_small"): 1,
+            ("h5", "insufficient_observations"): 1,
+            ("h5", "insufficient_folds"): 1,
+            ("h5", "quintile_too_small"): 1,
+            ("h20", "insufficient_observations"): 1,
+            ("h20", "insufficient_folds"): 1,
+            ("h20", "quintile_too_small"): 1,
+            ("h20", "pooled_ic_unavailable"): 1,
+        }
+    )
+    assert codes == expected
+    assert sum(codes.values()) == 11
+    assert report["evaluation"]["1"]["pooled"]["n"] == 9
+    assert report["evaluation"]["1"]["pooled"]["rank_ic"] is not None
+    assert report["evaluation"]["20"]["pooled"]["n"] == 1
+    assert report["evaluation"]["20"]["pooled"]["rank_ic"] is None
+
+
+def test_parse_archived_report_rejects_shape_mutation_matrix():
+    archived = _canonical_archive()
+    mutations = (
+        lambda blob: blob.update(unknown_top_level_key=1),
+        lambda blob: blob.pop("evidence_status"),
+        lambda blob: blob["health"].update(unknown_health_key=1),
+        lambda blob: blob["config"].pop("min_folds"),
+        lambda blob: blob["input_manifests"][0].update(unknown_manifest_key=1),
+        lambda blob: blob.update(report_type="not-a-real-report-type"),
+        lambda blob: blob.update(validator_version="not-a-real-validator"),
+        lambda blob: blob.update(research_only=False),
+        lambda blob: blob.update(research_only=0),
+        lambda blob: blob.update(research_only="true"),
+        lambda blob: blob.update(evidence_status="effective"),
+    )
+    for mutate in mutations:
+        blob = _roundtrip_json(archived)
+        mutate(blob)
+        with pytest.raises(ResearchValidationError):
+            parse_archived_report(blob)
+    for non_mapping in ([], "not-a-report", 5, None):
+        with pytest.raises(ResearchValidationError):
+            parse_archived_report(non_mapping)
+
+
+def test_parse_rejects_shape_tamper_even_when_report_id_is_forged():
+    archived = _canonical_archive()
+    # Control: an untouched archive whose id is recomputed with the
+    # production convention parses cleanly -- proving the forged id below
+    # really does satisfy the hash check and only shape revalidation rejects.
+    parse_archived_report(_forge_archived_report_id(dict(archived)))
+
+    tampers = (
+        ("research_only", lambda blob: blob.update(research_only=False)),
+        ("health key", lambda blob: blob["health"].update(unknown=1)),
+        ("config key", lambda blob: blob["config"].pop("min_folds")),
+    )
+    for label, tamper in tampers:
+        blob = dict(archived)
+        tamper(blob)
+        _forge_archived_report_id(blob)
+        with pytest.raises(ResearchValidationError) as excinfo:
+            parse_archived_report(blob)
+        assert "report_id" not in str(excinfo.value), label
+
+
+def test_quantize_pins_six_decimal_round_half_up_under_any_context():
+    assert _quantize(Decimal("0.1234565")) == Decimal("0.123457")
+    # The half-even tie would instead land on 0.123456; pin the direction.
+    assert _quantize(Decimal("0.123456")) == Decimal("0.123456")
+    assert _quantize({"score": Decimal("0.1234565")}) == {"score": Decimal("0.123457")}
+    # The pinned 34-digit context keeps a prec=2 ambient caller safe.
+    previous_prec = getcontext().prec
+    try:
+        getcontext().prec = 2
+        quantized = _quantize(Decimal("0.1234565"))
+    finally:
+        getcontext().prec = previous_prec
+    assert quantized == Decimal("0.123457")
+
+
+def test_jsonable_rejects_floats_and_parse_rejects_json_number_decimal_slot():
+    for payload in ({"score": 1.5}, [1.5], {"nested": {"value": 1.5}}):
+        with pytest.raises(ResearchValidationError, match="non-serializable"):
+            _jsonable(payload)
+    # A JSON number smuggled into a Decimal-typed archive slot is rejected by
+    # the exact-type shape guard rather than silently accepted as a float.
+    archived = _canonical_archive()
+    archived["health"]["coverage_ratio"] = 0.5
+    with pytest.raises(ResearchValidationError, match="coverage Decimal"):
+        parse_archived_report(archived)
+
+
+def test_public_api_surface():
+    import dragon_radar.research as research_api
+    from dragon_radar.research import (  # noqa: F401
+        DEFAULT_CONFIG,
+        EVIDENCE_INSUFFICIENT_REAL_SAMPLE,
+        EVIDENCE_REAL_SAMPLE_DESCRIPTIVE,
+        EVIDENCE_SYNTHETIC_ONLY,
+        ComponentCounts,
+        DailyComponents,
+        InputManifest,
+        ResearchValidationError,
+        SamplePack,
+        ValidationConfig,
+        assemble_report,
+        parse_archived_report,
+        serialize_report,
+        validate_config,
+    )
+
+    assert research_api.__all__ == [
+        "DEFAULT_CONFIG",
+        "ComponentCounts",
+        "DailyComponents",
+        "EVIDENCE_INSUFFICIENT_REAL_SAMPLE",
+        "EVIDENCE_REAL_SAMPLE_DESCRIPTIVE",
+        "EVIDENCE_SYNTHETIC_ONLY",
+        "InputManifest",
+        "ResearchValidationError",
+        "SamplePack",
+        "ValidatedPack",
+        "ValidationConfig",
+        "assemble_report",
+        "build_factor_health",
+        "evaluate_all",
+        "evaluate_horizon",
+        "parse_archived_report",
+        "serialize_report",
+        "validate_config",
+        "validate_pack",
+    ]
+    for name in research_api.__all__:
+        assert getattr(research_api, name) is not None
+
+
+def test_reset_scope_guard_tests_remain_collected():
+    # The refined Task 29 guard functions must coexist with the new slice
+    # tests. Read the sibling source and inspect it with AST: tests/ has no
+    # __init__.py and the repo root is not on sys.path under the pytest
+    # entry point, so a package import (``import tests.x``) is unreliable.
+    guard_path = Path(__file__).resolve().parent / "test_reset_full_scope.py"
+    tree = ast.parse(guard_path.read_text(encoding="utf-8"))
+    function_names = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert (
+        "test_task27_backtest_and_simulation_artifacts_remain_absent" in function_names
+    )
+    assert (
+        "test_task27_research_validation_is_a_closed_pure_subdomain" in function_names
+    )
+
+
+def test_forbidden_subpackage_closed_set_matches_spec_and_rejects_cli_api(tmp_path):
+    # The spec's Import purity clause enumerates the authoritative closed
+    # set of 17 forbidden dragon_radar subpackages; pin adds/deletes here.
+    spec_forbidden_subpackages = {
+        "http",
+        "storage",
+        "owner",
+        "publication",
+        "analysis_jobs",
+        "query",
+        "realtime",
+        "ai",
+        "lhb",
+        "news",
+        "review",
+        "regulation",
+        "topics",
+        "roles",
+        "ingestion",
+        "cli",
+        "api",
+    }
+    assert set(FORBIDDEN_DRAGON_SUBPACKAGES) == spec_forbidden_subpackages
+    assert len(FORBIDDEN_DRAGON_SUBPACKAGES) == len(set(FORBIDDEN_DRAGON_SUBPACKAGES))
+
+    forbidden_roots = {f"dragon_radar.{sub}" for sub in FORBIDDEN_DRAGON_SUBPACKAGES}
+
+    # cli.py / api.py are real application entry points; a research module
+    # importing either must be rejected by the same root construction the
+    # package-wide purity scan uses.
+    fake_module = tmp_path / "fake_research_module.py"
+    fake_module.write_text(
+        "import dragon_radar.cli\nimport dragon_radar.api\n",
+        encoding="utf-8",
+    )
+    imported_names = _imported_modules(fake_module)
+    assert "dragon_radar.cli" in imported_names
+    assert "dragon_radar.api" in imported_names
+    rejected = {
+        name
+        for name in imported_names
+        if ".".join(name.split(".")[:2]) in forbidden_roots
+    }
+    assert rejected == {"dragon_radar.cli", "dragon_radar.api"}
+
+    # Allowed control: the one explicitly permitted dragon_radar dependency
+    # passes the identical construction.
+    allowed_module = tmp_path / "allowed_research_module.py"
+    allowed_module.write_text(
+        "import dragon_radar.analytics.metrics\n",
+        encoding="utf-8",
+    )
+    allowed_names = _imported_modules(allowed_module)
+    assert allowed_names == ["dragon_radar.analytics.metrics"]
+    assert all(
+        ".".join(name.split(".")[:2]) not in forbidden_roots for name in allowed_names
+    )
+
+
+def test_from_dragon_radar_root_imports_are_expanded_and_enforced(tmp_path):
+    # A bare-package from-import (``from dragon_radar import cli``) must not
+    # slip through as the trusted "dragon_radar" root name. The helper expands
+    # it to the concrete submodule and the production scan predicates reject
+    # it; mirror both predicates from test_research_package_imports_stay_pure.
+    forbidden_roots = {f"dragon_radar.{sub}" for sub in FORBIDDEN_DRAGON_SUBPACKAGES}
+
+    def scan_rejects(name: str) -> bool:
+        if name.startswith(FORBIDDEN_IMPORTS):
+            return True
+        if name.startswith("dragon_radar."):
+            if not (
+                name == "dragon_radar"
+                or name.startswith("dragon_radar.research")
+                or name.startswith(ALLOWED_DRAGON_IMPORTS)
+            ):
+                return True
+            root = ".".join(name.split(".")[:2])
+            return root in forbidden_roots
+        return False
+
+    def names_from(filename: str, source: str) -> list[str]:
+        fake_module = tmp_path / filename
+        fake_module.write_text(source, encoding="utf-8")
+        return _imported_modules(fake_module)
+
+    # Forbidden entry points via the bare-root form must be rejected...
+    assert names_from("cli_root.py", "from dragon_radar import cli\n") == [
+        "dragon_radar.cli"
+    ]
+    assert scan_rejects("dragon_radar.cli")
+    assert names_from("api_root.py", "from dragon_radar import api\n") == [
+        "dragon_radar.api"
+    ]
+    assert scan_rejects("dragon_radar.api")
+    # ...including the aliased form: origin is the alias name, not asname.
+    aliased_names = names_from("cli_alias.py", "from dragon_radar import cli as c\n")
+    assert aliased_names == ["dragon_radar.cli"]
+    assert "c" not in aliased_names
+    assert scan_rejects("dragon_radar.cli")
+
+    # Allowed root: the in-slice research subdomain passes.
+    research_names = names_from(
+        "research_root.py", "from dragon_radar import research\n"
+    )
+    assert research_names == ["dragon_radar.research"]
+    assert not any(scan_rejects(name) for name in research_names)
+
+    # Allowlist precision: only dragon_radar.analytics.metrics is permitted,
+    # not the analytics package root itself.
+    analytics_names = names_from(
+        "analytics_root.py", "from dragon_radar import analytics\n"
+    )
+    assert analytics_names == ["dragon_radar.analytics"]
+    assert any(scan_rejects(name) for name in analytics_names)
+
+    # Regression control: a plain ``import dragon_radar`` still records the
+    # bare root and remains trusted (expansion applies only to from-imports).
+    bare_names = names_from("bare_import.py", "import dragon_radar\n")
+    assert bare_names == ["dragon_radar"]
+    assert not any(scan_rejects(name) for name in bare_names)

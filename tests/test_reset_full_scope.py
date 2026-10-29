@@ -752,16 +752,14 @@ def test_migration_head_is_0013_query_with_no_task27_revision():
     assert "0014_research" not in revisions
 
 
-def test_task27_artifacts_remain_absent():
+def test_task27_backtest_and_simulation_artifacts_remain_absent():
     absent = (
-        "src/dragon_radar/research",
         "src/dragon_radar/http/routes/research.py",
         "src/dragon_radar/migrations/versions/0014_research.py",
         "web/src/repositories/local/simulation.ts",
         "web/src/features/research/BacktestPanel.tsx",
         "web/src/features/research/SimulationPanel.tsx",
         "tests/test_reset_backtest.py",
-        "tests/test_reset_research_validation.py",
         "web/tests/unit/reset-simulation.test.ts",
         "web/tests/e2e/reset-research.spec.ts",
     )
@@ -773,6 +771,32 @@ def test_task27_artifacts_remain_absent():
     assert {path.name for path in research_feature.glob("*.tsx")} == {
         "SentimentPanel.tsx"
     }
+
+
+def test_task27_research_validation_is_a_closed_pure_subdomain():
+    package = ROOT / "src/dragon_radar/research"
+    assert package.is_dir(), "Slice A adds the research validation package"
+    assert {path.name for path in package.glob("*.py")} == {
+        "__init__.py",
+        "models.py",
+        "samples.py",
+        "statistics.py",
+        "factor_health.py",
+        "forward_eval.py",
+        "report.py",
+    }
+    for forbidden in (
+        "repository.py",
+        "backtest.py",
+        "execution.py",
+        "walk_forward.py",
+        "ablation.py",
+        "routes.py",
+        "cli.py",
+        "worker.py",
+        "models_db.py",
+    ):
+        assert not (package / forbidden).exists(), f"forbidden module: {forbidden}"
 
 
 # ---------------------------------------------------------------------------
