@@ -1285,6 +1285,10 @@ def test_ci_runs_focused_realtime_release_gates_without_weakening_existing_gates
         "tests/test_reset_realtime.py",
         "-q",
     ] in commands(verify)
+    # The performance budget is owned by the dedicated reset_performance gate
+    # (fresh PostgreSQL, pinned runner); the coverage run deselects the same
+    # module to avoid a second, load-perturbed measurement, mirroring the
+    # full_backend gate in scripts/verify_reset.py.
     assert [
         "uv",
         "run",
@@ -1295,7 +1299,20 @@ def test_ci_runs_focused_realtime_release_gates_without_weakening_existing_gates
         "--cov=dragon_radar",
         "--cov-report=term-missing",
         "--cov-report=xml:.temp/coverage.xml",
+        "--deselect",
+        "tests/performance/test_reset_queries.py",
     ] in commands(verify)
+
+    # The P95 budget stays a mandatory, isolated gate; no threshold is weakened.
+    reset_performance = commands(job("reset_performance"))
+    assert [
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "-rs",
+        "tests/performance/test_reset_queries.py",
+    ] in reset_performance
 
     web_quality = commands(job("web_quality"))
     assert [
