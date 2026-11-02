@@ -226,6 +226,10 @@ test('candidate coverage discloses valid, expected, excluded and missing counts'
 test('preserves leaders filters through drawer, local watchlist and a bound note', async ({ page }) => {
   await mockLeaders(page);
   await page.goto(leadersUrl);
+  // Mount canonicalizes the address via history.replaceState, which can land
+  // after goto's load settle; wait for the canonical leaders URL so the round
+  // trip compares against exactly what in-app navigation returns to.
+  await expect(page).toHaveURL(/[?&]sort=security_id&order=asc&/);
   const original = new URL(page.url()).search;
 
   await page.getByRole('table', { name: '角色候选' })
