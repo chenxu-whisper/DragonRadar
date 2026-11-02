@@ -196,15 +196,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: python -m pip install uv==0.8.2
-      - run: uv sync --locked
+      # Front-load browser/apt and private image build wake so their residual
+      # CPU/IO load cannot perturb the in-harness P95 performance gate; the
+      # verifier additionally stops the private stack around the measurement.
       - run: npm ci --ignore-scripts
         working-directory: web
       - run: npx playwright install --with-deps chromium
         working-directory: web
+      - name: Build Task20 private images ahead of the acceptance verifier
+        run: ./scripts/task20-private-tls.sh build
+      - run: python -m pip install uv==0.8.2
+      - run: uv sync --locked
       - name: Prepare Task20 private TLS gateway
-        run: ./scripts/task20-private-tls.sh setup
-      - run: uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
+        run: ./scripts/task20-private-tls.sh setup --skip-build
+      - name: Run Task20 acceptance verifier
+        run: uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
+        env:
+          DRAGON_TASK20_PERF_ISOLATION: "1"
       - name: Tear down Task20 private TLS gateway
         if: always()
         run: ./scripts/task20-private-tls.sh teardown

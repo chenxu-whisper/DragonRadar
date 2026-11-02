@@ -33,6 +33,48 @@ def test_task20_workflow_prepares_tls_before_verifier_and_always_tears_down():
     assert "if: always()" in teardown_step
 
 
+def test_task20_workflow_frontloads_heavy_steps_and_enables_perf_isolation():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    task20 = workflow[
+        workflow.index("  task20_acceptance:") : workflow.index(
+            "\n  web_quality:", workflow.index("  task20_acceptance:")
+        )
+    ]
+
+    playwright = task20.index("npx playwright install --with-deps chromium")
+    images = task20.index("./scripts/task20-private-tls.sh build")
+    setup = task20.index("name: Prepare Task20 private TLS gateway")
+    verifier = task20.index("scripts/verify_reset.py --mode full")
+    teardown = task20.index("name: Tear down Task20 private TLS gateway")
+
+    assert playwright < images < setup < verifier < teardown
+    assert "run: ./scripts/task20-private-tls.sh setup --skip-build" in task20
+    verifier_step = task20[verifier:teardown]
+    assert 'DRAGON_TASK20_PERF_ISOLATION: "1"' in verifier_step
+
+
+def test_task20_perf_isolation_env_contract_is_shared_by_harness_and_workflow():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    task20 = workflow[
+        workflow.index("  task20_acceptance:") : workflow.index(
+            "\n  web_quality:", workflow.index("  task20_acceptance:")
+        )
+    ]
+    harness = (ROOT / "scripts" / "verify_reset.py").read_text(encoding="utf-8")
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'PERF_ISOLATION_ENV = "DRAGON_TASK20_PERF_ISOLATION"' in harness
+    assert "DRAGON_TASK20_PERF_ISOLATION" in task20
+    assert "DRAGON_TASK20_COMPOSE_PROJECT" in script
+
+
+def test_task20_tls_script_supports_split_build_and_skip_build_setup():
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "build)" in script
+    assert "--skip-build" in script
+
+
 def test_task20_tls_script_uses_fixed_isolated_compose_lifecycle_and_exports_ca():
     script = SETUP_SCRIPT.read_text(encoding="utf-8")
 

@@ -933,6 +933,228 @@ def test_execution_rejects_exit_zero_without_native_output():
     assert any("native output" in error for error in errors)
 
 
+def test_performance_isolation_factory_is_off_without_explicit_marker():
+    factory = VERIFIER["_performance_isolation"]
+
+    assert factory({}) is None
+    assert factory({"DRAGON_TASK20_COMPOSE_PROJECT": "dragon-radar-task20-1-1"}) is None
+
+
+def test_performance_isolation_factory_fails_closed_without_project_or_state(
+    tmp_path, monkeypatch
+):
+    factory = VERIFIER["_performance_isolation"]
+    marker = VERIFIER["PERF_ISOLATION_ENV"]
+    project_env = VERIFIER["TASK20_COMPOSE_PROJECT_ENV"]
+    state_file = tmp_path / "compose.env"
+    monkeypatch.setitem(
+        VERIFIER["_performance_isolation"].__globals__,
+        "TASK20_STACK_ENV_FILE",
+        state_file,
+    )
+
+    with pytest.raises(RuntimeError, match=project_env):
+        factory({marker: "1"})
+
+    with pytest.raises(RuntimeError, match="compose.env"):
+        factory({marker: "1", project_env: "dragon-radar-task20-1-1"})
+
+    state_file.write_text("DRAGON_DB_PASSWORD=secret\n", encoding="utf-8")
+    isolation = factory({marker: "1", project_env: "dragon-radar-task20-1-1"})
+    assert isinstance(isolation, VERIFIER["PrivateStackIsolation"])
+
+
+def test_private_stack_isolation_runs_compose_stop_and_wait_up_bypassing_runner(
+    tmp_path,
+):
+    root = VERIFIER["ROOT"]
+    invoked = []
+
+    def invoke(argv, *, cwd, env, timeout):
+        invoked.append({"argv": argv, "cwd": cwd, "env": env, "timeout": timeout})
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    state_file = tmp_path / "compose.env"
+    state_file.write_text("DRAGON_DB_PASSWORD=secret\n", encoding="utf-8")
+    isolation = VERIFIER["PrivateStackIsolation"](
+        project="dragon-radar-task20-7-2",
+        env_file=state_file,
+        invoke=invoke,
+    )
+
+    isolation.suspend()
+    isolation.resume()
+
+    expected_prefix = (
+        "docker",
+        "compose",
+        "--project-name",
+        "dragon-radar-task20-7-2",
+        "--project-directory",
+        str(root),
+        "--env-file",
+        str(state_file),
+        "-f",
+        str(root / "compose.yaml"),
+        "-f",
+        str(root / "compose.private.yaml"),
+    )
+    assert invoked[0]["argv"] == expected_prefix + ("stop",)
+    assert invoked[1]["argv"] == expected_prefix + (
+        "up",
+        "--detach",
+        "--wait",
+        "web",
+        "api",
+    )
+    assert invoked[0]["timeout"] < invoked[1]["timeout"]
+    assert all(call["cwd"] == root for call in invoked)
+    assert all(isinstance(call["env"], dict) for call in invoked)
+
+
+def test_private_stack_isolation_raises_when_compose_reports_failure(tmp_path):
+    def invoke(argv, *, cwd, env, timeout):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="docker denied")
+
+    isolation = VERIFIER["PrivateStackIsolation"](
+        project="dragon-radar-task20-7-2",
+        env_file=tmp_path / "compose.env",
+        invoke=invoke,
+    )
+
+    with pytest.raises(RuntimeError, match="suspend"):
+        isolation.suspend()
+
+
+class ScriptedIsolation:
+    def __init__(self, events):
+        self.events = events
+
+    def suspend(self):
+        self.events.append("suspend")
+
+    def resume(self):
+        self.events.append("resume")
+
+
+def test_performance_gate_suspends_before_command_and_resumes_after(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 2, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            self.calls.append(
+                {
+                    "argv": argv,
+                    "cwd": cwd,
+                    "environment": environment,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            events.append(("command", argv))
+            return next(self.results)
+
+    runner = EventRunner(results)
+
+    records = execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    performance_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and event[1][-1] == "tests/performance/test_reset_queries.py"
+    )
+    assert events.index("suspend") < performance_index < events.index("resume")
+    assert events.count("suspend") == 1
+    assert events.count("resume") == 1
+    assert [call["argv"] for call in runner.calls] == [
+        tuple(spec["command"]) for spec in specs
+    ]
+    assert len(records) == len(REQUIRED_GATES)
+
+
+def test_performance_isolation_resumes_even_when_performance_command_raises(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+            self.calls = []
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            self.calls.append(argv)
+            if argv[-1] == "tests/performance/test_reset_queries.py":
+                raise RuntimeError("runner exploded")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 2, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 2, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(4)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="runner exploded"):
+        execute("focused", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    assert events == ["suspend", "resume"]
+
+
+def test_perf_isolation_marker_is_stripped_from_gate_command_environments(
+    tmp_path, monkeypatch
+):
+    execute = VERIFIER["_execute_gates"]
+    marker = VERIFIER["PERF_ISOLATION_ENV"]
+    monkeypatch.setenv(marker, "1")
+    monkeypatch.setenv("DRAGON_TASK20_COMPOSE_PROJECT", "dragon-radar-task20-1-1")
+    focused_specs = [
+        spec
+        for gate in VERIFIER["FOCUSED_GATES"]
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 2, tzinfo=UTC)
+    runner = RecordingRunner(
+        [
+            FakeRunResult(
+                started_at=started + timedelta(seconds=index),
+                ended_at=started + timedelta(seconds=index + 1),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for index in range(len(focused_specs))
+        ]
+    )
+
+    execute("focused", tmp_path, runner)
+
+    assert runner.calls
+    assert all(marker not in call["environment"] for call in runner.calls)
+
+
 def test_full_execution_manifest_passes_only_in_execution_context(
     tmp_path, monkeypatch
 ):
