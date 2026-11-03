@@ -130,7 +130,7 @@ def performance_raw():
     runs = [
         {
             "round": index,
-            "cache_condition": "post_warmup_caches_uncontrolled",
+            "cache_condition": ("steady_state_warmup_gc_fenced_caches_uncontrolled"),
             "request_count": 20,
             "concurrency": 20,
             "successful": 20,
@@ -156,7 +156,10 @@ def performance_raw():
         "environment": {
             "postgresql": "17",
             "os_cold_cache_controlled": False,
-            "cache_claim": "warmup_then_measured_caches_uncontrolled",
+            "gc_fenced": True,
+            "cache_claim": (
+                "multi_wave_warmup_then_gc_fenced_measured_caches_uncontrolled"
+            ),
         },
         "warmup": {
             "paths": [
@@ -165,9 +168,10 @@ def performance_raw():
                 "/api/rank/range",
                 "/api/stock/{id}",
             ],
-            "request_count": 20,
+            "wave_count": 3,
+            "request_count": 60,
             "concurrency": 20,
-            "successful": 20,
+            "successful": 60,
         },
         "runs": runs,
         "aggregate": {
@@ -519,6 +523,37 @@ def test_performance_contract_requires_realistic_warmed_multi_round_fixture():
     false_cold = deepcopy(valid)
     false_cold["runs"][0]["cache_condition"] = "cold_process"
     assert any("cold" in error.lower() for error in errors(false_cold))
+
+    legacy_run_label = deepcopy(valid)
+    legacy_run_label["runs"][0]["cache_condition"] = "post_warmup_caches_uncontrolled"
+    assert any("cache claim" in error.lower() for error in errors(legacy_run_label))
+
+    single_wave_warmup = deepcopy(valid)
+    single_wave_warmup["warmup"] = {
+        "paths": valid["warmup"]["paths"],
+        "request_count": 20,
+        "concurrency": 20,
+        "successful": 20,
+    }
+    assert any("warmup" in error.lower() for error in errors(single_wave_warmup))
+
+    inconsistent_warmup = deepcopy(valid)
+    inconsistent_warmup["warmup"]["request_count"] = 40
+    assert any("warmup" in error.lower() for error in errors(inconsistent_warmup))
+
+    missing_gc_fence = deepcopy(valid)
+    del missing_gc_fence["environment"]["gc_fenced"]
+    assert any("gc" in error.lower() for error in errors(missing_gc_fence))
+
+    disabled_gc_fence = deepcopy(valid)
+    disabled_gc_fence["environment"]["gc_fenced"] = False
+    assert any("gc" in error.lower() for error in errors(disabled_gc_fence))
+
+    legacy_cache_claim = deepcopy(valid)
+    legacy_cache_claim["environment"]["cache_claim"] = (
+        "warmup_then_measured_caches_uncontrolled"
+    )
+    assert any("cache claim" in error.lower() for error in errors(legacy_cache_claim))
 
     no_aggregate = deepcopy(valid)
     del no_aggregate["aggregate"]
