@@ -198,7 +198,8 @@ jobs:
           node-version: "22"
       # Front-load browser/apt and private image build wake so their residual
       # CPU/IO load cannot perturb the in-harness P95 performance gate; the
-      # verifier additionally stops the private stack around the measurement.
+      # verifier additionally stops the private stack around the performance
+      # measurement and the full backend suite.
       - run: npm ci --ignore-scripts
         working-directory: web
       - run: npx playwright install --with-deps chromium

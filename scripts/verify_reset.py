@@ -65,15 +65,23 @@ RECOVERY_DRILLS = (
     "ai_off",
 )
 PERFORMANCE_ARTIFACT = ROOT / ".temp" / "acceptance" / "reset-performance.json"
-# Opt-in marker for the Task20 acceptance job: while the P95 performance gate
-# runs, the private compose stack left running by the TLS setup step is
-# stopped, then resumed for the later private browser gates. The marker is
-# harness-only and is stripped from gate subprocess environments.
+# Opt-in marker for the Task20 acceptance job: while the isolated gates (P95
+# performance measurement, full backend suite) run, the private compose stack
+# left running by the TLS setup step is stopped, then resumed for the later
+# private browser gates. The marker is harness-only and is stripped from gate
+# subprocess environments.
 PERF_ISOLATION_ENV = "DRAGON_TASK20_PERF_ISOLATION"
 TASK20_COMPOSE_PROJECT_ENV = "DRAGON_TASK20_COMPOSE_PROJECT"
 TASK20_STACK_ENV_FILE = ROOT / ".temp" / "task20-private-tls" / "compose.env"
 TASK20_COMPOSE_FILES = ("compose.yaml", "compose.private.yaml")
 PERF_ISOLATION_ACTIVE = frozenset({"1", "true", "yes", "on"})
+# Gates that run with the private compose stack fully stopped on the Task20
+# runner: the P95 measurement (residual container IO perturbs the sample) and
+# the ~30-minute full backend suite (resumed web/api/worker containers contend
+# against the suite and its PostgreSQL and pushed it past the 2400s budget on
+# the pinned 24.04 runner). The stack resumes immediately afterwards for the
+# private browser gates.
+ISOLATED_GATES = frozenset({"performance", "full_backend"})
 MEASURED_PATHS = {
     "/api/snapshots/{id}",
     "/api/market/overview",
@@ -411,13 +419,14 @@ class SubprocessRunner:
 
 
 class PrivateStackIsolation:
-    """Stop the Task20 private compose stack around the P95 measurement.
+    """Stop the Task20 private compose stack around isolated gate windows.
 
-    Idle db/api/web containers (and their residual checkpoint/IO wake) are
-    removed from the performance measurement window, then the stack is
-    resumed so later private browser gates still reach the TLS gateway.
-    This deliberately bypasses the frozen gate Runner: the allowlisted gate
-    command graph must not gain docker entries.
+    Idle db/api/web/worker containers (and their residual checkpoint/IO and
+    PostgreSQL polling) are removed from the P95 measurement window and the
+    full backend suite window, then the stack is resumed so later private
+    browser gates still reach the TLS gateway. This deliberately bypasses the
+    frozen gate Runner: the allowlisted gate command graph must not gain
+    docker entries.
     """
 
     def __init__(
@@ -473,7 +482,7 @@ class PrivateStackIsolation:
     def _run(self, label: str, action: tuple[str, ...], timeout_seconds: int) -> None:
         argv = self._compose_argv(*action)
         print(
-            f"[perf-isolation] {label} private stack '{self._project}'",
+            f"[stack-isolation] {label} private stack '{self._project}'",
             file=sys.stderr,
             flush=True,
         )
@@ -486,17 +495,17 @@ class PrivateStackIsolation:
             )
         except subprocess.TimeoutExpired as error:
             raise RuntimeError(
-                f"perf isolation {label} timed out after {timeout_seconds}s"
+                f"private stack isolation {label} timed out after {timeout_seconds}s"
             ) from error
         except OSError as error:
             raise RuntimeError(
-                f"perf isolation {label} failed to invoke docker: "
+                f"private stack isolation {label} failed to invoke docker: "
                 f"{type(error).__name__}: {error}"
             ) from error
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
             raise RuntimeError(
-                f"perf isolation {label} failed with exit "
+                f"private stack isolation {label} failed with exit "
                 f"{result.returncode}: {detail[:500]}"
             )
 
@@ -1304,10 +1313,10 @@ def _execute_gates(
             if performance_commands is None:
                 continue
             commands = performance_commands
-        elif gate == "performance" and isolation is not None:
-            # Deterministic measurement window: suspend the residual private
-            # stack before the command and always resume afterwards, even on
-            # runner failure, so later private gates keep their gateway.
+        elif gate in ISOLATED_GATES and isolation is not None:
+            # Deterministic resource window: suspend the residual private stack
+            # before the command and always resume afterwards, even on runner
+            # failure, so later private gates keep their gateway.
             isolation.suspend()
             try:
                 commands = [

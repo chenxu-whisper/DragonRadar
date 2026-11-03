@@ -1117,8 +1117,10 @@ def test_performance_gate_suspends_before_command_and_resumes_after(tmp_path):
         and event[1][-1] == "tests/performance/test_reset_queries.py"
     )
     assert events.index("suspend") < performance_index < events.index("resume")
-    assert events.count("suspend") == 1
-    assert events.count("resume") == 1
+    # Full mode isolates two heavyweight windows from the resumed private
+    # stack: the P95 measurement and the full backend coverage suite.
+    assert events.count("suspend") == 2
+    assert events.count("resume") == 2
     assert [call["argv"] for call in runner.calls] == [
         tuple(spec["command"]) for spec in specs
     ]
@@ -1156,6 +1158,86 @@ def test_performance_isolation_resumes_even_when_performance_command_raises(tmp_
         execute("focused", tmp_path, runner, isolation=ScriptedIsolation(events))
 
     assert events == ["suspend", "resume"]
+
+
+def test_full_backend_gate_suspends_private_stack_and_resumes_after(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 3, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            events.append(("command", argv))
+            return next(self.results)
+
+    runner = EventRunner(results)
+
+    execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    full_backend_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    full_backend_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and tuple(event[1]) == full_backend_command
+    )
+    suspend_indices = [
+        index for index, event in enumerate(events) if event == "suspend"
+    ]
+    resume_indices = [index for index, event in enumerate(events) if event == "resume"]
+    assert len(suspend_indices) == 2
+    assert len(resume_indices) == 2
+    assert suspend_indices[1] < full_backend_index < resume_indices[1]
+
+
+def test_full_backend_isolation_resumes_even_when_suite_command_raises(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    full_backend_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            if tuple(argv) == full_backend_command:
+                raise RuntimeError("suite timed out externally")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 3, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 3, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(40)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="suite timed out externally"):
+        execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    assert events.count("suspend") == 2
+    assert events.count("resume") == 2
+    assert events[-1] == "resume"
 
 
 def test_perf_isolation_marker_is_stripped_from_gate_command_environments(
