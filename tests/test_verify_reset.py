@@ -1160,6 +1160,112 @@ def test_performance_isolation_resumes_even_when_performance_command_raises(tmp_
     assert events == ["suspend", "resume"]
 
 
+def test_full_backend_gateway_command_runs_against_live_stack_before_suspend():
+    gateway_spec, bulk_spec = GATE_SPECS["full_backend"]
+
+    # The live TLS gateway checks (DRAGON_TEST_PRIVATE_CA gated) must hit the
+    # running private edge, so this command runs with the stack up.
+    assert tuple(gateway_spec["command"]) == (
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "-rs",
+        "tests/test_private_https.py",
+    )
+    assert gateway_spec.get("suspend_private_stack") is False
+
+    # The bulk suite is the contention-sensitive window: it suspends the
+    # stack and must not re-run the live gateway checks it just executed.
+    bulk_command = tuple(bulk_spec["command"])
+    assert bulk_command[:5] == ("uv", "run", "pytest", "-q", "-rs")
+    assert bulk_command.count("--deselect") == 2
+    assert "tests/performance/test_reset_queries.py" in bulk_command
+    assert "tests/test_private_https.py" in bulk_command
+    assert bulk_spec.get("suspend_private_stack") is True
+    assert bulk_spec["timeout_seconds"] == 2400
+
+    (performance_spec,) = GATE_SPECS["performance"]
+    assert performance_spec.get("suspend_private_stack") is True
+
+
+def test_full_backend_gateway_command_runs_with_stack_up(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 3, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            events.append(("command", argv))
+            return next(self.results)
+
+    execute("full", tmp_path, EventRunner(results), isolation=ScriptedIsolation(events))
+
+    gateway_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    gateway_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and tuple(event[1]) == gateway_command
+    )
+    suspend_indices = [
+        index for index, event in enumerate(events) if event == "suspend"
+    ]
+    # The live gateway command must complete during the stack-up window that
+    # follows the performance resume, before the bulk suite suspends it again.
+    assert gateway_index < suspend_indices[1]
+
+
+def test_full_backend_gateway_failure_propagates_without_suspending_stack(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    gateway_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            if tuple(argv) == gateway_command:
+                raise RuntimeError("gateway unreachable")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 3, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 3, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(40)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="gateway unreachable"):
+        execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    # Only the performance window isolated the stack; the full_backend bulk
+    # suspend never starts when the live gateway command fails fail-closed.
+    assert events == ["suspend", "resume"]
+
+
 def test_full_backend_gate_suspends_private_stack_and_resumes_after(tmp_path):
     execute = VERIFIER["_execute_gates"]
     specs = [
@@ -1189,7 +1295,7 @@ def test_full_backend_gate_suspends_private_stack_and_resumes_after(tmp_path):
 
     execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
 
-    full_backend_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    full_backend_command = tuple(GATE_SPECS["full_backend"][1]["command"])
     full_backend_index = next(
         index
         for index, event in enumerate(events)
@@ -1208,7 +1314,7 @@ def test_full_backend_gate_suspends_private_stack_and_resumes_after(tmp_path):
 
 def test_full_backend_isolation_resumes_even_when_suite_command_raises(tmp_path):
     execute = VERIFIER["_execute_gates"]
-    full_backend_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    full_backend_command = tuple(GATE_SPECS["full_backend"][1]["command"])
     events = []
 
     class RaisingRunner:

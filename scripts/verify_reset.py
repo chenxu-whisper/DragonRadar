@@ -75,13 +75,15 @@ TASK20_COMPOSE_PROJECT_ENV = "DRAGON_TASK20_COMPOSE_PROJECT"
 TASK20_STACK_ENV_FILE = ROOT / ".temp" / "task20-private-tls" / "compose.env"
 TASK20_COMPOSE_FILES = ("compose.yaml", "compose.private.yaml")
 PERF_ISOLATION_ACTIVE = frozenset({"1", "true", "yes", "on"})
-# Gates that run with the private compose stack fully stopped on the Task20
-# runner: the P95 measurement (residual container IO perturbs the sample) and
-# the ~30-minute full backend suite (resumed web/api/worker containers contend
-# against the suite and its PostgreSQL and pushed it past the 2400s budget on
-# the pinned 24.04 runner). The stack resumes immediately afterwards for the
-# private browser gates.
-ISOLATED_GATES = frozenset({"performance", "full_backend"})
+# Allowlisted commands marked suspend_private_stack run with the private
+# compose stack fully stopped on the Task20 runner: the P95 measurement
+# (residual container IO perturbs the sample) and the ~30-minute full backend
+# bulk suite (the resumed web/api edge contended against the suite and its
+# PostgreSQL and pushed it past the 2400s budget on the pinned 24.04 runner).
+# Live TLS gateway checks cannot run stopped, so full_backend runs them as a
+# separate stack-up command first and deselects them from the suspended bulk
+# command. The stack resumes immediately afterwards for the private browser
+# gates.
 MEASURED_PATHS = {
     "/api/snapshots/{id}",
     "/api/market/overview",
@@ -140,6 +142,7 @@ class CommandSpec:
     environment_class: str
     environment_overrides: tuple[tuple[str, str], ...] = ()
     requires_test_counts: bool = True
+    suspend_private_stack: bool = False
 
     def __getitem__(self, key: str) -> Any:
         if key == "environment_overrides":
@@ -161,6 +164,7 @@ def _spec(
     environment_class: str = "default",
     environment_overrides: Mapping[str, str] | None = None,
     requires_test_counts: bool = True,
+    suspend_private_stack: bool = False,
 ) -> CommandSpec:
     return CommandSpec(
         command=tuple(command),
@@ -169,6 +173,7 @@ def _spec(
         environment_class=environment_class,
         environment_overrides=tuple(sorted((environment_overrides or {}).items())),
         requires_test_counts=requires_test_counts,
+        suspend_private_stack=suspend_private_stack,
     )
 
 
@@ -249,9 +254,24 @@ _GATE_SPECS: dict[str, list[CommandSpec]] = {
                 "tests/performance/test_reset_queries.py",
             ],
             timeout=1200,
+            suspend_private_stack=True,
         )
     ],
     "full_backend": [
+        # Live TLS gateway checks must reach the running private edge: run
+        # them first while the stack resumed by the performance window is up,
+        # then deselect them from the suspended bulk command below.
+        _spec(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "-q",
+                "-rs",
+                "tests/test_private_https.py",
+            ],
+            timeout=300,
+        ),
         _spec(
             [
                 "uv",
@@ -263,9 +283,14 @@ _GATE_SPECS: dict[str, list[CommandSpec]] = {
                 # load-perturbed measurement inside the 30+ minute suite.
                 "--deselect",
                 "tests/performance/test_reset_queries.py",
+                # Executed against the live edge by the stack-up command above;
+                # the bulk window runs with the private stack stopped.
+                "--deselect",
+                "tests/test_private_https.py",
             ],
             timeout=2400,
-        )
+            suspend_private_stack=True,
+        ),
     ],
     "ruff_lint": [
         _spec(["uv", "run", "ruff", "check", "."], requires_test_counts=False)
@@ -419,12 +444,14 @@ class SubprocessRunner:
 
 
 class PrivateStackIsolation:
-    """Stop the Task20 private compose stack around isolated gate windows.
+    """Stop the Task20 private compose stack around isolated command windows.
 
-    Idle db/api/web/worker containers (and their residual checkpoint/IO and
+    Idle db/api/web containers (and their residual checkpoint/IO and
     PostgreSQL polling) are removed from the P95 measurement window and the
-    full backend suite window, then the stack is resumed so later private
-    browser gates still reach the TLS gateway. This deliberately bypasses the
+    full backend bulk-suite window, then the stack is resumed so later
+    private browser gates still reach the TLS gateway. Commands that must
+    reach the live gateway (the test_private_https checks) run in a separate
+    stack-up window and are never suspended. This deliberately bypasses the
     frozen gate Runner: the allowlisted gate command graph must not gain
     docker entries.
     """
@@ -1313,23 +1340,23 @@ def _execute_gates(
             if performance_commands is None:
                 continue
             commands = performance_commands
-        elif gate in ISOLATED_GATES and isolation is not None:
-            # Deterministic resource window: suspend the residual private stack
-            # before the command and always resume afterwards, even on runner
-            # failure, so later private gates keep their gateway.
-            isolation.suspend()
-            try:
-                commands = [
-                    _run_command(gate, index, spec, evidence_dir, runner)
-                    for index, spec in enumerate(GATE_SPECS[gate], start=1)
-                ]
-            finally:
-                isolation.resume()
         else:
-            commands = [
-                _run_command(gate, index, spec, evidence_dir, runner)
-                for index, spec in enumerate(GATE_SPECS[gate], start=1)
-            ]
+            commands = []
+            for index, spec in enumerate(GATE_SPECS[gate], start=1):
+                if isolation is not None and spec.get("suspend_private_stack", False):
+                    # Deterministic resource window: suspend the residual
+                    # private stack before the command and always resume
+                    # afterwards, even on runner failure, so later private
+                    # gates keep their gateway. Commands without the marker
+                    # (e.g. the live TLS gateway checks) run stack-up.
+                    isolation.suspend()
+                    try:
+                        command = _run_command(gate, index, spec, evidence_dir, runner)
+                    finally:
+                        isolation.resume()
+                else:
+                    command = _run_command(gate, index, spec, evidence_dir, runner)
+                commands.append(command)
         record = {
             "gate_id": gate,
             "commands": commands,
