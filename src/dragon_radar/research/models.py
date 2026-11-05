@@ -89,7 +89,7 @@ VersionToken = Annotated[
 ]
 
 
-class _StrictFrozenModel(FrozenModel):
+class StrictFrozenModel(FrozenModel):
     model_config = ConfigDict(
         strict=True,
         frozen=True,
@@ -98,7 +98,7 @@ class _StrictFrozenModel(FrozenModel):
     )
 
 
-class CostModel(_StrictFrozenModel):
+class CostModel(StrictFrozenModel):
     """Explicit, finite positive trading-cost assumptions."""
 
     commission_rate: PositiveRate
@@ -109,14 +109,14 @@ class CostModel(_StrictFrozenModel):
     min_commission: BoundedFee
 
 
-class ExecutionModel(_StrictFrozenModel):
+class ExecutionModel(StrictFrozenModel):
     """Execution timing; unknown limit metadata is never assumed tradable."""
 
     fill_timing: FillTiming = "next_tradable_point"
     unknown_limit_policy: UnknownLimitPolicy = "reject_untradable"
 
 
-class StrategyParameters(_StrictFrozenModel):
+class StrategyParameters(StrictFrozenModel):
     top_n: Annotated[int, Field(ge=1, le=MAX_TOP_N)]
     rebalance_period: Annotated[
         int,
@@ -125,7 +125,7 @@ class StrategyParameters(_StrictFrozenModel):
     weighting: Weighting = "equal_weight"
 
 
-class BacktestPeriod(_StrictFrozenModel):
+class BacktestPeriod(StrictFrozenModel):
     start: date
     end: date
 
@@ -140,7 +140,7 @@ class BacktestPeriod(_StrictFrozenModel):
         return self
 
 
-class WalkForwardSpec(_StrictFrozenModel):
+class WalkForwardSpec(StrictFrozenModel):
     folds: Annotated[int, Field(ge=MIN_WALK_FORWARD_FOLDS, le=MAX_WALK_FORWARD_FOLDS)]
     train_sessions: Annotated[int, Field(ge=1)]
     test_sessions: Annotated[int, Field(ge=1)]
@@ -156,18 +156,18 @@ class WalkForwardSpec(_StrictFrozenModel):
         return self
 
 
-class DomainManifest(_StrictFrozenModel):
+class DomainManifest(StrictFrozenModel):
     domain: ManifestDomainName
     snapshot_id: UUID
 
 
-class ManifestVersions(_StrictFrozenModel):
+class ManifestVersions(StrictFrozenModel):
     adjustment: VersionToken
     calendar: VersionToken
     pool: VersionToken
 
 
-class InputManifests(_StrictFrozenModel):
+class InputManifests(StrictFrozenModel):
     domains: Annotated[tuple[DomainManifest, ...], Field(min_length=1, max_length=3)]
     versions: ManifestVersions
 
@@ -181,7 +181,7 @@ class InputManifests(_StrictFrozenModel):
         return self
 
 
-class ExperimentSpec(_StrictFrozenModel):
+class ExperimentSpec(StrictFrozenModel):
     random_seed: Annotated[int, Field(ge=0, le=0xFFFFFFFF)]
     legs: Annotated[tuple[ExperimentLegName, ...], Field(min_length=1, max_length=2)]
 
@@ -194,7 +194,7 @@ class ExperimentSpec(_StrictFrozenModel):
         return self
 
 
-class BacktestConfig(_StrictFrozenModel):
+class BacktestConfig(StrictFrozenModel):
     schema_version: Literal[RESEARCH_BACKTEST_SCHEMA_VERSION] = (
         RESEARCH_BACKTEST_SCHEMA_VERSION
     )
@@ -245,7 +245,7 @@ class BacktestConfig(_StrictFrozenModel):
         return hashlib.sha256(self.canonical_json().encode("ascii")).hexdigest()
 
 
-class BacktestSubmission(_StrictFrozenModel):
+class BacktestSubmission(StrictFrozenModel):
     """EX14 envelope; the idempotency key never participates in the hash."""
 
     config: BacktestConfig
@@ -268,6 +268,7 @@ __all__ = [
     "RESEARCH_BACKTEST_SCHEMA_VERSION",
     "STRATEGY_FACTOR_CROSS_SECTIONAL_TOPN_V1",
     "STRATEGY_IDS",
+    "StrictFrozenModel",
     "BacktestConfig",
     "BacktestPeriod",
     "BacktestSubmission",
