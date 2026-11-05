@@ -27,6 +27,7 @@ from pydantic import (
 from dragon_radar.domain.models import FrozenModel
 
 RESEARCH_BACKTEST_SCHEMA_VERSION = "dragon-radar.research-backtest/v1"
+RESEARCH_HEALTH_SCHEMA_VERSION = "dragon-radar.research-health/v1"
 
 STRATEGY_FACTOR_CROSS_SECTIONAL_TOPN_V1 = "factor-cross-sectional-topn-v1"
 STRATEGY_IDS = frozenset({STRATEGY_FACTOR_CROSS_SECTIONAL_TOPN_V1})
@@ -268,6 +269,7 @@ __all__ = [
     "MIN_PERIOD_SPAN_DAYS",
     "MIN_WALK_FORWARD_FOLDS",
     "RESEARCH_BACKTEST_SCHEMA_VERSION",
+    "RESEARCH_HEALTH_SCHEMA_VERSION",
     "STRATEGY_FACTOR_CROSS_SECTIONAL_TOPN_V1",
     "STRATEGY_IDS",
     "StrictFrozenModel",

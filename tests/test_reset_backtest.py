@@ -34,6 +34,10 @@ from dragon_radar.research.engine import (
     get_strategy,
     run_backtest,
 )
+from dragon_radar.research.health import (
+    FactorHealthReport,
+    assess_factor_health,
+)
 from dragon_radar.research.models import (
     MAX_PERIOD_CALENDAR_DAYS,
     BacktestConfig,
@@ -1554,3 +1558,379 @@ def test_cross_process_run_is_byte_identical() -> None:
         text=True,
     )
     assert completed.stdout.strip() == golden_engine_result_json()
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — factor health: sample size, coverage partition, Decimal quantiles
+# and cross-factor Spearman rank correlations
+# ---------------------------------------------------------------------------
+
+
+def _health_frames(
+    closes_by_day: dict[date, dict[str, str]] | None = None,
+    *,
+    ids: tuple[str, ...] = ENG_IDS,
+) -> tuple[PitFrame, ...]:
+    closes = closes_by_day or {day: dict(ENG_FLAT) for day in ENG_DAYS}
+    return _eng_frames(closes, ids=ids)
+
+
+def _factor_stream(
+    values_by_day: dict[date, dict[str, Decimal | bool | None]],
+    *,
+    ids: tuple[str, ...] = ENG_IDS,
+    factor_id: str = "FAC-R01",
+    metric: str = "relative_strength_20",
+) -> tuple[FactorFrame, ...]:
+    return tuple(
+        _factor_frame(
+            day,
+            values_by_day[day],
+            ids=ids,
+            factor_id=factor_id,
+            metric=metric,
+        )
+        for day in ENG_DAYS
+    )
+
+
+def _assess_health(
+    streams: dict[str, tuple[FactorFrame, ...]],
+    *,
+    frames: tuple[PitFrame, ...] | None = None,
+    min_sample_size: int = 5,
+    quantile_points: tuple[Decimal, ...] | None = None,
+) -> FactorHealthReport:
+    keyword_args: dict[str, object] = {}
+    if quantile_points is not None:
+        keyword_args["quantile_points"] = quantile_points
+    return assess_factor_health(
+        _eng_config(),
+        frames if frames is not None else _health_frames(),
+        streams,
+        anchor=_eng_anchor(),
+        policy=UniversePolicy(),
+        min_sample_size=min_sample_size,
+        **keyword_args,
+    )
+
+
+def _health_by_id(
+    report: FactorHealthReport,
+) -> dict[str, object]:
+    return {factor.factor_id: factor for factor in report.factors}
+
+
+def test_health_report_carries_versions_window_and_primary_factor() -> None:
+    report = _assess_health(
+        {"FAC-R01": _factor_stream(ENG_VALUES_BY_DAY)},
+    )
+    assert report.schema_version == "dragon-radar.research-health/v1"
+    assert report.research_only is True
+    assert report.window_start == E_D1
+    assert report.window_end == E_D5
+    assert report.sessions == 5
+    assert report.anchor_sequence == 500
+    assert report.primary_factor_id == "FAC-R01"
+    assert report.manifests == _eng_config().input_manifests
+    factor = _health_by_id(report)["FAC-R01"]
+    assert factor.metric == "relative_strength_20"
+    assert factor.window == "20d"
+    assert factor.unit == "ratio"
+    assert report.rank_correlations == ()
+
+
+def test_health_pooled_coverage_partition_conserves_with_rates() -> None:
+    values = {
+        day: dict(values_for_day) for day, values_for_day in ENG_VALUES_BY_DAY.items()
+    }
+    values[E_D1]["X4"] = None
+    values[E_D2]["X4"] = True
+    report = _assess_health({"FAC-R01": _factor_stream(values)})
+    factor = _health_by_id(report)["FAC-R01"]
+    coverage = factor.coverage
+    assert (
+        coverage.expected,
+        coverage.valid,
+        coverage.excluded,
+        coverage.missing,
+    ) == (20, 18, 1, 1)
+    assert factor.sample_size == 18
+    assert factor.valid_rate == Decimal("0.900000")
+    assert factor.excluded_rate == Decimal("0.050000")
+    assert factor.missing_rate == Decimal("0.050000")
+    assert factor.status == "ok"
+    assert factor.quantiles is not None
+
+
+def test_health_points_outside_visible_pool_never_enter_partition() -> None:
+    values = {
+        day: dict(values_for_day) for day, values_for_day in ENG_VALUES_BY_DAY.items()
+    }
+    values[E_D1]["X9"] = Decimal("99")
+    stream = tuple(
+        frame.model_copy(
+            update={
+                "points": (
+                    *frame.points,
+                    _factor_point("X9", Decimal("99")),
+                )
+            }
+        )
+        if frame.trade_date == E_D1
+        else frame
+        for frame in _factor_stream(values)
+    )
+    report = _assess_health({"FAC-R01": stream})
+    coverage = _health_by_id(report)["FAC-R01"].coverage
+    assert (coverage.expected, coverage.valid) == (20, 20)
+
+
+def test_health_quantiles_match_hand_computed_linear_interpolation() -> None:
+    ids = ("X1", "X2", "X3", "X4", "X5")
+    level_values = {
+        day: (
+            {
+                "X1": Decimal("1"),
+                "X2": Decimal("2"),
+                "X3": Decimal("3"),
+                "X4": Decimal("4"),
+                "X5": Decimal("5"),
+            }
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    frames = _health_frames(
+        {day: {sid: "10" for sid in ids} for day in ENG_DAYS}, ids=ids
+    )
+    report = _assess_health(
+        {"FAC-R01": _factor_stream(level_values, ids=ids)},
+        frames=frames,
+        quantile_points=(
+            Decimal("0"),
+            Decimal("0.1"),
+            Decimal("0.25"),
+            Decimal("0.5"),
+            Decimal("0.75"),
+            Decimal("1"),
+        ),
+    )
+    factor = _health_by_id(report)["FAC-R01"]
+    assert factor.status == "ok"
+    assert tuple(str(point) for point in factor.quantiles.points) == (
+        "0",
+        "0.1",
+        "0.25",
+        "0.5",
+        "0.75",
+        "1",
+    )
+    assert tuple(str(value) for value in factor.quantiles.values) == (
+        "1.000000",
+        "1.400000",
+        "2.000000",
+        "3.000000",
+        "4.000000",
+        "5.000000",
+    )
+
+
+def test_health_spearman_with_ties_matches_hand_computed_value() -> None:
+    ids = ("X1", "X2", "X3", "X4", "X5")
+    values_a = {
+        day: (
+            {
+                "X1": Decimal("1"),
+                "X2": Decimal("2"),
+                "X3": Decimal("3"),
+                "X4": Decimal("4"),
+                "X5": Decimal("5"),
+            }
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    # Hand ranks: B values 5,3,3,2,1 -> ascending ranks 5,3.5,3.5,2,1.
+    values_b = {
+        day: (
+            {
+                "X1": Decimal("5"),
+                "X2": Decimal("3"),
+                "X3": Decimal("3"),
+                "X4": Decimal("2"),
+                "X5": Decimal("1"),
+            }
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    frames = _health_frames(
+        {day: {sid: "10" for sid in ids} for day in ENG_DAYS}, ids=ids
+    )
+    report = _assess_health(
+        {
+            "FAC-R01": _factor_stream(values_a, ids=ids),
+            "FAC-C01": _factor_stream(
+                values_b, ids=ids, factor_id="FAC-C01", metric="fac_c01_metric"
+            ),
+        },
+        frames=frames,
+    )
+    assert len(report.rank_correlations) == 1
+    correlation = report.rank_correlations[0]
+    assert (correlation.left, correlation.right) == ("FAC-C01", "FAC-R01")
+    assert correlation.paired_sample_size == 5
+    assert correlation.eligible_sessions == 1
+    assert correlation.status == "ok"
+    assert correlation.value == Decimal("-0.974679")
+
+
+def test_health_insufficient_sample_gives_reason_not_fabricated_numbers() -> None:
+    ids = ("X1", "X2", "X3", "X4")
+    sparse_a = {
+        day: (
+            {sid: Decimal(str(index + 1)) for index, sid in enumerate(ids)}
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    sparse_b = {
+        day: (
+            {sid: Decimal(str(4 - index)) for index, sid in enumerate(ids)}
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    frames = _health_frames(
+        {day: {sid: "10" for sid in ids} for day in ENG_DAYS}, ids=ids
+    )
+    report = _assess_health(
+        {
+            "FAC-R01": _factor_stream(sparse_a, ids=ids),
+            "FAC-R02": _factor_stream(
+                sparse_b, ids=ids, factor_id="FAC-R02", metric="fac_r02_metric"
+            ),
+        },
+        frames=frames,
+    )
+    weak = _health_by_id(report)["FAC-R01"]
+    assert weak.coverage.valid == 4
+    assert weak.status == "insufficient_sample"
+    assert weak.reasons == ("insufficient_sample_size",)
+    assert weak.quantiles is None
+    # Exact partition ratios remain facts; statistical estimates are withheld.
+    assert weak.valid_rate == Decimal("0.200000")
+    correlation = report.rank_correlations[0]
+    assert correlation.value is None
+    assert correlation.status == "insufficient_sample"
+    assert "insufficient_paired_sample" in correlation.reasons
+
+
+def test_health_constant_ranks_close_to_untradable_correlation() -> None:
+    ids = ("X1", "X2", "X3", "X4", "X5")
+    values_a = {
+        day: (
+            {sid: Decimal(str(index + 1)) for index, sid in enumerate(ids)}
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    values_constant = {
+        day: (
+            {sid: Decimal("7") for sid in ids}
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    frames = _health_frames(
+        {day: {sid: "10" for sid in ids} for day in ENG_DAYS}, ids=ids
+    )
+    report = _assess_health(
+        {
+            "FAC-R01": _factor_stream(values_a, ids=ids),
+            "FAC-R02": _factor_stream(
+                values_constant, ids=ids, factor_id="FAC-R02", metric="m2"
+            ),
+        },
+        frames=frames,
+    )
+    correlation = report.rank_correlations[0]
+    assert correlation.paired_sample_size == 5
+    assert correlation.eligible_sessions == 0
+    assert correlation.value is None
+    assert "no_eligible_sessions" in correlation.reasons
+
+
+def test_health_rank_matrix_pairs_are_sorted_for_three_factors() -> None:
+    ids = ("X1", "X2", "X3", "X4", "X5")
+    base = {
+        day: (
+            {
+                "X1": Decimal("1"),
+                "X2": Decimal("2"),
+                "X3": Decimal("3"),
+                "X4": Decimal("4"),
+                "X5": Decimal("5"),
+            }
+            if day == E_D1
+            else {sid: None for sid in ids}
+        )
+        for day in ENG_DAYS
+    }
+    frames = _health_frames(
+        {day: {sid: "10" for sid in ids} for day in ENG_DAYS}, ids=ids
+    )
+    report = _assess_health(
+        {
+            "FAC-R01": _factor_stream(base, ids=ids),
+            "FAC-R02": _factor_stream(base, ids=ids, factor_id="FAC-R02", metric="m2"),
+            "FAC-C01": _factor_stream(base, ids=ids, factor_id="FAC-C01", metric="m3"),
+        },
+        frames=frames,
+    )
+    assert [(entry.left, entry.right) for entry in report.rank_correlations] == [
+        ("FAC-C01", "FAC-R01"),
+        ("FAC-C01", "FAC-R02"),
+        ("FAC-R01", "FAC-R02"),
+    ]
+    assert all(entry.value == Decimal("1.000000") for entry in report.rank_correlations)
+
+
+def test_health_validation_fails_closed() -> None:
+    primary_stream = _factor_stream(ENG_VALUES_BY_DAY)
+
+    with pytest.raises(ValueError, match="primary"):
+        _assess_health(
+            {"FAC-C01": _factor_stream(ENG_VALUES_BY_DAY, factor_id="FAC-C01")}
+        )
+    with pytest.raises(ValueError, match="align"):
+        _assess_health({"FAC-R01": primary_stream[:-1]})
+    drifted_metric = primary_stream[2].model_copy(update={"metric": "other-metric"})
+    with pytest.raises(ValueError, match="metric"):
+        _assess_health(
+            {"FAC-R01": (*primary_stream[:2], drifted_metric, *primary_stream[3:])}
+        )
+    with pytest.raises(ValueError, match="min_sample"):
+        _assess_health({"FAC-R01": primary_stream}, min_sample_size=1)
+    with pytest.raises(ValueError, match="min_sample"):
+        _assess_health({"FAC-R01": primary_stream}, min_sample_size=251)
+    with pytest.raises(ValueError, match="quantile"):
+        _assess_health(
+            {"FAC-R01": primary_stream},
+            quantile_points=(Decimal("0.5"), Decimal("1.2")),
+        )
+
+
+def test_health_same_inputs_produce_field_identical_reports() -> None:
+    streams = {"FAC-R01": _factor_stream(ENG_VALUES_BY_DAY)}
+    first = _assess_health(streams).model_dump_json()
+    second = _assess_health(streams).model_dump_json()
+    assert first == second
