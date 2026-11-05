@@ -61,6 +61,7 @@ UnknownLimitPolicy = Literal["reject_untradable"]
 Weighting = Literal["equal_weight"]
 ManifestDomainName = Literal["market", "topic", "role"]
 ExperimentLegName = Literal["baseline", "ai_variant"]
+ResearchFactorId = Literal["FAC-R01", "FAC-R02", "FAC-R03", "FAC-C01", "FAC-C02"]
 
 
 def _decimal_input(value: object) -> object:
@@ -117,6 +118,7 @@ class ExecutionModel(StrictFrozenModel):
 
 
 class StrategyParameters(StrictFrozenModel):
+    factor_id: ResearchFactorId = "FAC-R01"
     top_n: Annotated[int, Field(ge=1, le=MAX_TOP_N)]
     rebalance_period: Annotated[
         int,
@@ -280,6 +282,7 @@ __all__ = [
     "ExperimentSpec",
     "InputManifests",
     "ManifestVersions",
+    "ResearchFactorId",
     "StrategyParameters",
     "VersionToken",
     "WalkForwardSpec",

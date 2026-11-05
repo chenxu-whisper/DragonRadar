@@ -9,7 +9,12 @@ behaviour tests arrive in Tasks 5-8.
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import re
+import subprocess
+import sys
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -22,6 +27,12 @@ from dragon_radar.domain.models import (
     ExchangeCalendar,
     MarketBatch,
     SecurityState,
+)
+from dragon_radar.research.engine import (
+    FactorFrame,
+    FactorPoint,
+    get_strategy,
+    run_backtest,
 )
 from dragon_radar.research.models import (
     MAX_PERIOD_CALENDAR_DAYS,
@@ -894,3 +905,652 @@ def test_window_over_250_sessions_fails_closed() -> None:
             ),
             policy=_policy(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — run_backtest engine, strategy registry and frozen result schema
+# ---------------------------------------------------------------------------
+#
+# A flat-price five-session market (all closes 10.00) keeps the golden
+# arithmetic inspectable. The factor rotates the Top-2 selection at every
+# rebalance: on D1 the section ranks X1 > X2 > X3 > X4, on D3 it ranks
+# X3 > X4 > X1 > X2. Signals form at the close and fill only next session.
+
+E_D1, E_D2, E_D3, E_D4, E_D5 = tuple(date(2025, 2, d) for d in range(10, 15))
+ENG_DAYS = (E_D1, E_D2, E_D3, E_D4, E_D5)
+ENG_IDS = ("X1", "X2", "X3", "X4")
+ENG_CAL = ExchangeCalendar(exchange="TEST", version="c1", sessions=ENG_DAYS)
+ENG_FLAT = {sid: Decimal("10") for sid in ENG_IDS}
+ENG_RANK_12 = {
+    "X1": Decimal("40"),
+    "X2": Decimal("30"),
+    "X3": Decimal("20"),
+    "X4": Decimal("10"),
+}
+ENG_RANK_34 = {
+    "X1": Decimal("20"),
+    "X2": Decimal("10"),
+    "X3": Decimal("40"),
+    "X4": Decimal("30"),
+}
+ENG_VALUES_BY_DAY = {
+    E_D1: ENG_RANK_12,
+    E_D2: ENG_RANK_12,
+    E_D3: ENG_RANK_34,
+    E_D4: ENG_RANK_34,
+    E_D5: ENG_RANK_34,
+}
+
+
+def _eng_dt(day: date, hour: int = 16, minute: int = 0) -> datetime:
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=UTC)
+
+
+def _eng_state(
+    sid: str,
+    *,
+    effective_from: date = E_D1,
+    effective_to: date | None = None,
+    suspended: bool = False,
+) -> SecurityState:
+    return SecurityState(
+        security_id=sid,
+        code=sid,
+        name=f"Engine {sid}",
+        board="main",
+        board_category="synthetic_test",
+        exchange="TEST",
+        effective_from=effective_from,
+        effective_to=effective_to,
+        available_at=_eng_dt(E_D1, 9),
+        listing_date=E_D1,
+        suspended=suspended,
+        source_id="synthetic",
+        source_version="s1",
+        pool_version="p1",
+    )
+
+
+def _eng_steady_states(ids: tuple[str, ...] = ENG_IDS) -> tuple[SecurityState, ...]:
+    return tuple(_eng_state(sid) for sid in ids)
+
+
+def _eng_bar(
+    sid: str,
+    day: date,
+    *,
+    close: str = "10",
+    limited: bool = False,
+) -> DailyBar:
+    return DailyBar(
+        security_id=sid,
+        trade_date=day,
+        available_at=_eng_dt(day, 16),
+        source_id="synthetic",
+        source_version="s1",
+        close=Decimal(close),
+        adjustment_factor=Decimal("1"),
+        adjustment_version="a1",
+        currency="CNY",
+        price_unit="currency/share",
+        volume_unit="share",
+        amount_unit="currency",
+        volume=Decimal("100"),
+        amount=Decimal("1000"),
+        limit_status="limited" if limited else "no_limit",
+        limit_date=day if limited else None,
+        limit_up=Decimal("11") if limited else None,
+        limit_down=Decimal("9") if limited else None,
+    )
+
+
+def _eng_market(
+    day: date,
+    closes: dict[str, str],
+    *,
+    ids: tuple[str, ...] = ENG_IDS,
+    states: tuple[SecurityState, ...] | None = None,
+    limited: frozenset[str] = frozenset(),
+) -> MarketBatch:
+    from factories import grant
+
+    bars = []
+    for sid in ids:
+        close = closes.get(sid)
+        if close is None:
+            continue
+        bars.append(_eng_bar(sid, day, close=close, limited=sid in limited))
+    return MarketBatch(
+        trade_date=day,
+        as_of=_eng_dt(day, 16, 30),
+        source_id="synthetic",
+        source_version="s1",
+        adjustment_version="a1",
+        calendar_version="c1",
+        pool_version="p1",
+        grant=grant(),
+        calendar=ENG_CAL,
+        expected_security_ids=ids,
+        security_states=states if states is not None else _eng_steady_states(ids),
+        bars=tuple(bars),
+        complete_pages=True,
+        provenance="contemporaneous",
+    )
+
+
+def _eng_frames(
+    closes_by_day: dict[date, dict[str, str]],
+    *,
+    ids: tuple[str, ...] = ENG_IDS,
+    states: tuple[SecurityState, ...] | None = None,
+    limited: dict[date, frozenset[str]] | None = None,
+) -> tuple[PitFrame, ...]:
+    limits = limited or {}
+    return tuple(
+        PitFrame(
+            trade_date=day,
+            publication_sequence=(index + 1) * 100,
+            market=_eng_market(
+                day,
+                closes_by_day[day],
+                ids=ids,
+                states=states,
+                limited=limits.get(day, frozenset()),
+            ),
+        )
+        for index, day in enumerate(ENG_DAYS)
+    )
+
+
+def _factor_point(sid: str, value: Decimal | bool | None) -> FactorPoint:
+    if value is None:
+        return FactorPoint(
+            security_id=sid,
+            value=None,
+            reasons=("factor_value_unavailable",),
+        )
+    return FactorPoint(security_id=sid, value=value)
+
+
+def _factor_frame(
+    day: date,
+    values: dict[str, Decimal | bool | None],
+    *,
+    ids: tuple[str, ...] = ENG_IDS,
+    factor_id: str = "FAC-R01",
+    metric: str = "relative_strength_20",
+    window: str = "20d",
+    unit: str = "ratio",
+) -> FactorFrame:
+    return FactorFrame(
+        trade_date=day,
+        factor_id=factor_id,  # type: ignore[arg-type]
+        metric=metric,
+        window=window,
+        unit=unit,
+        points=tuple(_factor_point(sid, values.get(sid)) for sid in ids),
+    )
+
+
+def _factor_frames(
+    values_by_day: dict[date, dict[str, Decimal | bool | None]],
+    *,
+    ids: tuple[str, ...] = ENG_IDS,
+    factor_id: str = "FAC-R01",
+) -> tuple[FactorFrame, ...]:
+    return tuple(
+        _factor_frame(day, values_by_day[day], ids=ids, factor_id=factor_id)
+        for day in ENG_DAYS
+    )
+
+
+def _eng_anchor() -> PitAnchor:
+    return PitAnchor(
+        publication_sequence=500,
+        trade_date=E_D5,
+        status="published",
+    )
+
+
+def _eng_config(**overrides: object) -> BacktestConfig:
+    values = {
+        "period": period(start=E_D1, end=E_D5),
+        "parameters": parameters(top_n=2, rebalance_period=2),
+    }
+    values.update(overrides)
+    return config(**values)  # type: ignore[arg-type]
+
+
+def _run_engine(
+    cfg: BacktestConfig,
+    frames: Sequence[PitFrame],
+    factor_frames: Sequence[FactorFrame],
+) -> object:
+    return run_backtest(
+        cfg,
+        frames,
+        factor_frames,
+        anchor=_eng_anchor(),
+        policy=UniversePolicy(),
+    )
+
+
+def _result_json(result: object) -> str:
+    return json.dumps(
+        result.model_dump(mode="json"),  # type: ignore[attr-defined]
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+def golden_engine_result_json() -> str:
+    """Deterministic primary-scenario builder for the cross-process probe."""
+    cfg = _eng_config()
+    frames = _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS})
+    factor_frames = _factor_frames(ENG_VALUES_BY_DAY)
+    return _result_json(_run_engine(cfg, frames, factor_frames))
+
+
+def test_strategy_registry_rejects_unknown_strategy_id() -> None:
+    assert get_strategy("factor-cross-sectional-topn-v1") is not None
+    with pytest.raises(ValueError, match="strategy"):
+        get_strategy("six-role-signals-v1")
+
+
+def test_factor_id_is_a_bounded_strategy_parameter_with_default() -> None:
+    assert parameters().factor_id == "FAC-R01"
+    assert parameters(factor_id="FAC-C02").factor_id == "FAC-C02"
+    with pytest.raises(ValidationError):
+        parameters(factor_id="MADE-UP")  # type: ignore[arg-type]
+    baseline = _eng_config().config_hash
+    changed = _eng_config(
+        parameters=parameters(top_n=2, rebalance_period=2, factor_id="FAC-C01")
+    ).config_hash
+    assert changed != baseline
+
+
+def test_run_backtest_golden_rotation_economics() -> None:
+    result = _run_engine(
+        _eng_config(),
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(ENG_VALUES_BY_DAY),
+    )
+
+    trades = result.trades
+    assert len(trades) == 6
+    assert [(t.security_id, t.side) for t in trades] == [
+        ("X1", "buy"),
+        ("X2", "buy"),
+        ("X1", "sell"),
+        ("X2", "sell"),
+        ("X3", "buy"),
+        ("X4", "buy"),
+    ]
+    assert {t.trade_date for t in trades} == {E_D2, E_D4}
+    assert all(t.quantity == 4900 for t in trades)
+    assert all(t.fill_price == Decimal("10.0050") for t in trades if t.side == "buy")
+    assert all(t.fill_price == Decimal("9.9950") for t in trades if t.side == "sell")
+    assert result.rejections == ()
+
+    assert [point.trade_date for point in result.equity] == list(ENG_DAYS)
+    assert result.equity[0].equity == Decimal("100000.00")
+    assert result.equity[-1].equity == Decimal("99666.82")
+
+    metrics = result.metrics
+    assert metrics.initial_equity == Decimal("100000.00")
+    assert metrics.final_equity == Decimal("99666.82")
+    assert metrics.total_return == Decimal("-0.003332")
+    assert metrics.max_drawdown == Decimal("0.003332")
+    assert metrics.turnover_rate == Decimal("2.940490")
+    assert metrics.total_commission == Decimal("88.22")
+    assert metrics.total_stamp_tax == Decimal("97.96")
+    assert metrics.total_cost == Decimal("186.18")
+    assert metrics.unfillable_count_ratio == Decimal("0.000000")
+    assert metrics.unfillable_amount_ratio == Decimal("0.000000")
+
+
+def test_signals_fill_only_next_session_and_terminal_day_never_trades() -> None:
+    result = _run_engine(
+        _eng_config(),
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(ENG_VALUES_BY_DAY),
+    )
+    for trade in result.trades:
+        assert trade.trade_date == trade.signal_date + timedelta(days=1)
+    assert all(trade.trade_date != E_D5 for trade in result.trades)
+    terminal_events = [
+        event
+        for day in result.quality
+        for event in day.events
+        if event.code == "decision_without_next_session"
+    ]
+    assert [(event.trade_date) for event in terminal_events] == [E_D5]
+
+
+def test_result_carries_versioned_research_only_skeleton() -> None:
+    cfg = _eng_config()
+    result = _run_engine(
+        cfg,
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(ENG_VALUES_BY_DAY),
+    )
+    assert result.schema_version == "dragon-radar.research-backtest/v1"
+    assert result.research_only is True
+    assert result.config_hash == cfg.config_hash
+    assert result.snapshot_id == cfg.snapshot_id
+    assert result.manifests == cfg.input_manifests
+    versions = result.versions
+    assert versions.strategy_id == "factor-cross-sectional-topn-v1"
+    assert versions.factor_id == "FAC-R01"
+    assert versions.factor_metric == "relative_strength_20"
+    assert versions.factor_window == "20d"
+    assert versions.factor_unit == "ratio"
+    assert versions.sizing_method
+    assert versions.execution_method
+    assert versions.ledger_method
+    assert versions.valuation_method
+    assert versions.cost_method
+    assert versions.adjustment == "adjustment-v1"
+    assert versions.calendar == "calendar-cn-v1"
+    assert versions.pool == "topic-pool-v1"
+    assert result.folds is None
+    assert result.ablation is None
+    assert result.baseline.status == "completed"
+    assert result.baseline.metrics == result.metrics
+    assert tuple(entry.tier for entry in result.baseline.cost_sensitivity) == (
+        "low",
+        "base",
+        "high",
+    )
+    assert [day_quality.trade_date for day_quality in result.quality] == list(ENG_DAYS)
+    decision_coverage = {
+        day_quality.trade_date: day_quality.factor_coverage
+        for day_quality in result.quality
+    }
+    assert decision_coverage[E_D1].expected == 4
+    assert decision_coverage[E_D1].valid == 4
+    assert decision_coverage[E_D2] is None
+    assert decision_coverage[E_D3].valid == 4
+    assert decision_coverage[E_D4] is None
+
+
+def test_cost_sensitivity_tiers_are_strictly_ordered() -> None:
+    result = _run_engine(
+        _eng_config(),
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(ENG_VALUES_BY_DAY),
+    )
+    legs = {entry.tier: entry for entry in result.baseline.cost_sensitivity}
+    assert legs["base"].metrics == result.metrics
+    assert legs["low"].cost_multiplier == Decimal("0.5")
+    assert legs["high"].cost_multiplier == Decimal("2")
+    assert (
+        legs["low"].metrics.final_equity
+        > legs["base"].metrics.final_equity
+        > legs["high"].metrics.final_equity
+    )
+    assert (
+        legs["low"].metrics.total_cost
+        < legs["base"].metrics.total_cost
+        < legs["high"].metrics.total_cost
+    )
+
+
+def test_missing_factor_value_is_excluded_never_fabricated() -> None:
+    values = {
+        day: dict(values_for_day) for day, values_for_day in ENG_VALUES_BY_DAY.items()
+    }
+    values[E_D1]["X3"] = None
+    result = _run_engine(
+        _eng_config(),
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(values),
+    )
+    day_one = result.quality[0]
+    coverage = day_one.factor_coverage
+    assert (coverage.expected, coverage.valid, coverage.excluded, coverage.missing) == (
+        4,
+        3,
+        0,
+        1,
+    )
+    missing_events = [
+        event for event in day_one.events if event.code == "factor_value_missing"
+    ]
+    assert [(event.security_id) for event in missing_events] == ["X3"]
+    bought = {t.security_id for t in result.trades if t.trade_date == E_D2}
+    assert bought == {"X1", "X2"}
+
+
+def test_bool_factor_value_counts_as_excluded_coverage() -> None:
+    values = {
+        E_D1: {
+            "X1": Decimal("40"),
+            "X2": Decimal("30"),
+            "X3": Decimal("20"),
+            "X4": True,
+        },
+        E_D2: dict(ENG_RANK_12),
+        E_D3: dict(ENG_RANK_34),
+        E_D4: dict(ENG_RANK_34),
+        E_D5: dict(ENG_RANK_34),
+    }
+    result = _run_engine(
+        _eng_config(),
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(values),
+    )
+    coverage = result.quality[0].factor_coverage
+    assert (coverage.expected, coverage.valid, coverage.excluded, coverage.missing) == (
+        4,
+        3,
+        1,
+        0,
+    )
+    excluded_events = [
+        event
+        for event in result.quality[0].events
+        if event.code == "factor_value_excluded"
+    ]
+    assert [event.security_id for event in excluded_events] == ["X4"]
+    bought = {t.security_id for t in result.trades if t.trade_date == E_D2}
+    assert bought == {"X1", "X2"}
+
+
+def test_section_below_top_n_and_empty_section_fail_open_without_orders() -> None:
+    below_values = {
+        E_D1: {
+            "X1": Decimal("40"),
+            "X2": Decimal("30"),
+            "X3": None,
+            "X4": None,
+        },
+        E_D2: dict(ENG_RANK_12),
+        E_D3: dict(ENG_RANK_34),
+        E_D4: dict(ENG_RANK_34),
+        E_D5: dict(ENG_RANK_34),
+    }
+    below = _run_engine(
+        _eng_config(parameters=parameters(top_n=3, rebalance_period=2)),
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(below_values),
+    )
+    below_events = [event.code for event in below.quality[0].events]
+    assert "factor_section_below_top_n" in below_events
+    assert below.quality[0].factor_coverage.valid == 2
+    assert {t.security_id for t in below.trades if t.trade_date == E_D2} == {
+        "X1",
+        "X2",
+    }
+
+    empty_values = {day: {sid: None for sid in ENG_IDS} for day in ENG_DAYS}
+    empty = _run_engine(
+        _eng_config(),
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(empty_values),
+    )
+    assert empty.trades == ()
+    assert "factor_section_empty" in [event.code for event in empty.quality[0].events]
+    assert empty.metrics.total_return == Decimal("0.000000")
+
+
+def test_limit_up_buy_rejection_feeds_dual_unfillable_ratios() -> None:
+    # A sealed limit-up session closes exactly at limit_up (11 vs 10 flat).
+    closes = {day: dict(ENG_FLAT) for day in ENG_DAYS}
+    closes[E_D2]["X1"] = "11"
+    result = _run_engine(
+        _eng_config(),
+        _eng_frames(
+            closes,
+            limited={E_D2: frozenset({"X1"})},
+        ),
+        _factor_frames(ENG_VALUES_BY_DAY),
+    )
+    assert len(result.rejections) == 1
+    rejection = result.rejections[0]
+    assert rejection.security_id == "X1"
+    assert rejection.side == "buy"
+    assert rejection.trade_date == E_D2
+    assert rejection.reason == "limit_up_blocked_buy"
+    # The rejected buy never settles, so X1 is absent from holdings at the D3
+    # rebalance: five intended orders in total, one unfillable (1/5).
+    assert result.metrics.unfillable_count_ratio == Decimal("0.200000")
+    assert result.metrics.unfillable_amount_ratio == Decimal("0.200000")
+
+
+def test_suspended_holding_carries_mark_and_closes_as_rejection() -> None:
+    ids = ("Y1", "Y2")
+    states = (
+        _eng_state("Y1"),
+        _eng_state("Y2", effective_to=E_D3),
+        _eng_state("Y2", effective_from=E_D3, effective_to=E_D5, suspended=True),
+        _eng_state("Y2", effective_from=E_D5),
+    )
+    closes = {
+        E_D1: {"Y1": "10", "Y2": "10"},
+        E_D2: {"Y1": "10", "Y2": "10"},
+        E_D3: {"Y1": "10"},
+        E_D4: {"Y1": "10"},
+        E_D5: {"Y1": "10", "Y2": "10"},
+    }
+    values = {day: {"Y1": Decimal("40"), "Y2": Decimal("30")} for day in ENG_DAYS}
+    result = _run_engine(
+        _eng_config(),
+        _eng_frames(closes, ids=ids, states=states),
+        _factor_frames(values, ids=ids),
+    )
+    sell_rejections = [
+        rejection
+        for rejection in result.rejections
+        if rejection.security_id == "Y2" and rejection.side == "sell"
+    ]
+    assert len(sell_rejections) == 1
+    assert sell_rejections[0].reason == "suspended"
+    assert sell_rejections[0].trade_date == E_D4
+    carry_days = [
+        day_quality.trade_date
+        for day_quality in result.quality
+        for event in day_quality.events
+        if event.code == "mark_price_carried" and event.security_id == "Y2"
+    ]
+    assert carry_days == [E_D3, E_D4]
+
+
+def test_factor_frames_must_align_with_window_and_declared_factor() -> None:
+    frames = _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS})
+    factor_frames = _factor_frames(ENG_VALUES_BY_DAY)
+
+    with pytest.raises(ValueError, match="align"):
+        run_backtest(
+            _eng_config(),
+            frames,
+            factor_frames[:-1],
+            anchor=_eng_anchor(),
+            policy=UniversePolicy(),
+        )
+    mismatched_date = factor_frames[0].model_copy(update={"trade_date": E_D2})
+    with pytest.raises(ValueError, match="align"):
+        run_backtest(
+            _eng_config(),
+            frames,
+            (mismatched_date, *factor_frames[1:]),
+            anchor=_eng_anchor(),
+            policy=UniversePolicy(),
+        )
+    with pytest.raises(ValueError, match="factor_id"):
+        run_backtest(
+            _eng_config(),
+            frames,
+            _factor_frames(ENG_VALUES_BY_DAY, factor_id="FAC-C01"),
+            anchor=_eng_anchor(),
+            policy=UniversePolicy(),
+        )
+    inconsistent_metric = factor_frames[2].model_copy(update={"metric": "other-metric"})
+    with pytest.raises(ValueError, match="metric"):
+        run_backtest(
+            _eng_config(),
+            frames,
+            (*factor_frames[:2], inconsistent_metric, *factor_frames[3:]),
+            anchor=_eng_anchor(),
+            policy=UniversePolicy(),
+        )
+
+
+def test_factor_frame_validation_is_strict() -> None:
+    with pytest.raises(ValidationError):
+        FactorPoint(security_id="X1", value=1.2)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        FactorPoint(security_id="X1", value=None)
+    with pytest.raises(ValidationError):
+        FactorFrame(
+            trade_date=E_D1,
+            factor_id="NOT-A-FACTOR",  # type: ignore[arg-type]
+            metric="m",
+            window="w",
+            unit="u",
+            points=(_factor_point("X1", Decimal("1")),),
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        FactorFrame(
+            trade_date=E_D1,
+            factor_id="FAC-R01",
+            metric="m",
+            window="w",
+            unit="u",
+            points=(
+                _factor_point("X1", Decimal("1")),
+                _factor_point("X1", Decimal("2")),
+            ),
+        )
+
+
+def test_same_inputs_produce_field_identical_results() -> None:
+    frames = _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS})
+    factor_frames = _factor_frames(ENG_VALUES_BY_DAY)
+    first = _result_json(_run_engine(_eng_config(), frames, factor_frames))
+    second = _result_json(_run_engine(_eng_config(), frames, factor_frames))
+    assert first == second
+
+
+def test_cross_process_run_is_byte_identical() -> None:
+    env = dict(os.environ)
+    env["PYTHONPYCACHEPREFIX"] = os.path.abspath(".temp/pycache")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; sys.path.insert(0, 'tests'); "
+                "import test_reset_backtest as t; "
+                "print(t.golden_engine_result_json())"
+            ),
+        ],
+        cwd=os.getcwd(),
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == golden_engine_result_json()
