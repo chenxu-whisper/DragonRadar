@@ -22,6 +22,17 @@ from dragon_radar.research.execution import (
     Rejection,
     simulate_fill,
 )
+from dragon_radar.research.ledger import (
+    EquityPoint,
+    LedgerState,
+    OrderOutcome,
+    apply_fill,
+    cost_sensitivity_models,
+    mark_equity,
+    open_ledger,
+    roll_overnight,
+    summarize_run,
+)
 from dragon_radar.research.models import CostModel
 
 VALIDATION_MODULES = (
@@ -444,3 +455,219 @@ def test_rejection_precedence_limit_before_cash_and_position():
     )
     assert isinstance(sell, Rejection)
     assert sell.reason == "limit_down_blocked_sell"
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — Decimal ledger, metrics and cost sensitivity
+# ---------------------------------------------------------------------------
+
+DAY1 = date(2025, 1, 7)
+DAY2 = date(2025, 1, 8)
+INITIAL_CASH = Decimal("100000.00")
+
+
+def _round_trip_fills(rules: CostModel):
+    """Buy 100 @10 on DAY1, sell 100 @10 on DAY2 under one cost model."""
+    ledger = open_ledger(INITIAL_CASH, SIGNAL_DAY)
+
+    buy = simulate_fill(
+        order("buy", 100),
+        bar(trade_date=DAY1),
+        state(),
+        rules,
+        ledger.cash,
+        None,
+    )
+    assert isinstance(buy, Fill)
+    ledger = apply_fill(ledger, buy)
+    assert ledger.holdings["000001"].quantity == Decimal("100")
+    assert ledger.holdings["000001"].available_quantity == Decimal("0")
+
+    # Identity, not a base-tier constant: this helper runs under every cost
+    # tier, so independently recompute cash after the fill plus the holding
+    # marked at the raw close. The base-cost golden value stays pinned below.
+    day1_equity = mark_equity(ledger, {"000001": Decimal("10.00")})
+    assert day1_equity == (INITIAL_CASH + buy.net_cash_delta + Decimal("1000.00"))
+
+    ledger = roll_overnight(ledger, DAY2)
+    assert ledger.holdings["000001"].available_quantity == Decimal("100")
+
+    holding = ledger.holdings["000001"]
+    sell = simulate_fill(
+        Order(
+            security_id="000001",
+            side="sell",
+            quantity=100,
+            signal_date=DAY1,
+        ),
+        bar(trade_date=DAY2),
+        state(),
+        rules,
+        ledger.cash,
+        Position(
+            security_id="000001",
+            quantity=holding.quantity,
+            available_quantity=holding.available_quantity,
+        ),
+    )
+    assert isinstance(sell, Fill)
+    ledger = apply_fill(ledger, sell)
+    assert "000001" not in ledger.holdings
+    return buy, sell, ledger
+
+
+def test_ledger_identity_and_nonnegativity_hold_each_session():
+    buy, sell, final_ledger = _round_trip_fills(cost_model())
+    assert final_ledger.cash == Decimal("99988.00")
+
+    points = (
+        EquityPoint(trade_date=SIGNAL_DAY, equity=INITIAL_CASH),
+        EquityPoint(trade_date=DAY1, equity=Decimal("99994.50")),
+        EquityPoint(trade_date=DAY2, equity=Decimal("99988.00")),
+    )
+    # Identity recomputed independently at every marked session.
+    assert points[1].equity == Decimal("98994.50") + Decimal("1000.00")
+    assert points[2].equity == final_ledger.cash
+
+
+def test_ledger_rejects_negative_cash_construction():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        LedgerState(as_of=SIGNAL_DAY, cash=Decimal("-0.01"), holdings={})
+
+
+def test_t1_lot_freezes_until_roll_overnight():
+    ledger = open_ledger(INITIAL_CASH, SIGNAL_DAY)
+    buy = simulate_fill(
+        order("buy", 100),
+        bar(trade_date=DAY1),
+        state(),
+        cost_model(),
+        ledger.cash,
+        None,
+    )
+    assert isinstance(buy, Fill)
+    same_day = apply_fill(ledger, buy)
+    assert same_day.holdings["000001"].available_quantity == Decimal("0")
+    next_day = roll_overnight(same_day, DAY2)
+    assert next_day.holdings["000001"].available_quantity == Decimal("100")
+    assert next_day.cash == same_day.cash
+
+
+def test_summarize_run_golden_metrics_and_dual_unfillable_ratios():
+    buy, sell, _ledger = _round_trip_fills(cost_model())
+    outcomes = (
+        OrderOutcome(
+            security_id="000001",
+            side="buy",
+            quantity=100,
+            intended_amount=Decimal("1000.00"),
+            filled=True,
+        ),
+        OrderOutcome(
+            security_id="000001",
+            side="sell",
+            quantity=100,
+            intended_amount=Decimal("1000.00"),
+            filled=True,
+        ),
+        # 50-share rejected order carries half the intended amount but the
+        # same count weight, separating the two ratio denominators.
+        OrderOutcome(
+            security_id="000001",
+            side="buy",
+            quantity=50,
+            intended_amount=Decimal("500.00"),
+            filled=False,
+        ),
+    )
+    points = (
+        EquityPoint(trade_date=SIGNAL_DAY, equity=INITIAL_CASH),
+        EquityPoint(trade_date=DAY1, equity=Decimal("99994.50")),
+        EquityPoint(trade_date=DAY2, equity=Decimal("99988.00")),
+    )
+    metrics = summarize_run(
+        equity_points=points,
+        fills=(buy, sell),
+        outcomes=outcomes,
+        benchmark_prices=(
+            Decimal("100000"),
+            Decimal("100000"),
+            Decimal("100010"),
+        ),
+    )
+    assert metrics.initial_equity == Decimal("100000.00")
+    assert metrics.final_equity == Decimal("99988.00")
+    assert metrics.total_return == Decimal("-0.000120")
+    assert metrics.benchmark_return == Decimal("0.000100")
+    assert metrics.excess_return == Decimal("-0.000220")
+    assert metrics.max_drawdown == Decimal("0.000120")
+    assert metrics.turnover_rate == Decimal("0.020000")
+    assert metrics.total_commission == Decimal("10.00")
+    assert metrics.total_stamp_tax == Decimal("1.00")
+    assert metrics.total_cost == Decimal("11.00")
+    assert metrics.unfillable_count_ratio == Decimal("0.333333")
+    assert metrics.unfillable_amount_ratio == Decimal("0.200000")
+
+
+def test_empty_order_stream_reports_zero_ratios():
+    points = (EquityPoint(trade_date=SIGNAL_DAY, equity=INITIAL_CASH),)
+    metrics = summarize_run(
+        equity_points=points,
+        fills=(),
+        outcomes=(),
+        benchmark_prices=None,
+    )
+    assert metrics.total_return == Decimal("0.000000")
+    assert metrics.unfillable_count_ratio == Decimal("0.000000")
+    assert metrics.unfillable_amount_ratio == Decimal("0.000000")
+    assert metrics.excess_return == Decimal("0.000000")
+
+
+def test_cost_sensitivity_scales_every_component_and_monotone_returns():
+    tiers = cost_sensitivity_models(cost_model())
+    assert tuple(tiers) == ("low", "base", "high")
+    assert tiers["base"].commission_rate == Decimal("0.0003")
+    assert tiers["low"].commission_rate == Decimal("0.00015")
+    assert tiers["high"].commission_rate == Decimal("0.0006")
+    assert tiers["low"].slippage_rate == Decimal("0.00025")
+    assert tiers["high"].stamp_tax_rate == Decimal("0.002")
+    assert tiers["low"].min_commission == Decimal("2.50")
+
+    returns_by_tier = {}
+    for tier_name, rules in tiers.items():
+        buy, sell, _ledger = _round_trip_fills(rules)
+        outcomes = (
+            OrderOutcome(
+                security_id="000001",
+                side="buy",
+                quantity=100,
+                intended_amount=buy.gross_amount,
+                filled=True,
+            ),
+            OrderOutcome(
+                security_id="000001",
+                side="sell",
+                quantity=100,
+                intended_amount=sell.gross_amount,
+                filled=True,
+            ),
+        )
+        points = (
+            EquityPoint(trade_date=SIGNAL_DAY, equity=INITIAL_CASH),
+            EquityPoint(
+                trade_date=DAY2,
+                equity=INITIAL_CASH + buy.net_cash_delta + sell.net_cash_delta,
+            ),
+        )
+        metrics = summarize_run(
+            equity_points=points,
+            fills=(buy, sell),
+            outcomes=outcomes,
+            benchmark_prices=None,
+        )
+        returns_by_tier[tier_name] = metrics.total_return
+
+    assert returns_by_tier["low"] > returns_by_tier["base"]
+    assert returns_by_tier["base"] > returns_by_tier["high"]
