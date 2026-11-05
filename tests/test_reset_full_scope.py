@@ -752,23 +752,51 @@ def test_migration_head_is_0013_query_with_no_task27_revision():
     assert "0014_research" not in revisions
 
 
-def test_task27_artifacts_remain_absent():
-    absent = (
-        "src/dragon_radar/research",
-        "src/dragon_radar/http/routes/research.py",
-        "src/dragon_radar/migrations/versions/0014_research.py",
-        "web/src/repositories/local/simulation.ts",
-        "web/src/features/research/BacktestPanel.tsx",
-        "web/src/features/research/SimulationPanel.tsx",
-        "tests/test_reset_backtest.py",
-        "tests/test_reset_research_validation.py",
-        "web/tests/unit/reset-simulation.test.ts",
-        "web/tests/e2e/reset-research.spec.ts",
-    )
-    for relative in absent:
-        assert not (ROOT / relative).exists(), f"Task 27 artifact appeared: {relative}"
+# Task 27 unfreezes in slices. Task 1 delivers the pure-kernel package
+# skeleton plus collectible test placeholders; every later-slice artifact
+# keeps its frozen absence until its owning task flips the contract.
+TASK27_SKELETON = (
+    "src/dragon_radar/research/__init__.py",
+    "src/dragon_radar/research/models.py",
+    "src/dragon_radar/research/pit.py",
+    "src/dragon_radar/research/execution.py",
+    "src/dragon_radar/research/ledger.py",
+    "src/dragon_radar/research/engine.py",
+    "src/dragon_radar/research/health.py",
+    "src/dragon_radar/research/walk_forward.py",
+    "src/dragon_radar/research/ablation.py",
+    "src/dragon_radar/research/repository.py",
+    "src/dragon_radar/research/worker.py",
+    "tests/test_reset_backtest.py",
+    "tests/test_reset_research_validation.py",
+    "web/tests/unit/reset-simulation.test.ts",
+    "web/tests/e2e/reset-research.spec.ts",
+)
 
-    # The existing research feature directory holds only Task 28 sentiment.
+TASK27_LATER_ARTIFACTS = (
+    # Task 10 — migration 0014_research.
+    "src/dragon_radar/migrations/versions/0014_research.py",
+    # Task 12 — EX14/EX15 owner routes.
+    "src/dragon_radar/http/routes/research.py",
+    # Task 14 — IndexedDB v5 simulation repository.
+    "web/src/repositories/local/simulation.ts",
+    # Tasks 15/16 — research workbench panels.
+    "web/src/features/research/SimulationPanel.tsx",
+    "web/src/features/research/BacktestPanel.tsx",
+)
+
+
+def test_task27_skeleton_present_but_later_slice_artifacts_remain_absent():
+    for relative in TASK27_SKELETON:
+        assert (ROOT / relative).is_file(), f"Task 27 skeleton missing: {relative}"
+
+    for relative in TASK27_LATER_ARTIFACTS:
+        assert not (ROOT / relative).exists(), (
+            f"Task 27 later-slice artifact appeared early: {relative}"
+        )
+
+    # The existing research feature directory holds only Task 28 sentiment
+    # until Tasks 15/16 add the panels.
     research_feature = ROOT / "web/src/features/research"
     assert {path.name for path in research_feature.glob("*.tsx")} == {
         "SentimentPanel.tsx"
