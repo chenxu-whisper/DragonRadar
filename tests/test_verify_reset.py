@@ -130,7 +130,7 @@ def performance_raw():
     runs = [
         {
             "round": index,
-            "cache_condition": "post_warmup_caches_uncontrolled",
+            "cache_condition": ("steady_state_warmup_gc_fenced_caches_uncontrolled"),
             "request_count": 20,
             "concurrency": 20,
             "successful": 20,
@@ -156,7 +156,10 @@ def performance_raw():
         "environment": {
             "postgresql": "17",
             "os_cold_cache_controlled": False,
-            "cache_claim": "warmup_then_measured_caches_uncontrolled",
+            "gc_fenced": True,
+            "cache_claim": (
+                "multi_wave_warmup_then_gc_fenced_measured_caches_uncontrolled"
+            ),
         },
         "warmup": {
             "paths": [
@@ -165,9 +168,10 @@ def performance_raw():
                 "/api/rank/range",
                 "/api/stock/{id}",
             ],
-            "request_count": 20,
+            "wave_count": 3,
+            "request_count": 60,
             "concurrency": 20,
-            "successful": 20,
+            "successful": 60,
         },
         "runs": runs,
         "aggregate": {
@@ -344,6 +348,34 @@ def test_count_parser_uses_test_count_from_ansi_colored_output():
     assert count_output(output, 0)["passed"] == 14
 
 
+def test_count_parser_maps_node_test_tap_block_without_key_error():
+    # `npm test` ends with the node:test gates, whose TAP summary emits
+    # "# pass" / "# fail" rather than pytest's "passed" / "failed"; the
+    # parser must normalize both aliases (regression: KeyError "pass"
+    # crashed the harness after the frontend_tests gate).
+    count_output = VERIFIER["_counts"]
+    output = "\n".join(
+        [
+            "Test Files  32 passed",
+            "Tests  1025 passed",
+            "1..10",
+            "# tests 10",
+            "# pass 10",
+            "# fail 0",
+            "# cancelled 0",
+            "# skipped 0",
+            "# todo 0",
+            "# duration_ms 88.294201",
+        ]
+    )
+
+    counts = count_output(output, 0, fallback_from_exit=False)
+
+    assert counts["passed"] == 1025
+    assert counts["failed"] == 0
+    assert counts["skipped"] == 0
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
@@ -491,6 +523,37 @@ def test_performance_contract_requires_realistic_warmed_multi_round_fixture():
     false_cold = deepcopy(valid)
     false_cold["runs"][0]["cache_condition"] = "cold_process"
     assert any("cold" in error.lower() for error in errors(false_cold))
+
+    legacy_run_label = deepcopy(valid)
+    legacy_run_label["runs"][0]["cache_condition"] = "post_warmup_caches_uncontrolled"
+    assert any("cache claim" in error.lower() for error in errors(legacy_run_label))
+
+    single_wave_warmup = deepcopy(valid)
+    single_wave_warmup["warmup"] = {
+        "paths": valid["warmup"]["paths"],
+        "request_count": 20,
+        "concurrency": 20,
+        "successful": 20,
+    }
+    assert any("warmup" in error.lower() for error in errors(single_wave_warmup))
+
+    inconsistent_warmup = deepcopy(valid)
+    inconsistent_warmup["warmup"]["request_count"] = 40
+    assert any("warmup" in error.lower() for error in errors(inconsistent_warmup))
+
+    missing_gc_fence = deepcopy(valid)
+    del missing_gc_fence["environment"]["gc_fenced"]
+    assert any("gc" in error.lower() for error in errors(missing_gc_fence))
+
+    disabled_gc_fence = deepcopy(valid)
+    disabled_gc_fence["environment"]["gc_fenced"] = False
+    assert any("gc" in error.lower() for error in errors(disabled_gc_fence))
+
+    legacy_cache_claim = deepcopy(valid)
+    legacy_cache_claim["environment"]["cache_claim"] = (
+        "warmup_then_measured_caches_uncontrolled"
+    )
+    assert any("cache claim" in error.lower() for error in errors(legacy_cache_claim))
 
     no_aggregate = deepcopy(valid)
     del no_aggregate["aggregate"]
@@ -903,6 +966,416 @@ def test_execution_rejects_exit_zero_without_native_output():
     errors = validate_result(result, requires_test_counts=True)
 
     assert any("native output" in error for error in errors)
+
+
+def test_performance_isolation_factory_is_off_without_explicit_marker():
+    factory = VERIFIER["_performance_isolation"]
+
+    assert factory({}) is None
+    assert factory({"DRAGON_TASK20_COMPOSE_PROJECT": "dragon-radar-task20-1-1"}) is None
+
+
+def test_performance_isolation_factory_fails_closed_without_project_or_state(
+    tmp_path, monkeypatch
+):
+    factory = VERIFIER["_performance_isolation"]
+    marker = VERIFIER["PERF_ISOLATION_ENV"]
+    project_env = VERIFIER["TASK20_COMPOSE_PROJECT_ENV"]
+    state_file = tmp_path / "compose.env"
+    monkeypatch.setitem(
+        VERIFIER["_performance_isolation"].__globals__,
+        "TASK20_STACK_ENV_FILE",
+        state_file,
+    )
+
+    with pytest.raises(RuntimeError, match=project_env):
+        factory({marker: "1"})
+
+    with pytest.raises(RuntimeError, match="compose.env"):
+        factory({marker: "1", project_env: "dragon-radar-task20-1-1"})
+
+    state_file.write_text("DRAGON_DB_PASSWORD=secret\n", encoding="utf-8")
+    isolation = factory({marker: "1", project_env: "dragon-radar-task20-1-1"})
+    assert isinstance(isolation, VERIFIER["PrivateStackIsolation"])
+
+
+def test_private_stack_isolation_runs_compose_stop_and_wait_up_bypassing_runner(
+    tmp_path,
+):
+    root = VERIFIER["ROOT"]
+    invoked = []
+
+    def invoke(argv, *, cwd, env, timeout):
+        invoked.append({"argv": argv, "cwd": cwd, "env": env, "timeout": timeout})
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    state_file = tmp_path / "compose.env"
+    state_file.write_text("DRAGON_DB_PASSWORD=secret\n", encoding="utf-8")
+    isolation = VERIFIER["PrivateStackIsolation"](
+        project="dragon-radar-task20-7-2",
+        env_file=state_file,
+        invoke=invoke,
+    )
+
+    isolation.suspend()
+    isolation.resume()
+
+    expected_prefix = (
+        "docker",
+        "compose",
+        "--project-name",
+        "dragon-radar-task20-7-2",
+        "--project-directory",
+        str(root),
+        "--env-file",
+        str(state_file),
+        "-f",
+        str(root / "compose.yaml"),
+        "-f",
+        str(root / "compose.private.yaml"),
+    )
+    assert invoked[0]["argv"] == expected_prefix + ("stop",)
+    assert invoked[1]["argv"] == expected_prefix + (
+        "up",
+        "--detach",
+        "--wait",
+        "web",
+        "api",
+    )
+    assert invoked[0]["timeout"] < invoked[1]["timeout"]
+    assert all(call["cwd"] == root for call in invoked)
+    assert all(isinstance(call["env"], dict) for call in invoked)
+
+
+def test_private_stack_isolation_raises_when_compose_reports_failure(tmp_path):
+    def invoke(argv, *, cwd, env, timeout):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="docker denied")
+
+    isolation = VERIFIER["PrivateStackIsolation"](
+        project="dragon-radar-task20-7-2",
+        env_file=tmp_path / "compose.env",
+        invoke=invoke,
+    )
+
+    with pytest.raises(RuntimeError, match="suspend"):
+        isolation.suspend()
+
+
+class ScriptedIsolation:
+    def __init__(self, events):
+        self.events = events
+
+    def suspend(self):
+        self.events.append("suspend")
+
+    def resume(self):
+        self.events.append("resume")
+
+
+def test_performance_gate_suspends_before_command_and_resumes_after(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 2, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            self.calls.append(
+                {
+                    "argv": argv,
+                    "cwd": cwd,
+                    "environment": environment,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            events.append(("command", argv))
+            return next(self.results)
+
+    runner = EventRunner(results)
+
+    records = execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    performance_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and event[1][-1] == "tests/performance/test_reset_queries.py"
+    )
+    assert events.index("suspend") < performance_index < events.index("resume")
+    # Full mode isolates two heavyweight windows from the resumed private
+    # stack: the P95 measurement and the full backend coverage suite.
+    assert events.count("suspend") == 2
+    assert events.count("resume") == 2
+    assert [call["argv"] for call in runner.calls] == [
+        tuple(spec["command"]) for spec in specs
+    ]
+    assert len(records) == len(REQUIRED_GATES)
+
+
+def test_performance_isolation_resumes_even_when_performance_command_raises(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+            self.calls = []
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            self.calls.append(argv)
+            if argv[-1] == "tests/performance/test_reset_queries.py":
+                raise RuntimeError("runner exploded")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 2, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 2, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(4)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="runner exploded"):
+        execute("focused", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    assert events == ["suspend", "resume"]
+
+
+def test_full_backend_gateway_command_runs_against_live_stack_before_suspend():
+    gateway_spec, bulk_spec = GATE_SPECS["full_backend"]
+
+    # The live TLS gateway checks (DRAGON_TEST_PRIVATE_CA gated) must hit the
+    # running private edge, so this command runs with the stack up.
+    assert tuple(gateway_spec["command"]) == (
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "-rs",
+        "tests/test_private_https.py",
+    )
+    assert gateway_spec.get("suspend_private_stack") is False
+
+    # The bulk suite is the contention-sensitive window: it suspends the
+    # stack and must not re-run the live gateway checks it just executed.
+    bulk_command = tuple(bulk_spec["command"])
+    assert bulk_command[:5] == ("uv", "run", "pytest", "-q", "-rs")
+    assert bulk_command.count("--deselect") == 2
+    assert "tests/performance/test_reset_queries.py" in bulk_command
+    assert "tests/test_private_https.py" in bulk_command
+    assert bulk_spec.get("suspend_private_stack") is True
+    assert bulk_spec["timeout_seconds"] == 2400
+
+    (performance_spec,) = GATE_SPECS["performance"]
+    assert performance_spec.get("suspend_private_stack") is True
+
+
+def test_full_backend_gateway_command_runs_with_stack_up(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 3, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            events.append(("command", argv))
+            return next(self.results)
+
+    execute("full", tmp_path, EventRunner(results), isolation=ScriptedIsolation(events))
+
+    gateway_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    gateway_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and tuple(event[1]) == gateway_command
+    )
+    suspend_indices = [
+        index for index, event in enumerate(events) if event == "suspend"
+    ]
+    # The live gateway command must complete during the stack-up window that
+    # follows the performance resume, before the bulk suite suspends it again.
+    assert gateway_index < suspend_indices[1]
+
+
+def test_full_backend_gateway_failure_propagates_without_suspending_stack(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    gateway_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            if tuple(argv) == gateway_command:
+                raise RuntimeError("gateway unreachable")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 3, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 3, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(40)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="gateway unreachable"):
+        execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    # Only the performance window isolated the stack; the full_backend bulk
+    # suspend never starts when the live gateway command fails fail-closed.
+    assert events == ["suspend", "resume"]
+
+
+def test_full_backend_gate_suspends_private_stack_and_resumes_after(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 3, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            events.append(("command", argv))
+            return next(self.results)
+
+    runner = EventRunner(results)
+
+    execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    full_backend_command = tuple(GATE_SPECS["full_backend"][1]["command"])
+    full_backend_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and tuple(event[1]) == full_backend_command
+    )
+    suspend_indices = [
+        index for index, event in enumerate(events) if event == "suspend"
+    ]
+    resume_indices = [index for index, event in enumerate(events) if event == "resume"]
+    assert len(suspend_indices) == 2
+    assert len(resume_indices) == 2
+    assert suspend_indices[1] < full_backend_index < resume_indices[1]
+
+
+def test_full_backend_isolation_resumes_even_when_suite_command_raises(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    full_backend_command = tuple(GATE_SPECS["full_backend"][1]["command"])
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            if tuple(argv) == full_backend_command:
+                raise RuntimeError("suite timed out externally")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 3, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 3, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(40)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="suite timed out externally"):
+        execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    assert events.count("suspend") == 2
+    assert events.count("resume") == 2
+    assert events[-1] == "resume"
+
+
+def test_perf_isolation_marker_is_stripped_from_gate_command_environments(
+    tmp_path, monkeypatch
+):
+    execute = VERIFIER["_execute_gates"]
+    marker = VERIFIER["PERF_ISOLATION_ENV"]
+    monkeypatch.setenv(marker, "1")
+    monkeypatch.setenv("DRAGON_TASK20_COMPOSE_PROJECT", "dragon-radar-task20-1-1")
+    focused_specs = [
+        spec
+        for gate in VERIFIER["FOCUSED_GATES"]
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 2, tzinfo=UTC)
+    runner = RecordingRunner(
+        [
+            FakeRunResult(
+                started_at=started + timedelta(seconds=index),
+                ended_at=started + timedelta(seconds=index + 1),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for index in range(len(focused_specs))
+        ]
+    )
+
+    execute("focused", tmp_path, runner)
+
+    assert runner.calls
+    assert all(marker not in call["environment"] for call in runner.calls)
 
 
 def test_full_execution_manifest_passes_only_in_execution_context(

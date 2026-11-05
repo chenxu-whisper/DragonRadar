@@ -246,10 +246,26 @@ test('配对失败后 focus 和 visibility 会话检查恢复', async ({ page })
   await mockMarket(page);
   await mockReview(page, db);
   let sessionGets = 0;
+  let sessionFinished = 0;
   await page.route('**/api/owner/v1/session', async route => {
-    if (route.request().method() === 'GET') sessionGets++;
+    if (route.request().method() === 'GET') {
+      sessionGets++;
+      // Widen the in-flight window: focus/visibility signals dispatched while a
+      // check is still running are coalesced by design, so the test must only
+      // send the next signal after the previous check has finished.
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
     await route.fallback();
   });
+  page.on('response', response => {
+    if (response.request().method() !== 'GET') return;
+    if (new URL(response.url()).pathname !== '/api/owner/v1/session') return;
+    void response.finished().then(() => { sessionFinished += 1; });
+  });
+  const sessionDrained = () =>
+    expect.poll(() => sessionGets === sessionFinished, {
+      message: 'in-flight session checks finish before the next signal',
+    }).toBe(true);
   await page.route('**/api/owner/v1/pair', route => route.fulfill({
     status: 401,
     contentType: 'application/json',
@@ -257,6 +273,7 @@ test('配对失败后 focus 和 visibility 会话检查恢复', async ({ page })
   }));
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toBeVisible();
+  await sessionDrained();
   const sessionGetsBeforePair = sessionGets;
   await page.getByLabel('一次性配对码').fill('expired-code');
   await page.getByRole('button', { name: '配对', exact: true }).click();
@@ -264,8 +281,12 @@ test('配对失败后 focus 和 visibility 会话检查恢复', async ({ page })
 
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect.poll(() => sessionGets).toBe(sessionGetsBeforePair + 1);
+  // Release the in-flight guard before dispatching the next signal: an
+  // overlapping visibility check is coalesced by design and must not be raced.
+  await sessionDrained();
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(() => sessionGets).toBe(sessionGetsBeforePair + 2);
+  await sessionDrained();
 });
 
 test('验证详情延迟和失败属于读取状态，恢复后可提交且保留草稿', async ({ page }) => {

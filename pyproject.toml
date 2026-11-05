@@ -36,6 +36,10 @@ members = []
 [tool.pytest.ini_options]
 cache_dir = ".temp/pytest_cache"
 testpaths = ["tests"]
+markers = [
+    "windows_only: probe exercises Windows-only platform behavior (junctions); deselected off win32",
+    "requires_restore_container: named labeled PostgreSQL container drill via DRAGON_TEST_POSTGRES_CONTAINER/DRAGON_TEST_DATABASE_URL; deselected without it",
+]
 
 [tool.ruff]
 cache-dir = ".temp/ruff_cache"

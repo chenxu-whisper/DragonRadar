@@ -57,7 +57,14 @@ test('401隐藏并恢复同主体草稿，切主体销毁', async ({ page }) => 
   await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toBeVisible();
   await expect(page.getByLabel('判断', { exact: true })).not.toBeVisible();
   await page.getByLabel('一次性配对码').fill('synthetic-fixture-code');
+  // 恢复会话会触发同主体列表/详情必读请求；必须等二者在授权窗口内返回 200 后再翻转授权，
+  // 否则迟到的 401 按 fail-closed 契约立即锁屏，与随后的“检查会话”点击形成竞态。
+  const restored = Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === '/api/owner/v1/notes' && response.status() === 200),
+    page.waitForResponse(response => /^\/api\/owner\/v1\/notes\/[0-9a-f-]+$/.test(new URL(response.url()).pathname) && response.status() === 200),
+  ]);
   await page.getByRole('button', { name: '配对', exact: true }).click();
+  await restored;
   await expect(page.getByLabel('判断', { exact: true })).toHaveValue('内存独有');
   db.authorized = false;
   await page.getByRole('button', { name: '检查会话' }).click();

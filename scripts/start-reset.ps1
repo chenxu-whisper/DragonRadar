@@ -32,6 +32,7 @@ if (-not (Test-Path -LiteralPath $secret)) {
         $stream.Dispose()
         $password = $null
     }
+    Set-PrivateFileAcl $secret | Out-Null
 }
 
 Assert-PrivateFile $secret

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  composeChildEnvironment,
   parsePublishedPort,
   queryPublishedPort,
 } from './production-isolation-support.mjs';
@@ -34,4 +35,34 @@ test('queryPublishedPort asks Compose for the service container port', () => {
 
   assert.equal(queryPublishedPort(compose, 'web', 8443), 51234);
   assert.deepEqual(calls, [['port', 'web', '8443']]);
+});
+
+test('composeChildEnvironment strips stack-owned vars leaked by the parent shell', () => {
+  // The Task 20 TLS drill publishes DRAGON_PRIVATE_PORT/PUBLISHED_PORT via
+  // GITHUB_ENV for the whole acceptance job; shell variables override the
+  // --env-file in Compose interpolation and would force a bind on 8030.
+  const base = {
+    PATH: '/usr/bin',
+    DOCKER_HOST: 'unix:///var/run/docker.sock',
+    PLAYWRIGHT_CHANNEL: 'chromium',
+    DRAGON_DB_PASSWORD: 'leaked-task20-password',
+    DRAGON_PRIVATE_PORT: '8030',
+    DRAGON_PRIVATE_PUBLISHED_PORT: '8030',
+    DRAGON_WEB_PORT: '8030',
+    DRAGON_E2E_STATE_DIR: '/leaked/state',
+  };
+
+  assert.deepEqual(composeChildEnvironment(base), {
+    PATH: '/usr/bin',
+    DOCKER_HOST: 'unix:///var/run/docker.sock',
+    PLAYWRIGHT_CHANNEL: 'chromium',
+  });
+});
+
+test('composeChildEnvironment does not mutate the provided environment', () => {
+  const base = { PATH: '/usr/bin', DRAGON_PRIVATE_PUBLISHED_PORT: '8030' };
+
+  composeChildEnvironment(base);
+
+  assert.equal(base.DRAGON_PRIVATE_PUBLISHED_PORT, '8030');
 });

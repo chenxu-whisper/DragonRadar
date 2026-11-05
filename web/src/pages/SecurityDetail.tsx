@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, type ComponentType } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, type ComponentType, type KeyboardEvent } from 'react';
 import { ArrowLeft, ExternalLink, X } from 'lucide-react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
@@ -298,17 +298,78 @@ export interface SecurityDrawerProps {
 }
 export function SecurityDrawer({ state, snapshot, id, sector, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityDrawerProps) {
   const dialog = useRef<HTMLDialogElement>(null), closeButton = useRef<HTMLButtonElement>(null);
+  const openGeneration = useRef(0);
   useEffect(() => {
-    dialog.current?.showModal(); closeButton.current?.focus();
-    return () => { dialog.current?.close(); if (trigger.isConnected) trigger.focus(); };
+    // React StrictMode (dev) replays mount as setup -> cleanup -> setup in one
+    // passive-effect flush. Tearing the dialog down in the replayed cleanup
+    // visibly closes/reopens it across scheduler tasks; keyboard input landing
+    // in that window makes the browser recompute the modal focus ring and strand
+    // focus on <body>. Each setup bumps a generation and the microtask-deferred
+    // teardown bails out when a newer setup already owns the dialog, so StrictMode
+    // replay opens the dialog exactly once. A genuine unmount has no successor
+    // setup and still closes the captured node and restores focus to the opener.
+    const element = dialog.current;
+    if (!element) return;
+    openGeneration.current += 1;
+    const generation = openGeneration.current;
+    if (!element.open) element.showModal();
+    closeButton.current?.focus();
+    return () => {
+      const opener = trigger;
+      queueMicrotask(() => {
+        if (generation !== openGeneration.current) return;
+        if (element.open) element.close();
+        if (opener.isConnected) opener.focus();
+      });
+    };
   }, [trigger]);
+  // Deterministic focus trap: Chromium lets Shift+Tab escape a modal dialog to
+  // the viewport when the dialog's content does not overflow (its native
+  // boundary wrap resolves to no focusable area), which strands keyboard users
+  // while the drawer is still loading short content. Wrap Tab explicitly.
+  const trapTab = (event: KeyboardEvent<HTMLDialogElement>) => {
+    if (event.key !== 'Tab') return;
+    const element = dialog.current;
+    if (!element || !element.open) return;
+    // Only the first <summary> child of a <details> is implicitly focusable;
+    // later summaries stay in the DOM tree but are skipped natively.
+    const isReachable = (node: HTMLElement) => {
+      if (node.getClientRects().length === 0) return false;
+      // Chromium still reports layout boxes for light-DOM children slotted into
+      // a closed <details>, so exclude them explicitly; the details' own
+      // <summary> remains reachable while the details is closed.
+      const closedDetails = node.closest('details:not([open])');
+      if (closedDetails) {
+        const summary = node.closest('summary');
+        if (!summary || summary.parentElement !== closedDetails) return false;
+      }
+      return true;
+    };
+    const focusables = Array.from(element.querySelectorAll<HTMLElement>(
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),details > summary:first-of-type',
+    )).filter(isReachable);
+    if (focusables.length === 0) {
+      event.preventDefault();
+      element.focus();
+      return;
+    }
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === element)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (active === last || active === element)) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   const next = {
     ...state,
     view: 'stock' as const,
     security: id,
     return_view: state.view === 'leaders' ? 'leaders' as const : state.view === 'analysis' ? 'analysis' as const : state.view === 'news' ? 'news' as const : 'overview' as const,
   };
-  return <dialog ref={dialog} className="security-drawer" aria-labelledby="drawer-title" onCancel={e => { e.preventDefault(); close(); }}>
+  return <dialog ref={dialog} className="security-drawer" aria-labelledby="drawer-title" onKeyDown={trapTab} onCancel={e => { e.preventDefault(); close(); }}>
     <div className="drawer-toolbar"><h2 id="drawer-title">证券详情 · 只读</h2><button ref={closeButton} onClick={close} aria-label="关闭详情" title="关闭详情（退出键）"><X size={20} /></button></div>
     <a className="fullpage-link" href={stateSearch(next, allowPrivate, resetEnabled)} onClick={e => { if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(next)) close(); } }}><ExternalLink size={16} />打开完整详情</a>
     <DetailContent state={state} snapshot={snapshot} id={id} evidenceSector={sector} refreshToken={refreshToken} ReviewActions={ReviewActions} patch={patch} />

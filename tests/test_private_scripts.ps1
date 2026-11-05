@@ -10,6 +10,7 @@ try {
     if ($directoryAcl.Access.Count -ne 2) { throw "Directory ACL has unexpected rules." }
     $file = Join-Path $probe "fixture.txt"
     [System.IO.File]::WriteAllText($file, "synthetic-test-only")
+    Set-PrivateFileAcl $file | Out-Null
     Assert-PrivateFile $file
     $acl = Get-Acl -LiteralPath $file
     $everyone = New-Object System.Security.Principal.SecurityIdentifier("S-1-1-0")
@@ -17,7 +18,10 @@ try {
         $everyone, "Read", "Allow"
     )
     $acl.AddAccessRule($rule)
-    Set-Acl -LiteralPath $file -AclObject $acl
+    # Set-Acl requests ACCESS_SYSTEM_SECURITY (SeSecurityPrivilege) for a
+    # DACL-protected file; the DACL-only FileInfo extension needs no elevated
+    # token and still persists the intentionally broadened ACL for rejection.
+    (Get-Item -LiteralPath $file).SetAccessControl($acl)
     $rejected = $false
     try { Assert-PrivateFile $file } catch { $rejected = $true }
     if (-not $rejected) { throw "Private file with Everyone access was accepted." }

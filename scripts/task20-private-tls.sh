@@ -30,16 +30,9 @@ append_github_env() {
     } >>"${GITHUB_ENV}"
 }
 
-setup() {
-    python - "${PRIVATE_PORT}" <<'PY'
-import socket
-import sys
-
-port = int(sys.argv[1])
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-    probe.bind(("127.0.0.1", port))
-PY
-
+# Generate the random DB password and fixed compose project name, persisted in
+# the state file so a separate build step and the later setup step share them.
+write_state() {
     umask 077
     mkdir -p "${STATE_DIR}"
     DRAGON_DB_PASSWORD="$(openssl rand -hex 32)"
@@ -59,8 +52,25 @@ PY
         printf 'COMPOSE_PROJECT_NAME=%s\n' "${COMPOSE_PROJECT_NAME}"
     } >"${ENV_FILE}"
     append_github_env
+}
 
+# Rebind credentials/project created by a previous build step. The state file
+# only contains hex secrets, fixed ports and a run-scoped project name.
+load_state() {
+    # shellcheck source=/dev/null
+    set -a
+    # shellcheck disable=SC1090
+    source "${ENV_FILE}"
+    set +a
+    export COMPOSE_PROJECT_NAME
+    append_github_env
+}
+
+build_images() {
     compose build api web
+}
+
+start_services() {
     compose up --detach --wait db
     compose run --rm api migrate
     compose run --rm api owner-init >/dev/null
@@ -75,6 +85,37 @@ PY
         --cacert "${CA_FILE}" \
         --resolve "localhost:${PRIVATE_PORT}:127.0.0.1" \
         "https://localhost:${PRIVATE_PORT}/health/ready" >/dev/null
+}
+
+# Standalone image build: front-loads Docker wake away from timed acceptance
+# measurements; writes the same state that setup later reuses.
+build() {
+    write_state
+    build_images
+}
+
+setup() {
+    python - "${PRIVATE_PORT}" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    probe.bind(("127.0.0.1", port))
+PY
+
+    if [[ "${1:-}" == "--skip-build" ]]; then
+        if [[ ! -f "${ENV_FILE}" ]]; then
+            printf 'setup --skip-build requires a prior build step (%s missing)\n' \
+                "${ENV_FILE}" >&2
+            exit 2
+        fi
+        load_state
+    else
+        write_state
+        build_images
+    fi
+    start_services
 }
 
 teardown() {
@@ -103,14 +144,18 @@ teardown() {
 }
 
 case "${1:-}" in
+    build)
+        build
+        ;;
     setup)
-        setup
+        shift
+        setup "$@"
         ;;
     teardown)
         teardown
         ;;
     *)
-        printf 'usage: %s setup|teardown\n' "$0" >&2
+        printf 'usage: %s build|setup|teardown\n' "$0" >&2
         exit 2
         ;;
 esac

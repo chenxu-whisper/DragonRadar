@@ -5,7 +5,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-import { queryPublishedPort } from './production-isolation-support.mjs';
+import {
+  composeChildEnvironment,
+  queryPublishedPort,
+} from './production-isolation-support.mjs';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(webRoot, '..');
@@ -24,7 +27,7 @@ function run(command, args, options = {}) {
     cwd: root,
     encoding: 'utf8',
     timeout: options.timeout ?? 600_000,
-    env: { ...process.env, ...options.env },
+    env: composeChildEnvironment({ ...process.env, ...options.env }),
   });
   if (result.error) throw result.error;
   if (!(options.allowed ?? [0]).includes(result.status)) {

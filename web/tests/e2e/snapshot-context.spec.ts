@@ -52,13 +52,50 @@ test('403 clears comparison and security selections before permission recovery',
 
 test('drawer traps focus and closes on browser history changes', async ({ page }) => {
   await mockMarket(page);
+  // A slow detail response keeps the drawer in its short, non-scrollable
+  // loading state: the exact layout where Chromium's native modal boundary
+  // wrap lets Shift+Tab escape to the viewport. Focus must stay trapped.
+  await page.route('**/api/v1/snapshots/*/securities/*', async route => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await route.fallback();
+  });
   await page.goto('/');
   await page.getByRole('button', { name: '下一页', exact: true }).click();
   const trigger = page.getByRole('button', { name: '合成测试证券51', exact: true });
   await trigger.click();
   await expect(page.getByRole('button', { name: '关闭详情' })).toBeFocused();
   await page.keyboard.press('Shift+Tab');
-  expect(await page.evaluate(() => document.activeElement?.closest('dialog') !== null)).toBe(true);
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () => document.activeElement?.closest('dialog') !== null,
+        ),
+      { message: 'Shift+Tab focus stays trapped inside the drawer dialog' },
+    )
+    .toBe(true);
+  // Once the slow response renders, forward Tab must walk the native chain —
+  // including implicit-focusable <summary> elements — before wrapping.
+  const historySummary = page.locator('dialog summary').filter({ hasText: '查看完整历史数据' });
+  await expect(historySummary).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(historySummary).toBeFocused();
+  // The data table is still collapsed: summary is the last tabbable, so Tab wraps.
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: '关闭详情' })).toBeFocused();
+  await historySummary.click();
+  const historyRegion = page.getByRole('region', { name: '完整历史数据' });
+  await expect(historyRegion).toBeVisible();
+  // Walk back to the first control, then verify backward wrap reaches the
+  // expanded table region and forward wrap returns to the close button.
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('link', { name: '打开完整详情' })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('button', { name: '关闭详情' })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(historyRegion).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: '关闭详情' })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(trigger).toBeFocused();
   await trigger.click();
