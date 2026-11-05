@@ -737,19 +737,19 @@ def test_public_app_has_no_post_and_no_private_namespace():
 # ---------------------------------------------------------------------------
 
 
-def test_migration_head_is_0013_query_with_no_task27_revision():
+def test_migration_head_is_0014_research_with_task27_revision():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0013_query"
+    assert SCHEMA_REVISION == "0014_research"
     config = Config()
     config.set_main_option("script_location", "dragon_radar:migrations")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0013_query"]
+    assert script.get_heads() == ["0014_research"]
     revisions = {migration.revision for migration in script.walk_revisions()}
-    assert "0014_research" not in revisions
+    assert "0014_research" in revisions
 
 
 # Task 27 unfreezes in slices. Task 1 delivers the pure-kernel package
@@ -774,8 +774,6 @@ TASK27_SKELETON = (
 )
 
 TASK27_LATER_ARTIFACTS = (
-    # Task 10 — migration 0014_research.
-    "src/dragon_radar/migrations/versions/0014_research.py",
     # Task 12 — EX14/EX15 owner routes.
     "src/dragon_radar/http/routes/research.py",
     # Task 14 — IndexedDB v5 simulation repository.

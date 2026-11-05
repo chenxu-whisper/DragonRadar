@@ -37,6 +37,7 @@ SUPPORTED_FROM = [
     "0011_realtime",
     "0012_lhb",
     "0013_query",
+    "0014_research",
 ]
 
 
@@ -142,11 +143,11 @@ def test_release_manifest_matches_single_linear_graph(verifier):
     assert manifest["rollback_mode"] == "backup_restore_only"
     assert manifest["supported_from"] == SUPPORTED_FROM
     assert graph["bases"] == ["0001_foundation"]
-    assert graph["heads"] == ["0013_query"]
-    assert graph["revision_count"] == 21
+    assert graph["heads"] == ["0014_research"]
+    assert graph["revision_count"] == 22
     assert result == {
-        "head": "0013_query",
-        "revision_count": 21,
+        "head": "0014_research",
+        "revision_count": 22,
         "errors": [],
     }
 
@@ -518,8 +519,8 @@ def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "0013_query" in result.stdout
-    assert "21 revisions" in result.stdout
+    assert "0014_research" in result.stdout
+    assert "22 revisions" in result.stdout
 
 
 def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
@@ -721,7 +722,7 @@ def test_supported_revision_upgrades_with_sentinel(
     result = verifier["exercise_upgrade"](database_url, revision)
 
     assert result["from_revision"] == revision
-    assert result["to_revision"] == "0013_query"
+    assert result["to_revision"] == "0014_research"
     assert result["sentinel_preserved"] is True
     assert result["ready"] is True
 
@@ -773,7 +774,7 @@ def test_built_wheel_contains_all_release_migration_resources(built_wheel):
         f"dragon_radar/migrations/versions/{path.name}"
         for path in (MIGRATIONS / "versions").glob("*.py")
     }
-    assert len(migration_files) == 21
+    assert len(migration_files) == 22
     assert "dragon_radar/migrations/release_manifest.json" in names
     assert "dragon_radar/storage/schema_contract.json" in names
 
@@ -1230,7 +1231,7 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
     assert f"dragon_radar imported from {imported_from}" in result.stdout
     assert not imported_from.is_relative_to(ROOT)
     assert evidence["fresh"] == {
-        "to_revision": "0013_query",
+        "to_revision": "0014_research",
         "ready": True,
     }
     assert [item["from_revision"] for item in evidence["supported_upgrades"]] == (
@@ -2797,7 +2798,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 
         def scalar(self, statement):
             events.append(str(statement))
-            return "0013_query"
+            return "0014_research"
 
     class FakeEngine:
         @contextmanager
@@ -2858,7 +2859,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 @pytest.mark.parametrize(
     ("revision", "close_fails", "expected_error"),
     [
-        ("0013_query", False, "capture failed"),
+        ("0014_research", False, "capture failed"),
         ("wrong_revision", False, "generated database revision"),
     ],
     ids=["capture", "revision"],
@@ -2996,7 +2997,7 @@ def _configure_generation_failures(
                 raise RuntimeError("drop failed")
 
         def scalar(self, _statement):
-            return "0013_query"
+            return "0014_research"
 
     class FakeEngine:
         @contextmanager

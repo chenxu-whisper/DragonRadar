@@ -2414,10 +2414,10 @@ def test_lhb_schema_preserves_null_zero_and_decimal_precision(database_url):
         database.close()
 
 
-def test_lhb_schema_is_ready_at_0013_head(database):
+def test_lhb_schema_is_ready_at_0014_head(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0013_query"
+    assert SCHEMA_REVISION == "0014_research"
     assert database.ready()
 
 

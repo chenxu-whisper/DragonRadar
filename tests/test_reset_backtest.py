@@ -2449,3 +2449,602 @@ def test_ablation_report_is_field_identical_across_runs() -> None:
     assert first.ablation.model_dump(mode="json") == second.ablation.model_dump(
         mode="json"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 10 — migration 0014_research: owner-scoped run ledger and the global
+# immutable config_hash cache. The five-state machine, input immutability and
+# the forbidden downgrade are real PostgreSQL contracts (TR-10.1/10.2).
+# ---------------------------------------------------------------------------
+
+REQUEST_HASH_64 = "a" * 64
+CONFIG_HASH_64 = "c" * 64
+OTHER_HASH_64 = "b" * 64
+T10_NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+T10_ENGINE_VERSION = "dragon-radar.research-backtest/v1"
+
+
+def _research_publish(database, repository, *, suffix: str = ""):
+    from factories import NOW, batch
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key=f"research-migration-market{suffix}",
+        ).id
+    )
+    return PublicationService(database, repository, clock=lambda: NOW).publish(
+        PublicationCommand(
+            trade_date=market.batch.trade_date,
+            market_snapshot_id=market.id,
+            disabled_domains=("topic", "news", "regulation", "role"),
+        ),
+        key=f"research-migration-publication{suffix}",
+    )
+
+
+@pytest.fixture
+def backtest_schema(database, repository):
+    """Head schema with one owner principal and one published publication."""
+    from sqlalchemy import text
+
+    owner_id = uuid4()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO owner_principals (id, local_key, created_at) "
+                "VALUES (:owner_id, NULL, :now)"
+            ),
+            {"owner_id": owner_id, "now": T10_NOW},
+        )
+    publication = _research_publish(database, repository, suffix="-t10")
+    return database, owner_id, publication.id
+
+
+_RUN_INSERT_SQL = """
+    INSERT INTO research_backtest_runs (
+        id, owner_id, idempotency_key, request_hash, config_hash, snapshot_id,
+        input_manifest, status, attempt_count, max_wall_clock_ms, available_at,
+        lease_token, lease_owner, lease_expires_at, result, failure,
+        created_at, started_at, completed_at
+    ) VALUES (
+        :run_id, :owner_id, :idempotency_key, :request_hash, :config_hash,
+        :snapshot_id, CAST(:input_manifest AS JSONB), :status, :attempt_count,
+        :max_wall_clock_ms, :available_at, :lease_token, :lease_owner,
+        :lease_expires_at, CAST(:result AS JSONB), CAST(:failure AS JSONB),
+        :created_at, :started_at, :completed_at
+    )
+"""
+
+_CACHE_INSERT_SQL = """
+    INSERT INTO research_backtest_cache (
+        id, config_hash, engine_version, input_manifest, result, created_at
+    ) VALUES (
+        :cache_id, :config_hash, :engine_version,
+        CAST(:input_manifest AS JSONB), CAST(:result AS JSONB), :created_at
+    )
+"""
+
+
+def _run_values(owner_id, snapshot_id, *, status: str = "queued", **overrides):
+    values = {
+        "run_id": uuid4(),
+        "owner_id": owner_id,
+        "idempotency_key": f"research-key-{uuid4().hex}",
+        "request_hash": REQUEST_HASH_64,
+        "config_hash": CONFIG_HASH_64,
+        "snapshot_id": snapshot_id,
+        "input_manifest": json.dumps({"domains": ["market"]}),
+        "status": status,
+        "attempt_count": 0,
+        "max_wall_clock_ms": 60_000,
+        "available_at": T10_NOW,
+        "lease_token": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "result": None,
+        "failure": None,
+        "created_at": T10_NOW,
+        "started_at": None,
+        "completed_at": None,
+    }
+    values.update(overrides)
+    return values
+
+
+def _state_overrides(status: str) -> dict[str, object]:
+    if status == "queued":
+        return {}
+    if status == "running":
+        return {
+            "lease_token": uuid4(),
+            "lease_owner": "research-worker-1",
+            "lease_expires_at": T10_NOW,
+            "started_at": T10_NOW,
+        }
+    if status == "succeeded":
+        return {
+            "result": json.dumps({"schema_version": T10_ENGINE_VERSION}),
+            "completed_at": T10_NOW,
+        }
+    if status == "failed":
+        return {
+            "failure": json.dumps({"code": "attempts_exhausted"}),
+            "completed_at": T10_NOW,
+        }
+    if status == "cancelled":
+        return {"completed_at": T10_NOW}
+    raise AssertionError(f"unknown lifecycle state: {status}")
+
+
+def _insert_run(connection, owner_id, snapshot_id, **overrides):
+    from sqlalchemy import text
+
+    values = _run_values(owner_id, snapshot_id, **overrides)
+    connection.execute(text(_RUN_INSERT_SQL), values)
+    return values
+
+
+def _insert_cache(connection, *, config_hash: str = CONFIG_HASH_64):
+    from sqlalchemy import text
+
+    values = {
+        "cache_id": uuid4(),
+        "config_hash": config_hash,
+        "engine_version": T10_ENGINE_VERSION,
+        "input_manifest": json.dumps({"domains": ["market"]}),
+        "result": json.dumps({"schema_version": T10_ENGINE_VERSION}),
+        "created_at": T10_NOW,
+    }
+    connection.execute(text(_CACHE_INSERT_SQL), values)
+    return values
+
+
+def test_0014_migration_is_unique_head_and_database_is_ready(database) -> None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import inspect, text
+
+    from dragon_radar.storage.database import SCHEMA_REVISION
+
+    assert SCHEMA_REVISION == "0014_research"
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    script = ScriptDirectory.from_config(config)
+    assert script.get_heads() == ["0014_research"]
+    assert script.get_revision("0014_research").down_revision == "0013_query"
+    assert database.ready()
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0014_research"
+        )
+    inspector = inspect(database.engine)
+    assert {"research_backtest_runs", "research_backtest_cache"} <= set(
+        inspector.get_table_names()
+    )
+    run_columns = {
+        column["name"] for column in inspector.get_columns("research_backtest_runs")
+    }
+    assert {
+        "owner_id",
+        "idempotency_key",
+        "request_hash",
+        "config_hash",
+        "snapshot_id",
+        "input_manifest",
+        "status",
+        "attempt_count",
+        "max_wall_clock_ms",
+        "available_at",
+        "lease_token",
+        "lease_owner",
+        "lease_expires_at",
+        "result",
+        "failure",
+        "created_at",
+        "started_at",
+        "completed_at",
+    } <= run_columns
+    cache_columns = {
+        column["name"] for column in inspector.get_columns("research_backtest_cache")
+    }
+    assert {
+        "id",
+        "config_hash",
+        "engine_version",
+        "input_manifest",
+        "result",
+        "created_at",
+    } <= cache_columns
+
+
+def test_0014_registers_input_guard_and_cache_immutability_triggers(
+    backtest_schema,
+) -> None:
+    from sqlalchemy import text
+
+    database, _owner_id, _publication_id = backtest_schema
+    with database.engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT relation.relname, trigger_record.tgname,
+                       function_record.proname,
+                       pg_get_triggerdef(trigger_record.oid, true)
+                FROM pg_trigger trigger_record
+                JOIN pg_class relation
+                  ON relation.oid = trigger_record.tgrelid
+                JOIN pg_namespace namespace
+                  ON namespace.oid = relation.relnamespace
+                JOIN pg_proc function_record
+                  ON function_record.oid = trigger_record.tgfoid
+                WHERE namespace.nspname = current_schema()
+                  AND relation.relname IN (
+                      'research_backtest_runs', 'research_backtest_cache'
+                  )
+                  AND NOT trigger_record.tgisinternal
+                """
+            )
+        ).all()
+    triggers = {
+        (relation, name): (function, definition)
+        for (
+            relation,
+            name,
+            function,
+            definition,
+        ) in rows
+    }
+
+    runs_function, runs_definition = triggers[
+        ("research_backtest_runs", "research_backtest_runs_immutable_inputs")
+    ]
+    assert runs_function == "guard_research_backtest_inputs"
+    assert "BEFORE UPDATE ON research_backtest_runs" in runs_definition
+    assert "FOR EACH ROW" in runs_definition
+
+    cache_function, cache_definition = triggers[
+        ("research_backtest_cache", "research_backtest_cache_immutable")
+    ]
+    assert cache_function == "reject_immutable_mutation"
+    assert "BEFORE DELETE OR UPDATE ON research_backtest_cache" in cache_definition
+    assert "FOR EACH STATEMENT" in cache_definition
+
+    truncate_function, truncate_definition = triggers[
+        ("research_backtest_cache", "research_backtest_cache_no_truncate")
+    ]
+    assert truncate_function == "reject_immutable_mutation"
+    assert "BEFORE TRUNCATE ON research_backtest_cache" in truncate_definition
+    assert "FOR EACH STATEMENT" in truncate_definition
+
+
+_IMMUTABLE_INPUT_CASES = (
+    ("id", "id = :other"),
+    ("owner_id", "owner_id = :other"),
+    ("idempotency_key", "idempotency_key = 'changed-by-test'"),
+    ("request_hash", f"request_hash = '{OTHER_HASH_64}'"),
+    ("config_hash", f"config_hash = '{OTHER_HASH_64}'"),
+    ("snapshot_id", "snapshot_id = :other"),
+    ("input_manifest", "input_manifest = jsonb_build_object('changed', true)"),
+    ("created_at", "created_at = created_at + INTERVAL '1 hour'"),
+    ("max_wall_clock_ms", "max_wall_clock_ms = 1"),
+)
+
+
+@pytest.mark.parametrize(
+    ("column", "fragment"),
+    _IMMUTABLE_INPUT_CASES,
+    ids=[case[0] for case in _IMMUTABLE_INPUT_CASES],
+)
+def test_research_run_identity_and_input_columns_are_immutable(
+    backtest_schema, column: str, fragment: str
+) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database, owner_id, publication_id = backtest_schema
+    with database.engine.begin() as connection:
+        row = _insert_run(connection, owner_id, publication_id)
+    with pytest.raises(DBAPIError) as exc_info:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"UPDATE research_backtest_runs SET {fragment} WHERE id = :run_id"
+                ),
+                {"run_id": row["run_id"], "other": uuid4()},
+            )
+    assert "research backtest inputs are immutable" in str(exc_info.value)
+
+
+def test_lifecycle_columns_remain_mutable_through_all_states(backtest_schema) -> None:
+    from sqlalchemy import text
+
+    database, owner_id, publication_id = backtest_schema
+    with database.engine.begin() as connection:
+        row = _insert_run(connection, owner_id, publication_id)
+        # queued -> running: claim metadata, lease and started_at are mutable.
+        connection.execute(
+            text(
+                """
+                UPDATE research_backtest_runs
+                SET status = 'running', attempt_count = 1,
+                    available_at = available_at + INTERVAL '1 minute',
+                    lease_token = :lease_token, lease_owner = 'worker-1',
+                    lease_expires_at = :now, started_at = :now
+                WHERE id = :run_id
+                """
+            ),
+            {"run_id": row["run_id"], "lease_token": uuid4(), "now": T10_NOW},
+        )
+        # running -> succeeded: lease cleared, result and completion recorded.
+        connection.execute(
+            text(
+                """
+                UPDATE research_backtest_runs
+                SET status = 'succeeded', lease_token = NULL, lease_owner = NULL,
+                    lease_expires_at = NULL, result = CAST(:result AS JSONB),
+                    completed_at = :now
+                WHERE id = :run_id
+                """
+            ),
+            {
+                "run_id": row["run_id"],
+                "result": json.dumps({"schema_version": T10_ENGINE_VERSION}),
+                "now": T10_NOW,
+            },
+        )
+    with database.engine.connect() as connection:
+        record = connection.execute(
+            text(
+                """
+                SELECT status, attempt_count, result IS NOT NULL AS has_result,
+                       failure IS NULL AS no_failure,
+                       lease_token IS NULL AS lease_clear,
+                       started_at IS NOT NULL AS has_started,
+                       completed_at IS NOT NULL AS has_completed
+                FROM research_backtest_runs WHERE id = :run_id
+                """
+            ),
+            {"run_id": row["run_id"]},
+        ).one()
+    assert tuple(record) == ("succeeded", 1, True, True, True, True, True)
+
+    # queued -> cancelled is an allowed terminal transition without result.
+    with database.engine.begin() as connection:
+        cancelled = _insert_run(connection, owner_id, publication_id)
+        connection.execute(
+            text(
+                """
+                UPDATE research_backtest_runs
+                SET status = 'cancelled', completed_at = :now
+                WHERE id = :run_id
+                """
+            ),
+            {"run_id": cancelled["run_id"], "now": T10_NOW},
+        )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "UPDATE research_backtest_cache "
+        "SET result = jsonb_build_object('changed', true)",
+        "DELETE FROM research_backtest_cache",
+        "TRUNCATE TABLE research_backtest_cache",
+    ),
+    ids=("update", "delete", "truncate"),
+)
+def test_research_cache_rejects_every_mutation(backtest_schema, statement: str) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database, _owner_id, _publication_id = backtest_schema
+    with database.engine.begin() as connection:
+        _insert_cache(connection)
+    with pytest.raises(DBAPIError) as exc_info:
+        with database.engine.begin() as connection:
+            connection.execute(text(statement))
+    assert "immutable records cannot be changed" in str(exc_info.value)
+    with database.engine.connect() as connection:
+        preserved = connection.scalar(
+            text("SELECT count(*) FROM research_backtest_cache")
+        )
+    assert preserved == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    ("queued", "running", "succeeded", "failed", "cancelled"),
+)
+def test_five_lifecycle_states_are_accepted(backtest_schema, status: str) -> None:
+    from sqlalchemy import text
+
+    database, owner_id, publication_id = backtest_schema
+    with database.engine.begin() as connection:
+        row = _insert_run(
+            connection,
+            owner_id,
+            publication_id,
+            status=status,
+            **_state_overrides(status),
+        )
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                text("SELECT status FROM research_backtest_runs WHERE id = :run_id"),
+                {"run_id": row["run_id"]},
+            )
+            == status
+        )
+
+
+_INVALID_STATE_CASES = (
+    ("queued_with_lease", "queued", {"lease_token": uuid4()}),
+    ("queued_with_completed_at", "queued", {"completed_at": T10_NOW}),
+    (
+        "queued_with_result",
+        "queued",
+        {"result": json.dumps({"unexpected": True})},
+    ),
+    (
+        "running_without_lease_owner",
+        "running",
+        {
+            "lease_token": uuid4(),
+            "lease_expires_at": T10_NOW,
+            "started_at": T10_NOW,
+        },
+    ),
+    ("succeeded_without_result", "succeeded", {"completed_at": T10_NOW}),
+    (
+        "succeeded_with_failure",
+        "succeeded",
+        {
+            "result": json.dumps({"ok": True}),
+            "failure": json.dumps({"code": "x"}),
+            "completed_at": T10_NOW,
+        },
+    ),
+    (
+        "failed_with_result",
+        "failed",
+        {
+            "result": json.dumps({"ok": True}),
+            "failure": json.dumps({"code": "x"}),
+            "completed_at": T10_NOW,
+        },
+    ),
+    (
+        "cancelled_with_result",
+        "cancelled",
+        {
+            "result": json.dumps({"ok": True}),
+            "completed_at": T10_NOW,
+        },
+    ),
+    (
+        "cancelled_with_lease",
+        "cancelled",
+        {"lease_token": uuid4(), "completed_at": T10_NOW},
+    ),
+    ("unknown_status", "discarded", {"completed_at": T10_NOW}),
+)
+
+
+@pytest.mark.parametrize(
+    ("case_name", "status", "overrides"),
+    _INVALID_STATE_CASES,
+    ids=[case[0] for case in _INVALID_STATE_CASES],
+)
+def test_invalid_lifecycle_combinations_are_rejected(
+    backtest_schema, case_name: str, status: str, overrides: dict[str, object]
+) -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    database, owner_id, publication_id = backtest_schema
+    with pytest.raises(DBAPIError) as exc_info:
+        with database.engine.begin() as connection:
+            _insert_run(
+                connection,
+                owner_id,
+                publication_id,
+                status=status,
+                **overrides,
+            )
+    assert "violates check constraint" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint_fragment"),
+    (
+        ("max_wall_clock_ms", -1, "max_wall_clock_ms"),
+        ("attempt_count", -1, "attempt_count"),
+    ),
+)
+def test_budget_and_attempt_checks_reject_negative_values(
+    backtest_schema, column: str, value: int, constraint_fragment: str
+) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database, owner_id, publication_id = backtest_schema
+    with pytest.raises(DBAPIError) as exc_info:
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(_RUN_INSERT_SQL),
+                _run_values(owner_id, publication_id, **{column: value}),
+            )
+    assert constraint_fragment in str(exc_info.value)
+
+
+def test_owner_idempotency_pair_is_unique(backtest_schema) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    database, owner_id, publication_id = backtest_schema
+    with database.engine.begin() as connection:
+        first = _insert_run(connection, owner_id, publication_id)
+        second = _run_values(
+            owner_id,
+            publication_id,
+            idempotency_key=first["idempotency_key"],
+            config_hash=OTHER_HASH_64,
+        )
+        with pytest.raises(DBAPIError) as exc_info:
+            connection.execute(text(_RUN_INSERT_SQL), second)
+    assert "violates unique constraint" in str(exc_info.value)
+
+
+def test_run_requires_existing_owner_and_publication(backtest_schema) -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    database, owner_id, publication_id = backtest_schema
+    with pytest.raises(DBAPIError) as exc_info:
+        with database.engine.begin() as connection:
+            _insert_run(connection, uuid4(), publication_id)
+    assert "violates foreign key constraint" in str(exc_info.value)
+    with pytest.raises(DBAPIError) as exc_info:
+        with database.engine.begin() as connection:
+            _insert_run(connection, owner_id, uuid4())
+    assert "violates foreign key constraint" in str(exc_info.value)
+
+
+def test_cache_config_hash_is_unique(backtest_schema) -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    database, _owner_id, _publication_id = backtest_schema
+    with pytest.raises(DBAPIError) as exc_info:
+        with database.engine.begin() as connection:
+            _insert_cache(connection)
+            _insert_cache(connection)
+    assert "violates unique constraint" in str(exc_info.value)
+
+
+def test_0014_research_downgrade_is_forbidden(database_url) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    from dragon_radar.storage.database import Database
+
+    database = Database(database_url)
+    config = Config()
+    config.set_main_option("script_location", "dragon_radar:migrations")
+    try:
+        with database.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+        with (
+            pytest.raises(
+                RuntimeError,
+                match="Research backtest history cannot be downgraded",
+            ),
+            database.engine.begin() as connection,
+        ):
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0013_query")
+    finally:
+        database.close()

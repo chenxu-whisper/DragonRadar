@@ -46,7 +46,7 @@ MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
 AUDIT_SCHEMA = "dragon-radar.release-migration-verification"
 AUDIT_SCHEMA_VERSION = 1
-RELEASE_HEAD = "0013_query"
+RELEASE_HEAD = "0014_research"
 ROLLBACK_MODE = "backup_restore_only"
 SUPPORTED_FROM = [
     "0001_foundation",
@@ -62,6 +62,7 @@ SUPPORTED_FROM = [
     "0011_realtime",
     "0012_lhb",
     "0013_query",
+    "0014_research",
 ]
 MANIFEST_FIELDS = {
     "schema",
@@ -687,6 +688,7 @@ def _sentinel_values() -> dict[str, object]:
         "lhb_row_record_a": uuid4(),
         "lhb_row_record_b": uuid4(),
         "query_record_id": uuid4(),
+        "research_backtest_run_id": uuid4(),
         "hash": hashlib.sha256(token.encode("ascii")).hexdigest(),
     }
 
@@ -1377,6 +1379,40 @@ def _insert_sentinel(
             "query_record",
             {"id": values["query_record_id"], "hash": values["hash"]},
         )
+    if revision == "0014_research":
+        _insert_market_archive(connection, values, with_idempotency_hash=True)
+        connection.execute(
+            text(
+                "INSERT INTO owner_principals (id, local_key, created_at) "
+                "VALUES (:owner_id, NULL, :now)"
+            ),
+            {**values, "now": now},
+        )
+        _insert_publication(connection, values)
+        connection.execute(
+            text(
+                """
+                INSERT INTO research_backtest_runs (
+                    id, owner_id, idempotency_key, request_hash, config_hash,
+                    snapshot_id, input_manifest, status, attempt_count,
+                    max_wall_clock_ms, available_at, created_at
+                ) VALUES (
+                    :research_backtest_run_id, :owner_id, :token, :hash, :hash,
+                    :publication_id, '{}', 'queued', 0, 60000, :now, :now
+                )
+                """
+            ),
+            {**values, "now": now},
+        )
+        return (
+            "research_backtest_run",
+            {
+                "id": values["research_backtest_run_id"],
+                "hash": values["hash"],
+                "config_hash": values["hash"],
+                "max_wall_clock_ms": 60000,
+            },
+        )
     raise ValueError(f"unsupported upgrade baseline: {revision}")
 
 
@@ -1471,6 +1507,13 @@ def _sentinel_preserved(
         ),
         "query_record": (
             "SELECT id, request_hash AS hash FROM query_records WHERE id = :id",
+            expected,
+        ),
+        "research_backtest_run": (
+            """
+            SELECT id, request_hash AS hash, config_hash, max_wall_clock_ms
+            FROM research_backtest_runs WHERE id = :id
+            """,
             expected,
         ),
         "realtime_evidence": (
