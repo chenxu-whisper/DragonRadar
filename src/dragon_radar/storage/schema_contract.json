@@ -404,6 +404,25 @@
     },
     {
       "columns": [
+        "attempt_count"
+      ],
+      "deferrable": false,
+      "expression": "(attempt_count >= 0)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_attempt_count",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
         "attempt_sequence"
       ],
       "deferrable": false,
@@ -736,6 +755,63 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "config_hash"
+      ],
+      "deferrable": false,
+      "expression": "((config_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_cache_config_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_cache"
+    },
+    {
+      "columns": [
+        "config_hash"
+      ],
+      "deferrable": false,
+      "expression": "((config_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_config_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
+        "config_hash"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "research_backtest_cache_config_hash_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_cache"
     },
     {
       "columns": [
@@ -2278,6 +2354,44 @@
       "key_expressions": [],
       "kind": "primary_key",
       "match_type": null,
+      "name": "research_backtest_cache_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_cache"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "research_backtest_runs_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
       "name": "review_note_revisions_pkey",
       "on_delete": null,
       "on_update": null,
@@ -3083,6 +3197,25 @@
     },
     {
       "columns": [
+        "max_wall_clock_ms"
+      ],
+      "deferrable": false,
+      "expression": "(max_wall_clock_ms >= 0)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_max_wall_clock_ms",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
         "method"
       ],
       "deferrable": false,
@@ -3574,6 +3707,26 @@
     {
       "columns": [
         "owner_id",
+        "idempotency_key"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "research_backtest_runs_owner_idempotency_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
+        "owner_id",
         "key"
       ],
       "deferrable": false,
@@ -4024,6 +4177,27 @@
       "referenced_schema": "current_schema",
       "referenced_table": "owner_principals",
       "table": "query_records"
+    },
+    {
+      "columns": [
+        "owner_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "research_backtest_runs_owner_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "owner_principals",
+      "table": "research_backtest_runs"
     },
     {
       "columns": [
@@ -4667,6 +4841,25 @@
       "referenced_schema": "current_schema",
       "referenced_table": "regulation_snapshots",
       "table": "publications"
+    },
+    {
+      "columns": [
+        "request_hash"
+      ],
+      "deferrable": false,
+      "expression": "((request_hash)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_request_hash",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
     },
     {
       "columns": [
@@ -6293,6 +6486,27 @@
       "key_expressions": [],
       "kind": "foreign_key",
       "match_type": "simple",
+      "name": "research_backtest_runs_snapshot_id_fkey",
+      "on_delete": "restrict",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "publications",
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
+        "snapshot_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
       "name": "review_notes_snapshot_id_fkey",
       "on_delete": "no_action",
       "on_update": "no_action",
@@ -7807,6 +8021,31 @@
         "completed_at"
       ],
       "deferrable": false,
+      "expression": "((((status)::text = 'queued'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR (((status)::text = 'running'::text) AND (lease_token IS NOT NULL) AND (lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL) AND (result IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR (((status)::text = 'succeeded'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NOT NULL) AND (failure IS NULL) AND (completed_at IS NOT NULL)) OR (((status)::text = 'failed'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NULL) AND (failure IS NOT NULL) AND (completed_at IS NOT NULL)) OR (((status)::text = 'cancelled'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NULL) AND (failure IS NULL) AND (completed_at IS NOT NULL)))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_state",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
+        "status",
+        "lease_token",
+        "lease_owner",
+        "lease_expires_at",
+        "result",
+        "failure",
+        "completed_at"
+      ],
+      "deferrable": false,
       "expression": "((((status)::text = 'queued'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR (((status)::text = 'running'::text) AND (lease_token IS NOT NULL) AND (lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL) AND (result IS NULL) AND (failure IS NULL) AND (completed_at IS NULL)) OR (((status)::text = 'succeeded'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NOT NULL) AND (failure IS NULL) AND (completed_at IS NOT NULL)) OR (((status)::text = 'failed'::text) AND (lease_token IS NULL) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL) AND (result IS NULL) AND (failure IS NOT NULL) AND (completed_at IS NOT NULL)))",
       "initially_deferred": false,
       "key_expressions": [],
@@ -8150,6 +8389,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "market_import_tasks"
+    },
+    {
+      "columns": [
+        "status"
+      ],
+      "deferrable": false,
+      "expression": "((status)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[]))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_status",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
     },
     {
       "columns": [
@@ -9187,6 +9445,18 @@
       "access_method": "btree",
       "key_expressions": [
         "available_at",
+        "created_at"
+      ],
+      "name": "research_backtest_runs_claim",
+      "predicate": "((status)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying])::text[]))",
+      "table": "research_backtest_runs",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "available_at",
         "event_id"
       ],
       "name": "realtime_anomaly_events_listing",
@@ -9261,6 +9531,17 @@
       "name": "owner_pairings_code_hash_key",
       "predicate": null,
       "table": "owner_pairings",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "config_hash"
+      ],
+      "name": "research_backtest_cache_config_hash_key",
+      "predicate": null,
+      "table": "research_backtest_cache",
       "unique": true,
       "valid": true
     },
@@ -9899,6 +10180,28 @@
       "key_expressions": [
         "id"
       ],
+      "name": "research_backtest_cache_pkey",
+      "predicate": null,
+      "table": "research_backtest_cache",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "research_backtest_runs_pkey",
+      "predicate": null,
+      "table": "research_backtest_runs",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
       "name": "review_note_revisions_pkey",
       "predicate": null,
       "table": "review_note_revisions",
@@ -10386,6 +10689,18 @@
       "name": "query_records_owner_id_idempotency_key_key",
       "predicate": null,
       "table": "query_records",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "owner_id",
+        "idempotency_key"
+      ],
+      "name": "research_backtest_runs_owner_idempotency_key",
+      "predicate": null,
+      "table": "research_backtest_runs",
       "unique": true,
       "valid": true
     },
@@ -13245,6 +13560,53 @@
         {
           "generated": null,
           "identity": null,
+          "name": "config_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "engine_version",
+          "nullable": false,
+          "type": "character varying(100)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "input_manifest",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "result",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "research_backtest_cache"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
           "name": "evidence_kind",
           "nullable": false,
           "type": "character varying(40)"
@@ -14393,6 +14755,144 @@
         }
       ],
       "name": "analysis_jobs"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "owner_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "request_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "config_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "snapshot_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "input_manifest",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "status",
+          "nullable": false,
+          "type": "character varying(20)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "attempt_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "max_wall_clock_ms",
+          "nullable": false,
+          "type": "bigint"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "available_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "lease_token",
+          "nullable": true,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "lease_owner",
+          "nullable": true,
+          "type": "character varying(100)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "lease_expires_at",
+          "nullable": true,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "result",
+          "nullable": true,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "failure",
+          "nullable": true,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "started_at",
+          "nullable": true,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "completed_at",
+          "nullable": true,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "research_backtest_runs"
     },
     {
       "columns": [
@@ -19335,6 +19835,25 @@
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "STATEMENT",
+      "name": "research_backtest_cache_no_truncate",
+      "table": "research_backtest_cache",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
       "name": "review_note_revisions_no_truncate",
       "table": "review_note_revisions",
       "timing": "BEFORE",
@@ -20713,6 +21232,26 @@
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "STATEMENT",
+      "name": "research_backtest_cache_immutable",
+      "table": "research_backtest_cache",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
       "name": "review_note_revisions_immutable",
       "table": "review_note_revisions",
       "timing": "BEFORE",
@@ -21250,6 +21789,25 @@
       "level": "ROW",
       "name": "ai_tasks_guard",
       "table": "ai_tasks",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "fcd8c4cde85e58e38b045ce9fa8bc4b3baee72e60bbdfedc5246ae9f7a39bcab",
+      "function_name": "guard_research_backtest_inputs",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "research_backtest_runs_immutable_inputs",
+      "table": "research_backtest_runs",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null
