@@ -787,6 +787,14 @@ def run_backtest(
         )
 
     assert base_artifacts is not None
+
+    ablation_report = None
+    if "ai_variant" in config.experiment.legs:
+        # Imported lazily to keep ablation out of the baseline-only import path.
+        from dragon_radar.research.ablation import build_ablation_report
+
+        ablation_report = build_ablation_report(config, base_artifacts.metrics)
+
     return BacktestResult(
         schema_version=RESEARCH_BACKTEST_SCHEMA_VERSION,
         config_hash=config.config_hash,
@@ -804,7 +812,7 @@ def run_backtest(
             metrics=base_artifacts.metrics,
             cost_sensitivity=tuple(sensitivity),
         ),
-        ablation=None,
+        ablation=ablation_report,
     )
 
 

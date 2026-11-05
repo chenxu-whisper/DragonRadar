@@ -28,6 +28,12 @@ from dragon_radar.domain.models import (
     MarketBatch,
     SecurityState,
 )
+from dragon_radar.research.ablation import (
+    ABLATION_AI_DISABLED_REASON,
+    RESEARCH_ABLATION_SCHEMA_VERSION,
+    AblationLeg,
+    AblationReport,
+)
 from dragon_radar.research.engine import (
     FactorFrame,
     FactorPoint,
@@ -1261,7 +1267,14 @@ def test_result_carries_versioned_research_only_skeleton() -> None:
     assert versions.calendar == "calendar-cn-v1"
     assert versions.pool == "topic-pool-v1"
     assert result.folds is None
-    assert result.ablation is None
+    # Task 9: the default experiment requests the ai_variant leg, which is
+    # fixed disabled and carries no numbers; the baseline leg runs normally.
+    assert result.ablation is not None
+    assert result.ablation.schema_version == RESEARCH_ABLATION_SCHEMA_VERSION
+    assert result.ablation.ai_variant.status == "disabled"
+    assert result.ablation.ai_variant.reason == ABLATION_AI_DISABLED_REASON
+    assert result.ablation.ai_variant.metrics is None
+    assert result.ablation.baseline.status == "completed"
     assert result.baseline.status == "completed"
     assert result.baseline.metrics == result.metrics
     assert tuple(entry.tier for entry in result.baseline.cost_sensitivity) == (
@@ -2306,3 +2319,133 @@ def test_wf_validation_fails_closed() -> None:
         _run_wf(phases=(_phase(date(2025, 3, 13), "ice", 100),))
     with pytest.raises(ValidationError):
         _phase(WF_DAYS[0], "bull_market", 100)
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — AI-uplift ablation frame fixed disabled (AC-11, TR-9.1/9.2)
+# ---------------------------------------------------------------------------
+
+
+def _ablation_result(
+    *,
+    legs: tuple[str, ...] = ("baseline", "ai_variant"),
+    random_seed: int = 20250106,
+) -> tuple[BacktestConfig, object]:
+    cfg = _eng_config(
+        experiment=experiment(legs=legs, random_seed=random_seed)  # type: ignore[arg-type]
+    )
+    frames = _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS})
+    return cfg, _run_engine(cfg, frames, _factor_frames(ENG_VALUES_BY_DAY))
+
+
+def test_ai_variant_leg_is_disabled_with_reason_and_no_numbers() -> None:
+    _, result = _ablation_result()
+    report = result.ablation
+    assert isinstance(report, AblationReport)
+    assert report.schema_version == "dragon-radar.research-ablation/v1"
+    assert report.research_only is True
+
+    ai_leg = report.ai_variant
+    assert ai_leg.leg == "ai_variant"
+    assert ai_leg.status == "disabled"
+    assert ai_leg.reason == "real_evaluation_inputs_unavailable"
+    # TR-9.1: a disabled leg produces no performance numbers of any kind.
+    assert ai_leg.metrics is None
+    ai_dump = ai_leg.model_dump(mode="json")
+    assert ai_dump["metrics"] is None
+    assert "equity" not in ai_dump
+    assert "trades" not in ai_dump
+    assert "uplift" not in ai_dump
+
+
+def test_baseline_leg_repeats_the_unchanged_run() -> None:
+    _, result = _ablation_result()
+    base_leg = result.ablation.baseline
+    assert base_leg.leg == "baseline"
+    assert base_leg.status == "completed"
+    assert base_leg.reason is None
+    assert base_leg.metrics == result.metrics
+    assert base_leg.metrics == result.baseline.metrics
+
+
+def test_ablation_legs_share_identical_pool_window_cost_seed() -> None:
+    cfg, result = _ablation_result(random_seed=424242)
+    report = result.ablation
+    baseline_inputs = report.baseline.inputs
+    ai_inputs = report.ai_variant.inputs
+    # TR-9.2: the controlled comparison freezes identical inputs on both legs.
+    assert baseline_inputs == ai_inputs
+    assert baseline_inputs.snapshot_id == cfg.snapshot_id
+    assert baseline_inputs.input_manifests == cfg.input_manifests
+    assert baseline_inputs.period == cfg.period
+    assert baseline_inputs.cost_model == cfg.cost_model
+    assert baseline_inputs.random_seed == 424242
+    assert baseline_inputs.random_seed == cfg.experiment.random_seed
+
+
+def test_baseline_only_experiment_emits_no_ablation() -> None:
+    _, result = _ablation_result(legs=("baseline",))
+    assert result.ablation is None
+    # The baseline leg and headline run are unaffected by the absent variant.
+    assert result.baseline.status == "completed"
+    assert result.baseline.metrics == result.metrics
+
+
+def test_ablation_leg_models_fail_closed() -> None:
+    _, result = _ablation_result()
+    shared = result.ablation.baseline.inputs
+    metrics = result.metrics
+    reason = "real_evaluation_inputs_unavailable"
+
+    # A disabled leg must carry the structured reason and no metrics.
+    with pytest.raises(ValidationError):
+        AblationLeg(leg="ai_variant", status="disabled", inputs=shared, metrics=metrics)
+    with pytest.raises(ValidationError):
+        AblationLeg(
+            leg="ai_variant",
+            status="disabled",
+            inputs=shared,
+            metrics=metrics,
+            reason=reason,
+        )
+    with pytest.raises(ValidationError):
+        AblationLeg(leg="ai_variant", status="disabled", inputs=shared)
+    # A completed leg must carry metrics and no disabled reason.
+    with pytest.raises(ValidationError):
+        AblationLeg(leg="baseline", status="completed", inputs=shared)
+    with pytest.raises(ValidationError):
+        AblationLeg(
+            leg="baseline",
+            status="completed",
+            inputs=shared,
+            metrics=metrics,
+            reason=reason,
+        )
+    # The well-formed legs construct.
+    AblationLeg(leg="ai_variant", status="disabled", inputs=shared, reason=reason)
+    AblationLeg(leg="baseline", status="completed", inputs=shared, metrics=metrics)
+
+
+def test_ablation_report_rejects_mismatched_leg_inputs() -> None:
+    _, result = _ablation_result()
+    shared = result.ablation.baseline.inputs
+    changed = shared.model_copy(update={"random_seed": shared.random_seed + 1})
+    completed = AblationLeg(
+        leg="baseline", status="completed", inputs=shared, metrics=result.metrics
+    )
+    disabled = AblationLeg(
+        leg="ai_variant",
+        status="disabled",
+        inputs=changed,
+        reason=ABLATION_AI_DISABLED_REASON,
+    )
+    with pytest.raises(ValidationError):
+        AblationReport(baseline=completed, ai_variant=disabled)
+
+
+def test_ablation_report_is_field_identical_across_runs() -> None:
+    _, first = _ablation_result()
+    _, second = _ablation_result()
+    assert first.ablation.model_dump(mode="json") == second.ablation.model_dump(
+        mode="json"
+    )
