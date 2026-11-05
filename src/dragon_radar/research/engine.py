@@ -213,6 +213,7 @@ class BacktestResult(StrictFrozenModel):
     rejections: tuple[Rejection, ...]
     quality: tuple[DayQuality, ...]
     folds: tuple[object, ...] | None = None
+    walk_forward: object | None = None
     baseline: BaselineLeg
     ablation: object | None = None
 
@@ -310,13 +311,14 @@ def _target_quantities(
     signal_close: Mapping[str, Decimal],
     marks: Mapping[str, Decimal],
     config: BacktestConfig,
+    regime_weight: Decimal = Decimal("1"),
 ) -> dict[str, int]:
     """Equal-weight, cost-aware board-lot targets sized at signal close."""
     selected = tuple(item.security_id for item in signal.selected)
     if not selected:
         return {}
     equity = mark_equity(ledger, marks)
-    budget = (equity / Decimal(len(selected))).quantize(
+    budget = ((equity / Decimal(len(selected))) * regime_weight).quantize(
         MONEY_QUANTUM, rounding=ROUND_FLOOR
     )
     slippage = config.cost_model.slippage_rate
@@ -342,9 +344,12 @@ def _plan_orders(
     signal_close: Mapping[str, Decimal],
     marks: Mapping[str, Decimal],
     config: BacktestConfig,
+    regime_weight: Decimal = Decimal("1"),
 ) -> list[Order]:
     """Sell exits/rebalances first (sorted) so proceeds can fund buys."""
-    targets = _target_quantities(signal, ledger, signal_close, marks, config)
+    targets = _target_quantities(
+        signal, ledger, signal_close, marks, config, regime_weight
+    )
     signal_day = signal.trade_date
     orders: list[Order] = []
 
@@ -475,6 +480,7 @@ def _simulate(
     factor_by_date: Mapping[date, FactorFrame],
     cost_model: CostModel,
     benchmark_closes: Mapping[date, Decimal] | None,
+    regime_weights: Mapping[date, Decimal] | None = None,
 ) -> object:
     days = window.days
     strategy = get_strategy(config.strategy_id)
@@ -537,6 +543,11 @@ def _simulate(
                     and security_id in last_visible_close
                 }
             )
+            regime_weight = (
+                regime_weights.get(decision_day.trade_date, Decimal("1"))
+                if regime_weights is not None
+                else Decimal("1")
+            )
             orders = _plan_orders(
                 signal,
                 ledger,
@@ -546,6 +557,7 @@ def _simulate(
                 },
                 decision_marks,
                 config,
+                regime_weight,
             )
         else:
             orders = []
@@ -717,8 +729,17 @@ def run_backtest(
     anchor: PitAnchor,
     policy: UniversePolicy | None = None,
     benchmark_closes: Mapping[date, Decimal] | None = None,
+    phase_publications: Sequence[object] | None = None,
 ) -> BacktestResult:
     """Run the deterministic PIT backtest and all cost-sensitivity legs."""
+    if config.walk_forward is None and phase_publications is not None:
+        raise ValueError("phase publications require a walk_forward spec")
+    if config.walk_forward is not None and phase_publications is None:
+        raise ValueError(
+            "walk-forward runs require an explicit phase publication series "
+            "(an empty tuple is allowed)"
+        )
+
     window = assemble_pit_window(frames, anchor=anchor, policy=policy)
     _validate_factor_frames(config, window.days, factor_frames)
     if benchmark_closes is not None and any(
@@ -728,6 +749,20 @@ def run_backtest(
 
     frames_by_date = {frame.trade_date: frame for frame in frames}
     factor_by_date = {frame.trade_date: frame for frame in factor_frames}
+
+    # Imported lazily: walk_forward imports this module at its top level.
+    walk_forward_report = None
+    if config.walk_forward is not None:
+        from dragon_radar.research.walk_forward import run_walk_forward
+
+        walk_forward_report = run_walk_forward(
+            config,
+            window,
+            phase_publications,  # type: ignore[arg-type]
+            frames_by_date=frames_by_date,
+            factor_by_date=factor_by_date,
+            benchmark_closes=benchmark_closes,
+        )
 
     tiers = cost_sensitivity_models(config.cost_model)
     base_artifacts: _SimulationArtifacts | None = None
@@ -763,7 +798,8 @@ def run_backtest(
         trades=base_artifacts.trades,
         rejections=base_artifacts.rejections,
         quality=base_artifacts.quality,
-        folds=None,
+        folds=(None if walk_forward_report is None else walk_forward_report.folds),
+        walk_forward=walk_forward_report,
         baseline=BaselineLeg(
             metrics=base_artifacts.metrics,
             cost_sensitivity=tuple(sensitivity),

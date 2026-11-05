@@ -58,6 +58,7 @@ from dragon_radar.research.pit import (
     UniversePolicy,
     assemble_pit_window,
 )
+from dragon_radar.research.walk_forward import PhasePublication
 
 BACKTEST_MODULES = (
     "models",
@@ -1934,3 +1935,374 @@ def test_health_same_inputs_produce_field_identical_reports() -> None:
     first = _assess_health(streams).model_dump_json()
     second = _assess_health(streams).model_dump_json()
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — walk-forward fold partition, frozen train-only regime weighting
+# and EX16 five-phase PIT conditioning
+# ---------------------------------------------------------------------------
+#
+# Eight business sessions (d0..d7) split into one anchored train prefix
+# (d0..d3) plus two strictly tiled out-of-sample folds (d4..d5, d6..d7).
+# The canonical market only moves inside the train prefix: d0 10 -> d1 9 and
+# d2 10 -> d3 10.5, so the hand-computed regime means stay tiny and auditable.
+
+WF_IDS = ("X1", "X2")
+
+
+def _wf_business_days(count: int) -> tuple[date, ...]:
+    days: list[date] = []
+    cursor = date(2025, 3, 3)
+    while len(days) < count:
+        if cursor.weekday() < 5:
+            days.append(cursor)
+        cursor += timedelta(days=1)
+    return tuple(days)
+
+
+WF_DAYS = _wf_business_days(8)
+WF_CAL = ExchangeCalendar(exchange="TEST", version="wf1", sessions=WF_DAYS)
+WF_SPEC = WalkForwardSpec(folds=2, train_sessions=4, test_sessions=2)
+
+
+def _wf_state(sid: str, first_day: date) -> SecurityState:
+    return SecurityState(
+        security_id=sid,
+        code=sid,
+        name=f"WalkForward {sid}",
+        board="main",
+        board_category="synthetic_test",
+        exchange="TEST",
+        effective_from=first_day,
+        effective_to=None,
+        available_at=datetime(
+            first_day.year, first_day.month, first_day.day, 9, tzinfo=UTC
+        ),
+        listing_date=first_day,
+        suspended=False,
+        source_id="synthetic",
+        source_version="s1",
+        pool_version="p1",
+    )
+
+
+def _wf_market(day: date, closes: dict[str, str]) -> MarketBatch:
+    from factories import grant
+
+    return MarketBatch(
+        trade_date=day,
+        as_of=_eng_dt(day, 16, 30),
+        source_id="synthetic",
+        source_version="s1",
+        adjustment_version="a1",
+        calendar_version="wf1",
+        pool_version="p1",
+        grant=grant(),
+        calendar=WF_CAL,
+        expected_security_ids=WF_IDS,
+        security_states=tuple(_wf_state(sid, WF_DAYS[0]) for sid in WF_IDS),
+        bars=tuple(_eng_bar(sid, day, close=closes[sid]) for sid in WF_IDS),
+        complete_pages=True,
+        provenance="contemporaneous",
+    )
+
+
+def _wf_closes() -> dict[date, dict[str, str]]:
+    closes = {day: {sid: "10" for sid in WF_IDS} for day in WF_DAYS}
+    closes[WF_DAYS[1]] = {sid: "9" for sid in WF_IDS}
+    closes[WF_DAYS[3]] = {sid: "10.5" for sid in WF_IDS}
+    return closes
+
+
+def _wf_frames(
+    closes_by_day: dict[date, dict[str, str]],
+) -> tuple[PitFrame, ...]:
+    return tuple(
+        PitFrame(
+            trade_date=day,
+            publication_sequence=(index + 1) * 100,
+            market=_wf_market(day, closes_by_day[day]),
+        )
+        for index, day in enumerate(WF_DAYS)
+    )
+
+
+def _wf_factor_frames() -> tuple[FactorFrame, ...]:
+    values = {"X1": Decimal("40"), "X2": Decimal("30")}
+    return tuple(_factor_frame(day, values, ids=WF_IDS) for day in WF_DAYS)
+
+
+def _wf_anchor() -> PitAnchor:
+    return PitAnchor(
+        publication_sequence=900,
+        trade_date=WF_DAYS[-1],
+        status="published",
+    )
+
+
+def _wf_config(**overrides: object) -> BacktestConfig:
+    values = {
+        "period": period(start=WF_DAYS[0], end=WF_DAYS[-1]),
+        "parameters": parameters(top_n=2, rebalance_period=2),
+        "walk_forward": WF_SPEC,
+    }
+    values.update(overrides)
+    return config(**values)  # type: ignore[arg-type]
+
+
+def _phase(day: date, phase: str, sequence: int) -> PhasePublication:
+    return PhasePublication(
+        trade_date=day,
+        publication_sequence=sequence,
+        phase=phase,  # type: ignore[arg-type]
+    )
+
+
+def _wf_phases() -> tuple[PhasePublication, ...]:
+    # d0 sees ice, d2 sees repair; both fit windows stay inside the train
+    # prefix. The first OOS decision day d4 republishes ice in its own frame
+    # (seq 500), so under latest-visible PIT lookup the frozen ice weight --
+    # not the older repair publication -- governs fold 0.
+    return (
+        _phase(WF_DAYS[0], "ice", 100),
+        _phase(WF_DAYS[2], "repair", 300),
+        _phase(WF_DAYS[4], "ice", 500),
+    )
+
+
+def _run_wf(
+    closes_by_day: dict[date, dict[str, str]] | None = None,
+    phases: tuple[PhasePublication, ...] | None = None,
+    *,
+    spec: WalkForwardSpec | None = WF_SPEC,
+) -> object:
+    cfg = _wf_config() if spec is WF_SPEC else _wf_config(walk_forward=spec)
+    return run_backtest(
+        cfg,
+        _wf_frames(closes_by_day or _wf_closes()),
+        _wf_factor_frames(),
+        anchor=_wf_anchor(),
+        policy=UniversePolicy(),
+        phase_publications=_wf_phases() if phases is None else phases,
+    )
+
+
+def _wf_weight_map(report: object) -> dict[str, object]:
+    return {entry.phase: entry for entry in report.regime_map.weights}
+
+
+def _wf_fold_trades(result: object, fold_index: int) -> dict[str, int]:
+    report = result.walk_forward
+    fold = report.folds[fold_index]
+    bought: dict[str, int] = {}
+    for fill in fold.trades:
+        if fill.side == "buy":
+            bought[fill.security_id] = fill.quantity
+    return bought
+
+
+def test_wf_fold_partition_is_disjoint_and_covers_test_region() -> None:
+    report = _run_wf().walk_forward
+    assert report.folds_count == 2
+    assert report.train_sessions == 4
+    assert report.test_sessions == 2
+    train = report.regime_map
+    assert (train.train_start, train.train_end) == (WF_DAYS[0], WF_DAYS[3])
+    bounds = [(fold.test_start, fold.test_end) for fold in report.folds]
+    assert bounds == [(WF_DAYS[4], WF_DAYS[5]), (WF_DAYS[6], WF_DAYS[7])]
+    for fold in report.folds:
+        assert (fold.train_start, fold.train_end) == (WF_DAYS[0], WF_DAYS[3])
+        assert fold.test_start > fold.train_end
+    # The tiled test folds share no session and cover sessions d4..d7 wholly.
+    first, second = report.folds
+    assert first.test_end < second.test_start
+    fold_equity_days = [
+        point.trade_date for fold in report.folds for point in fold.equity
+    ]
+    assert fold_equity_days == list(WF_DAYS[4:])
+    assert report.aggregate_metrics.initial_equity == first.metrics.initial_equity
+
+
+def test_wf_report_pins_schema_spec_folds_and_aggregate_metrics() -> None:
+    result = _run_wf()
+    report = result.walk_forward
+    assert report.schema_version == "dragon-radar.research-walk-forward/v1"
+    assert report.research_only is True
+    assert result.folds == report.folds
+    assert [fold.fold_index for fold in report.folds] == [0, 1]
+    for fold in report.folds:
+        assert fold.metrics.initial_equity == Decimal("100000.00")
+        assert fold.equity[0].equity == Decimal("100000.00")
+    # The aggregate OOS run spans the full tiled test region continuously.
+    aggregate_days = [point.trade_date for point in report.aggregate_equity]
+    assert aggregate_days == list(WF_DAYS[4:])
+    assert report.aggregate_metrics.final_equity == report.aggregate_equity[-1].equity
+
+
+def test_wf_fitted_weights_match_hand_computed_regime_means() -> None:
+    report = _run_wf().walk_forward
+    weights = _wf_weight_map(report)
+    ice = weights["ice"]
+    assert ice.status == "fitted"
+    assert ice.observations == 1
+    assert ice.mean_next_session_return == Decimal("-0.100000")
+    assert ice.weight == Decimal("0.900000")
+    repair = weights["repair"]
+    assert repair.status == "fitted"
+    assert repair.observations == 1
+    assert repair.mean_next_session_return == Decimal("0.050000")
+    assert repair.weight == Decimal("1.000000")  # never levered above unit weight
+    for phase_name in ("ebb", "divergent", "climax"):
+        entry = weights[phase_name]
+        assert entry.status == "unobserved_in_training"
+        assert entry.observations == 0
+        assert entry.mean_next_session_return is None
+        assert entry.weight == Decimal("1.000000")
+    assert report.regime_map.missing_phase_decision_sessions == ()
+
+
+def test_wf_fitted_weights_freeze_against_test_region_mutations() -> None:
+    baseline = _run_wf().walk_forward
+
+    mutated_test = _wf_closes()
+    for day in WF_DAYS[4:]:
+        mutated_test[day] = {sid: "12" for sid in WF_IDS}
+    test_mutated = _run_wf(mutated_test).walk_forward
+    assert test_mutated.regime_map.model_dump() == baseline.regime_map.model_dump()
+
+    mutated_train = _wf_closes()
+    mutated_train[WF_DAYS[1]] = {sid: "9.5" for sid in WF_IDS}
+    train_mutated = _run_wf(mutated_train).walk_forward
+    ice = _wf_weight_map(train_mutated)["ice"]
+    assert ice.mean_next_session_return == Decimal("-0.050000")
+    assert ice.weight == Decimal("0.950000")
+
+
+def test_wf_regime_weight_scales_oos_order_quantities() -> None:
+    weighted = _run_wf()
+    # ice weight 0.900000: 50,000 budget -> 45,000 -> floor(44.96 lots) = 4,400.
+    assert _wf_fold_trades(weighted, 0) == {"X1": 4400, "X2": 4400}
+
+    # No phase series at all degrades every decision to unit weight: 4,900.
+    unweighted = _run_wf(phases=())
+    assert _wf_fold_trades(unweighted, 0) == {"X1": 4900, "X2": 4900}
+    missing_events = [
+        event.code for fold in unweighted.walk_forward.folds for event in fold.quality
+    ]
+    assert missing_events == ["regime_phase_missing", "regime_phase_missing"]
+
+
+def test_wf_phase_as_of_never_reads_future_or_late_publications() -> None:
+    # A late high-sequence revision of d0 must not reach any historical day;
+    # the d6 climax publication must not leak into the train prefix.
+    phases = (
+        _phase(WF_DAYS[0], "ice", 100),
+        _phase(WF_DAYS[0], "ebb", 900),
+        _phase(WF_DAYS[6], "climax", 550),
+    )
+    report = _run_wf(phases=phases).walk_forward
+    weights = _wf_weight_map(report)
+    ice = weights["ice"]
+    assert ice.observations == 2
+    assert ice.mean_next_session_return == Decimal("-0.025000")
+    assert ice.weight == Decimal("0.975000")
+    assert weights["ebb"].status == "unobserved_in_training"
+    assert weights["repair"].status == "unobserved_in_training"
+    assert weights["climax"].status == "unobserved_in_training"
+    # d4 still sees the contemporaneous ice phase visible on d0.
+    assert _wf_fold_trades(_run_wf(phases=phases), 0) == {"X1": 4800, "X2": 4800}
+    # d6 sees climax for the first time; it was never fitted, so unit weight.
+    events = {event.code: event.phase for event in report.folds[1].quality}
+    assert events == {"regime_unobserved_in_training": "climax"}
+    assert _wf_fold_trades(_run_wf(phases=phases), 1) == {"X1": 4900, "X2": 4900}
+
+
+def test_wf_missing_phase_degrades_to_unit_weight_with_quality_reason() -> None:
+    # The first publication lands on d5: train decisions and fold-0's d4
+    # decision have no visible phase; no state may be fabricated.
+    phases = (_phase(WF_DAYS[5], "ebb", 600),)
+    report = _run_wf(phases=phases).walk_forward
+    assert report.regime_map.missing_phase_decision_sessions == (
+        WF_DAYS[0],
+        WF_DAYS[2],
+    )
+    assert all(
+        entry.status == "unobserved_in_training" for entry in report.regime_map.weights
+    )
+    codes = [
+        (event.trade_date, event.code, event.phase)
+        for fold in report.folds
+        for event in fold.quality
+    ]
+    assert codes == [
+        (WF_DAYS[4], "regime_phase_missing", None),
+        (WF_DAYS[6], "regime_unobserved_in_training", "ebb"),
+    ]
+
+
+def test_wf_unobserved_regime_on_test_day_applies_unit_weight() -> None:
+    # Train sessions are all ice; fold 1 meets a never-fitted climax phase.
+    phases = (
+        _phase(WF_DAYS[0], "ice", 100),
+        _phase(WF_DAYS[6], "climax", 700),
+    )
+    report = _run_wf(phases=phases).walk_forward
+    assert _wf_weight_map(report)["ice"].observations == 2
+    events = tuple(report.folds[1].quality)
+    assert len(events) == 1
+    assert events[0].trade_date == WF_DAYS[6]
+    assert events[0].code == "regime_unobserved_in_training"
+    assert events[0].phase == "climax"
+    assert _wf_fold_trades(_run_wf(phases=phases), 1) == {"X1": 4900, "X2": 4900}
+
+
+def test_wf_same_inputs_produce_field_identical_reports() -> None:
+    first = _result_json(_run_wf())
+    second = _result_json(_run_wf())
+    assert first == second
+
+
+def test_wf_validation_fails_closed() -> None:
+    frames = _wf_frames(_wf_closes())
+    factor_frames = _wf_factor_frames()
+
+    with pytest.raises(ValueError, match="phase"):
+        run_backtest(
+            _wf_config(),
+            frames,
+            factor_frames,
+            anchor=_wf_anchor(),
+            policy=UniversePolicy(),
+            phase_publications=None,
+        )
+    with pytest.raises(ValueError, match="phase"):
+        run_backtest(
+            _wf_config(walk_forward=None),
+            frames,
+            factor_frames,
+            anchor=_wf_anchor(),
+            policy=UniversePolicy(),
+            phase_publications=_wf_phases(),
+        )
+    with pytest.raises(ValueError, match="session"):
+        _run_wf(spec=WalkForwardSpec(folds=3, train_sessions=4, test_sessions=2))
+    with pytest.raises(ValueError, match="duplicate"):
+        _run_wf(
+            phases=(
+                _phase(WF_DAYS[0], "ice", 100),
+                _phase(WF_DAYS[0], "ebb", 100),
+            )
+        )
+    with pytest.raises(ValueError, match="order"):
+        _run_wf(
+            phases=(
+                _phase(WF_DAYS[2], "repair", 300),
+                _phase(WF_DAYS[0], "ice", 100),
+            )
+        )
+    with pytest.raises(ValueError, match="anchor"):
+        _run_wf(phases=(_phase(WF_DAYS[0], "ice", 950),))
+    with pytest.raises(ValueError, match="anchor"):
+        _run_wf(phases=(_phase(date(2025, 3, 13), "ice", 100),))
+    with pytest.raises(ValidationError):
+        _phase(WF_DAYS[0], "bull_market", 100)
