@@ -3048,3 +3048,686 @@ def test_0014_research_downgrade_is_forbidden(database_url) -> None:
             command.downgrade(config, "0013_query")
     finally:
         database.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 11 — ResearchRunRepository: owner isolation, idempotency replay and
+# conflict, config-hash cache reuse, lease claim/renew, cooperative cancel and
+# structured budget failures. Every lifecycle rule runs on real PostgreSQL.
+# ---------------------------------------------------------------------------
+
+T11_BUDGET_MS = 300_000
+T11_RESULT = {
+    "schema_version": T10_ENGINE_VERSION,
+    "research_only": True,
+    "summary": {"total_return": "0.1250"},
+}
+
+
+def _research_session(owners):
+    code = owners.issue_pairing()
+    return owners.exchange_pairing(code, "https://localhost:8030")
+
+
+@pytest.fixture
+def run_repo(database, repository):
+    from types import SimpleNamespace
+
+    from dragon_radar.owner.repository import OwnerRepository
+    from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.research.repository import ResearchRunRepository
+
+    owners = OwnerRepository(database, clock=lambda: T10_NOW)
+    owners.initialize()
+    session = _research_session(owners)
+    publication = _research_publish(database, repository, suffix="-t11")
+    runs = ResearchRunRepository(
+        database,
+        owners,
+        PublicationRepository(database, repository, clock=lambda: T10_NOW),
+        clock=lambda: T10_NOW,
+    )
+    return SimpleNamespace(
+        runs=runs,
+        owners=owners,
+        session=session,
+        publication=publication,
+    )
+
+
+def _submission(snapshot_id, *, key=None, **config_changes):
+    values = {"snapshot_id": snapshot_id}
+    values.update(config_changes)
+    return BacktestSubmission(
+        config=config(**values),
+        idempotency_key=key or uuid4(),
+    )
+
+
+def _second_owner_session(database, *, now=T10_NOW):
+    import secrets
+    from types import SimpleNamespace
+
+    from sqlalchemy import insert
+
+    from dragon_radar.owner.models import owner_principals, owner_sessions
+    from dragon_radar.owner.repository import _hash
+
+    owner_id = uuid4()
+    token = secrets.token_urlsafe(32)
+    csrf = secrets.token_urlsafe(32)
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(owner_principals).values(id=owner_id, local_key=None, created_at=now)
+        )
+        connection.execute(
+            insert(owner_sessions).values(
+                id=uuid4(),
+                owner_id=owner_id,
+                token_hash=_hash(token),
+                csrf_hash=_hash(csrf),
+                origin="https://localhost:8030",
+                created_at=now,
+                expires_at=now + timedelta(hours=1),
+            )
+        )
+    return SimpleNamespace(owner_id=owner_id, token=token, csrf=csrf)
+
+
+# -- TR-11.1: idempotency, conflict and owner isolation ---------------------
+
+
+def test_research_submit_persists_queued_run_and_replays_same_submission(
+    run_repo,
+) -> None:
+    from sqlalchemy import select, text
+
+    from dragon_radar.research.repository import DEFAULT_MAX_WALL_CLOCK_MS
+    from dragon_radar.research.tables import research_backtest_runs
+
+    ctx = run_repo
+    submission = _submission(ctx.publication.id)
+    record = ctx.runs.submit(ctx.session.token, ctx.session.csrf, submission)
+
+    assert record.status == "queued"
+    assert record.attempt_count == 0
+    assert record.max_wall_clock_ms == DEFAULT_MAX_WALL_CLOCK_MS == T11_BUDGET_MS
+    assert record.owner_id == ctx.session.owner_id
+    assert record.config == submission.config
+    assert record.result is None
+    assert record.failure is None
+    assert record.started_at is None
+    assert record.completed_at is None
+    assert record.created_at == T10_NOW
+
+    replay = ctx.runs.submit(ctx.session.token, ctx.session.csrf, submission)
+    assert replay == record
+
+    with ctx.runs.database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                research_backtest_runs.c.request_hash,
+                research_backtest_runs.c.config_hash,
+                research_backtest_runs.c.idempotency_key,
+                research_backtest_runs.c.max_wall_clock_ms,
+            ).where(research_backtest_runs.c.id == record.id)
+        ).one()
+        assert row.request_hash == row.config_hash == submission.config.config_hash
+        assert row.idempotency_key == str(submission.idempotency_key)
+        assert row.max_wall_clock_ms == T11_BUDGET_MS
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_runs")) == 1
+        )
+
+
+def test_research_submit_conflicts_when_same_key_changes_config(run_repo) -> None:
+    from sqlalchemy import text
+
+    from dragon_radar.storage.repository import Conflict
+
+    ctx = run_repo
+    key = uuid4()
+    first = ctx.runs.submit(
+        ctx.session.token,
+        ctx.session.csrf,
+        _submission(ctx.publication.id, key=key),
+    )
+    changed = BacktestSubmission(
+        config=config(
+            snapshot_id=ctx.publication.id,
+            parameters=parameters(top_n=11),
+        ),
+        idempotency_key=key,
+    )
+    with pytest.raises(Conflict):
+        ctx.runs.submit(ctx.session.token, ctx.session.csrf, changed)
+
+    stored = ctx.runs.get(ctx.session.token, first.id)
+    assert stored.config.parameters.top_n == 10
+    with ctx.runs.database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_runs")) == 1
+        )
+
+
+def test_research_get_is_owner_scoped_and_unknown_run_is_not_found(run_repo) -> None:
+    from dragon_radar.storage.repository import NotFound
+
+    ctx = run_repo
+    record = ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    assert ctx.runs.get(ctx.session.token, record.id) == record
+
+    other = _second_owner_session(ctx.runs.database)
+    with pytest.raises(NotFound):
+        ctx.runs.get(other.token, record.id)
+    with pytest.raises(NotFound):
+        ctx.runs.get(ctx.session.token, uuid4())
+    with pytest.raises(ValueError, match="Invalid record ID"):
+        ctx.runs.get(ctx.session.token, "not-a-uuid")
+
+
+@pytest.mark.parametrize("bad_csrf", (None, "", "wrong"))
+def test_research_submit_requires_session_bound_csrf(run_repo, bad_csrf) -> None:
+    from sqlalchemy import text
+
+    from dragon_radar.owner import CsrfForbidden
+
+    ctx = run_repo
+    with pytest.raises(CsrfForbidden):
+        ctx.runs.submit(
+            ctx.session.token,
+            bad_csrf,
+            _submission(ctx.publication.id),
+        )
+    with ctx.runs.database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_runs")) == 0
+        )
+
+
+def test_research_readonly_repository_fails_closed_for_owner_methods(run_repo) -> None:
+    from dragon_radar.research.repository import ResearchRunRepository
+    from dragon_radar.storage.repository import Forbidden
+
+    ctx = run_repo
+    readonly = ResearchRunRepository(
+        ctx.runs.database,
+        None,
+        ctx.runs.publications,
+        clock=lambda: T10_NOW,
+    )
+    with pytest.raises(Forbidden):
+        readonly.submit(
+            ctx.session.token,
+            ctx.session.csrf,
+            _submission(ctx.publication.id),
+        )
+    with pytest.raises(Forbidden):
+        readonly.get(ctx.session.token, uuid4())
+    with pytest.raises(Forbidden):
+        readonly.cancel(ctx.session.token, ctx.session.csrf, uuid4())
+
+
+def test_research_submit_rechecks_publication_is_published(run_repo) -> None:
+    from sqlalchemy import update
+
+    from dragon_radar.publication.tables import publications as publications_table
+    from dragon_radar.storage.repository import Forbidden, NotFound
+
+    ctx = run_repo
+    with pytest.raises(NotFound):
+        ctx.runs.submit(
+            ctx.session.token,
+            ctx.session.csrf,
+            _submission(uuid4()),
+        )
+
+    with ctx.runs.database.engine.begin() as connection:
+        connection.execute(
+            update(publications_table)
+            .where(publications_table.c.id == ctx.publication.id)
+            .values(status="revoked")
+        )
+    with pytest.raises(Forbidden):
+        ctx.runs.submit(
+            ctx.session.token,
+            ctx.session.csrf,
+            _submission(ctx.publication.id),
+        )
+
+
+def test_research_config_hash_cache_reuses_result_across_owners(run_repo) -> None:
+    from sqlalchemy import inspect, text
+
+    from dragon_radar.storage.repository import NotFound
+
+    ctx = run_repo
+    submission = _submission(ctx.publication.id)
+    first = ctx.runs.submit(ctx.session.token, ctx.session.csrf, submission)
+    lease = ctx.runs.claim("research-worker-1")
+    assert lease is not None
+    assert lease.run.id == first.id
+    ctx.runs.succeed(lease, T11_RESULT)
+
+    other = _second_owner_session(ctx.runs.database)
+    cached = ctx.runs.submit(
+        other.token,
+        other.csrf,
+        _submission(ctx.publication.id),
+    )
+    assert cached.owner_id == other.owner_id
+    assert cached.id != first.id
+    assert cached.status == "succeeded"
+    assert cached.result == T11_RESULT
+    assert cached.completed_at == T10_NOW
+    with pytest.raises(NotFound):
+        ctx.runs.get(ctx.session.token, cached.id)
+
+    with ctx.runs.database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_cache")) == 1
+        )
+        cache_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("research_backtest_cache")
+        }
+        assert "owner_id" not in cache_columns
+
+
+def test_research_submit_for_owner_requires_caller_transaction(run_repo) -> None:
+    ctx = run_repo
+    submission = _submission(ctx.publication.id)
+    with ctx.runs.database.engine.connect() as connection:
+        with pytest.raises(ValueError, match="caller transaction"):
+            ctx.runs.submit_for_owner(
+                connection,
+                ctx.session.owner_id,
+                submission,
+            )
+
+
+# -- TR-11.2: cooperative cancellation --------------------------------------
+
+
+def test_research_cancel_queued_run_is_immediate_without_result(run_repo) -> None:
+    from sqlalchemy import select
+
+    from dragon_radar.research.tables import research_backtest_runs
+
+    ctx = run_repo
+    record = ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    cancelled = ctx.runs.cancel(ctx.session.token, ctx.session.csrf, record.id)
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.result is None
+    assert cancelled.failure is None
+    assert cancelled.started_at is None
+    assert cancelled.completed_at == T10_NOW
+
+    with ctx.runs.database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                research_backtest_runs.c.status,
+                research_backtest_runs.c.lease_token,
+                research_backtest_runs.c.lease_owner,
+                research_backtest_runs.c.lease_expires_at,
+                research_backtest_runs.c.result,
+                research_backtest_runs.c.failure,
+            ).where(research_backtest_runs.c.id == record.id)
+        ).one()
+        assert tuple(row) == ("cancelled", None, None, None, None, None)
+
+
+def test_research_cancel_running_run_invalidates_lease_and_blocks_completion(
+    run_repo,
+) -> None:
+    from sqlalchemy import select, text
+
+    from dragon_radar.research.tables import research_backtest_runs
+    from dragon_radar.storage.repository import Conflict
+
+    ctx = run_repo
+    ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    lease = ctx.runs.claim("research-worker-1")
+    assert lease is not None
+    cancelled = ctx.runs.cancel(ctx.session.token, ctx.session.csrf, lease.run.id)
+    assert cancelled.status == "cancelled"
+    assert cancelled.completed_at == T10_NOW
+
+    with pytest.raises(Conflict, match="no longer active"):
+        ctx.runs.succeed(lease, T11_RESULT)
+    with pytest.raises(Conflict, match="no longer active"):
+        ctx.runs.renew(lease)
+    with pytest.raises(Conflict, match="no longer active"):
+        ctx.runs.fail(lease, {"code": "engine_failed"})
+
+    with ctx.runs.database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                research_backtest_runs.c.status,
+                research_backtest_runs.c.result,
+                research_backtest_runs.c.failure,
+                research_backtest_runs.c.lease_token,
+            ).where(research_backtest_runs.c.id == lease.run.id)
+        ).one()
+        assert tuple(row) == ("cancelled", None, None, None)
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_cache")) == 0
+        )
+
+
+@pytest.mark.parametrize("terminal", ("succeeded", "failed", "cancelled"))
+def test_research_cancel_rejects_terminal_runs(run_repo, terminal) -> None:
+    from dragon_radar.storage.repository import Conflict
+
+    ctx = run_repo
+    record = ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    if terminal == "succeeded":
+        lease = ctx.runs.claim("research-worker-1")
+        ctx.runs.succeed(lease, T11_RESULT)
+    elif terminal == "failed":
+        lease = ctx.runs.claim("research-worker-1")
+        ctx.runs.fail(lease, {"code": "engine_failed"})
+    else:
+        ctx.runs.cancel(ctx.session.token, ctx.session.csrf, record.id)
+
+    with pytest.raises(Conflict):
+        ctx.runs.cancel(ctx.session.token, ctx.session.csrf, record.id)
+
+
+def test_research_cancel_is_owner_scoped_and_requires_csrf(run_repo) -> None:
+    from dragon_radar.owner import CsrfForbidden
+    from dragon_radar.storage.repository import NotFound
+
+    ctx = run_repo
+    record = ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    other = _second_owner_session(ctx.runs.database)
+    with pytest.raises(NotFound):
+        ctx.runs.cancel(other.token, other.csrf, record.id)
+    with pytest.raises(CsrfForbidden):
+        ctx.runs.cancel(ctx.session.token, "", record.id)
+    with pytest.raises(NotFound):
+        ctx.runs.cancel(ctx.session.token, ctx.session.csrf, uuid4())
+
+    assert ctx.runs.get(ctx.session.token, record.id).status == "queued"
+
+
+# -- TR-11.3: leases, attempt limits and structured budget failure ----------
+
+
+def test_research_claim_issues_lease_and_empties_pool(run_repo) -> None:
+    ctx = run_repo
+    assert ctx.runs.claim("research-worker-1") is None
+
+    record = ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    lease = ctx.runs.claim("research-worker-1")
+    assert lease is not None
+    assert isinstance(lease.token, UUID)
+    assert lease.worker_id == "research-worker-1"
+    assert lease.expires_at == T10_NOW + timedelta(seconds=30)
+    assert lease.run.id == record.id
+    assert lease.run.status == "running"
+    assert lease.run.attempt_count == 1
+    assert lease.run.started_at == T10_NOW
+    assert lease.run.max_wall_clock_ms == T11_BUDGET_MS
+    assert lease.run.result is None
+    assert ctx.runs.claim("research-worker-2") is None
+
+    with pytest.raises(ValueError, match="Identifier"):
+        ctx.runs.claim("bad worker id")
+
+
+def test_research_expired_lease_is_reclaimable_but_stale_worker_cannot_finish(
+    run_repo,
+) -> None:
+    from dragon_radar.storage.repository import Conflict
+
+    ctx = run_repo
+    ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    first = ctx.runs.claim("research-worker-1", lease_for=timedelta(seconds=10))
+    assert first is not None
+    ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=11)
+    second = ctx.runs.claim("research-worker-2", lease_for=timedelta(seconds=10))
+    assert second is not None
+    assert second.run.id == first.run.id
+    assert second.token != first.token
+    assert second.run.attempt_count == 2
+
+    with pytest.raises(Conflict, match="no longer active"):
+        ctx.runs.succeed(first, T11_RESULT)
+    completed = ctx.runs.succeed(second, T11_RESULT)
+    assert completed.status == "succeeded"
+
+
+def test_research_claim_validates_policy_and_fails_exhausted_run(run_repo) -> None:
+    from dragon_radar.storage.repository import Conflict
+
+    ctx = run_repo
+    submitted = ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    for invalid in (True, 0, 11, "3"):
+        with pytest.raises(ValueError, match="max attempts"):
+            ctx.runs.claim("research-worker", max_attempts=invalid)
+    for invalid_lease in (timedelta(seconds=0), timedelta(hours=2), 30):
+        with pytest.raises(ValueError, match="lease duration"):
+            ctx.runs.claim("research-worker", lease_for=invalid_lease)
+
+    first = ctx.runs.claim(
+        "research-worker-1",
+        lease_for=timedelta(seconds=10),
+        max_attempts=2,
+    )
+    assert first is not None
+    ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=11)
+    second = ctx.runs.claim(
+        "research-worker-2",
+        lease_for=timedelta(seconds=10),
+        max_attempts=2,
+    )
+    assert second is not None
+    assert second.run.attempt_count == 2
+    ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=22)
+    assert (
+        ctx.runs.claim(
+            "research-worker-3",
+            lease_for=timedelta(seconds=10),
+            max_attempts=2,
+        )
+        is None
+    )
+
+    exhausted = ctx.runs.get(ctx.session.token, submitted.id)
+    assert exhausted.status == "failed"
+    assert exhausted.attempt_count == 2
+    assert exhausted.failure == {"code": "attempts_exhausted"}
+    assert exhausted.result is None
+    assert exhausted.completed_at == T10_NOW + timedelta(seconds=22)
+    with pytest.raises(Conflict):
+        ctx.runs.succeed(second, T11_RESULT)
+
+
+def test_research_renew_keeps_active_lease_and_rejects_expired(run_repo) -> None:
+    from dragon_radar.storage.repository import Conflict
+
+    ctx = run_repo
+    ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    lease = ctx.runs.claim("research-worker-1", lease_for=timedelta(seconds=10))
+    assert lease is not None
+
+    ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=6)
+    renewed = ctx.runs.renew(lease, lease_for=timedelta(seconds=10))
+    assert renewed.token == lease.token
+    assert renewed.worker_id == lease.worker_id
+    assert renewed.expires_at == T10_NOW + timedelta(seconds=16)
+
+    ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=17)
+    with pytest.raises(Conflict, match="no longer active"):
+        ctx.runs.renew(renewed, lease_for=timedelta(seconds=10))
+
+
+def test_research_budget_failure_is_structured_without_half_result(run_repo) -> None:
+    from sqlalchemy import select
+
+    from dragon_radar.research.tables import research_backtest_runs
+
+    ctx = run_repo
+    ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    lease = ctx.runs.claim("research-worker-1")
+    assert lease is not None
+    failure = {
+        "code": "budget_exceeded",
+        "budget_ms": T11_BUDGET_MS,
+        "elapsed_ms": T11_BUDGET_MS + 1,
+    }
+    failed = ctx.runs.fail(lease, failure)
+
+    assert failed.status == "failed"
+    assert failed.result is None
+    assert failed.failure == failure
+    assert failed.completed_at == T10_NOW
+    with ctx.runs.database.engine.connect() as connection:
+        row = connection.execute(
+            select(
+                research_backtest_runs.c.result,
+                research_backtest_runs.c.failure,
+                research_backtest_runs.c.lease_token,
+                research_backtest_runs.c.lease_owner,
+                research_backtest_runs.c.lease_expires_at,
+            ).where(research_backtest_runs.c.id == lease.run.id)
+        ).one()
+        assert tuple(row) == (None, failure, None, None, None)
+    assert ctx.runs.claim("research-worker-2") is None
+
+
+def test_research_load_input_returns_authorized_publication(run_repo) -> None:
+    from sqlalchemy import update
+
+    from dragon_radar.publication.tables import publications as publications_table
+    from dragon_radar.storage.repository import Conflict, Forbidden
+
+    ctx = run_repo
+    ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    lease = ctx.runs.claim("research-worker-1")
+    assert lease is not None
+    snapshot = ctx.runs.load_input(lease)
+    assert snapshot.id == ctx.publication.id
+
+    ctx.runs.cancel(ctx.session.token, ctx.session.csrf, lease.run.id)
+    with pytest.raises(Conflict, match="no longer active"):
+        ctx.runs.load_input(lease)
+
+    ctx.runs.submit(
+        ctx.session.token,
+        ctx.session.csrf,
+        _submission(ctx.publication.id, key=uuid4()),
+    )
+    second_lease = ctx.runs.claim("research-worker-2")
+    assert second_lease is not None
+    with ctx.runs.database.engine.begin() as connection:
+        connection.execute(
+            update(publications_table)
+            .where(publications_table.c.id == ctx.publication.id)
+            .values(status="revoked")
+        )
+    with pytest.raises(Forbidden):
+        ctx.runs.load_input(second_lease)
+
+
+def test_research_succeed_pins_immutable_cache_and_authoritative_result(
+    run_repo,
+) -> None:
+    from sqlalchemy import select, text
+
+    from dragon_radar.research.tables import (
+        research_backtest_cache,
+        research_backtest_runs,
+    )
+
+    ctx = run_repo
+    submission = _submission(ctx.publication.id)
+    first = ctx.runs.submit(ctx.session.token, ctx.session.csrf, submission)
+    second = ctx.runs.submit(
+        ctx.session.token,
+        ctx.session.csrf,
+        BacktestSubmission(
+            config=submission.config,
+            idempotency_key=uuid4(),
+        ),
+    )
+    assert first.id != second.id
+
+    first_lease = ctx.runs.claim("research-worker-1")
+    assert first_lease is not None
+    completed_first = ctx.runs.succeed(first_lease, T11_RESULT)
+    assert completed_first.result == T11_RESULT
+
+    second_lease = ctx.runs.claim("research-worker-2")
+    assert second_lease is not None
+    competing_result = {
+        "schema_version": T10_ENGINE_VERSION,
+        "summary": {"total_return": "9.9999"},
+    }
+    completed_second = ctx.runs.succeed(second_lease, competing_result)
+    assert completed_second.result == T11_RESULT
+
+    with ctx.runs.database.engine.connect() as connection:
+        cache_row = (
+            connection.execute(
+                select(research_backtest_cache).where(
+                    research_backtest_cache.c.config_hash
+                    == submission.config.config_hash
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert cache_row.engine_version == T10_ENGINE_VERSION
+        assert cache_row.result == T11_RESULT
+        assert cache_row.input_manifest == {
+            "config": submission.config.model_dump(mode="json")
+        }
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_cache")) == 1
+        )
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_runs")) == 2
+        )
+        run_statuses = (
+            connection.execute(select(research_backtest_runs.c.status)).scalars().all()
+        )
+        assert run_statuses == ["succeeded", "succeeded"]
+
+
+def test_research_result_and_failure_must_be_json_objects(run_repo) -> None:
+    ctx = run_repo
+    ctx.runs.submit(
+        ctx.session.token, ctx.session.csrf, _submission(ctx.publication.id)
+    )
+    lease = ctx.runs.claim("research-worker-1")
+    assert lease is not None
+
+    with pytest.raises(ValueError, match="object"):
+        ctx.runs.succeed(lease, ["not", "an", "object"])
+    with pytest.raises(ValueError, match="object"):
+        ctx.runs.fail(lease, "not-an-object")
