@@ -3,8 +3,8 @@
 This suite does not replace the per-domain suites. It links the 57 PRD
 requirements and engineering extensions EX01-EX16 to their actually delivered
 evidence, pins the cross-domain snapshot-binding rules, and records the Task 27
-scope boundary (B01/B02, EX14/EX15) as an explicit blocked contract instead of
-silently skipping it.
+scope boundary (B01/B02) as an explicit blocked contract instead of silently
+skipping it.
 """
 
 from __future__ import annotations
@@ -546,15 +546,15 @@ EX_REGISTRY: dict[str, tuple[str, str, str | None, tuple[str, ...]]] = {
     ),
     "EX14": (
         "27",
-        "none",
-        None,
-        ("docs/acceptance/reset-final.md",),
+        "owner",
+        "/api/research/backtests",
+        (f"{T}test_reset_backtest.py",),
     ),
     "EX15": (
         "27",
-        "none",
-        None,
-        ("docs/acceptance/reset-final.md",),
+        "owner",
+        "/api/research/backtests/{run_id}",
+        (f"{T}test_reset_backtest.py",),
     ),
     "EX16": (
         "28",
@@ -570,7 +570,7 @@ EX_REGISTRY: dict[str, tuple[str, str, str | None, tuple[str, ...]]] = {
 }
 
 BLOCKED_REQS = {"B01", "B02"}
-BLOCKED_EX = {"EX14", "EX15"}
+BLOCKED_EX: set[str] = set()
 PRIVATE_PREFIXES = ("/api/owner", "/api/query", "/api/ai", "/api/research")
 
 STATE_ANCHORS = (
@@ -653,7 +653,7 @@ def test_blocked_requirements_are_exactly_task27_and_carry_no_fake_evidence():
 # ---------------------------------------------------------------------------
 
 
-def test_ex_registry_covers_all_sixteen_extensions_with_task27_blocked():
+def test_ex_registry_covers_all_sixteen_extensions_with_no_blocked_surface():
     assert set(EX_REGISTRY) == {f"EX{number:02d}" for number in range(1, 17)}
     blocked = {
         ex_id
@@ -685,7 +685,7 @@ def test_workbench_serves_delivered_extensions_and_no_private_namespace():
         assert route in routes, f"{ex_id} missing from workbench: {route}"
         assert "GET" in routes[route], f"{ex_id} must be a GET read route"
 
-    # EX01-03/12-13 are owner-only; EX14-15 must not exist at all.
+    # EX01-03/12-15 are owner-only and must never leak into the workbench.
     for private_route in (
         "/api/analysis/jobs",
         "/api/query/parse",
@@ -705,18 +705,18 @@ def test_workbench_serves_delivered_extensions_and_no_private_namespace():
     )
 
 
-def test_owner_app_serves_ex01_03_12_13_but_not_task27_research_routes():
+def test_owner_app_serves_ex01_03_12_15_including_task27_research_routes():
     from dragon_radar.owner.app import create_owner_app
     from dragon_radar.owner.repository import DEFAULT_ORIGIN
 
     routes = _route_index(create_owner_app(origin=DEFAULT_ORIGIN))
 
-    for ex_id in ("EX01", "EX02", "EX03", "EX12", "EX13"):
+    for ex_id in ("EX01", "EX02", "EX03", "EX12", "EX13", "EX14", "EX15"):
         _task, _surface, route, _evidence = EX_REGISTRY[ex_id]
         assert route in routes, f"{ex_id} missing from owner app: {route}"
 
-    assert "/api/research/backtests" not in routes
-    assert "/api/research/backtests/{run_id}" not in routes
+    assert "POST" in routes["/api/research/backtests"]
+    assert "GET" in routes["/api/research/backtests/{run_id}"]
 
 
 def test_public_app_has_no_post_and_no_private_namespace():
@@ -774,8 +774,6 @@ TASK27_SKELETON = (
 )
 
 TASK27_LATER_ARTIFACTS = (
-    # Task 12 — EX14/EX15 owner routes.
-    "src/dragon_radar/http/routes/research.py",
     # Task 14 — IndexedDB v5 simulation repository.
     "web/src/repositories/local/simulation.ts",
     # Tasks 15/16 — research workbench panels.

@@ -3731,3 +3731,437 @@ def test_research_result_and_failure_must_be_json_objects(run_repo) -> None:
         ctx.runs.succeed(lease, ["not", "an", "object"])
     with pytest.raises(ValueError, match="object"):
         ctx.runs.fail(lease, "not-an-object")
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — EX14/EX15 owner-only HTTP routes: mount boundary, session/CSRF
+# gates, field whitelist, idempotency/conflict, principal isolation and the
+# full EX15 research_only envelope. Every case runs on real PostgreSQL.
+# ---------------------------------------------------------------------------
+
+T12_ORIGIN = "https://localhost:8030"
+T12_PATH = "/api/research/backtests"
+T12_SESSION_COOKIE = "__Host-dragon-private-session"
+T12_CSRF_COOKIE = "__Host-dragon-private-csrf"
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+def _t12_headers(session) -> dict[str, str]:
+    return {
+        "Origin": T12_ORIGIN,
+        "X-CSRF-Token": session.csrf,
+        "Cookie": (
+            f"{T12_SESSION_COOKIE}={session.token}; {T12_CSRF_COOKIE}={session.csrf}"
+        ),
+    }
+
+
+def _ex14_body(snapshot_id, *, key=None, **config_changes) -> dict:
+    submission = _submission(snapshot_id, key=key, **config_changes)
+    body = submission.config.model_dump(mode="json")
+    body["idempotency_key"] = str(submission.idempotency_key)
+    return body
+
+
+def _ex15_result(submission) -> dict:
+    # Minimal object that still carries every EX15 envelope key; the route is
+    # a thin materialized-result reader and must validate transport, not the
+    # engine schema (Task 13 owns producing the real BacktestResult).
+    return {
+        "schema_version": T10_ENGINE_VERSION,
+        "research_only": True,
+        "config_hash": submission.config.config_hash,
+        "snapshot_id": str(submission.config.snapshot_id),
+        "manifests": submission.config.input_manifests.model_dump(mode="json"),
+        "versions": {"strategy_id": submission.config.strategy_id},
+        "metrics": {"total_return": "0.1250"},
+        "equity": [{"trade_date": "2025-01-06", "equity": "1000000.00"}],
+        "trades": [],
+        "rejections": [],
+        "quality": [],
+        "folds": None,
+        "walk_forward": None,
+        "baseline": {
+            "status": "completed",
+            "metrics": {"total_return": "0.1250"},
+            "cost_sensitivity": [],
+        },
+        "ablation": None,
+    }
+
+
+def _research_owner_app(ctx):
+    from dragon_radar.owner.app import create_owner_app
+
+    return create_owner_app(
+        repository=ctx.runs.publications.market,
+        owner_repository=ctx.owners,
+        publication_repository=ctx.runs.publications,
+        research_repository=ctx.runs,
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_research_http_requires_real_session(run_repo, method) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        if method == "POST":
+            # A browser-shaped write carries Origin; with no session cookie the
+            # gate must still fail closed at session authorization (401), not
+            # at CSRF/origin enforcement (403).
+            response = await client.post(
+                T12_PATH,
+                json=_ex14_body(ctx.publication.id),
+                headers={"Origin": T12_ORIGIN},
+            )
+        else:
+            response = await client.get(f"{T12_PATH}/{uuid4()}")
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        "missing_csrf_header",
+        "wrong_csrf_header",
+    ],
+)
+async def test_research_http_post_requires_matching_csrf(run_repo, headers) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    session = ctx.session
+    if headers == "missing_csrf_header":
+        bad_headers = {
+            "Origin": T12_ORIGIN,
+            "Cookie": (
+                f"{T12_SESSION_COOKIE}={session.token}; "
+                f"{T12_CSRF_COOKIE}={session.csrf}"
+            ),
+        }
+    else:
+        bad_headers = {
+            "Origin": T12_ORIGIN,
+            "X-CSRF-Token": "other-csrf-token",
+            "Cookie": (
+                f"{T12_SESSION_COOKIE}={session.token}; "
+                f"{T12_CSRF_COOKIE}={session.csrf}"
+            ),
+        }
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        response = await client.post(
+            T12_PATH,
+            json=_ex14_body(ctx.publication.id),
+            headers=bad_headers,
+        )
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_research_http_post_submits_queued_run_and_replays(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import text
+
+    ctx = run_repo
+    body = _ex14_body(ctx.publication.id)
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH, json=body, headers=_t12_headers(ctx.session)
+        )
+        assert created.status_code == 200, created.text
+        assert set(created.json()) == {"run_id", "status"}
+        assert created.json()["status"] == "queued"
+
+        replay = await client.post(
+            T12_PATH, json=body, headers=_t12_headers(ctx.session)
+        )
+        assert replay.status_code == 200
+        assert replay.json() == created.json()
+
+    with ctx.runs.database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_runs")) == 1
+        )
+
+
+@pytest.mark.anyio
+async def test_research_http_post_conflicts_on_same_key_changed_config(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    body = _ex14_body(ctx.publication.id)
+    changed = {
+        **body,
+        "parameters": {**body["parameters"], "top_n": 11},
+    }
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH, json=body, headers=_t12_headers(ctx.session)
+        )
+        assert created.status_code == 200
+        conflict = await client.post(
+            T12_PATH, json=changed, headers=_t12_headers(ctx.session)
+        )
+    assert conflict.status_code == 409
+    assert conflict.json() == {
+        "code": "VERSION_CONFLICT",
+        "message": "Version conflict",
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "unknown_field",
+        "query_string",
+        "top_n_out_of_bounds",
+        "bad_idempotency_key",
+        "missing_snapshot_id",
+    ],
+)
+async def test_research_http_post_rejects_invalid_requests(run_repo, case) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    body = _ex14_body(ctx.publication.id)
+    path = T12_PATH
+    if case == "unknown_field":
+        payload = {**body, "unexpected": "x"}
+    elif case == "query_string":
+        payload = body
+        path = f"{T12_PATH}?unexpected=1"
+    elif case == "top_n_out_of_bounds":
+        payload = {
+            **body,
+            "parameters": {**body["parameters"], "top_n": 101},
+        }
+    elif case == "bad_idempotency_key":
+        payload = {**body, "idempotency_key": "not-a-uuid"}
+    else:
+        payload = dict(body)
+        payload.pop("snapshot_id")
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        response = await client.post(
+            path, json=payload, headers=_t12_headers(ctx.session)
+        )
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "INVALID_PARAM",
+        "message": "Invalid request",
+    }
+
+
+@pytest.mark.anyio
+async def test_research_http_get_returns_ex15_envelope_with_research_only(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    submission = _submission(ctx.publication.id)
+    body = _ex14_body(ctx.publication.id)
+    body = {
+        **submission.config.model_dump(mode="json"),
+        "idempotency_key": str(submission.idempotency_key),
+    }
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH, json=body, headers=_t12_headers(ctx.session)
+        )
+        assert created.status_code == 200, created.text
+        run_id = created.json()["run_id"]
+
+        lease = ctx.runs.claim("research-worker-1")
+        assert lease is not None
+        ctx.runs.succeed(lease, _ex15_result(submission))
+
+        fetched = await client.get(
+            f"{T12_PATH}/{run_id}", headers=_t12_headers(ctx.session)
+        )
+    assert fetched.status_code == 200, fetched.text
+    payload = fetched.json()
+    assert set(payload) == {
+        "run_id",
+        "status",
+        "config_hash",
+        "research_only",
+        "result",
+        "failure",
+    }
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "succeeded"
+    assert payload["research_only"] is True
+    assert payload["config_hash"] == submission.config.config_hash
+    assert payload["failure"] is None
+
+    result = payload["result"]
+    for key in (
+        "config_hash",
+        "manifests",
+        "metrics",
+        "trades",
+        "rejections",
+        "equity",
+        "folds",
+        "baseline",
+        "ablation",
+        "quality",
+    ):
+        assert key in result, f"EX15 field missing: {key}"
+    assert result["research_only"] is True
+    assert result["config_hash"] == submission.config.config_hash
+    # Monetary values stay Decimal strings through the JSONB round trip.
+    assert result["metrics"]["total_return"] == "0.1250"
+    assert isinstance(result["equity"][0]["equity"], str)
+
+    for secret in (
+        ctx.session.token,
+        ctx.session.csrf,
+        str(ctx.session.owner_id),
+        "lease",
+        "request_hash",
+        "input_manifest",
+        "attempt_count",
+    ):
+        assert secret not in fetched.text
+
+
+@pytest.mark.anyio
+async def test_research_http_get_queued_run_returns_null_result(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    body = _ex14_body(ctx.publication.id)
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH, json=body, headers=_t12_headers(ctx.session)
+        )
+        run_id = created.json()["run_id"]
+        first = await client.get(
+            f"{T12_PATH}/{run_id}", headers=_t12_headers(ctx.session)
+        )
+        assert first.status_code == 200
+        payload = first.json()
+        assert payload["status"] == "queued"
+        assert payload["result"] is None
+        assert payload["failure"] is None
+        assert payload["research_only"] is True
+        assert isinstance(payload["config_hash"], str)
+
+        # Lightweight read: no worker exists, polling must never recompute.
+        second = await client.get(
+            f"{T12_PATH}/{run_id}", headers=_t12_headers(ctx.session)
+        )
+        assert second.json() == payload
+
+
+@pytest.mark.anyio
+async def test_research_http_get_isolates_owners_and_maps_unknown_ids(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    body = _ex14_body(ctx.publication.id)
+    other = _second_owner_session(ctx.runs.database)
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH, json=body, headers=_t12_headers(ctx.session)
+        )
+        run_id = created.json()["run_id"]
+
+        isolated = await client.get(f"{T12_PATH}/{run_id}", headers=_t12_headers(other))
+        assert isolated.status_code == 404
+        assert isolated.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
+
+        missing = await client.get(
+            f"{T12_PATH}/{uuid4()}", headers=_t12_headers(ctx.session)
+        )
+        assert missing.status_code == 404
+        assert missing.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
+
+        bad_id = await client.get(
+            f"{T12_PATH}/not-a-uuid", headers=_t12_headers(ctx.session)
+        )
+        assert bad_id.status_code == 400
+        assert bad_id.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+
+
+@pytest.mark.anyio
+async def test_research_owner_app_factory_constructs_research_repository(
+    database_url,
+) -> None:
+    from dragon_radar.http.app import create_workbench_app
+    from dragon_radar.owner.app import create_owner_app
+    from dragon_radar.research.repository import ResearchRunRepository
+
+    owner = create_owner_app(database_url=database_url)
+    try:
+        assert isinstance(owner.state.research_repository, ResearchRunRepository)
+        assert owner.state.research_repository.owners is owner.state.owner_repository
+        owner_paths = {getattr(route, "path", None) for route in owner.routes}
+        assert T12_PATH in owner_paths
+        assert f"{T12_PATH}/{{run_id}}" in owner_paths
+        async with owner.router.lifespan_context(owner):
+            pass
+    finally:
+        pass
+
+    workbench = create_workbench_app(database_url=database_url)
+    try:
+        assert getattr(workbench.state, "research_repository", None) is None
+        workbench_paths = {getattr(route, "path", None) for route in workbench.routes}
+        assert T12_PATH not in workbench_paths
+        assert f"{T12_PATH}/{{run_id}}" not in workbench_paths
+        async with workbench.router.lifespan_context(workbench):
+            pass
+    finally:
+        pass
