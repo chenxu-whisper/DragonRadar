@@ -18,6 +18,7 @@ from dragon_radar.http.app import create_workbench_app
 from dragon_radar.http.routes.ai import install_ai_routes
 from dragon_radar.http.routes.news import install_news_review_routes
 from dragon_radar.http.routes.query import install_query_routes
+from dragon_radar.http.routes.research import install_research_routes
 from dragon_radar.news.repository import NewsRepository
 from dragon_radar.owner.repository import (
     DEFAULT_ORIGIN,
@@ -42,6 +43,7 @@ from dragon_radar.owner.security import (
 )
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.query.repository import QueryRepository
+from dragon_radar.research.repository import ResearchRunRepository
 from dragon_radar.review.routes import install_review_routes
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import (
@@ -83,6 +85,7 @@ def create_owner_app(
     owner_repository: OwnerRepository | None = None,
     publication_repository: PublicationRepository | None = None,
     analysis_repository: AnalysisJobRepository | None = None,
+    research_repository: ResearchRunRepository | None = None,
     ai_service: AIService | None = None,
     news_repository: NewsRepository | None = None,
     query_repository: QueryRepository | None = None,
@@ -97,6 +100,7 @@ def create_owner_app(
             owner_repository,
             publication_repository,
             analysis_repository,
+            research_repository,
             ai_service,
             news_repository,
             query_repository,
@@ -110,6 +114,11 @@ def create_owner_app(
             publication_repository or analysis_repository.publications
         )
         owner_repository = owner_repository or analysis_repository.owners
+    if research_repository is not None:
+        publication_repository = (
+            publication_repository or research_repository.publications
+        )
+        owner_repository = owner_repository or research_repository.owners
     if publication_repository is not None:
         repository = repository or publication_repository.market
     value = database_url or os.environ.get("DRAGON_DATABASE_URL")
@@ -120,6 +129,8 @@ def create_owner_app(
         if publication_repository is not None
         else analysis_repository.database
         if analysis_repository is not None
+        else research_repository.database
+        if research_repository is not None
         else ai_service.tasks.database
         if ai_service is not None
         else news_repository.database
@@ -138,6 +149,12 @@ def create_owner_app(
         publication_repository = PublicationRepository(database, repository)
     if analysis_repository is None and database is not None:
         analysis_repository = AnalysisJobRepository(
+            database,
+            owner_repository,
+            publication_repository,
+        )
+    if research_repository is None and database is not None:
+        research_repository = ResearchRunRepository(
             database,
             owner_repository,
             publication_repository,
@@ -185,6 +202,7 @@ def create_owner_app(
     app.state.owner_repository = owner_repository
     app.state.publication_repository = publication_repository
     app.state.analysis_repository = analysis_repository
+    app.state.research_repository = research_repository
     app.state.ai_service = ai_service
     app.state.news_repository = news_repository
     app.state.query_repository = query_repository
@@ -294,6 +312,7 @@ def create_owner_app(
 
     install_review_routes(app)
     install_analysis_job_routes(app)
+    install_research_routes(app)
     install_ai_routes(app)
     install_news_review_routes(app)
     install_query_routes(app)
