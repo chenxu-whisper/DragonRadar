@@ -1,3 +1,5 @@
+import { createSimulationStores } from './simulation';
+
 export interface NoteContent {
   title: string; content: string; judgment: string; evidence: string;
   invalid_condition: string; verify_date: string;
@@ -136,35 +138,37 @@ export class LocalRepository {
   constructor(private name = 'dragon-radar-local-v3') {}
   private db(): Promise<IDBDatabase> {
     if (!this.connection) this.connection = new Promise((resolve, reject) => {
-      const opening = indexedDB.open(this.name, 4);
+      const opening = indexedDB.open(this.name, 5);
       opening.onupgradeneeded = event => {
         const db = opening.result;
         if ((event as IDBVersionChangeEvent).oldVersion === 0) {
           createStores(db);
           db.createObjectStore('migration_payload');
-          return;
+        } else {
+          const upgrade = opening.transaction;
+          if (!upgrade) throw new Error('本地存储升级事务不可用');
+          const payload: LegacyPayload = { notes: [], note_revisions: [], watchlist: [], verification_records: [], commands: [] };
+          const reads: IDBRequest[] = [];
+          for (const name of businessStores) {
+            if (!db.objectStoreNames.contains(name)) continue;
+            const store = upgrade.objectStore(name);
+            const query = name === 'profiles' ? store.get('active') : store.getAll();
+            reads.push(query);
+            query.onsuccess = () => {
+              if (name === 'profiles') payload.profile = query.result as string | undefined;
+              else (payload[name] as unknown[]) = query.result as unknown[];
+              if (reads.every(read => read.readyState === 'done')) {
+                for (const oldName of businessStores) if (db.objectStoreNames.contains(oldName)) db.deleteObjectStore(oldName);
+                createStores(db);
+                const migration = db.objectStoreNames.contains('migration_payload')
+                  ? upgrade.objectStore('migration_payload') : db.createObjectStore('migration_payload');
+                migration.put(payload, 'pending');
+              }
+            };
+          }
         }
-        const upgrade = opening.transaction;
-        if (!upgrade) throw new Error('本地存储升级事务不可用');
-        const payload: LegacyPayload = { notes: [], note_revisions: [], watchlist: [], verification_records: [], commands: [] };
-        const reads: IDBRequest[] = [];
-        for (const name of businessStores) {
-          if (!db.objectStoreNames.contains(name)) continue;
-          const store = upgrade.objectStore(name);
-          const query = name === 'profiles' ? store.get('active') : store.getAll();
-          reads.push(query);
-          query.onsuccess = () => {
-            if (name === 'profiles') payload.profile = query.result as string | undefined;
-            else (payload[name] as unknown[]) = query.result as unknown[];
-            if (reads.every(read => read.readyState === 'done')) {
-              for (const oldName of businessStores) if (db.objectStoreNames.contains(oldName)) db.deleteObjectStore(oldName);
-              createStores(db);
-              const migration = db.objectStoreNames.contains('migration_payload')
-                ? upgrade.objectStore('migration_payload') : db.createObjectStore('migration_payload');
-              migration.put(payload, 'pending');
-            }
-          };
-        }
+        // v5 is additive: the four simulation stores never touch v1-v4 data.
+        createSimulationStores(db);
       };
       opening.onerror = () => { this.connection = undefined; reject(opening.error ?? new Error('浏览器本地存储不可用')); };
       opening.onblocked = () => reject(new Error('请关闭旧标签页后重试本地存储升级'));
@@ -235,6 +239,10 @@ export class LocalRepository {
       throw error;
     }
     await done;
+  }
+  /** Shared v5 connection for companion repositories (simulation ledger). */
+  connect(): Promise<IDBDatabase> {
+    return this.db();
   }
   async profile(): Promise<string> {
     const db = await this.db(), tx = db.transaction('profiles', 'readwrite'), done = completion(tx);
