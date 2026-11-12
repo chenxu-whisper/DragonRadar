@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from dragon_radar.owner.repository import (
 )
 from dragon_radar.owner.security import validate_origin
 from dragon_radar.publication.repository import PublicationRepository
+from dragon_radar.research.repository import ResearchRunRepository
+from dragon_radar.research.worker import (
+    ResearchBacktestWorker,
+    fail_closed_research_compute,
+)
 from dragon_radar.storage.repository import Repository, _identifier
 
 COMMANDS = {
@@ -146,12 +152,30 @@ def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
     if args.command == "analysis-worker":
         publications = PublicationRepository(repository.database, repository)
         jobs = AnalysisJobRepository(repository.database, owners, publications)
-        AnalysisJobWorker(
+        # The research loop shares this process: no new container or CLI
+        # option. It runs on a daemon thread while analysis owns the main
+        # thread, so the same worker identity and lease settings apply.
+        research_runs = ResearchRunRepository(repository.database, owners, publications)
+        analysis_worker = AnalysisJobWorker(
             jobs,
             worker_id=args.worker_id,
             lease_for=timedelta(seconds=args.lease_seconds),
             max_attempts=args.max_attempts,
-        ).run_forever(poll_seconds=args.poll_seconds)
+        )
+        research_worker = ResearchBacktestWorker(
+            research_runs,
+            worker_id=args.worker_id,
+            lease_for=timedelta(seconds=args.lease_seconds),
+            max_attempts=args.max_attempts,
+            compute=fail_closed_research_compute,
+        )
+        threading.Thread(
+            target=research_worker.run_forever,
+            name="research-backtest-worker",
+            daemon=True,
+            kwargs={"poll_seconds": args.poll_seconds},
+        ).start()
+        analysis_worker.run_forever(poll_seconds=args.poll_seconds)
         return None
     if args.command == "owner-init":
         return {"owner_id": str(owners.initialize())}

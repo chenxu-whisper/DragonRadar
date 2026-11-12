@@ -78,6 +78,16 @@ LEDGER_METHOD = "decimal-t1-settlement-v1"
 VALUATION_METHOD = "session-close-last-visible-carry-v1"
 COST_METHOD = "explicit-fixed-rate-three-tier-v1"
 
+# Cooperative cancellation/budget seam. The kernel stays pure: the default is
+# a no-op and the callable itself performs no IO; the IO layer (worker) passes
+# a closure that probes the lease and wall-clock budget at these checkpoints.
+CheckpointFn = Callable[[], None]
+
+
+def _noop_checkpoint() -> None:
+    return None
+
+
 FactorInputValue = Decimal | bool | None
 
 QualityCode = Literal[
@@ -481,6 +491,7 @@ def _simulate(
     cost_model: CostModel,
     benchmark_closes: Mapping[date, Decimal] | None,
     regime_weights: Mapping[date, Decimal] | None = None,
+    checkpoint: CheckpointFn = _noop_checkpoint,
 ) -> object:
     days = window.days
     strategy = get_strategy(config.strategy_id)
@@ -508,6 +519,9 @@ def _simulate(
     }
 
     for index in range(len(days) - 1):
+        # Cooperative checkpoint: one probe per decision iteration so a
+        # cancellation or budget breach stops the run before the next fill.
+        checkpoint()
         decision_day = days[index]
         execution_date = days[index + 1].trade_date
         market = frames_by_date[execution_date].market
@@ -730,8 +744,14 @@ def run_backtest(
     policy: UniversePolicy | None = None,
     benchmark_closes: Mapping[date, Decimal] | None = None,
     phase_publications: Sequence[object] | None = None,
+    checkpoint: CheckpointFn = _noop_checkpoint,
 ) -> BacktestResult:
-    """Run the deterministic PIT backtest and all cost-sensitivity legs."""
+    """Run the deterministic PIT backtest and all cost-sensitivity legs.
+
+    ``checkpoint`` is a zero-argument cooperative seam invoked at every fold
+    boundary and every simulated decision iteration; it defaults to a no-op so
+    the pure kernel result is byte-identical when no worker drives the run.
+    """
     if config.walk_forward is None and phase_publications is not None:
         raise ValueError("phase publications require a walk_forward spec")
     if config.walk_forward is not None and phase_publications is None:
@@ -762,6 +782,7 @@ def run_backtest(
             frames_by_date=frames_by_date,
             factor_by_date=factor_by_date,
             benchmark_closes=benchmark_closes,
+            checkpoint=checkpoint,
         )
 
     tiers = cost_sensitivity_models(config.cost_model)
@@ -775,6 +796,7 @@ def run_backtest(
             factor_by_date,
             tiers[tier_name],
             benchmark_closes,
+            checkpoint=checkpoint,
         )
         if tier_name == "base":
             base_artifacts = artifacts

@@ -46,7 +46,12 @@ from dragon_radar.readmodels.sentiment_research import (
     PHASE_REPAIR,
     PHASES,
 )
-from dragon_radar.research.engine import FactorFrame, _simulate
+from dragon_radar.research.engine import (
+    CheckpointFn,
+    FactorFrame,
+    _noop_checkpoint,
+    _simulate,
+)
 from dragon_radar.research.execution import Fill, Rejection
 from dragon_radar.research.ledger import EquityPoint, Metrics
 from dragon_radar.research.models import (
@@ -393,8 +398,14 @@ def run_walk_forward(
     frames_by_date: Mapping[date, PitFrame],
     factor_by_date: Mapping[date, FactorFrame],
     benchmark_closes: Mapping[date, Decimal] | None = None,
+    checkpoint: CheckpointFn = _noop_checkpoint,
 ) -> WalkForwardReport:
-    """Fit once on the train prefix, then evaluate every tiled OOS fold."""
+    """Fit once on the train prefix, then evaluate every tiled OOS fold.
+
+    ``checkpoint`` fires once per fold boundary and is threaded into every
+    fold/aggregate simulation, so a cooperative stop lands before the next
+    fold's fills rather than mid-ledger.
+    """
     spec = config.walk_forward
     if spec is None:
         raise ValueError("walk_forward spec is required")
@@ -426,6 +437,9 @@ def run_walk_forward(
     train_days = days[:train_sessions]
     fold_results: list[FoldResult] = []
     for fold_index in range(folds_count):
+        # Fold-boundary checkpoint: a cancel/budget breach here prevents the
+        # next out-of-sample fold (and every later stage) from running.
+        checkpoint()
         start = train_sessions + fold_index * test_sessions
         block = days[start : start + test_sessions]
         weights, events = _weights_for_block(
@@ -446,6 +460,7 @@ def run_walk_forward(
             config.cost_model,
             benchmark_closes,
             regime_weights=weights,
+            checkpoint=checkpoint,
         )
         fold_results.append(
             FoldResult(
@@ -477,6 +492,7 @@ def run_walk_forward(
         config.cost_model,
         benchmark_closes,
         regime_weights=region_weights,
+        checkpoint=checkpoint,
     )
 
     return WalkForwardReport(

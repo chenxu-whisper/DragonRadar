@@ -432,6 +432,38 @@ class ResearchRunRepository:
             raise Conflict("Research run lease is no longer active")
         return row
 
+    def check_lease(self, lease: ResearchRunLease) -> None:
+        """Read-only liveness probe backing worker cooperative checkpoints.
+
+        Raises :class:`Conflict` when the run was cancelled, the lease was
+        taken over by another worker, or the lease expired. Performs no write
+        and never fabricates a state transition.
+        """
+        with self.database.engine.begin() as connection:
+            self._active_lease(connection, lease)
+
+    def fetch_run(self, run_id: UUID | str) -> ResearchRunRecord:
+        """Hydrate the authoritative row after a stale worker loses its lease.
+
+        System-level (no owner authorization): the worker only reads runs it
+        already claimed, and uses this to return the current terminal or
+        take-over state instead of writing through a dead token.
+        """
+        run_id = _uuid(run_id)
+        with self.database.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(research_backtest_runs).where(
+                        research_backtest_runs.c.id == run_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFound("Research run not found")
+            return _record(row)
+
     def succeed(
         self,
         lease: ResearchRunLease,
