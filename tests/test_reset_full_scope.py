@@ -774,10 +774,7 @@ TASK27_SKELETON = (
 )
 
 TASK27_LATER_ARTIFACTS = (
-    # Task 14 — IndexedDB v5 simulation repository.
-    "web/src/repositories/local/simulation.ts",
-    # Tasks 15/16 — research workbench panels.
-    "web/src/features/research/SimulationPanel.tsx",
+    # Task 16 — research workbench backtest panel.
     "web/src/features/research/BacktestPanel.tsx",
 )
 
@@ -791,12 +788,15 @@ def test_task27_skeleton_present_but_later_slice_artifacts_remain_absent():
             f"Task 27 later-slice artifact appeared early: {relative}"
         )
 
-    # The existing research feature directory holds only Task 28 sentiment
-    # until Tasks 15/16 add the panels.
+    # Task 14 delivered the IDB v5 simulation repository and Task 15 added the
+    # local SimulationPanel; SentimentPanel stays the Task 28 read-only surface.
+    # BacktestPanel remains absent until Task 16 flips this contract again.
     research_feature = ROOT / "web/src/features/research"
     assert {path.name for path in research_feature.glob("*.tsx")} == {
-        "SentimentPanel.tsx"
+        "SentimentPanel.tsx",
+        "SimulationPanel.tsx",
     }
+    assert (ROOT / "web/src/repositories/local/simulation.ts").is_file()
 
 
 # ---------------------------------------------------------------------------
