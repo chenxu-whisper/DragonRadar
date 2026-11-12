@@ -15,7 +15,7 @@ import type { ComparisonProps } from './components/Comparison';
 import type { Patch } from './components/Common';
 import { IntervalForm } from './components/IntervalForm';
 import { Overview } from './pages/Overview';
-import { Analysis, ResetQueryPanel } from './pages/Analysis';
+import { Analysis, ResetBacktestPanel, ResetQueryPanel } from './pages/Analysis';
 import type { LeadersProps } from './pages/Leaders';
 import type { SecurityDrawerProps, SecurityPageProps } from './pages/SecurityDetail';
 
@@ -394,6 +394,13 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         {ResetQueryPanel && resetEnabled && !denied && state.view === 'analysis' && (
           <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载白名单查询…</p>}>
             <ResetQueryPanel state={state} patch={patch} snapshot={snapshot} open={open} />
+          </Suspense></LazyLoadBoundary>
+        )}
+        {/* Task 16 研究回测面板：与白名单查询同构的 reset-only 主区持久挂载，仅在 analysis
+            视图下渲染；研究清单通道接通前 manifest 传 null，面板 fail-closed 禁用提交。 */}
+        {ResetBacktestPanel && resetEnabled && !denied && state.view === 'analysis' && (
+          <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载研究回测…</p>}>
+            <ResetBacktestPanel manifest={null} />
           </Suspense></LazyLoadBoundary>
         )}
       </main>

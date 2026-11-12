@@ -2,7 +2,8 @@
 
 The routes are thin transport adapters over :class:`ResearchRunRepository`:
 POST validates the EX14 field whitelist and the strict kernel model, GET is a
-lightweight materialized-result read that never recomputes a run.
+lightweight materialized-result read that never recomputes a run, and the
+cancel command exposes cooperative termination without any recomputation.
 """
 
 import json
@@ -156,6 +157,22 @@ def install_research_routes(app: FastAPI) -> None:
     def get_backtest(run_id: UUID, request: Request, owner: OwnerRead):
         _no_query(request)
         record = _repository(request).get(owner.token, run_id)
+        return DecimalJSONResponse(_safe_record(record))
+
+    @router.post("/api/research/backtests/{run_id}/cancel")
+    def cancel_backtest(run_id: UUID, request: Request, owner: OwnerWrite):
+        _no_query(request)
+        body = json_object(request, {"idempotency_key"})
+        if set(body) != {"idempotency_key"} or not isinstance(
+            body["idempotency_key"], str
+        ):
+            raise invalid_request()
+        assert owner.csrf is not None
+        record = _repository(request).cancel(
+            owner.token,
+            owner.csrf,
+            run_id,
+        )
         return DecimalJSONResponse(_safe_record(record))
 
     app.router.routes.extend(router.routes)

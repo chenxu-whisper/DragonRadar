@@ -16,9 +16,17 @@ const ResetAnalysis = lazy(async () => ({
 // 不产出 query chunk（对照 App.tsx CommandPalette；勿学 ResetAnalysis 的无条件 lazy）。
 // 挂载点在 App 主区且不被 {snapshot && …} 门控卸载：结果绑定旧快照条必须在改日期/版本
 // （Analysis 整树会随 snapshot 短暂卸载重建）后继续保留，故由 Workbench 持久挂载。
-const resetQueryEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
-export const ResetQueryPanel = resetQueryEnabled
+const resetWorkbenchEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
+export const ResetQueryPanel = resetWorkbenchEnabled
   ? lazy(async () => ({ default: (await import('../features/query/QueryPanel')).QueryPanel as ComponentType<QueryPanelProps> }))
+  : null;
+// 研究回测面板（Task 16）同属 reset-only 私有面：同一模块级 env 常量折叠，默认构建下
+// 动态 import 被死代码消除，不产出 BacktestPanel 懒 chunk；由 App 主区在 analysis 视图
+// 门控下持久挂载。manifest 走 fail-closed 注入，前端不伪造研究清单 UUID。
+// 契约记号 import('../research/BacktestPanel') 以 features 同级目录为基准（同
+// LocalReview 之 SimulationPanel）；pages 目录下的可解析相对路径需补 features 段。
+export const ResetBacktestPanel = resetWorkbenchEnabled
+  ? lazy(async () => ({ default: (await import('../features/research/BacktestPanel')).default }))
   : null;
 
 export interface AnalysisProps {
