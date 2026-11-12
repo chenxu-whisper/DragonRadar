@@ -67,6 +67,21 @@ for (const file of researchScope) {
       : `Default build emitted a reset-only research asset: ${file}`);
   }
 }
+// Task 17：owner-only 研究回测命名空间（/api/research/backtests|manifests）与本地
+// 模拟账本模块（仅研究模拟披露文案）。默认/分享构建的任何产物（含懒 chunk）都不得
+// 包含；reset 构建下二者只能存在于 env 折叠后的懒 chunk，不得进入 entry 静态闭包。
+const researchModuleMarkers = ['/api/research', '仅研究模拟'];
+const researchModuleScope = resetBuild ? [...staticAssets] : allScripts;
+for (const file of researchModuleScope) {
+  const source = readFileSync(file, 'utf8');
+  for (const marker of researchModuleMarkers) {
+    if (source.includes(marker)) {
+      throw new Error(resetBuild
+        ? `Owner-only research module marker "${marker}" reached the entry static closure: ${file}`
+        : `Default build emitted an owner-only research asset containing "${marker}": ${file}`);
+    }
+  }
+}
 const entryBudget = process.env.VITE_PUBLIC_SHARING === '1' ? 320_000 : 315_500;
 if (entryBytes > entryBudget) {
   throw new Error(`Entry is ${entryBytes} bytes; budget is ${entryBudget} bytes`);

@@ -13,8 +13,17 @@
  * the gateway code passes through untouched.
  */
 
-const UUID = /^[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
-const RESEARCH_PATH = /^\/api\/research\/backtests(?:\/[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}(?:\/cancel)?)?$/i;
+const UUID_PATTERN = '[\\da-f]{8}-[\\da-f]{4}-[1-5][\\da-f]{3}-[89ab][\\da-f]{3}-[\\da-f]{12}';
+const UUID = new RegExp(`^${UUID_PATTERN}$`, 'i');
+/**
+ * Closed research namespace: the EX14/EX15 backtest collection, run and cancel
+ * routes plus the Task 17 owner input-manifest read. No other path under
+ * /api/research is reachable through this client.
+ */
+const RESEARCH_PATH = new RegExp(
+  `^/api/research/(?:backtests(?:/${UUID_PATTERN}(?:/cancel)?)?|manifests/${UUID_PATTERN})$`,
+  'i',
+);
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export type BacktestRunStatus =
@@ -45,6 +54,17 @@ export interface BacktestCommand {
   path: string;
   body: Record<string, unknown> & { idempotency_key: string };
 }
+
+/** Owner input-manifest envelope; aligns exactly with the panel materialisation context. */
+export interface BacktestManifestContext {
+  snapshot_id: string;
+  domains: Array<{ domain: 'market' | 'topic' | 'role'; snapshot_id: string }>;
+  versions: { adjustment: string; calendar: string; pool: string };
+}
+
+const MANIFEST_DOMAINS = new Set(['market', 'topic', 'role']);
+const VERSION_TOKEN = /^[A-Za-z0-9_.:-]+$/;
+const MAX_VERSION_TOKEN_LENGTH = 100;
 
 export class BacktestClientError extends Error {
   constructor(
@@ -257,6 +277,60 @@ export async function getBacktestRun(
   if (!isUuid(runId)) throw new BacktestClientError(400, 'INVALID_PARAM');
   return validateRunRecord(
     await researchRequest(`/api/research/backtests/${runId}`, { signal }),
+  );
+}
+
+/**
+ * Fail-closed transport validation for the owner manifest envelope: exactly
+ * three top-level keys, 1-3 unique domains that must include market, UUID
+ * snapshot ids on every entry and three bounded version tokens.
+ */
+function validateManifestResponse(data: unknown): BacktestManifestContext {
+  if (!isRecord(data) || !exactKeys(data, ['snapshot_id', 'domains', 'versions'])) {
+    throw new BacktestClientError(502, 'malformed_response');
+  }
+  if (!isUuid(data.snapshot_id)) throw new BacktestClientError(502, 'malformed_response');
+  const domains = data.domains;
+  if (!Array.isArray(domains) || domains.length < 1 || domains.length > 3) {
+    throw new BacktestClientError(502, 'malformed_response');
+  }
+  const names: string[] = [];
+  for (const entry of domains) {
+    if (!isRecord(entry)
+      || !exactKeys(entry, ['domain', 'snapshot_id'])
+      || typeof entry.domain !== 'string'
+      || !MANIFEST_DOMAINS.has(entry.domain)
+      || !isUuid(entry.snapshot_id)) {
+      throw new BacktestClientError(502, 'malformed_response');
+    }
+    names.push(entry.domain);
+  }
+  if (new Set(names).size !== names.length || !names.includes('market')) {
+    throw new BacktestClientError(502, 'malformed_response');
+  }
+  const versions = data.versions;
+  const tokens = isRecord(versions)
+    ? [versions.adjustment, versions.calendar, versions.pool]
+    : [];
+  if (!isRecord(versions)
+    || !exactKeys(versions, ['adjustment', 'calendar', 'pool'])
+    || tokens.some(token => typeof token !== 'string'
+      || token.length < 1
+      || token.length > MAX_VERSION_TOKEN_LENGTH
+      || !VERSION_TOKEN.test(token))) {
+    throw new BacktestClientError(502, 'malformed_response');
+  }
+  return data as unknown as BacktestManifestContext;
+}
+
+/** Task 17 owner read: fetch the materialised input manifest for one publication. */
+export async function getBacktestManifest(
+  snapshotId: string,
+  signal?: AbortSignal,
+): Promise<BacktestManifestContext> {
+  if (!isUuid(snapshotId)) throw new BacktestClientError(400, 'INVALID_PARAM');
+  return validateManifestResponse(
+    await researchRequest(`/api/research/manifests/${snapshotId}`, { signal }),
   );
 }
 

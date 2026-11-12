@@ -62,6 +62,21 @@ https://localhost:8443 {
 		}
 		reverse_proxy @logout 127.0.0.1:8001
 
+		# Task 17 owner-only research namespace: manifest/run reads and the
+		# submit/cancel writes are whitelisted by exact anchored patterns; every
+		# other /api/research sibling falls through to the empty @api 404 below.
+		@researchRead {
+			method GET HEAD
+			path_regexp researchRead ^/api/research/(manifests/[0-9a-fA-F-]{36}|backtests/[0-9a-fA-F-]{36})$
+		}
+		reverse_proxy @researchRead 127.0.0.1:8001
+
+		@researchWrite {
+			method POST
+			path_regexp researchWrite ^/api/research/backtests(/[0-9a-fA-F-]{36}/cancel)?$
+		}
+		reverse_proxy @researchWrite 127.0.0.1:8001
+
 		@api path /api/* /health/*
 		respond @api 404
 		@write not method GET HEAD

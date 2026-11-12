@@ -14,7 +14,7 @@
 	route {
 		@write not method GET HEAD
 		respond @write 405
-		@private path /api/ai/* /api/owner/*
+		@private path /api/ai/* /api/owner/* /api/research/*
 		respond @private 404
 		handle /api/* {
 			reverse_proxy api:8000

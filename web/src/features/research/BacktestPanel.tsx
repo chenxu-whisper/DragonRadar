@@ -17,10 +17,12 @@ import {
   getBacktestRun,
   pollBacktestDecision,
   submitBacktest,
+  type BacktestManifestContext,
   type BacktestRunRecord,
   type BacktestRunStatus,
 } from './backtest-client';
 import './backtest-panel.css';
+import { TableScroll } from '../../components/Common';
 
 export const STRATEGY_ID = 'factor-cross-sectional-topn-v1';
 export const RESEARCH_BACKTEST_SCHEMA_VERSION = 'dragon-radar.research-backtest/v1';
@@ -73,11 +75,10 @@ export interface BacktestDraft {
   test_sessions: string;
 }
 
-export interface BacktestManifestContext {
-  snapshot_id: string;
-  domains: Array<{ domain: 'market' | 'topic' | 'role'; snapshot_id: string }>;
-  versions: { adjustment: string; calendar: string; pool: string };
-}
+// The manifest context type is owned by the transport client (single source of
+// truth for the endpoint envelope) and re-exported to preserve the panel's
+// existing import surface.
+export type { BacktestManifestContext };
 
 export type BacktestErrors = Partial<Record<string, string>>;
 
@@ -634,59 +635,65 @@ export function BacktestResultView({ record }: { record: BacktestRunRecord }) {
     <MetricList metrics={result.metrics} />
 
     <h4>净值曲线</h4>
-    <table aria-label="净值曲线">
-      <thead><tr><th>交易日</th><th>账户权益</th></tr></thead>
-      <tbody>
-        {equity.length === 0
-          ? <tr><td colSpan={2} className="muted">暂无净值点</td></tr>
-          : equity.map((point, index) => <tr key={`${point.trade_date}-${index}`}>
-            <td data-label="交易日">{String(point.trade_date)}</td>
-            <td data-label="账户权益" className="numeric">{String(point.equity)}</td>
-          </tr>)}
-      </tbody>
-    </table>
+    <TableScroll label="净值曲线横向滚动">
+      <table aria-label="净值曲线">
+        <thead><tr><th>交易日</th><th>账户权益</th></tr></thead>
+        <tbody>
+          {equity.length === 0
+            ? <tr><td colSpan={2} className="muted">暂无净值点</td></tr>
+            : equity.map((point, index) => <tr key={`${point.trade_date}-${index}`}>
+              <td data-label="交易日">{String(point.trade_date)}</td>
+              <td data-label="账户权益" className="numeric">{String(point.equity)}</td>
+            </tr>)}
+        </tbody>
+      </table>
+    </TableScroll>
 
     <h4>成交流水</h4>
-    <table aria-label="成交流水">
-      <thead><tr>
-        <th>证券代码</th><th>方向</th><th>数量</th><th>信号日</th><th>成交日</th>
-        <th>原始收盘</th><th>成交价</th><th>成交额</th><th>佣金</th><th>印花税</th><th>资金净额</th>
-      </tr></thead>
-      <tbody>
-        {trades.length === 0
-          ? <tr><td colSpan={11} className="muted">暂无成交</td></tr>
-          : trades.map((trade, index) => <tr key={`${trade.security_id}-${trade.trade_date}-${index}`}>
-            <td data-label="证券代码">{String(trade.security_id)}</td>
-            <td data-label="方向">{trade.side === 'buy' ? '买入' : '卖出'}</td>
-            <td data-label="数量" className="numeric">{String(trade.quantity)}</td>
-            <td data-label="信号日">{String(trade.signal_date)}</td>
-            <td data-label="成交日">{String(trade.trade_date)}</td>
-            <td data-label="原始收盘" className="numeric">{String(trade.raw_close)}</td>
-            <td data-label="成交价" className="numeric">{String(trade.fill_price)}</td>
-            <td data-label="成交额" className="numeric">{String(trade.gross_amount)}</td>
-            <td data-label="佣金" className="numeric">{String(trade.commission)}</td>
-            <td data-label="印花税" className="numeric">{String(trade.stamp_tax)}</td>
-            <td data-label="资金净额" className="numeric">{String(trade.net_cash_delta)}</td>
-          </tr>)}
-      </tbody>
-    </table>
+    <TableScroll label="成交流水横向滚动">
+      <table aria-label="成交流水">
+        <thead><tr>
+          <th>证券代码</th><th>方向</th><th>数量</th><th>信号日</th><th>成交日</th>
+          <th>原始收盘</th><th>成交价</th><th>成交额</th><th>佣金</th><th>印花税</th><th>资金净额</th>
+        </tr></thead>
+        <tbody>
+          {trades.length === 0
+            ? <tr><td colSpan={11} className="muted">暂无成交</td></tr>
+            : trades.map((trade, index) => <tr key={`${trade.security_id}-${trade.trade_date}-${index}`}>
+              <td data-label="证券代码">{String(trade.security_id)}</td>
+              <td data-label="方向">{trade.side === 'buy' ? '买入' : '卖出'}</td>
+              <td data-label="数量" className="numeric">{String(trade.quantity)}</td>
+              <td data-label="信号日">{String(trade.signal_date)}</td>
+              <td data-label="成交日">{String(trade.trade_date)}</td>
+              <td data-label="原始收盘" className="numeric">{String(trade.raw_close)}</td>
+              <td data-label="成交价" className="numeric">{String(trade.fill_price)}</td>
+              <td data-label="成交额" className="numeric">{String(trade.gross_amount)}</td>
+              <td data-label="佣金" className="numeric">{String(trade.commission)}</td>
+              <td data-label="印花税" className="numeric">{String(trade.stamp_tax)}</td>
+              <td data-label="资金净额" className="numeric">{String(trade.net_cash_delta)}</td>
+            </tr>)}
+        </tbody>
+      </table>
+    </TableScroll>
 
     <h4>拒单说明</h4>
-    <table aria-label="拒单说明">
-      <thead><tr><th>证券代码</th><th>方向</th><th>数量</th><th>信号日</th><th>成交日</th><th>拒单原因</th></tr></thead>
-      <tbody>
-        {rejections.length === 0
-          ? <tr><td colSpan={6} className="muted">暂无拒单</td></tr>
-          : rejections.map((rejection, index) => <tr key={`rejection-${index}`}>
-            <td data-label="证券代码">{String(rejection.security_id)}</td>
-            <td data-label="方向">{rejection.side === 'buy' ? '买入' : '卖出'}</td>
-            <td data-label="数量" className="numeric">{String(rejection.quantity)}</td>
-            <td data-label="信号日">{String(rejection.signal_date)}</td>
-            <td data-label="成交日">{String(rejection.trade_date)}</td>
-            <td data-label="拒单原因">{rejectionLabel(rejection.reason)}</td>
-          </tr>)}
-      </tbody>
-    </table>
+    <TableScroll label="拒单说明横向滚动">
+      <table aria-label="拒单说明">
+        <thead><tr><th>证券代码</th><th>方向</th><th>数量</th><th>信号日</th><th>成交日</th><th>拒单原因</th></tr></thead>
+        <tbody>
+          {rejections.length === 0
+            ? <tr><td colSpan={6} className="muted">暂无拒单</td></tr>
+            : rejections.map((rejection, index) => <tr key={`rejection-${index}`}>
+              <td data-label="证券代码">{String(rejection.security_id)}</td>
+              <td data-label="方向">{rejection.side === 'buy' ? '买入' : '卖出'}</td>
+              <td data-label="数量" className="numeric">{String(rejection.quantity)}</td>
+              <td data-label="信号日">{String(rejection.signal_date)}</td>
+              <td data-label="成交日">{String(rejection.trade_date)}</td>
+              <td data-label="拒单原因">{rejectionLabel(rejection.reason)}</td>
+            </tr>)}
+        </tbody>
+      </table>
+    </TableScroll>
 
     <h4>因子体检</h4>
     {quality.length === 0
@@ -703,36 +710,40 @@ export function BacktestResultView({ record }: { record: BacktestRunRecord }) {
         })}
 
     <h4>成本敏感性</h4>
-    <table aria-label="成本敏感性">
-      <thead><tr><th>成本档位</th><th>成本乘数</th><th>总收益率</th></tr></thead>
-      <tbody>
-        {sensitivity.length === 0
-          ? <tr><td colSpan={3} className="muted">暂无成本敏感性结果</td></tr>
-          : sensitivity.map((entry, index) => {
-              const metrics = asRecord(entry.metrics);
-              return <tr key={`sensitivity-${index}`}>
-                <td data-label="成本档位">{String(entry.tier)}</td>
-                <td data-label="成本乘数" className="numeric">{String(entry.cost_multiplier)}</td>
-                <td data-label="总收益率" className="numeric">{String(metrics.total_return ?? '—')}</td>
-              </tr>;
-            })}
-      </tbody>
-    </table>
+    <TableScroll label="成本敏感性横向滚动">
+      <table aria-label="成本敏感性">
+        <thead><tr><th>成本档位</th><th>成本乘数</th><th>总收益率</th></tr></thead>
+        <tbody>
+          {sensitivity.length === 0
+            ? <tr><td colSpan={3} className="muted">暂无成本敏感性结果</td></tr>
+            : sensitivity.map((entry, index) => {
+                const metrics = asRecord(entry.metrics);
+                return <tr key={`sensitivity-${index}`}>
+                  <td data-label="成本档位">{String(entry.tier)}</td>
+                  <td data-label="成本乘数" className="numeric">{String(entry.cost_multiplier)}</td>
+                  <td data-label="总收益率" className="numeric">{String(metrics.total_return ?? '—')}</td>
+                </tr>;
+              })}
+        </tbody>
+      </table>
+    </TableScroll>
 
     {folds.length > 0 && <>
       <h4>滚动折数</h4>
-      <table aria-label="滚动折数">
-        <thead><tr><th>折序号</th><th>训练起</th><th>训练止</th><th>测试起</th><th>测试止</th></tr></thead>
-        <tbody>
-          {folds.map((fold, index) => <tr key={`fold-${index}`}>
-            <td data-label="折序号">{String(fold.fold_index)}</td>
-            <td data-label="训练起">{String(fold.train_start)}</td>
-            <td data-label="训练止">{String(fold.train_end)}</td>
-            <td data-label="测试起">{String(fold.test_start)}</td>
-            <td data-label="测试止">{String(fold.test_end)}</td>
-          </tr>)}
-        </tbody>
-      </table>
+      <TableScroll label="滚动折数横向滚动">
+        <table aria-label="滚动折数">
+          <thead><tr><th>折序号</th><th>训练起</th><th>训练止</th><th>测试起</th><th>测试止</th></tr></thead>
+          <tbody>
+            {folds.map((fold, index) => <tr key={`fold-${index}`}>
+              <td data-label="折序号">{String(fold.fold_index)}</td>
+              <td data-label="训练起">{String(fold.train_start)}</td>
+              <td data-label="训练止">{String(fold.train_end)}</td>
+              <td data-label="测试起">{String(fold.test_start)}</td>
+              <td data-label="测试止">{String(fold.test_end)}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </TableScroll>
     </>}
 
     <AblationSection ablation={ablation} />

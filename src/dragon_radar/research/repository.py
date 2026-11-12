@@ -23,11 +23,15 @@ from sqlalchemy import and_, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Connection
 
+from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.publication.tables import publications
 from dragon_radar.research.models import (
     BacktestConfig,
     BacktestSubmission,
+    DomainManifest,
+    InputManifests,
+    ManifestVersions,
     StrictFrozenModel,
 )
 from dragon_radar.research.tables import research_backtest_cache, research_backtest_runs
@@ -66,6 +70,52 @@ def _json_object(value: Mapping) -> dict:
     if not isinstance(stored, dict):
         raise ValueError("Research result must be an object")
     return stored
+
+
+def manifest_from_snapshot(snapshot: PublishedSnapshot) -> dict:
+    """Project an authorized publication onto the owner BacktestManifestContext.
+
+    Domain UUIDs come from the immutable publication row while adjustment,
+    calendar and pool version tokens come from the published MarketBatch; the
+    strict kernel models re-validate every value so the wire payload can be
+    round-tripped straight into an EX14 ``input_manifests`` field. Only
+    market/topic/role are research domains, and optional domains stay absent
+    until their publication input exists.
+    """
+    publication = snapshot.publication
+    domains = [
+        DomainManifest(
+            domain="market",
+            snapshot_id=publication.market_snapshot_id,
+        )
+    ]
+    if publication.topic_snapshot_id is not None:
+        domains.append(
+            DomainManifest(
+                domain="topic",
+                snapshot_id=publication.topic_snapshot_id,
+            )
+        )
+    if publication.role_input_id is not None:
+        domains.append(
+            DomainManifest(
+                domain="role",
+                snapshot_id=publication.role_input_id,
+            )
+        )
+    batch = snapshot.market_snapshot.batch
+    manifests = InputManifests(
+        domains=tuple(domains),
+        versions=ManifestVersions(
+            adjustment=batch.adjustment_version,
+            calendar=batch.calendar_version,
+            pool=batch.pool_version,
+        ),
+    )
+    return {
+        "snapshot_id": str(publication.id),
+        **manifests.model_dump(mode="json"),
+    }
 
 
 class ResearchRunRecord(StrictFrozenModel):
@@ -154,6 +204,21 @@ class ResearchRunRepository:
         if row["status"] != "published":
             raise Forbidden("Publication is not available")
         return self.publications._authorized_records(connection, [row])[0]
+
+    def input_manifest(self, token: str, snapshot_id: UUID | str) -> dict:
+        """Authorize an owner session, then project the publication manifest.
+
+        Read-only and fail-closed: unknown publications map to NotFound and
+        non-published rows to Forbidden through the shared
+        :meth:`_authorized_input` path. No published material is recomputed.
+        """
+        if self.owners is None:
+            raise Forbidden("Owner access is unavailable")
+        snapshot_id = _uuid(snapshot_id)
+        with self.database.engine.begin() as connection:
+            self.owners.authorize_connection(connection, token)
+            snapshot = self._authorized_input(connection, snapshot_id)
+            return manifest_from_snapshot(snapshot)
 
     def submit(
         self,
@@ -606,4 +671,5 @@ __all__ = [
     "ResearchRunLease",
     "ResearchRunRecord",
     "ResearchRunRepository",
+    "manifest_from_snapshot",
 ]

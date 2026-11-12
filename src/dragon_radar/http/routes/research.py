@@ -159,6 +159,12 @@ def install_research_routes(app: FastAPI) -> None:
         record = _repository(request).get(owner.token, run_id)
         return DecimalJSONResponse(_safe_record(record))
 
+    @router.get("/api/research/manifests/{snapshot_id}")
+    def get_input_manifest(snapshot_id: UUID, request: Request, owner: OwnerRead):
+        _no_query(request)
+        payload = _repository(request).input_manifest(owner.token, snapshot_id)
+        return DecimalJSONResponse(payload)
+
     @router.post("/api/research/backtests/{run_id}/cancel")
     def cancel_backtest(run_id: UUID, request: Request, owner: OwnerWrite):
         _no_query(request)
