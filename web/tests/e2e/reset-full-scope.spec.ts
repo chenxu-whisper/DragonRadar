@@ -9,9 +9,10 @@ import { mockNews, NEWS_SNAPSHOT } from '../fixtures/news';
 // pinned historical publication survives cross-view navigation, the realtime
 // batch remains an independent stream, LHB/word-cloud/rotation/NL-query bind to
 // the serving publication, local notes survive offline + reload, and the Task 27
-// research surface is provably absent. Nothing here uses test.skip(): the Task 27
-// scope is a passing *boundary assertion* (no /api/research request, no UI), so
-// the reset verify gate's zero-skip contract still holds.
+// owner research surface stays inside its boundary. Nothing here uses test.skip():
+// Task 27 is a passing *boundary assertion* — read-only views issue no research
+// traffic and render no research UI, while the analysis view only reads the
+// publication-bound owner manifest and never writes during passive navigation.
 
 const DATE = '2026-09-10';
 const SECURITY = 'TEST001';
@@ -20,6 +21,45 @@ const BATCH = 'batch-1';
 
 const QUERY_ID = '11111111-1111-4111-8111-111111111111';
 const HASH = 'a'.repeat(64);
+
+const TOPIC_ID = '00000000-0000-4000-8000-0000000000bb';
+const ROLE_ID = '00000000-0000-4000-8000-0000000000cc';
+
+// Task 27 owner input manifest served to the analysis view's fail-closed gate:
+// three domains (market required) and the three frozen version tokens.
+const researchManifest = {
+  snapshot_id: ID,
+  domains: [
+    { domain: 'market', snapshot_id: ID },
+    { domain: 'topic', snapshot_id: TOPIC_ID },
+    { domain: 'role', snapshot_id: ROLE_ID },
+  ],
+  versions: {
+    adjustment: 'adjustment-v1',
+    calendar: 'calendar-cn-v1',
+    pool: 'topic-pool-v1',
+  },
+} as const;
+
+type ResearchCall = { method: string; path: string };
+
+// Task 27 owner research boundary shared by every analysis-view probe: the
+// publication-bound manifest read answers the panel's fail-closed gate, while
+// every other research call (submit/poll/cancel or an unbound path) is a loud
+// 500 so an un-stubbed request can never leak through the Vite dev proxy.
+async function mockResearchBoundary(page: Page): Promise<ResearchCall[]> {
+  const researchCalls: ResearchCall[] = [];
+  await page.route('**/api/research/**', route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    researchCalls.push({ method: request.method(), path });
+    if (request.method() === 'GET' && path === `/api/research/manifests/${ID}`) {
+      return route.fulfill({ json: researchManifest });
+    }
+    return route.fulfill({ status: 500, json: { code: 'UNEXPECTED_RESEARCH_CALL' } });
+  });
+  return researchCalls;
+}
 
 function liveEnvelope(data: unknown, changes: Record<string, unknown> = {}) {
   return {
@@ -45,12 +85,10 @@ function liveEnvelope(data: unknown, changes: Record<string, unknown> = {}) {
 async function mockCrossDomain(
   page: Page,
   realtimeOptions: { revokeFirstQuote?: boolean } = {},
-): Promise<{ realtimeUrls: URL[]; flowUrls: URL[]; researchUrls: URL[]; aiUrls: URL[]; researchCalls: string[] }> {
+): Promise<{ realtimeUrls: URL[]; flowUrls: URL[]; aiUrls: URL[]; researchCalls: ResearchCall[] }> {
   const realtimeUrls: URL[] = [];
   const flowUrls: URL[] = [];
-  const researchUrls: URL[] = [];
   const aiUrls: URL[] = [];
-  const researchCalls: string[] = [];
 
   await mockRotation(page);
 
@@ -147,20 +185,17 @@ async function mockCrossDomain(
     return route.fulfill({ status: 404, json: { code: 'NOT_FOUND' } });
   });
 
-  // Task 27 boundary + AI-off probes: these namespaces must never be touched by
-  // the reset workbench. Routes are installed so a stray call is recorded and
-  // returns a loud 500 instead of silently passing through the dev proxy.
-  await page.route('**/api/research/**', route => {
-    researchCalls.push(new URL(route.request().url()).pathname);
-    return route.fulfill({ status: 500, json: { code: 'TASK27_MUST_BE_ABSENT' } });
-  });
+  // Task 27 owner research boundary. The analysis view is the sole owner
+  // surface and may only READ the input manifest bound to the selected
+  // publication; the shared helper answers that read and turns every other
+  // research call into a loud 500 instead of a dev-proxy leak.
+  const researchCalls = await mockResearchBoundary(page);
   page.on('request', request => {
     const url = new URL(request.url());
-    if (/\/api\/research\//.test(url.pathname)) researchUrls.push(url);
     if (/\/api\/ai\//.test(url.pathname)) aiUrls.push(url);
   });
 
-  return { realtimeUrls, flowUrls, researchUrls, aiUrls, researchCalls };
+  return { realtimeUrls, flowUrls, aiUrls, researchCalls };
 }
 
 function nav(page: Page, name: string) {
@@ -217,8 +252,15 @@ test('pinned daily publication survives 总览→梯队→涨幅 navigation whil
     u.searchParams.get('snapshot_id') === null
     && u.searchParams.get('snapshot') === null)).toBe(true);
 
-  expect(probes.researchUrls).toEqual([]);
-  expect(probes.researchCalls).toEqual([]);
+  // Task 27 owner boundary: passive navigation never writes to the research
+  // namespace. The only research traffic is the analysis view's manifest READ,
+  // and every read stays bound to the pinned publication. StrictMode may replay
+  // the mount effect in dev, so the read can fire more than once.
+  await expect.poll(() => probes.researchCalls.length).toBeGreaterThan(0);
+  expect(probes.researchCalls.filter(call => call.method !== 'GET')).toEqual([]);
+  expect(probes.researchCalls.every(
+    call => call.method === 'GET' && call.path === `/api/research/manifests/${ID}`,
+  )).toBe(true);
   expect(probes.aiUrls).toEqual([]);
   expect(consoleErrors).toEqual([]);
 });
@@ -334,6 +376,7 @@ test('NL query parse→preview→explicit confirm→execute binds the result to 
   const counts = { parse: 0, execute: 0 };
   const executeBodies: unknown[] = [];
   await mockMarket(page);
+  await mockResearchBoundary(page);
   await page.route(/\/api\/rank\//, route => route.fulfill({
     json: { ...resetSummary(snapshot), source: 'analysis_materialization', data: null },
   }));
@@ -457,21 +500,43 @@ test('dark theme and compact density persist across navigation, and Ctrl+K keeps
   await expect(page.locator('html')).toHaveAttribute('data-density', 'compact');
 });
 
-// Task 27 (B01/B02, EX14/EX15) is intentionally unimplemented. This is a
-// *passing* boundary check, not a skipped test: the workbench must issue no
-// research calls and render no backtest / simulation-ledger entry point.
-test('Task 27 blocked boundary: no /api/research traffic and no backtest or simulation-ledger entry point', async ({ page }) => {
+// Task 27 (B01/B02, EX14/EX15) owner boundary, flipped from the earlier
+// "provably absent" probe into a passing owner-positive contract: read-only
+// views stay research-silent and render no research surface; the analysis view
+// mounts the owner backtest panel and only READS a manifest bound to the pinned
+// publication. The simulation ledger remains a review-tab-only lazy surface.
+test('Task 27 owner boundary: read-only views stay research-silent while analysis mounts the panel with a publication-bound manifest read', async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on('console', message => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
   const probes = await mockCrossDomain(page);
   await page.goto(`/?view=overview&snapshot=${ID}&date=${DATE}&security=${SECURITY}&sector=${SECTOR}`);
   await expect(page.getByRole('heading', { name: '市场总览', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '研究回测' })).toHaveCount(0);
+  expect(probes.researchCalls).toEqual([]);
+
   await nav(page, '梯队').click();
   await expect(page.getByRole('heading', { name: '题材轮动时间轴' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '研究回测' })).toHaveCount(0);
+  expect(probes.researchCalls).toEqual([]);
+
   await nav(page, '涨幅').click();
   await expect(page.getByRole('region', { name: '白名单查询面板' })).toBeVisible();
 
-  expect(probes.researchUrls).toEqual([]);
-  expect(probes.researchCalls).toEqual([]);
-  await expect(page.getByRole('button', { name: /回测|模拟账本|因子体检/ })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: /回测|模拟账本|因子体检/ })).toHaveCount(0);
-  await expect(page.locator('body')).not.toContainText(/walk-forward|滚动调权|模拟账本/);
+  // Owner surface mounts only on analysis and keeps its research-only disclosure.
+  const panel = page.getByRole('region', { name: '研究回测' });
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId('backtest-disclosure')).toBeVisible();
+  await expect.poll(() => probes.researchCalls.length).toBeGreaterThan(0);
+  expect(probes.researchCalls.every(
+    call => call.method === 'GET' && call.path === `/api/research/manifests/${ID}`,
+  )).toBe(true);
+  expect(probes.researchCalls.filter(call => call.method !== 'GET')).toEqual([]);
+
+  // The local simulation ledger is a separate lazy surface on the review tab;
+  // the analysis view never exposes its entry point.
+  await expect(page.getByRole('region', { name: '本地模拟账本' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '模拟账本' })).toHaveCount(0);
+  expect(consoleErrors).toEqual([]);
 });

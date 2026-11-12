@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import {
+  RESEARCH_EDGE_DENY_PROBES,
+  RESEARCH_OWNER_READ_PROBES,
+  RESEARCH_OWNER_WRITE_PROBES,
+  RESEARCH_PUBLIC_DENY_PROBES,
   composeChildEnvironment,
   queryPublishedPort,
 } from './production-isolation-support.mjs';
@@ -169,6 +173,39 @@ async function testPrivate() {
         const denied = await request(page, path, options);
         assert(denied.status === 404, `Private disallowed route ${path} returned ${denied.status}`);
       }
+
+      // Task 17: whitelisted research reads proxy through to the app. The
+      // paired session clears the OwnerGate; the unknown id reaches the route,
+      // whose JSON NOT_FOUND envelope proves the edge did not swallow the call.
+      for (const path of RESEARCH_OWNER_READ_PROBES) {
+        const probed = await request(page, path);
+        assert(
+          probed.status === 404 && probed.body.includes('"code":"NOT_FOUND"'),
+          `Private research read ${path} did not reach the app: ${probed.status} ${probed.body}`,
+        );
+      }
+      // Whitelisted research writes without an X-CSRF-Token header are rejected
+      // by the app gate with a JSON csrf_forbidden envelope; an edge 404 would
+      // have an empty body instead.
+      for (const { method, path } of RESEARCH_OWNER_WRITE_PROBES) {
+        const probed = await request(page, path, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        assert(
+          probed.status === 403 && probed.body.includes('"code":"csrf_forbidden"'),
+          `Private research write ${path} was not CSRF-rejected by the app: ${probed.status} ${probed.body}`,
+        );
+      }
+      // Research sibling paths match no whitelist and die at the edge default-deny.
+      for (const path of RESEARCH_EDGE_DENY_PROBES) {
+        const probed = await request(page, path);
+        assert(
+          probed.status === 404 && probed.body === '',
+          `Private edge did not deny research sibling ${path}: ${probed.status} ${probed.body}`,
+        );
+      }
     } finally {
       await context.close();
     }
@@ -207,6 +244,22 @@ async function testPublic() {
           `Public Caddy did not deny ${path} at the edge: ${denied.status} ${denied.body}`,
         );
       }
+      // Task 17: the read-only edge denies the whole research namespace. GETs
+      // hit the empty private-namespace 404; POSTs stop at the method 405 guard.
+      for (const path of RESEARCH_PUBLIC_DENY_PROBES) {
+        const denied = await request(page, path);
+        assert(
+          denied.status === 404 && denied.body === '',
+          `Public Caddy did not deny research path ${path} at the edge: ${denied.status} ${denied.body}`,
+        );
+      }
+      for (const { method, path } of RESEARCH_OWNER_WRITE_PROBES) {
+        const denied = await request(page, path, { method });
+        assert(
+          denied.status === 405 && denied.body === '',
+          `Public Caddy allowed research write ${path} past the method guard: ${denied.status} ${denied.body}`,
+        );
+      }
       compose(
         publicProject,
         files,
@@ -215,7 +268,7 @@ async function testPublic() {
         'web',
         'sh',
         '-ec',
-        "if grep -R -E '仅限本机所有者会话|私人会话已锁定|/api/ai/' /srv; then exit 1; fi; "
+        "if grep -R -E '仅限本机所有者会话|私人会话已锁定|/api/ai/|/api/research|仅研究模拟' /srv; then exit 1; fi; "
           + "if find /srv -type f -iname '*taskpanel*' | grep -q .; then exit 1; fi",
       );
     } finally {

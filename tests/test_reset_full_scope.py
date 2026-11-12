@@ -695,6 +695,7 @@ def test_workbench_serves_delivered_extensions_and_no_private_namespace():
         "/api/research/backtests",
         "/api/research/backtests/{run_id}",
         "/api/research/backtests/{run_id}/cancel",
+        "/api/research/manifests/{snapshot_id}",
     ):
         assert private_route not in routes, f"{private_route} leaked into workbench"
 
@@ -719,6 +720,7 @@ def test_owner_app_serves_ex01_03_12_15_including_task27_research_routes():
     assert "POST" in routes["/api/research/backtests"]
     assert "GET" in routes["/api/research/backtests/{run_id}"]
     assert "POST" in routes["/api/research/backtests/{run_id}/cancel"]
+    assert "GET" in routes["/api/research/manifests/{snapshot_id}"]
 
 
 def test_public_app_has_no_post_and_no_private_namespace():

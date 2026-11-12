@@ -4390,6 +4390,7 @@ async def test_research_owner_app_factory_constructs_research_repository(
         owner_paths = {getattr(route, "path", None) for route in owner.routes}
         assert T12_PATH in owner_paths
         assert f"{T12_PATH}/{{run_id}}" in owner_paths
+        assert T17_MANIFEST_PATH in owner_paths
         async with owner.router.lifespan_context(owner):
             pass
     finally:
@@ -4401,6 +4402,7 @@ async def test_research_owner_app_factory_constructs_research_repository(
         workbench_paths = {getattr(route, "path", None) for route in workbench.routes}
         assert T12_PATH not in workbench_paths
         assert f"{T12_PATH}/{{run_id}}" not in workbench_paths
+        assert T17_MANIFEST_PATH not in workbench_paths
         async with workbench.router.lifespan_context(workbench):
             pass
     finally:
@@ -5096,3 +5098,336 @@ def test_research_worker_retry_limit_fails_run_but_other_runs_stay_claimable(
     assert completed.id == follow.id
     assert completed.status == "succeeded"
     assert completed.attempt_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 17 — owner-only backtest input manifest channel. A pure builder maps
+# an authorized PublishedSnapshot onto the strict kernel InputManifests
+# contract (domain UUIDs from the publication, version tokens from the
+# MarketBatch); the repository reuses the EX14 authorization path and the
+# HTTP route stays a thin OwnerRead adapter. Every IO case runs on real
+# PostgreSQL and never recomputes published material.
+# ---------------------------------------------------------------------------
+
+T17_MANIFEST_PATH = "/api/research/manifests/{snapshot_id}"
+
+
+def _manifest_snapshot(*, topic_id=None, role_id=None):
+    from factories import NOW, batch
+
+    from dragon_radar.publication.models import Publication, PublishedSnapshot
+    from dragon_radar.storage.models import Snapshot
+
+    market_batch = batch()
+    market_snapshot = Snapshot(
+        id=uuid4(),
+        batch_id=uuid4(),
+        revision=1,
+        supersedes=None,
+        published_at=NOW,
+        manifest={},
+        batch=market_batch,
+        quality_report={},
+    )
+    publication = Publication(
+        id=uuid4(),
+        trade_date=market_batch.trade_date,
+        version=1,
+        supersedes=None,
+        status="published",
+        market_snapshot_id=market_snapshot.id,
+        topic_snapshot_id=topic_id,
+        news_input_id=None,
+        regulation_input_id=None,
+        role_input_id=role_id,
+        domains={},
+        coverage={},
+        quality_flags=(),
+        command_json="{}",
+        published_at=NOW,
+    )
+    return PublishedSnapshot(publication, market_snapshot, ())
+
+
+def _manifest_url(snapshot_id) -> str:
+    return f"/api/research/manifests/{snapshot_id}"
+
+
+# -- Part A: pure PublishedSnapshot -> BacktestManifestContext builder ------
+
+
+def test_manifest_from_snapshot_marks_market_domain_and_batch_versions() -> None:
+    from dragon_radar.research.repository import manifest_from_snapshot
+
+    snapshot = _manifest_snapshot()
+
+    payload = manifest_from_snapshot(snapshot)
+
+    assert set(payload) == {"snapshot_id", "domains", "versions"}
+    assert payload["snapshot_id"] == str(snapshot.publication.id)
+    assert payload["domains"] == [
+        {
+            "domain": "market",
+            "snapshot_id": str(snapshot.publication.market_snapshot_id),
+        }
+    ]
+    assert payload["versions"] == {
+        "adjustment": "a1",
+        "calendar": "c1",
+        "pool": "p1",
+    }
+    # The wire payload must satisfy the same strict kernel contract as EX14.
+    InputManifests.model_validate_json(
+        json.dumps({"domains": payload["domains"], "versions": payload["versions"]})
+    )
+
+
+def test_manifest_from_snapshot_includes_topic_without_role_when_role_absent() -> None:
+    from dragon_radar.research.repository import manifest_from_snapshot
+
+    topic_id = uuid4()
+    snapshot = _manifest_snapshot(topic_id=topic_id)
+
+    payload = manifest_from_snapshot(snapshot)
+
+    assert [entry["domain"] for entry in payload["domains"]] == ["market", "topic"]
+    assert payload["domains"][1] == {
+        "domain": "topic",
+        "snapshot_id": str(topic_id),
+    }
+    InputManifests.model_validate_json(
+        json.dumps({"domains": payload["domains"], "versions": payload["versions"]})
+    )
+
+
+def test_manifest_from_snapshot_appends_topic_and_role_domains_in_order() -> None:
+    from dragon_radar.research.repository import manifest_from_snapshot
+
+    topic_id = uuid4()
+    role_id = uuid4()
+    snapshot = _manifest_snapshot(topic_id=topic_id, role_id=role_id)
+
+    payload = manifest_from_snapshot(snapshot)
+
+    assert [entry["domain"] for entry in payload["domains"]] == [
+        "market",
+        "topic",
+        "role",
+    ]
+    assert payload["domains"][1]["snapshot_id"] == str(topic_id)
+    assert payload["domains"][2]["snapshot_id"] == str(role_id)
+    InputManifests.model_validate_json(
+        json.dumps({"domains": payload["domains"], "versions": payload["versions"]})
+    )
+
+
+# -- Part B: repository authorization on real PostgreSQL --------------------
+
+
+def test_research_input_manifest_returns_authorized_publication_manifest(
+    run_repo,
+) -> None:
+    ctx = run_repo
+
+    payload = ctx.runs.input_manifest(ctx.session.token, ctx.publication.id)
+
+    assert payload == {
+        "snapshot_id": str(ctx.publication.id),
+        "domains": [
+            {
+                "domain": "market",
+                "snapshot_id": str(ctx.publication.market_snapshot_id),
+            }
+        ],
+        "versions": {"adjustment": "a1", "calendar": "c1", "pool": "p1"},
+    }
+
+
+def test_research_input_manifest_includes_topic_domain_when_published(
+    run_repo,
+) -> None:
+    from factories import NOW, batch
+    from topic_factories import topic_batch
+
+    from dragon_radar.publication.models import PublicationCommand
+    from dragon_radar.publication.service import PublicationService
+    from dragon_radar.topics.repository import TopicRepository
+
+    ctx = run_repo
+    database = ctx.runs.database
+    market_repo = ctx.runs.publications.market
+    topic_repo = TopicRepository(database, clock=lambda: NOW)
+    market = market_repo.publish(
+        market_repo.import_batch(batch(), key="manifest-topic-market").id
+    )
+    topic = topic_repo.publish(
+        topic_repo.import_batch(topic_batch(), key="manifest-topic").id
+    )
+    publication = PublicationService(database, market_repo, clock=lambda: NOW).publish(
+        PublicationCommand(
+            trade_date=market.batch.trade_date,
+            market_snapshot_id=market.id,
+            topic_snapshot_id=topic.id,
+            disabled_domains=("news", "regulation", "role"),
+        ),
+        key="manifest-topic-publication",
+    )
+
+    payload = ctx.runs.input_manifest(ctx.session.token, publication.id)
+
+    assert payload["snapshot_id"] == str(publication.id)
+    assert [entry["domain"] for entry in payload["domains"]] == ["market", "topic"]
+    assert payload["domains"][1] == {
+        "domain": "topic",
+        "snapshot_id": str(topic.id),
+    }
+    assert payload["versions"] == {
+        "adjustment": "a1",
+        "calendar": "c1",
+        "pool": "p1",
+    }
+
+
+def test_research_input_manifest_rejects_unknown_revoked_and_malformed(
+    run_repo,
+) -> None:
+    from sqlalchemy import update
+
+    from dragon_radar.publication.tables import publications as publications_table
+    from dragon_radar.storage.repository import Forbidden, NotFound
+
+    ctx = run_repo
+    with pytest.raises(NotFound):
+        ctx.runs.input_manifest(ctx.session.token, uuid4())
+    with pytest.raises(ValueError, match="Invalid record ID"):
+        ctx.runs.input_manifest(ctx.session.token, "not-a-uuid")
+
+    with ctx.runs.database.engine.begin() as connection:
+        connection.execute(
+            update(publications_table)
+            .where(publications_table.c.id == ctx.publication.id)
+            .values(status="revoked")
+        )
+    with pytest.raises(Forbidden):
+        ctx.runs.input_manifest(ctx.session.token, ctx.publication.id)
+
+
+def test_research_input_manifest_requires_authorized_session(run_repo) -> None:
+    from dragon_radar.owner import SessionUnauthorized
+
+    ctx = run_repo
+    with pytest.raises(SessionUnauthorized):
+        ctx.runs.input_manifest("not-a-real-session-token", ctx.publication.id)
+
+
+# -- Part C: thin OwnerRead HTTP route --------------------------------------
+
+
+@pytest.mark.anyio
+async def test_research_http_manifest_requires_real_session(run_repo) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        response = await client.get(
+            _manifest_url(ctx.publication.id),
+            headers={"Origin": T12_ORIGIN},
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_research_http_manifest_returns_backtest_manifest_context(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        response = await client.get(
+            _manifest_url(ctx.publication.id),
+            headers=_t12_headers(ctx.session),
+        )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert set(payload) == {"snapshot_id", "domains", "versions"}
+    assert payload == {
+        "snapshot_id": str(ctx.publication.id),
+        "domains": [
+            {
+                "domain": "market",
+                "snapshot_id": str(ctx.publication.market_snapshot_id),
+            }
+        ],
+        "versions": {"adjustment": "a1", "calendar": "c1", "pool": "p1"},
+    }
+
+
+@pytest.mark.anyio
+async def test_research_http_manifest_maps_not_found_forbidden_and_bad_request(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import update
+
+    from dragon_radar.publication.tables import publications as publications_table
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        missing = await client.get(
+            _manifest_url(uuid4()),
+            headers=_t12_headers(ctx.session),
+        )
+        assert missing.status_code == 404
+        assert missing.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
+
+        queried = await client.get(
+            f"{_manifest_url(ctx.publication.id)}?unexpected=1",
+            headers=_t12_headers(ctx.session),
+        )
+        assert queried.status_code == 400
+        assert queried.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+
+        malformed = await client.get(
+            "/api/research/manifests/not-a-uuid",
+            headers=_t12_headers(ctx.session),
+        )
+        assert malformed.status_code == 400
+        assert malformed.json() == {
+            "code": "INVALID_PARAM",
+            "message": "Invalid request",
+        }
+
+    with ctx.runs.database.engine.begin() as connection:
+        connection.execute(
+            update(publications_table)
+            .where(publications_table.c.id == ctx.publication.id)
+            .values(status="revoked")
+        )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        revoked = await client.get(
+            _manifest_url(ctx.publication.id),
+            headers=_t12_headers(ctx.session),
+        )
+    assert revoked.status_code == 403
+    assert revoked.json() == {
+        "code": "FORBIDDEN",
+        "message": "Source access denied",
+    }

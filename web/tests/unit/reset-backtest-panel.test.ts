@@ -26,12 +26,18 @@ import {
   BacktestClientError,
   cancelBacktestRun,
   createBacktestCommand,
+  getBacktestManifest,
   getBacktestRun,
   pollBacktestDecision,
   researchRequest,
   submitBacktest,
 } from '../../src/features/research/backtest-client';
 import type { BacktestRunRecord } from '../../src/features/research/backtest-client';
+import {
+  EMPTY_MANIFEST_RESOURCE,
+  subscribeBacktestManifest,
+  type BacktestManifestResource,
+} from '../../src/features/research/manifest-resource';
 import BacktestPanelDefault, {
   ABLATION_DISABLED_LABEL,
   ABLATION_DISABLED_REASON,
@@ -812,5 +818,209 @@ describe('Task 16 mount and isolation contract', () => {
     for (const banned of ['安全再涨', '无风险', '预期胜率', '上涨概率', '胜率', '必涨', '稳赚', '预测', '包赚']) {
       expect(source, `${file} must not contain ${banned}`).not.toContain(banned);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 17 — owner input-manifest endpoint client (GET /manifests/{snapshot})
+// ---------------------------------------------------------------------------
+
+describe('Task 17 manifest client transport contract', () => {
+  it('GETs the owner manifest with read-only transport and validates the three-key envelope', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse(manifest()));
+    vi.stubGlobal('fetch', fetcher);
+
+    const context = await getBacktestManifest(SNAPSHOT_ID);
+
+    expect(fetcher.mock.calls[0][0]).toBe(`/api/research/manifests/${SNAPSHOT_ID}`);
+    expect(fetcher.mock.calls[0][1]).toMatchObject({
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    expect(fetcher.mock.calls[0][1].headers).not.toHaveProperty('X-CSRF-Token');
+    expect(context).toEqual(manifest());
+  });
+
+  it('accepts a market-only manifest domain list', async () => {
+    const marketOnly = manifest({
+      domains: [{ domain: 'market', snapshot_id: SNAPSHOT_ID }],
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(marketOnly)));
+    await expect(getBacktestManifest(SNAPSHOT_ID)).resolves.toEqual(marketOnly);
+  });
+
+  it('rejects a non-UUID snapshot id locally without issuing a request', async () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    await expect(getBacktestManifest('not-a-uuid')).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_PARAM',
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('keeps manifest reads inside the research whitelist and refuses query strings or siblings', async () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    for (const bad of [
+      `/api/research/manifests/${SNAPSHOT_ID}?expand=1`,
+      '/api/research/manifests',
+      '/api/research/manifests/../secrets',
+      '/api/research/other/1',
+      '/api/research/backtests/../manifests/x',
+    ]) {
+      await expect(researchRequest(bad)).rejects.toBeInstanceOf(BacktestClientError);
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['extra top-level key', { ...manifest(), stale: true }],
+    ['missing versions', { snapshot_id: SNAPSHOT_ID, domains: manifest().domains }],
+    ['missing market domain', { ...manifest(), domains: [{ domain: 'topic', snapshot_id: TOPIC_ID }] }],
+    ['duplicate domains', {
+      ...manifest(),
+      domains: [
+        { domain: 'market', snapshot_id: SNAPSHOT_ID },
+        { domain: 'market', snapshot_id: SNAPSHOT_ID },
+      ],
+    }],
+    ['four domains', {
+      ...manifest(),
+      domains: [
+        { domain: 'market', snapshot_id: SNAPSHOT_ID },
+        { domain: 'topic', snapshot_id: TOPIC_ID },
+        { domain: 'role', snapshot_id: '33333333-3333-4333-8333-333333333333' },
+        { domain: 'role', snapshot_id: '44444444-4444-4444-8444-444444444444' },
+      ],
+    }],
+    ['unknown domain name', { ...manifest(), domains: [{ domain: 'news', snapshot_id: SNAPSHOT_ID }] }],
+    ['non-uuid domain snapshot', { ...manifest(), domains: [{ domain: 'market', snapshot_id: 'nope' }] }],
+    ['domain entry with an extra key', {
+      ...manifest(),
+      domains: [{ domain: 'market', snapshot_id: SNAPSHOT_ID, extra: 1 }],
+    }],
+    ['illegal version token', {
+      ...manifest(),
+      versions: { adjustment: 'bad token!', calendar: 'c', pool: 'p' },
+    }],
+    ['overlong version token', {
+      ...manifest(),
+      versions: { adjustment: 'a'.repeat(101), calendar: 'c', pool: 'p' },
+    }],
+    ['missing version key', {
+      ...manifest(),
+      versions: { adjustment: 'a', calendar: 'c' } as BacktestManifestContext['versions'],
+    }],
+    ['domains not an array', { ...manifest(), domains: {} }],
+    ['non-uuid top-level snapshot id', { ...manifest(), snapshot_id: 'nope' }],
+  ])('rejects %s with a 502 malformed_response', async (_name, body) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(body)));
+    await expect(getBacktestManifest(SNAPSHOT_ID)).rejects.toMatchObject({
+      status: 502,
+      code: 'malformed_response',
+    });
+  });
+
+  it('locks the private session once on a 401 from the manifest endpoint', async () => {
+    const dispatchEvent = vi.fn(() => true);
+    vi.stubGlobal('window', { dispatchEvent });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      jsonResponse({ code: 'SESSION_REVOKED' }, { status: 401 })));
+    await expect(getBacktestManifest(SNAPSHOT_ID))
+      .rejects.toMatchObject({ status: 401, code: 'SESSION_REVOKED' });
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a 404 manifest response onto the research route code family', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      jsonResponse({ code: 'NOT_FOUND', message: 'Resource not found' }, { status: 404 })));
+    await expect(getBacktestManifest(SNAPSHOT_ID))
+      .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+  });
+});
+
+describe('Task 17 manifest resource fail-closed lifecycle', () => {
+  it('pushes a loading resource first and then the validated manifest', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse(manifest()));
+    vi.stubGlobal('fetch', fetcher);
+    const seen: BacktestManifestResource[] = [];
+
+    subscribeBacktestManifest(SNAPSHOT_ID, next => { seen.push(next); });
+
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[0]).toEqual({ manifest: null, loading: true });
+    expect(seen[1]).toEqual({ manifest: manifest(), loading: false });
+    expect(fetcher.mock.calls[0][0]).toBe(`/api/research/manifests/${SNAPSHOT_ID}`);
+  });
+
+  it('fails closed to the empty resource when the endpoint refuses storage', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      jsonResponse({ code: 'STORAGE_UNAVAILABLE' }, { status: 503 })));
+    const seen: BacktestManifestResource[] = [];
+
+    subscribeBacktestManifest(SNAPSHOT_ID, next => { seen.push(next); });
+
+    await vi.waitFor(() => expect(seen.at(-1)).toEqual(EMPTY_MANIFEST_RESOURCE));
+    expect(seen[0]).toEqual({ manifest: null, loading: true });
+  });
+
+  it('fails closed on a malformed manifest body instead of trusting partial data', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      jsonResponse({ snapshot_id: SNAPSHOT_ID, domains: [], versions: {} })));
+    const seen: BacktestManifestResource[] = [];
+
+    subscribeBacktestManifest(SNAPSHOT_ID, next => { seen.push(next); });
+
+    await vi.waitFor(() => expect(seen.at(-1)).toEqual(EMPTY_MANIFEST_RESOURCE));
+  });
+
+  it('cancels an in-flight load and never delivers a late manifest', async () => {
+    const fetcher = vi.fn((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () =>
+          reject(new DOMException('回测请求已取消', 'AbortError')));
+      }));
+    vi.stubGlobal('fetch', fetcher);
+    const seen: BacktestManifestResource[] = [];
+
+    const unsubscribe = subscribeBacktestManifest(SNAPSHOT_ID, next => { seen.push(next); });
+    unsubscribe();
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(seen).toEqual([{ manifest: null, loading: true }]);
+    const signal = fetcher.mock.calls[0][1].signal as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+  });
+});
+
+describe('Task 17 App manifest wiring and fold isolation contract', () => {
+  it('replaces the hardcoded null manifest with a dynamically imported manifest subscription', () => {
+    const source = read('src/App.tsx');
+    expect(source).not.toContain('manifest={null}');
+    expect(source).toContain("import('./features/research/manifest-resource')");
+    expect(source).toContain('subscribeBacktestManifest');
+    expect(source).toContain('manifest={manifestResource.manifest}');
+    expect(source).toContain('ResetBacktestPanel');
+    expect(source).toContain("state.view === 'analysis'");
+    // Runtime research dependencies must stay dynamically imported so the
+    // default build folds them away; only type-only static imports are allowed.
+    expect(source).not.toMatch(/^import (?!type ).*from '\.\/features\/research/m);
+  });
+
+  it('re-exports the manifest context type from the panel module surface', () => {
+    const source = read('src/features/research/BacktestPanel.tsx');
+    expect(source).toContain("from './backtest-client'");
+    expect(source).toContain('export type { BacktestManifestContext };');
+  });
+
+  it('keeps the research client whitelist limited to backtests and manifests', () => {
+    const source = read('src/features/research/backtest-client.ts');
+    expect(source).toContain('/api/research/backtests');
+    expect(source).toContain('/api/research/manifests/');
+    expect(source).not.toContain('/api/ai/');
+    expect(source).not.toContain('/api/query/');
   });
 });
