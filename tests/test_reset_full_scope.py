@@ -694,6 +694,7 @@ def test_workbench_serves_delivered_extensions_and_no_private_namespace():
         "/api/ai/summarize",
         "/api/research/backtests",
         "/api/research/backtests/{run_id}",
+        "/api/research/backtests/{run_id}/cancel",
     ):
         assert private_route not in routes, f"{private_route} leaked into workbench"
 
@@ -717,6 +718,7 @@ def test_owner_app_serves_ex01_03_12_15_including_task27_research_routes():
 
     assert "POST" in routes["/api/research/backtests"]
     assert "GET" in routes["/api/research/backtests/{run_id}"]
+    assert "POST" in routes["/api/research/backtests/{run_id}/cancel"]
 
 
 def test_public_app_has_no_post_and_no_private_namespace():
@@ -773,10 +775,9 @@ TASK27_SKELETON = (
     "web/tests/e2e/reset-research.spec.ts",
 )
 
-TASK27_LATER_ARTIFACTS = (
-    # Task 16 — research workbench backtest panel.
-    "web/src/features/research/BacktestPanel.tsx",
-)
+# Task 16 delivered the owner-only research workbench BacktestPanel, so no
+# later-slice artifacts remain frozen behind this gate.
+TASK27_LATER_ARTIFACTS: tuple[str, ...] = ()
 
 
 def test_task27_skeleton_present_but_later_slice_artifacts_remain_absent():
@@ -788,11 +789,12 @@ def test_task27_skeleton_present_but_later_slice_artifacts_remain_absent():
             f"Task 27 later-slice artifact appeared early: {relative}"
         )
 
-    # Task 14 delivered the IDB v5 simulation repository and Task 15 added the
-    # local SimulationPanel; SentimentPanel stays the Task 28 read-only surface.
-    # BacktestPanel remains absent until Task 16 flips this contract again.
+    # Task 14 delivered the IDB v5 simulation repository, Task 15 added the
+    # local SimulationPanel and Task 16 added the owner-only BacktestPanel;
+    # SentimentPanel stays the Task 28 read-only surface.
     research_feature = ROOT / "web/src/features/research"
     assert {path.name for path in research_feature.glob("*.tsx")} == {
+        "BacktestPanel.tsx",
         "SentimentPanel.tsx",
         "SimulationPanel.tsx",
     }

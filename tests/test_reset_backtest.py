@@ -4135,6 +4135,246 @@ async def test_research_http_get_isolates_owners_and_maps_unknown_ids(
         }
 
 
+# -- Task 16 — cooperative cancel over HTTP (EX14 command surface) ----------
+
+
+def _cancel_url(run_id) -> str:
+    return f"{T12_PATH}/{run_id}/cancel"
+
+
+@pytest.mark.anyio
+async def test_research_http_cancel_queued_run_returns_cancelled_envelope(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH,
+            json=_ex14_body(ctx.publication.id),
+            headers=_t12_headers(ctx.session),
+        )
+        assert created.status_code == 200, created.text
+        run_id = created.json()["run_id"]
+
+        cancelled = await client.post(
+            _cancel_url(run_id),
+            json={"idempotency_key": str(uuid4())},
+            headers=_t12_headers(ctx.session),
+        )
+    assert cancelled.status_code == 200, cancelled.text
+    payload = cancelled.json()
+    assert set(payload) == {
+        "run_id",
+        "status",
+        "config_hash",
+        "research_only",
+        "result",
+        "failure",
+    }
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "cancelled"
+    assert payload["research_only"] is True
+    assert payload["result"] is None
+    assert payload["failure"] is None
+
+    # The next polling read observes the terminal cancelled state without any
+    # recomputation, which is what closes the Task 17 submit/poll/cancel loop.
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        fetched = await client.get(
+            f"{T12_PATH}/{run_id}", headers=_t12_headers(ctx.session)
+        )
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "cancelled"
+    assert fetched.json()["result"] is None
+
+
+@pytest.mark.anyio
+async def test_research_http_cancel_requires_real_session(run_repo) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        response = await client.post(
+            _cancel_url(uuid4()),
+            json={"idempotency_key": str(uuid4())},
+            headers={"Origin": T12_ORIGIN},
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "headers",
+    ["missing_csrf_header", "wrong_csrf_header"],
+)
+async def test_research_http_cancel_requires_matching_csrf(run_repo, headers) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    body = _ex14_body(ctx.publication.id)
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH, json=body, headers=_t12_headers(ctx.session)
+        )
+        run_id = created.json()["run_id"]
+        if headers == "missing_csrf_header":
+            bad_headers = {
+                "Origin": T12_ORIGIN,
+                "Cookie": (
+                    f"{T12_SESSION_COOKIE}={ctx.session.token}; "
+                    f"{T12_CSRF_COOKIE}={ctx.session.csrf}"
+                ),
+            }
+        else:
+            bad_headers = {
+                "Origin": T12_ORIGIN,
+                "X-CSRF-Token": "other-csrf-token",
+                "Cookie": (
+                    f"{T12_SESSION_COOKIE}={ctx.session.token}; "
+                    f"{T12_CSRF_COOKIE}={ctx.session.csrf}"
+                ),
+            }
+        response = await client.post(
+            _cancel_url(run_id),
+            json={"idempotency_key": str(uuid4())},
+            headers=bad_headers,
+        )
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_research_http_cancel_rejects_terminal_run_with_conflict(
+    run_repo,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    submission = _submission(ctx.publication.id)
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH,
+            json=_ex14_body(ctx.publication.id),
+            headers=_t12_headers(ctx.session),
+        )
+        run_id = created.json()["run_id"]
+        lease = ctx.runs.claim("research-worker-1")
+        assert lease is not None
+        ctx.runs.succeed(lease, _ex15_result(submission))
+
+        conflict = await client.post(
+            _cancel_url(run_id),
+            json={"idempotency_key": str(uuid4())},
+            headers=_t12_headers(ctx.session),
+        )
+    assert conflict.status_code == 409
+    assert conflict.json() == {
+        "code": "VERSION_CONFLICT",
+        "message": "Version conflict",
+    }
+
+
+@pytest.mark.anyio
+async def test_research_http_cancel_unknown_id_returns_not_found(run_repo) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        response = await client.post(
+            _cancel_url(uuid4()),
+            json={"idempotency_key": str(uuid4())},
+            headers=_t12_headers(ctx.session),
+        )
+    assert response.status_code == 404
+    assert response.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
+
+
+@pytest.mark.anyio
+async def test_research_http_cancel_isolates_owners(run_repo) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    other = _second_owner_session(ctx.runs.database)
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH,
+            json=_ex14_body(ctx.publication.id),
+            headers=_t12_headers(ctx.session),
+        )
+        run_id = created.json()["run_id"]
+        isolated = await client.post(
+            _cancel_url(run_id),
+            json={"idempotency_key": str(uuid4())},
+            headers=_t12_headers(other),
+        )
+    assert isolated.status_code == 404
+    assert ctx.runs.get(ctx.session.token, run_id).status == "queued"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "case",
+    ["missing_key", "unknown_field", "query_string", "non_string_key"],
+)
+async def test_research_http_cancel_rejects_malformed_requests(run_repo, case) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    ctx = run_repo
+    app = _research_owner_app(ctx)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url=T12_ORIGIN
+    ) as client:
+        created = await client.post(
+            T12_PATH,
+            json=_ex14_body(ctx.publication.id),
+            headers=_t12_headers(ctx.session),
+        )
+        run_id = created.json()["run_id"]
+        url = _cancel_url(run_id)
+        if case == "missing_key":
+            payload: object = {}
+        elif case == "unknown_field":
+            payload = {"idempotency_key": str(uuid4()), "unexpected": "x"}
+        elif case == "non_string_key":
+            payload = {"idempotency_key": 123}
+        else:
+            payload = {"idempotency_key": str(uuid4())}
+            url = f"{url}?unexpected=1"
+        response = await client.post(
+            url, json=payload, headers=_t12_headers(ctx.session)
+        )
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "INVALID_PARAM",
+        "message": "Invalid request",
+    }
+
+
 @pytest.mark.anyio
 async def test_research_owner_app_factory_constructs_research_repository(
     database_url,
