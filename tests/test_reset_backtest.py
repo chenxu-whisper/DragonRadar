@@ -4165,3 +4165,694 @@ async def test_research_owner_app_factory_constructs_research_repository(
             pass
     finally:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Task 13 — asynchronous research backtest worker. Part A pins the pure-kernel
+# cooperative checkpoint hooks (no IO, no clock): run_backtest/run_walk_forward
+# gain a keyword-only, default-noop checkpoint callable threaded through every
+# cost-tier simulation and every fold boundary. Part B pins the lease-driven
+# ResearchBacktestWorker on real PostgreSQL: end-to-end success, heartbeat
+# renewal, cooperative cancellation, wall-clock/computation budget gates,
+# structured failures and pool-level retry isolation.
+# ---------------------------------------------------------------------------
+
+
+class _T13CooperativeStop(RuntimeError):
+    """Synthetic checkpoint raise used to prove cooperative mid-run stopping."""
+
+
+# -- Part A: pure kernel checkpoint hooks -----------------------------------
+
+
+def test_research_engine_checkpoint_fires_once_per_decision_iteration_per_tier() -> (
+    None
+):
+    from dragon_radar.research import models as research_models
+
+    calls: list[None] = []
+    cfg = _eng_config()
+    frames = _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS})
+    factor_frames = _factor_frames(ENG_VALUES_BY_DAY)
+
+    run_backtest(
+        cfg,
+        frames,
+        factor_frames,
+        anchor=_eng_anchor(),
+        policy=UniversePolicy(),
+        checkpoint=lambda: calls.append(None),
+    )
+
+    decision_iterations = len(ENG_DAYS) - 1
+    assert len(calls) == decision_iterations * len(
+        research_models.COST_SENSITIVITY_TIERS
+    )
+    assert len(calls) == 12
+
+
+def test_research_engine_checkpoint_defaults_to_noop_and_keeps_result_identical() -> (
+    None
+):
+    cfg = _eng_config()
+    frames = _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS})
+    factor_frames = _factor_frames(ENG_VALUES_BY_DAY)
+    kwargs = {
+        "anchor": _eng_anchor(),
+        "policy": UniversePolicy(),
+    }
+
+    baseline = _result_json(run_backtest(cfg, frames, factor_frames, **kwargs))
+    explicit_noop = _result_json(
+        run_backtest(
+            cfg,
+            frames,
+            factor_frames,
+            checkpoint=lambda: None,
+            **kwargs,
+        )
+    )
+
+    assert explicit_noop == baseline
+
+
+def test_research_engine_checkpoint_propagates_cooperative_stop() -> None:
+    calls: list[None] = []
+
+    def checkpoint() -> None:
+        calls.append(None)
+        if len(calls) == 5:
+            raise _T13CooperativeStop
+
+    with pytest.raises(_T13CooperativeStop):
+        run_backtest(
+            _eng_config(),
+            _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+            _factor_frames(ENG_VALUES_BY_DAY),
+            anchor=_eng_anchor(),
+            policy=UniversePolicy(),
+            checkpoint=checkpoint,
+        )
+
+    # The raise must stop the engine immediately: no later tier runs.
+    assert len(calls) == 5
+
+
+def test_research_walk_forward_checkpoint_covers_fold_boundaries_and_decisions() -> (
+    None
+):
+    from dragon_radar.research.models import COST_SENSITIVITY_TIERS
+
+    cfg = _wf_config()
+    frames = _wf_frames(_wf_closes())
+    factor_frames = _wf_factor_frames()
+    calls: list[None] = []
+
+    run_backtest(
+        cfg,
+        frames,
+        factor_frames,
+        anchor=_wf_anchor(),
+        policy=UniversePolicy(),
+        phase_publications=_wf_phases(),
+        checkpoint=lambda: calls.append(None),
+    )
+
+    spec = WF_SPEC
+    fold_decisions = spec.folds * (spec.test_sessions - 1)
+    aggregate_decisions = spec.folds * spec.test_sessions - 1
+    walk_forward_decisions = fold_decisions + aggregate_decisions
+    tier_decisions = len(WF_DAYS) - 1
+    expected = (
+        spec.folds
+        + walk_forward_decisions
+        + tier_decisions * len(COST_SENSITIVITY_TIERS)
+    )
+    # 2 fold boundaries + (2 fold decisions + 3 aggregate decisions)
+    # + 3 tiers x 7 full-window decisions = 28.
+    assert expected == 28
+    assert len(calls) == expected
+
+    # Raising at the fold-1 boundary (3rd call) prevents that fold's
+    # simulation and every later stage from running.
+    stopping: list[None] = []
+
+    def stop_at_fold_one() -> None:
+        stopping.append(None)
+        if len(stopping) == 3:
+            raise _T13CooperativeStop
+
+    with pytest.raises(_T13CooperativeStop):
+        run_backtest(
+            cfg,
+            frames,
+            factor_frames,
+            anchor=_wf_anchor(),
+            policy=UniversePolicy(),
+            phase_publications=_wf_phases(),
+            checkpoint=stop_at_fold_one,
+        )
+    assert len(stopping) == 3
+
+
+def test_research_compute_budget_accepts_legal_configs_and_rejects_drift(
+    monkeypatch,
+) -> None:
+    from dragon_radar.research import models as research_models
+    from dragon_radar.research.worker import (
+        ComputeBudgetExceeded,
+        assert_compute_budget,
+    )
+
+    assert assert_compute_budget(_eng_config()) is None
+
+    # The maximal walk-forward needs 50 + 10 x 20 = 250 sessions (the model
+    # cap), so the default 172-day fixture period cannot host it; widen the
+    # span to the exact boundary while every frozen constant stays at max.
+    maximal = config(
+        parameters=parameters(top_n=100, rebalance_period=60),
+        period=period(start=date(2025, 1, 6), end=date(2025, 9, 13)),
+        walk_forward=walk_forward(folds=10, train_sessions=50, test_sessions=20),
+    )
+    assert assert_compute_budget(maximal) is None
+
+    monkeypatch.setattr(research_models, "MAX_TOP_N", 1)
+    with pytest.raises(ComputeBudgetExceeded) as caught:
+        assert_compute_budget(_eng_config())
+    assert caught.value.dimension == "top_n"
+    assert caught.value.limit == 1
+    assert caught.value.actual == 2
+
+    monkeypatch.setattr(research_models, "MAX_REBALANCE_PERIOD_SESSIONS", 1)
+    with pytest.raises(ComputeBudgetExceeded) as caught:
+        assert_compute_budget(_eng_config())
+    assert caught.value.dimension == "rebalance_period"
+
+    monkeypatch.setattr(research_models, "MAX_WALK_FORWARD_FOLDS", 1)
+    with pytest.raises(ComputeBudgetExceeded) as caught:
+        assert_compute_budget(
+            config(
+                walk_forward=walk_forward(folds=2, train_sessions=4, test_sessions=2)
+            )
+        )
+    assert caught.value.dimension == "walk_forward_folds"
+
+
+# -- Part B: lease-driven worker on real PostgreSQL -------------------------
+
+
+def _t13_submit(ctx, **changes):
+    return ctx.runs.submit(
+        ctx.session.token,
+        ctx.session.csrf,
+        _submission(ctx.publication.id, **changes),
+    )
+
+
+def _t13_worker(ctx, compute, **kwargs):
+    from dragon_radar.research.worker import ResearchBacktestWorker
+
+    kwargs.setdefault("worker_id", "research-worker-1")
+    return ResearchBacktestWorker(ctx.runs, compute=compute, **kwargs)
+
+
+def _t13_ok_compute():
+    def compute(snapshot, config, checkpoint):
+        assert snapshot is not None
+        assert callable(checkpoint)
+        checkpoint()
+        return dict(T11_RESULT)
+
+    return compute
+
+
+def test_research_worker_run_once_returns_none_when_queue_empty(run_repo) -> None:
+    worker = _t13_worker(run_repo, _t13_ok_compute())
+    assert worker.run_once() is None
+
+
+def test_research_worker_run_forever_only_sleeps_when_idle(
+    run_repo, monkeypatch
+) -> None:
+    worker = _t13_worker(run_repo, _t13_ok_compute())
+    results = iter((object(), None, object()))
+    sleeps: list[float] = []
+    monkeypatch.setattr(worker, "run_once", lambda: next(results))
+
+    worker.run_forever(poll_seconds=0.25, sleep=sleeps.append, max_iterations=3)
+
+    assert sleeps == [0.25]
+
+
+@pytest.mark.parametrize("interrupt_at", ("run", "sleep"))
+def test_research_worker_run_forever_returns_cleanly_on_keyboard_interrupt(
+    run_repo, monkeypatch, interrupt_at
+) -> None:
+    worker = _t13_worker(run_repo, _t13_ok_compute())
+
+    def interrupt(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        worker,
+        "run_once",
+        interrupt if interrupt_at == "run" else lambda: None,
+    )
+
+    worker.run_forever(
+        sleep=interrupt if interrupt_at == "sleep" else lambda seconds: None,
+    )
+
+
+def test_research_worker_succeeds_queued_run_end_to_end(run_repo) -> None:
+    from sqlalchemy import text
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+    seen = {}
+
+    def compute(snapshot, config, checkpoint):
+        seen["snapshot_id"] = snapshot.id
+        seen["config_hash"] = config.config_hash
+        assert callable(checkpoint)
+        checkpoint()
+        return dict(T11_RESULT)
+
+    record = _t13_worker(ctx, compute).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "succeeded"
+    assert record.attempt_count == 1
+    assert record.result == T11_RESULT
+    assert record.failure is None
+    assert record.completed_at == T10_NOW
+    assert seen == {
+        "snapshot_id": ctx.publication.id,
+        "config_hash": submitted.config.config_hash,
+    }
+    with ctx.runs.database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_cache")) == 1
+        )
+    assert ctx.runs.get(ctx.session.token, submitted.id).status == "succeeded"
+
+
+def test_research_worker_runs_real_engine_and_persists_json_mapping(
+    run_repo,
+) -> None:
+    ctx = run_repo
+    # The run's own config must drive the engine so the persisted config_hash
+    # stays traceable to the submitted BacktestConfig rather than a fixture
+    # config fabricated inside the compute seam.
+    submitted = _t13_submit(
+        ctx,
+        period=period(start=E_D1, end=E_D5),
+        parameters=parameters(top_n=2, rebalance_period=2),
+    )
+
+    def compute(snapshot, config, checkpoint):
+        assert snapshot.id == ctx.publication.id
+        result = run_backtest(
+            config,
+            _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+            _factor_frames(ENG_VALUES_BY_DAY),
+            anchor=_eng_anchor(),
+            policy=UniversePolicy(),
+            checkpoint=checkpoint,
+        )
+        return result.model_dump(mode="json")
+
+    record = _t13_worker(ctx, compute).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "succeeded"
+    assert record.result["schema_version"] == T10_ENGINE_VERSION
+    assert record.result["research_only"] is True
+    assert record.result["config_hash"] == submitted.config.config_hash
+    # JSONB hydration returns immutable tuples/mappings (ImmutableJsonObject);
+    # assert ledger shape and contents rather than in-memory list types.
+    equity = record.result["equity"]
+    assert len(equity) == len(ENG_DAYS)
+    assert tuple(point["trade_date"] for point in equity) == tuple(
+        day.isoformat() for day in ENG_DAYS
+    )
+    assert record.result["baseline"]["status"] == "completed"
+
+
+def test_research_worker_renews_lease_while_long_compute_is_running(
+    run_repo,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import monotonic, sleep
+
+    from sqlalchemy import select
+
+    from dragon_radar.research.tables import research_backtest_runs
+
+    ctx = run_repo
+    ctx.runs.clock = lambda: datetime.now(UTC)
+    submitted = _t13_submit(ctx)
+    compute_started = Event()
+    release_compute = Event()
+
+    def slow_compute(snapshot, config, checkpoint):
+        compute_started.set()
+        assert release_compute.wait(5)
+        checkpoint()
+        return dict(T11_RESULT)
+
+    worker = _t13_worker(
+        ctx,
+        slow_compute,
+        worker_id="heartbeat-worker",
+        lease_for=timedelta(seconds=1),
+    )
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(worker.run_once)
+    try:
+        assert compute_started.wait(5)
+        with ctx.runs.database.engine.begin() as connection:
+            original_expiry = connection.scalar(
+                select(research_backtest_runs.c.lease_expires_at).where(
+                    research_backtest_runs.c.id == submitted.id
+                )
+            )
+
+        deadline = monotonic() + 2
+        renewed_expiry = original_expiry
+        while renewed_expiry <= original_expiry and monotonic() < deadline:
+            sleep(0.05)
+            with ctx.runs.database.engine.begin() as connection:
+                renewed_expiry = connection.scalar(
+                    select(research_backtest_runs.c.lease_expires_at).where(
+                        research_backtest_runs.c.id == submitted.id
+                    )
+                )
+        assert renewed_expiry > original_expiry
+        while datetime.now(UTC) <= original_expiry:
+            sleep(0.01)
+        assert (
+            ctx.runs.claim("competing-worker", lease_for=timedelta(seconds=1)) is None
+        )
+        release_compute.set()
+        completed = future.result(timeout=5)
+    finally:
+        release_compute.set()
+        pool.shutdown(wait=True)
+
+    assert completed.status == "succeeded"
+    assert completed.attempt_count == 1
+    assert completed.result == T11_RESULT
+
+
+def test_research_worker_cancel_takes_effect_at_next_checkpoint_without_result(
+    run_repo,
+) -> None:
+    from sqlalchemy import text
+
+    from dragon_radar.research.worker import ResearchRunCancelled
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+
+    def compute(snapshot, config, checkpoint):
+        cancelled = ctx.runs.cancel(ctx.session.token, ctx.session.csrf, submitted.id)
+        assert cancelled.status == "cancelled"
+        with pytest.raises(ResearchRunCancelled):
+            checkpoint()
+        raise AssertionError("compute must not continue after cancellation")
+
+    record = _t13_worker(ctx, compute).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "cancelled"
+    assert record.result is None
+    assert record.failure is None
+    assert record.completed_at == T10_NOW
+    with ctx.runs.database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_cache")) == 0
+        )
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_runs")) == 1
+        )
+
+
+def test_research_worker_wall_clock_budget_gate_fails_and_keeps_pool_open(
+    run_repo,
+) -> None:
+    from dragon_radar.research.worker import ResearchBudgetExceeded
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+    ticks = [0.0, 0.0, 300.001]
+
+    def fake_clock() -> float:
+        return ticks.pop(0)
+
+    def over_budget_compute(snapshot, config, checkpoint):
+        checkpoint()
+        with pytest.raises(ResearchBudgetExceeded) as caught:
+            checkpoint()
+        assert caught.value.budget_ms == T11_BUDGET_MS
+        assert caught.value.elapsed_ms == T11_BUDGET_MS + 1
+        return dict(T11_RESULT)
+
+    record = _t13_worker(ctx, over_budget_compute, clock=fake_clock).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "failed"
+    assert record.result is None
+    assert record.failure == {
+        "code": "budget_exceeded",
+        "budget_ms": T11_BUDGET_MS,
+        "elapsed_ms": T11_BUDGET_MS + 1,
+    }
+    assert ticks == []
+
+    follow = _t13_submit(ctx)
+    follower = _t13_worker(ctx, _t13_ok_compute(), worker_id="research-worker-2")
+    completed = follower.run_once()
+    assert completed is not None
+    assert completed.id == follow.id
+    assert completed.status == "succeeded"
+
+
+def test_research_worker_compute_budget_gate_fails_before_compute(
+    run_repo, monkeypatch
+) -> None:
+    from dragon_radar.research import worker as worker_module
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+
+    def reject(_config):
+        raise worker_module.ComputeBudgetExceeded("top_n", limit=1, actual=10)
+
+    monkeypatch.setattr(worker_module, "assert_compute_budget", reject)
+
+    def compute(snapshot, config, checkpoint):
+        raise AssertionError("compute must not run past the budget gate")
+
+    record = _t13_worker(ctx, compute).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "failed"
+    assert record.result is None
+    assert record.failure == {
+        "code": "budget_exceeded",
+        "reason": "compute_budget",
+        "dimension": "top_n",
+        "limit": 1,
+        "actual": 10,
+    }
+
+    monkeypatch.undo()
+    follow = _t13_submit(ctx)
+    completed = _t13_worker(
+        ctx, _t13_ok_compute(), worker_id="research-worker-2"
+    ).run_once()
+    assert completed is not None
+    assert completed.id == follow.id
+    assert completed.status == "succeeded"
+
+
+def test_research_worker_engine_exception_fails_structured_without_blocking_claim(
+    run_repo,
+) -> None:
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+
+    def exploding_compute(snapshot, config, checkpoint):
+        raise RuntimeError("engine blew up")
+
+    record = _t13_worker(ctx, exploding_compute).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "failed"
+    assert record.result is None
+    assert record.failure == {
+        "code": "backtest_failed",
+        "error_type": "RuntimeError",
+    }
+    assert ctx.runs.claim("research-worker-9") is None
+
+    follow = _t13_submit(ctx)
+    completed = _t13_worker(
+        ctx, _t13_ok_compute(), worker_id="research-worker-2"
+    ).run_once()
+    assert completed is not None
+    assert completed.id == follow.id
+    assert completed.status == "succeeded"
+
+
+def test_research_worker_revoked_publication_maps_to_input_forbidden(
+    run_repo,
+) -> None:
+    from sqlalchemy import update
+
+    from dragon_radar.publication.tables import publications as publications_table
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+    with ctx.runs.database.engine.begin() as connection:
+        connection.execute(
+            update(publications_table)
+            .where(publications_table.c.id == ctx.publication.id)
+            .values(status="revoked")
+        )
+
+    record = _t13_worker(ctx, _t13_ok_compute()).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "failed"
+    assert record.result is None
+    assert record.failure == {"code": "input_forbidden"}
+
+
+def test_research_worker_fail_closed_compute_maps_to_input_unavailable(
+    run_repo,
+) -> None:
+    from dragon_radar.research.worker import (
+        ResearchInputsUnavailable,
+        fail_closed_research_compute,
+    )
+
+    with pytest.raises(ResearchInputsUnavailable):
+        fail_closed_research_compute(None, None, lambda: None)
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+    record = _t13_worker(ctx, fail_closed_research_compute).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "failed"
+    assert record.result is None
+    assert record.failure == {"code": "input_unavailable"}
+
+
+def test_research_worker_checkpoint_detects_lease_takeover_and_skips_finish(
+    run_repo,
+) -> None:
+    from dragon_radar.research.worker import ResearchRunCancelled
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+
+    def compute(snapshot, config, checkpoint):
+        ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=11)
+        takeover = ctx.runs.claim("research-worker-2", lease_for=timedelta(seconds=10))
+        assert takeover is not None
+        assert takeover.attempt_count == 2
+        with pytest.raises(ResearchRunCancelled):
+            checkpoint()
+        raise AssertionError("stale worker must stop at the checkpoint")
+
+    record = _t13_worker(ctx, compute, lease_for=timedelta(seconds=10)).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "running"
+    assert record.attempt_count == 2
+    assert record.result is None
+    assert record.completed_at is None
+
+    takeover_lease = ctx.runs.claim(
+        "research-worker-2", lease_for=timedelta(seconds=10)
+    )
+    assert takeover_lease is None
+    active = ctx.runs.get(ctx.session.token, submitted.id)
+    assert active.status == "running"
+    assert active.attempt_count == 2
+
+
+def test_research_worker_stale_succeed_conflict_leaves_no_half_result(
+    run_repo,
+) -> None:
+    from sqlalchemy import text
+
+    ctx = run_repo
+    submitted = _t13_submit(ctx)
+
+    def compute(snapshot, config, checkpoint):
+        ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=11)
+        takeover = ctx.runs.claim("research-worker-2", lease_for=timedelta(seconds=10))
+        assert takeover is not None
+        return dict(T11_RESULT)
+
+    record = _t13_worker(ctx, compute, lease_for=timedelta(seconds=10)).run_once()
+
+    assert record is not None
+    assert record.id == submitted.id
+    assert record.status == "running"
+    assert record.attempt_count == 2
+    assert record.result is None
+    with ctx.runs.database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM research_backtest_cache")) == 0
+        )
+
+    # The takeover lease claimed at T10_NOW+11s expires ten seconds later;
+    # advance the repository clock past it before worker-2 can reclaim.
+    ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=22)
+    second_lease = ctx.runs.claim("research-worker-2", lease_for=timedelta(seconds=10))
+    assert second_lease is not None
+    completed = ctx.runs.succeed(second_lease, T11_RESULT)
+    assert completed.status == "succeeded"
+    assert completed.result == T11_RESULT
+
+
+def test_research_worker_retry_limit_fails_run_but_other_runs_stay_claimable(
+    run_repo,
+) -> None:
+    ctx = run_repo
+    exhausted = _t13_submit(ctx)
+
+    def exploding_compute(snapshot, config, checkpoint):
+        raise RuntimeError("boom")
+
+    record = _t13_worker(ctx, exploding_compute, max_attempts=1).run_once()
+    assert record is not None
+    assert record.id == exhausted.id
+    assert record.status == "failed"
+    assert record.attempt_count == 1
+    assert record.result is None
+    assert ctx.runs.claim("research-worker-1", max_attempts=1) is None
+
+    follow = _t13_submit(ctx)
+    completed = _t13_worker(
+        ctx, _t13_ok_compute(), worker_id="research-worker-2", max_attempts=1
+    ).run_once()
+    assert completed is not None
+    assert completed.id == follow.id
+    assert completed.status == "succeeded"
+    assert completed.attempt_count == 1

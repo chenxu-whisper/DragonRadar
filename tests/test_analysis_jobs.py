@@ -214,6 +214,13 @@ def test_analysis_worker_command_constructs_dependencies_and_runs(monkeypatch):
             assert isinstance(publications, FakePublications)
             calls.append(("jobs",))
 
+    class FakeResearchRuns:
+        def __init__(self, actual_database, owners, publications):
+            assert actual_database is database
+            assert isinstance(owners, FakeOwners)
+            assert isinstance(publications, FakePublications)
+            calls.append(("research_runs",))
+
     class FakeWorker:
         def __init__(self, jobs, *, worker_id, lease_for, max_attempts):
             assert isinstance(jobs, FakeJobs)
@@ -222,10 +229,50 @@ def test_analysis_worker_command_constructs_dependencies_and_runs(monkeypatch):
         def run_forever(self, *, poll_seconds):
             calls.append(("run", poll_seconds))
 
+    class FakeResearchWorker:
+        def __init__(self, runs, *, worker_id, lease_for, max_attempts, compute):
+            assert isinstance(runs, FakeResearchRuns)
+            assert callable(compute)
+            calls.append(
+                (
+                    "research_worker",
+                    worker_id,
+                    lease_for.total_seconds(),
+                    max_attempts,
+                )
+            )
+
+        def run_forever(self, *, poll_seconds):
+            calls.append(("research_run", poll_seconds))
+
+    class FakeThread:
+        def __init__(self, target, *, name, daemon, kwargs):
+            assert callable(target)
+            assert daemon is True
+            calls.append(("thread", name, daemon, kwargs["poll_seconds"]))
+            self._target = target
+            self._kwargs = kwargs
+
+        def start(self):
+            # Synchronous stand-in: the real CLI starts a daemon thread so
+            # the research loop shares the analysis-worker process without a
+            # new container while the analysis loop owns the main thread.
+            self._target(**self._kwargs)
+
+        def join(self, timeout=None):
+            calls.append(("join", timeout))
+
+    monkeypatch.setattr(
+        owner_cli,
+        "threading",
+        SimpleNamespace(Thread=FakeThread),
+    )
     monkeypatch.setattr(owner_cli, "OwnerRepository", FakeOwners)
     monkeypatch.setattr(owner_cli, "PublicationRepository", FakePublications)
     monkeypatch.setattr(owner_cli, "AnalysisJobRepository", FakeJobs)
     monkeypatch.setattr(owner_cli, "AnalysisJobWorker", FakeWorker)
+    monkeypatch.setattr(owner_cli, "ResearchRunRepository", FakeResearchRuns)
+    monkeypatch.setattr(owner_cli, "ResearchBacktestWorker", FakeResearchWorker)
     args = SimpleNamespace(
         command="analysis-worker",
         worker_id="worker-7",
@@ -239,7 +286,11 @@ def test_analysis_worker_command_constructs_dependencies_and_runs(monkeypatch):
         ("owners",),
         ("publications",),
         ("jobs",),
+        ("research_runs",),
         ("worker", "worker-7", 45, 4),
+        ("research_worker", "worker-7", 45, 4),
+        ("thread", "research-backtest-worker", True, 2.5),
+        ("research_run", 2.5),
         ("run", 2.5),
     ]
 
