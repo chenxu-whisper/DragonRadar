@@ -20,6 +20,9 @@
 .local-note-link[aria-current="true"] { color: var(--accent); border-color: var(--accent); font-weight: 700; }
 .local-note-preview { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; background: var(--review-preview-bg); padding: 12px; }
 .local-note-editor [role="status"] { color: var(--down); min-height: 24px; }
+.local-review-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 16px; border-bottom: 1px solid var(--review-border); }
+.local-review-tab { min-height: 40px; border-radius: 5px 5px 0 0; border-bottom: 0; background: var(--review-backup-bg); color: var(--review-muted-text); font-weight: 600; }
+.local-review-tab[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--bg-surface); box-shadow: inset 0 -2px 0 var(--accent); }
 .local-review-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-block: 10px; }
 .local-review-actions [role="status"] { color: var(--down); font-size: 13px; }
 .local-review-actions [role="alert"] { color: var(--up); font-size: 13px; }

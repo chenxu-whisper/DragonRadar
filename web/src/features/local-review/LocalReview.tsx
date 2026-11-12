@@ -1,9 +1,10 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { exportLocalBackup, importLocalBackup, previewLocalBackup } from '../../repositories/local/backup';
 import {
   BACKUP_LIMITS, type ImportDecision, type ImportPlan,
 } from '../../repositories/local/migrate';
 import { localRepository as repo, type LocalNote, type LocalWatch, type NoteContent, type StoredNoteContent } from '../../repositories/local/repository';
+import { SimulationRepository } from '../../repositories/local/simulation';
 import { registerLeaveGuard } from '../review/navigation';
 import type { AITask } from '../ai/client';
 import {
@@ -17,6 +18,8 @@ import './local-review.css';
 const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
   ? lazy(() => import('../ai/TaskPanel'))
   : null;
+// 本地模拟账本是独立懒 chunk：只在切换到“模拟账本”页签时拉取，笔记面保持默认体验。
+const SimulationPanel = lazy(() => import('../research/SimulationPanel'));
 const empty = (): NoteContent => ({ title: '', content: '', judgment: '', evidence: '', invalid_condition: '', verify_date: '' });
 const editable = (content: StoredNoteContent): NoteContent => ({
   title: content.title, content: content.content, judgment: content.judgment ?? '',
@@ -47,6 +50,8 @@ export default function LocalReview({
   const [backupName, setBackupName] = useState('');
   const [decision, setDecision] = useState<ImportDecision | ''>('');
   const [preview, setPreview] = useState<ImportPlan>();
+  const [tab, setTab] = useState<'notes' | 'simulation'>('notes');
+  const simulationRepository = useMemo(() => new SimulationRepository(repo), []);
   const mounted = useRef(true), saving = useRef(false);
   const adoptionCommands = useRef(new AdoptionCommandCache());
   const previewGeneration = useRef(0);
@@ -279,6 +284,11 @@ export default function LocalReview({
         : '无需登录 · 笔记与自选不上传'}</span></div>
     <p className="muted">此浏览器保存你的判断。清除网站数据会删除本地记录；服务断开不影响保存。
       {AITaskPanel ? ' 未选择的笔记字段与自选列表不会发送。' : ''}</p>
+    <div className="local-review-tabs" role="group" aria-label="本地资料分区">
+      <button type="button" className="local-review-tab" aria-pressed={tab === 'notes'} onClick={() => setTab('notes')}>我的笔记</button>
+      <button type="button" className="local-review-tab" aria-pressed={tab === 'simulation'} onClick={() => setTab('simulation')}>模拟账本</button>
+    </div>
+    {tab === 'notes' && <>
     {AITaskPanel && snapshot && tradeDate && asOf && version && <Suspense fallback={<p role="status">正在加载 AI 复盘工具…</p>}>
       <AITaskPanel
         taskType="daily_review"
@@ -366,5 +376,9 @@ export default function LocalReview({
         </details>)}</section>}
       </section>
     </div>
+    </>}
+    {tab === 'simulation' && <Suspense fallback={<p className="status" role="status">正在加载本地模拟账本…</p>}>
+      <SimulationPanel repository={simulationRepository} />
+    </Suspense>}
   </div>;
 }
