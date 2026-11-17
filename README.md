@@ -12,6 +12,7 @@ Task 17 历史实现基线为 `1adda8d`。
 Task 18 已完成本机开发验收：全量回归、研究并发性能门及需求追溯均通过，
 实际证据见 [Task 27 验收记录](docs/acceptance/task27-research.md)。
 本次工程整合记录见 [主分支整合记录](docs/integration/2026-11-17-main.md)。
+其他工程资料见 [文档入口](docs/README.md)。
 
 | 模块 | 进度 |
 | --- | --- |
@@ -207,4 +208,4 @@ FastAPI 分别装配只读与所有者应用。
 相关文档：[已批准的技术设计](docs/superpowers/specs/2026-09-09-data-foundation-design.md)、
 [实施计划](docs/superpowers/plans/2026-09-09-data-foundation.md)、
 [验收记录](docs/verification-data-foundation.md)、
-[依赖清单](docs/dependencies.md)、[产品需求](docs/leader_quant_prd.md)。
+[依赖清单](docs/dependencies.md)、[产品需求](docs/DragonRadar_开发需求PRD.md)。

@@ -1,0 +1,160 @@
+........................F............................................... [  2%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  8%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+......................................s................................. [ 22%]
+.................s...................................................... [ 24%]
+........................................................................ [ 26%]
+.F...................................................................... [ 28%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 44%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 73%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+........................................................................ [ 85%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 91%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+..................................................................       [100%]
+================================== FAILURES ===================================
+____________ test_private_compose_defines_isolated_analysis_worker ____________
+
+    def test_private_compose_defines_isolated_analysis_worker():
+        root = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment["DRAGON_DB_PASSWORD"] = "compose-validation-only"
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(root / "compose.yaml"),
+                "-f",
+                str(root / "compose.private.yaml"),
+                "config",
+                "--format",
+                "json",
+            ],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert result.returncode == 0, result.stderr
+E       AssertionError: failed to read E:\ByteDance\Projects\Code\DragonRadar\.env: line 1: unexpected character "\ufeff" in variable name "\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\r"
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['docker', 'compose', '-f', 'E:\\ByteDance\\Projects\\Code\\DragonRadar\\compose.yaml', '-f', 'E...nRadar\\.env: line 1: unexpected character "\\ufeff" in variable name "\\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\\r"\n').returncode
+
+tests\test_analysis_jobs.py:2075: AssertionError
+____________ test_ai_worker_cli_is_bounded_and_compose_is_internal ____________
+
+    def test_ai_worker_cli_is_bounded_and_compose_is_internal():
+        from dragon_radar.ai.worker import (
+            AI_LEASE_COMPLETION_MARGIN,
+            DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS,
+        )
+        from dragon_radar.cli import _parser
+    
+        defaults = _parser().parse_args(["ai-worker"])
+        configured = _parser().parse_args(
+            [
+                "ai-worker",
+                "--worker-id",
+                "ai-worker.prod:1",
+                "--poll-seconds",
+                "0.1",
+                "--lease-seconds",
+                "3600",
+                "--max-attempts",
+                "10",
+                "--provider-timeout-seconds",
+                "300",
+                "--concurrency",
+                "8",
+            ]
+        )
+        assert defaults.worker_id == "ai-worker-1"
+        assert defaults.provider_timeout_seconds is None
+        assert defaults.concurrency is None
+        assert defaults.lease_seconds >= (
+            DEFAULT_AI_PROVIDER_TIMEOUT_SECONDS + AI_LEASE_COMPLETION_MARGIN.total_seconds()
+        )
+        assert vars(configured) == {
+            "command": "ai-worker",
+            "worker_id": "ai-worker.prod:1",
+            "poll_seconds": 0.1,
+            "lease_seconds": 3600,
+            "max_attempts": 10,
+            "provider_timeout_seconds": 300.0,
+            "concurrency": 8,
+        }
+    
+        root = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment["DRAGON_DB_PASSWORD"] = "compose-validation-only"
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(root / "compose.yaml"),
+                "config",
+                "--format",
+                "json",
+            ],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert result.returncode == 0, result.stderr
+E       AssertionError: failed to read E:\ByteDance\Projects\Code\DragonRadar\.env: line 1: unexpected character "\ufeff" in variable name "\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\r"
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['docker', 'compose', '-f', 'E:\\ByteDance\\Projects\\Code\\DragonRadar\\compose.yaml', 'config'...nRadar\\.env: line 1: unexpected character "\\ufeff" in variable name "\\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\\r"\n').returncode
+
+tests\test_reset_ai_tasks.py:2872: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_analysis_jobs.py::test_private_compose_defines_isolated_analysis_worker - AssertionError: failed to read E:\ByteDance\Projects\Code\DragonRadar\.env: line 1: unexpected character "\ufeff" in variable name "\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\r"
+  
+assert 1 == 0
+ +  where 1 = CompletedProcess(args=['docker', 'compose', '-f', 'E:\\ByteDance\\Projects\\Code\\DragonRadar\\compose.yaml', '-f', 'E...nRadar\\.env: line 1: unexpected character "\\ufeff" in variable name "\\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\\r"\n').returncode
+FAILED tests/test_reset_ai_tasks.py::test_ai_worker_cli_is_bounded_and_compose_is_internal - AssertionError: failed to read E:\ByteDance\Projects\Code\DragonRadar\.env: line 1: unexpected character "\ufeff" in variable name "\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\r"
+  
+assert 1 == 0
+ +  where 1 = CompletedProcess(args=['docker', 'compose', '-f', 'E:\\ByteDance\\Projects\\Code\\DragonRadar\\compose.yaml', 'config'...nRadar\\.env: line 1: unexpected character "\\ufeff" in variable name "\\ufeffPYTHONPYCACHEPREFIX=.temp/pycache\\r"\n').returncode
+2 failed, 3518 passed, 2 skipped, 1385 deselected in 422.45s (0:07:02)

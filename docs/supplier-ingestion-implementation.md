@@ -75,7 +75,7 @@ iFinD 申请等待回复。取得真实授权、接口字段、历史覆盖、�
 
 使用方式见 [supplier-ingestion-guide.md](supplier-ingestion-guide.md)；
 完整 API 和文件契约见
-[工作树文档](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/supplier-ingestion.md)。
+[使用文档](supplier-ingestion.md)。
 首轮未暂存、提交、推送、迁移数据库、发布或访问厂商服务。
 
 ## 续做：补齐 PostgreSQL 集成验证

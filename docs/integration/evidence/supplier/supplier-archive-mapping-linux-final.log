@@ -1,0 +1,18 @@
+Using CPython 3.12.11 interpreter at: /usr/local/bin/python3
+Creating virtual environment at: /tmp/supplier-venv
+   Building dragon-radar @ file:///workspace
+      Built dragon-radar @ file:///workspace
+Downloading sqlalchemy (3.2MiB)
+Downloading pydantic-core (2.0MiB)
+Downloading psycopg-binary (5.0MiB)
+Downloading pygments (1.2MiB)
+Downloading ruff (9.8MiB)
+ Downloading pygments
+ Downloading pydantic-core
+ Downloading sqlalchemy
+ Downloading psycopg-binary
+ Downloading ruff
+Installed 34 packages in 57ms
+........................................................................ [ 53%]
+..............................................................           [100%]
+134 passed in 8.85s

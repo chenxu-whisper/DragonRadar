@@ -28,8 +28,8 @@
 
 详细操作契约：
 
-- [生产证明](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/production-evidence.md)
-- [生产输入与计算](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/production-inputs.md)
+- [生产证明](production-evidence.md)
+- [生产输入与计算](production-inputs.md)
 
 ## 外部材料实际状态
 

@@ -43,7 +43,7 @@
 保存为 `context.json`。消除所有 null，核对版本和授权范围。
 
 六个版本恰为 code/dataset/rules/model/prompt/retrieval。
-code 应通过正在运行的验证器工作树计算，不能使用主工作区旧提交：
+code 应通过正在运行的根目录验证器计算，不能沿用历史工作树摘要：
 
 ```powershell
 $codeRoot = 'E:\ByteDance\Projects\Code\DragonRadar'

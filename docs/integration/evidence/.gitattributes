@@ -1,0 +1,3 @@
+# Keep native command output bytes intact.
+* -text
+.gitattributes text eol=lf

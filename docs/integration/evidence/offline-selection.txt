@@ -1,0 +1,12 @@
+"""Select the offline suite without misreporting unavailable database probes."""
+
+def pytest_collection_modifyitems(config, items):
+    selected, deselected = [], []
+    for item in items:
+        if "database_url" in item.fixturenames:
+            deselected.append(item)
+        else:
+            selected.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
