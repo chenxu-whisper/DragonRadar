@@ -1,7 +1,9 @@
 # DragonRadar PRD 与开发进度对照
 
-日期：2026-11-17。需求基线：[开发需求PRD](file:///E:/ByteDance/Projects/Code/DragonRadar/docs/DragonRadar_开发需求%20PRD.md)。
-实现基线：`.worktrees/task27-research`，分支 `feature/task27-research`，包含未提交修改。
+日期：2026-11-17。需求基线：[开发需求PRD](DragonRadar_开发需求PRD.md)，以含已批准范围修订的版本为准。
+本报告核对时实现位于 `feature/task27-research`，包含未提交修改。
+后续主要功能整合到本地 `main`，代码入口统一到根目录，见 [整合记录](integration/2026-11-17-main.md)。
+真实数据与生产验收环境暂缓，见 [TODO](TODO.md)；下文验证表仍为核对时的事实。
 当前源码身份：`source-sha256:c88f1e32576999090e52639412c9b4f08c488b4a8208c6c7369b9015632df4ea`。
 
 目前处于“主要产品能力已实现、本机工程验证已有证据、真实生产材料及正式验收未闭环”的阶段。
@@ -46,12 +48,12 @@ P1功能表另有“板块资金流分时曲线”这一没有独立REQ-ID的体
 | P1 扩展 | 实时授权读模型、分钟K/异动/分时资金流、龙虎榜、词云、轮动、偏好及白名单NL查询已有实现 | 真实实时数据许可与延迟实测、龙虎榜/新闻等真实来源尚未完成 |
 | P2 研究 | PIT回测、因子体检、walk-forward、本地模拟账本和AI对照框架已有实现 | 生产算子首版仅支持获批FAC-R01与baseline；真实阶段序列适配和AI收益腿未启用 |
 
-源码依据：前端[页面目录](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/web/src/pages)、
-[本地复盘](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/web/src/features/local-review/LocalReview.tsx)、
-[HTTP路由](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/http/routes)、
-[研究内核](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/research)。
-验收依据：[历史终验与追加指引](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/acceptance/reset-final.md)、
-[Task 27最新验收](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/acceptance/task27-research.md)。
+源码依据：前端[页面目录](file:///E:/ByteDance/Projects/Code/DragonRadar/web/src/pages)、
+[本地复盘](file:///E:/ByteDance/Projects/Code/DragonRadar/web/src/features/local-review/LocalReview.tsx)、
+[HTTP路由](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/http/routes)、
+[研究内核](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/research)。
+验收依据：[历史终验与追加指引](acceptance/reset-final.md)、
+[Task 27最新验收](acceptance/task27-research.md)。
 
 ## 3. 57项需求逐项对照
 
@@ -120,8 +122,8 @@ B01/B02采用后续Task 27文档，D02采用最新供应商交付记录。
 | V11 | Ctrl+K命令面板 | 工程已实现 | P1前端命令，不能越过owner与数据权限 |
 
 其他P1扩展“分时资金流”也有当前源码：
-[实时路由](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/http/routes/realtime.py#L372)、
-[分时面板](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/web/src/features/realtime/RealtimePanel.tsx#L213)。
+[实时路由](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/http/routes/realtime.py#L372)、
+[分时面板](file:///E:/ByteDance/Projects/Code/DragonRadar/web/src/features/realtime/RealtimePanel.tsx#L213)。
 缺授权或不可计算的资金流显示不可用，不推定资金方向。
 
 ## 4. 最容易误判的完成项
@@ -133,10 +135,10 @@ B01/B02采用后续Task 27文档，D02采用最新供应商交付记录。
 当前存在研究迁移、owner研究路由、worker/内核、回测和模拟面板及对应测试。
 所以B01/B02不能继续简单标成“尚未开发”，应标成“工程已有、真实运行与AI腿部分受限”。
 
-证据：[追加指引](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/acceptance/reset-final.md#L251)、
-[研究验收](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/acceptance/task27-research.md)、
-[研究路由](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/http/routes/research.py)、
-[研究迁移](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/migrations/versions/0014_research.py)。
+证据：[追加指引](file:///E:/ByteDance/Projects/Code/DragonRadar/docs/acceptance/reset-final.md#L251)、
+[研究验收](acceptance/task27-research.md)、
+[研究路由](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/http/routes/research.py)、
+[研究迁移](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/migrations/versions/0014_research.py)。
 
 ### 4.2 生产计算不是尚未从零开发
 
@@ -144,8 +146,8 @@ B01/B02采用后续Task 27文档，D02采用最新供应商交付记录。
 当前代码明确拒绝未经批准的方法；真实walk-forward需要实际阶段序列适配，
 生产实验仅允许baseline。研究测试中的多因子和滚动验证能力不能直接证明所有真实方法已可运行。
 
-证据：[生产计算源码](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/research/production.py#L354-L370)、
-[方法限制](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/research/production.py#L579-L585)、
+证据：[生产计算源码](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/research/production.py#L354-L370)、
+[方法限制](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/research/production.py#L579-L585)、
 [生产接入记录](file:///E:/ByteDance/Projects/Code/DragonRadar/docs/production-readiness-implementation.md)。
 
 ### 4.3 AI任务可用不等于真实AI质量通过
@@ -155,7 +157,7 @@ PRD要求至少100条人工标注样本、开发/冻结测试分离、原子事�
 但没有对应真实输入输出和独立证明。研究对照中的AI腿仍固定disabled。
 
 证据：PRD §8.3、
-[AI对照约束](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/research/ablation.py)、
+[AI对照约束](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/research/ablation.py)、
 [生产门禁记录](file:///E:/ByteDance/Projects/Code/DragonRadar/docs/production-readiness-implementation.md)。
 
 ### 4.4 标准样本合格不等于历史PIT或真实生产准入
@@ -182,8 +184,8 @@ N1/N1B/N1C已交付采集归档映射、不可变标准样本、独立核验及�
 | N1C静态与构建 | Ruff零问题、338文件format、compileall和wheel实际入口通过 | 当前源码有静态/构建证据 |
 | 正式CI/完整受信验收报告 | 未提供当前提交绑定的远程CI或正式verify_reset full受信报告 | automated_acceptance仍unverified |
 
-依据：[Task 27门禁及原始证据索引](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/acceptance/task27-research.md)、
-[manifest](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/acceptance/evidence/task27/manifest.json)、
+依据：[Task 27门禁及原始证据索引](acceptance/task27-research.md)、
+[manifest](acceptance/evidence/task27/manifest.json)、
 [生产接入验证](file:///E:/ByteDance/Projects/Code/DragonRadar/docs/production-readiness-implementation.md)、
 [N1C验证](file:///E:/ByteDance/Projects/Code/DragonRadar/docs/supplier-ingestion-implementation.md)。
 

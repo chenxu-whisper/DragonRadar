@@ -245,4 +245,4 @@ N1B、N1C与N2本机验收已完成；后续N3/N4按实际材料启动，
 [最新交付记录](supplier-ingestion-implementation.md)、
 [供应商使用指南](supplier-ingestion-guide.md)、
 [既有生产解锁设计](production-readiness-unblocking-design.md)、
-[生产输入契约](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/production-inputs.md)。
+[生产输入契约](production-inputs.md)。

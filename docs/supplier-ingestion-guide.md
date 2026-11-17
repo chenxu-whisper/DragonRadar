@@ -1,10 +1,10 @@
 # 供应商接入使用指南
 
-开发工作树：`E:\ByteDance\Projects\Code\DragonRadar\.worktrees\task27-research`。
+开发目录：`E:\ByteDance\Projects\Code\DragonRadar`（本地 `main`）。
 沿用现有环境，所有命令从该工作树运行。
 
 完整配置格式、采集 API、归档恢复和质量检查说明见
-[工作树使用文档](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/supplier-ingestion.md)。
+[使用文档](supplier-ingestion.md)。真实接入暂缓，见 [TODO](TODO.md)。
 设计及批准范围见 [supplier-ingestion-design.md](supplier-ingestion-design.md)。
 
 采集配置预检（默认不联网、不写采集档案）：

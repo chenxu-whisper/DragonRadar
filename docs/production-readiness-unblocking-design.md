@@ -8,7 +8,7 @@
 
 ## 1. 已确认的现状
 
-开发代码位于 `.worktrees/task27-research`。此前 Task 18 的开发验收及其
+开发代码已整合到根目录的本地 `main`，真实数据与生产验收暂缓，见 [TODO](TODO.md)。此前 Task 18 的开发验收及其
 549 个源文件、52 个产物的摘要绑定保持原样。
 
 当前阻断包含两个工程缺口：
@@ -220,8 +220,8 @@ regression_passed=true、冻结样例与引擎一致、最新追加生命周期 
 
 ## 核对依据
 
-- [现有开发验证器](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/scripts/verify_reset.py#L2120-L2129)
-- [生产 worker 的默认输入边界](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/src/dragon_radar/research/worker.py#L113-L138)
-- [AI 评测契约](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/ai-evaluation.md)
-- [规则激活要求](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/regulation-rules.md)
-- [Task 27 当前验收](file:///E:/ByteDance/Projects/Code/DragonRadar/.worktrees/task27-research/docs/acceptance/task27-research.md)
+- [现有开发验证器](file:///E:/ByteDance/Projects/Code/DragonRadar/scripts/verify_reset.py#L2120-L2129)
+- [生产 worker 的默认输入边界](file:///E:/ByteDance/Projects/Code/DragonRadar/src/dragon_radar/research/worker.py#L113-L138)
+- [AI 评测契约](ai-evaluation.md)
+- [规则激活要求](regulation-rules.md)
+- [Task 27 当前验收](acceptance/task27-research.md)

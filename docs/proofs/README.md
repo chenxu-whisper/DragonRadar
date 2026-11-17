@@ -46,7 +46,7 @@
 code 应通过正在运行的验证器工作树计算，不能使用主工作区旧提交：
 
 ```powershell
-$codeRoot = 'E:\ByteDance\Projects\Code\DragonRadar\.worktrees\task27-research'
+$codeRoot = 'E:\ByteDance\Projects\Code\DragonRadar'
 Push-Location $codeRoot
 try {
     & "$codeRoot\.venv\Scripts\python.exe" -c 'from dragon_radar.production.cli import CODE_ROOT,current_source_identity; print(current_source_identity(CODE_ROOT))'
@@ -116,7 +116,7 @@ schema 为 `dragon-radar-production-trust/v1`，
 当前无外部策略时可运行，预期退出 2 并输出 blocked：
 
 ```powershell
-$codeRoot = 'E:\ByteDance\Projects\Code\DragonRadar\.worktrees\task27-research'
+$codeRoot = 'E:\ByteDance\Projects\Code\DragonRadar'
 & "$codeRoot\.venv\Scripts\python.exe" "$codeRoot\scripts\verify_production.py" `
     --workspace 'E:\ByteDance\Projects\Code\DragonRadar' `
     --output 'E:\ByteDance\Projects\Code\DragonRadar\docs\production-readiness-status.json'
