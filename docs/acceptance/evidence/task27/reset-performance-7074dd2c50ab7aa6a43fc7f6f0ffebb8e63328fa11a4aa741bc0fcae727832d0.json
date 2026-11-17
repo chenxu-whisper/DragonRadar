@@ -1,0 +1,3110 @@
+{
+  "fixture": {
+    "kind": "synthetic",
+    "counts": {
+      "securities": 100,
+      "security_read_model_rows": 0,
+      "trading_sessions": 61,
+      "publications": 1,
+      "owner_sessions": 1,
+      "analysis_jobs": 1,
+      "completed_analysis_jobs": 1
+    },
+    "data_volume": {
+      "market_archive_bytes": 3597209,
+      "publication_payload_bytes": 510319
+    },
+    "controlled_worker_delay_seconds": 5.1,
+    "owner_execution": "queued_async"
+  },
+  "environment": {
+    "python": "3.12.9",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "postgresql": "17.11",
+    "os_cold_cache_controlled": false,
+    "gc_fenced": true,
+    "cache_claim": "multi_wave_warmup_then_gc_fenced_measured_caches_uncontrolled"
+  },
+  "warmup": {
+    "paths": [
+      "/api/snapshots/{id}",
+      "/api/market/overview",
+      "/api/rank/range",
+      "/api/stock/{id}"
+    ],
+    "wave_count": 3,
+    "request_count": 60,
+    "concurrency": 20,
+    "successful": 60
+  },
+  "runs": [
+    {
+      "round": 1,
+      "cache_condition": "steady_state_warmup_gc_fenced_caches_uncontrolled",
+      "request_count": 20,
+      "concurrency": 20,
+      "successful": 20,
+      "error_rate": 0.0,
+      "p50_seconds": 0.8493219999945723,
+      "p95_seconds": 1.128609899955336,
+      "max_seconds": 1.145303800003603,
+      "latencies_seconds": [
+        0.9967310000211,
+        0.2044035000144504,
+        0.3400701999780722,
+        0.34126900002593175,
+        0.33955420000711456,
+        1.145303800003603,
+        0.34032670001033694,
+        0.8538765999837779,
+        0.9633871999685653,
+        0.5267997999908403,
+        0.962587199988775,
+        0.6974290999933146,
+        0.42242780001834035,
+        0.9621099000214599,
+        1.0229166999924928,
+        1.128609899955336,
+        0.9302626999560744,
+        0.4145486999768764,
+        0.850137600034941,
+        0.8493219999945723
+      ],
+      "wall_seconds": 1.1472648000344634,
+      "process_cpu_seconds": 1.1875,
+      "peak_memory_bytes": 290021376,
+      "rss_bytes": 278282240,
+      "memory_measurement": "windows_working_set",
+      "sql_statement_count": 100,
+      "path_metrics": {
+        "/api/snapshots/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.9302626999560744,
+          "p95_seconds": 0.9967310000211,
+          "max_seconds": 0.9967310000211,
+          "latencies_seconds": [
+            0.9967310000211,
+            0.33955420000711456,
+            0.9633871999685653,
+            0.42242780001834035,
+            0.9302626999560744
+          ]
+        },
+        "/api/market/overview": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.5267997999908403,
+          "p95_seconds": 1.145303800003603,
+          "max_seconds": 1.145303800003603,
+          "latencies_seconds": [
+            0.2044035000144504,
+            1.145303800003603,
+            0.5267997999908403,
+            0.9621099000214599,
+            0.4145486999768764
+          ]
+        },
+        "/api/rank/range": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.850137600034941,
+          "p95_seconds": 1.0229166999924928,
+          "max_seconds": 1.0229166999924928,
+          "latencies_seconds": [
+            0.3400701999780722,
+            0.34032670001033694,
+            0.962587199988775,
+            1.0229166999924928,
+            0.850137600034941
+          ]
+        },
+        "/api/stock/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.8493219999945723,
+          "p95_seconds": 1.128609899955336,
+          "max_seconds": 1.128609899955336,
+          "latencies_seconds": [
+            0.34126900002593175,
+            0.8538765999837779,
+            0.6974290999933146,
+            1.128609899955336,
+            0.8493219999945723
+          ]
+        }
+      }
+    },
+    {
+      "round": 2,
+      "cache_condition": "steady_state_warmup_gc_fenced_caches_uncontrolled",
+      "request_count": 20,
+      "concurrency": 20,
+      "successful": 20,
+      "error_rate": 0.0,
+      "p50_seconds": 0.9295734000043012,
+      "p95_seconds": 1.0886014999705367,
+      "max_seconds": 1.1025106000015512,
+      "latencies_seconds": [
+        0.9852074000518769,
+        0.9364377000019886,
+        0.9836466999840923,
+        0.12458879995392635,
+        0.20478460000595078,
+        0.26958710001781583,
+        0.5138835000107065,
+        0.9815229999949224,
+        0.26828049996402115,
+        0.9483157000504434,
+        1.080900200002361,
+        0.5114886999945156,
+        0.5112504999851808,
+        1.1025106000015512,
+        1.0792331999982707,
+        0.9455189000000246,
+        0.9295734000043012,
+        0.9287808999652043,
+        1.0886014999705367,
+        0.2631958000129089
+      ],
+      "wall_seconds": 1.1089247000054456,
+      "process_cpu_seconds": 1.171875,
+      "peak_memory_bytes": 290021376,
+      "rss_bytes": 279142400,
+      "memory_measurement": "windows_working_set",
+      "sql_statement_count": 100,
+      "path_metrics": {
+        "/api/snapshots/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.5112504999851808,
+          "p95_seconds": 0.9852074000518769,
+          "max_seconds": 0.9852074000518769,
+          "latencies_seconds": [
+            0.9852074000518769,
+            0.20478460000595078,
+            0.26828049996402115,
+            0.5112504999851808,
+            0.9295734000043012
+          ]
+        },
+        "/api/market/overview": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.9364377000019886,
+          "p95_seconds": 1.1025106000015512,
+          "max_seconds": 1.1025106000015512,
+          "latencies_seconds": [
+            0.9364377000019886,
+            0.26958710001781583,
+            0.9483157000504434,
+            1.1025106000015512,
+            0.9287808999652043
+          ]
+        },
+        "/api/rank/range": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 1.0792331999982707,
+          "p95_seconds": 1.0886014999705367,
+          "max_seconds": 1.0886014999705367,
+          "latencies_seconds": [
+            0.9836466999840923,
+            0.5138835000107065,
+            1.080900200002361,
+            1.0792331999982707,
+            1.0886014999705367
+          ]
+        },
+        "/api/stock/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.5114886999945156,
+          "p95_seconds": 0.9815229999949224,
+          "max_seconds": 0.9815229999949224,
+          "latencies_seconds": [
+            0.12458879995392635,
+            0.9815229999949224,
+            0.5114886999945156,
+            0.9455189000000246,
+            0.2631958000129089
+          ]
+        }
+      }
+    },
+    {
+      "round": 3,
+      "cache_condition": "steady_state_warmup_gc_fenced_caches_uncontrolled",
+      "request_count": 20,
+      "concurrency": 20,
+      "successful": 20,
+      "error_rate": 0.0,
+      "p50_seconds": 0.5986208000103943,
+      "p95_seconds": 1.0636212999816053,
+      "max_seconds": 1.083469100005459,
+      "latencies_seconds": [
+        0.6027207999723032,
+        1.083469100005459,
+        0.21329260000493377,
+        0.24472209997475147,
+        0.35830330004682764,
+        0.2538844000082463,
+        0.9869101999793202,
+        0.8520243000239134,
+        0.3484625000273809,
+        0.8309742999845184,
+        0.985709200031124,
+        1.0636212999816053,
+        0.5986208000103943,
+        0.7366945999674499,
+        0.5976034000050277,
+        1.0310422999900766,
+        0.20873799995752051,
+        0.3319698999985121,
+        0.5964537999825552,
+        0.7349117999547161
+      ],
+      "wall_seconds": 1.0841005999827757,
+      "process_cpu_seconds": 1.21875,
+      "peak_memory_bytes": 290021376,
+      "rss_bytes": 280072192,
+      "memory_measurement": "windows_working_set",
+      "sql_statement_count": 100,
+      "path_metrics": {
+        "/api/snapshots/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.35830330004682764,
+          "p95_seconds": 0.6027207999723032,
+          "max_seconds": 0.6027207999723032,
+          "latencies_seconds": [
+            0.6027207999723032,
+            0.35830330004682764,
+            0.3484625000273809,
+            0.5986208000103943,
+            0.20873799995752051
+          ]
+        },
+        "/api/market/overview": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.7366945999674499,
+          "p95_seconds": 1.083469100005459,
+          "max_seconds": 1.083469100005459,
+          "latencies_seconds": [
+            1.083469100005459,
+            0.2538844000082463,
+            0.8309742999845184,
+            0.7366945999674499,
+            0.3319698999985121
+          ]
+        },
+        "/api/rank/range": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.5976034000050277,
+          "p95_seconds": 0.9869101999793202,
+          "max_seconds": 0.9869101999793202,
+          "latencies_seconds": [
+            0.21329260000493377,
+            0.9869101999793202,
+            0.985709200031124,
+            0.5976034000050277,
+            0.5964537999825552
+          ]
+        },
+        "/api/stock/{id}": {
+          "request_count": 5,
+          "successful": 5,
+          "p50_seconds": 0.8520243000239134,
+          "p95_seconds": 1.0636212999816053,
+          "max_seconds": 1.0636212999816053,
+          "latencies_seconds": [
+            0.24472209997475147,
+            0.8520243000239134,
+            1.0636212999816053,
+            1.0310422999900766,
+            0.7349117999547161
+          ]
+        }
+      }
+    }
+  ],
+  "aggregate": {
+    "round_count": 3,
+    "request_count": 60,
+    "successful": 60,
+    "error_rate": 0.0,
+    "p50_seconds": 0.7366945999674499,
+    "p95_seconds": 1.0886014999705367,
+    "max_seconds": 1.145303800003603,
+    "wall_seconds": 3.340290100022685,
+    "process_cpu_seconds": 3.578125
+  },
+  "async_work": {
+    "synthetic": true,
+    "label": "controlled_worker_delay",
+    "submission_seconds": 0.24981980002485216,
+    "submitted_status": "queued",
+    "worker_elapsed_seconds": 5.440117699967232,
+    "status": "succeeded"
+  },
+  "observed_query_shapes": {
+    "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113": {
+      "normalized_sql": "SELECT withdrawal_records.id FROM withdrawal_records JOIN withdrawal_dependencies ON withdrawal_dependencies.withdrawal_id = withdrawal_records.id LEFT OUTER JOIN source_dependencies ON source_dependencies.id = withdrawal_dependencies.source_dependency_id WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR AND withdrawal_records.action IN (%(action_1_1)s::VARCHAR, %(action_1_2)s::VARCHAR) AND (source_dependencies.archive_type = %(archive_type_1)s::VARCHAR AND source_dependencies.archive_id = %(archive_id_1)s::UUID OR withdrawal_dependencies.archive_type = %(archive_type_2)s::VARCHAR AND withdrawal_dependencies.archive_id = %(archive_id_2)s::UUID) LIMIT %(param_1)s::INTEGER",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "plan_role": "payload_projection_read",
+      "endpoint_observations": {
+        "/api/rank/range": {
+          "count": 15,
+          "total_seconds": 0.5719602000317536,
+          "min_seconds": 0.000977099989540875,
+          "max_seconds": 0.1555979999830015
+        },
+        "/api/market/overview": {
+          "count": 15,
+          "total_seconds": 0.6092112999758683,
+          "min_seconds": 0.002021999971475452,
+          "max_seconds": 0.26225039997370914
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 0.7532962998957373,
+          "min_seconds": 0.0015787999727763236,
+          "max_seconds": 0.3078281999914907
+        },
+        "/api/snapshots/{id}": {
+          "count": 15,
+          "total_seconds": 0.8717939999187365,
+          "min_seconds": 0.0020109000033698976,
+          "max_seconds": 0.2160818999982439
+        }
+      }
+    },
+    "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457": {
+      "normalized_sql": "SELECT source_dependencies.id, source_dependencies.dependency_sequence, source_dependencies.source_id, source_dependencies.archive_type, source_dependencies.archive_id, source_dependencies.derived_type, source_dependencies.derived_id, source_dependencies.publication_id, source_dependencies.created_at, source_grants.\"grant\" AS current_grant FROM source_dependencies JOIN source_grants ON source_grants.source_id = source_dependencies.source_id WHERE source_dependencies.publication_id = %(publication_id_1)s::UUID",
+      "verb": "SELECT",
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "plan_role": "payload_projection_read",
+      "endpoint_observations": {
+        "/api/market/overview": {
+          "count": 15,
+          "total_seconds": 0.5716351999435574,
+          "min_seconds": 0.001499100006185472,
+          "max_seconds": 0.23070249997545034
+        },
+        "/api/snapshots/{id}": {
+          "count": 15,
+          "total_seconds": 0.516400600085035,
+          "min_seconds": 0.0012466000043787062,
+          "max_seconds": 0.20566279999911785
+        },
+        "/api/rank/range": {
+          "count": 15,
+          "total_seconds": 0.3479319999460131,
+          "min_seconds": 0.0011500000255182385,
+          "max_seconds": 0.07812690001446754
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 0.5470641000429168,
+          "min_seconds": 0.0013080000062473118,
+          "max_seconds": 0.0945880000363104
+        }
+      }
+    },
+    "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52": {
+      "normalized_sql": "SELECT withdrawal_records.action FROM withdrawal_records WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR ORDER BY withdrawal_records.sequence DESC LIMIT %(param_1)s::INTEGER",
+      "verb": "SELECT",
+      "relations": [
+        "withdrawal_records"
+      ],
+      "plan_role": "payload_projection_read",
+      "endpoint_observations": {
+        "/api/market/overview": {
+          "count": 15,
+          "total_seconds": 0.38856539997505024,
+          "min_seconds": 0.0019096999894827604,
+          "max_seconds": 0.1264027000288479
+        },
+        "/api/rank/range": {
+          "count": 15,
+          "total_seconds": 0.3899335001478903,
+          "min_seconds": 0.001365099975373596,
+          "max_seconds": 0.0860814000479877
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 0.34767569979885593,
+          "min_seconds": 0.0009252000018022954,
+          "max_seconds": 0.1505293999798596
+        },
+        "/api/snapshots/{id}": {
+          "count": 15,
+          "total_seconds": 0.30147879995638505,
+          "min_seconds": 0.0018209000118076801,
+          "max_seconds": 0.09999840002274141
+        }
+      }
+    },
+    "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2": {
+      "normalized_sql": "SELECT publication_results.publication_id, publication_results.domain, xmin::text AS row_version FROM publication_results WHERE publication_results.publication_id IN (%(publication_id_1_1)s::UUID) ORDER BY publication_results.publication_id, publication_results.domain",
+      "verb": "SELECT",
+      "relations": [
+        "publication_results"
+      ],
+      "plan_role": "payload_projection_read",
+      "endpoint_observations": {
+        "/api/rank/range": {
+          "count": 15,
+          "total_seconds": 1.0863471999764442,
+          "min_seconds": 0.002511099970433861,
+          "max_seconds": 0.28236989997094497
+        },
+        "/api/market/overview": {
+          "count": 15,
+          "total_seconds": 1.0994836000609212,
+          "min_seconds": 0.001673299993854016,
+          "max_seconds": 0.30211300001246855
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 0.8753281001118012,
+          "min_seconds": 0.0015069000073708594,
+          "max_seconds": 0.1556500000297092
+        },
+        "/api/snapshots/{id}": {
+          "count": 15,
+          "total_seconds": 1.7893127999268472,
+          "min_seconds": 0.0029506999999284744,
+          "max_seconds": 0.5132782000000589
+        }
+      }
+    },
+    "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9": {
+      "normalized_sql": "SELECT publications.id, publications.publication_sequence, publications.trade_date, publications.version, publications.supersedes, publications.status, publications.market_snapshot_id, publications.topic_snapshot_id, publications.news_input_id, publications.regulation_input_id, publications.role_input_id, publications.domains, publications.coverage, publications.quality_flags, publications.command_json, publications.command_hash, publications.created_at, publications.published_at FROM publications WHERE publications.id = %(id_1)s::UUID",
+      "verb": "SELECT",
+      "relations": [
+        "publications"
+      ],
+      "plan_role": "generic_publication_lookup",
+      "endpoint_observations": {
+        "/api/rank/range": {
+          "count": 15,
+          "total_seconds": 2.1956022997619584,
+          "min_seconds": 0.002375099982600659,
+          "max_seconds": 0.3098863000050187
+        },
+        "/api/snapshots/{id}": {
+          "count": 15,
+          "total_seconds": 1.0044258002890274,
+          "min_seconds": 0.0026278000441379845,
+          "max_seconds": 0.20144820003770292
+        },
+        "/api/market/overview": {
+          "count": 15,
+          "total_seconds": 1.4902931000688113,
+          "min_seconds": 0.0025218999944627285,
+          "max_seconds": 0.3074744999757968
+        },
+        "/api/stock/{id}": {
+          "count": 15,
+          "total_seconds": 1.2897498999955133,
+          "min_seconds": 0.0026517999940551817,
+          "max_seconds": 0.21882960002403706
+        }
+      }
+    }
+  },
+  "endpoint_shape_hashes": {
+    "/api/snapshots/{id}": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/market/overview": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/rank/range": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/stock/{id}": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ]
+  },
+  "query_attribution_groups": [
+    {
+      "scope": "shared_repository_projection",
+      "endpoints": [
+        "/api/market/overview",
+        "/api/rank/range",
+        "/api/snapshots/{id}",
+        "/api/stock/{id}"
+      ],
+      "sql_hashes": [
+        "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+        "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+        "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+        "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+        "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+      ]
+    }
+  ],
+  "application_state_before": {
+    "ai_task_cancellations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_drafts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "alembic_version": {
+      "rows": 1,
+      "fingerprint": "8f1582ce88c5387b1f11004e0ede372b"
+    },
+    "analysis_job_cache": {
+      "rows": 1,
+      "fingerprint": "5dfbe3a2635df383c0048a8687b79b3c"
+    },
+    "analysis_jobs": {
+      "rows": 1,
+      "fingerprint": "8d994b0a9753668ebf2fd2abdd70b537"
+    },
+    "audit_events": {
+      "rows": 4,
+      "fingerprint": "613cda7a9a30191b8b3fb15913e65764"
+    },
+    "daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "import_batches": {
+      "rows": 1,
+      "fingerprint": "6dc2730d31a3af271285a667a95a0dae"
+    },
+    "index_daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_disclosure_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_disclosure_seats": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_disclosures": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_import_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_seats": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "limit_up_record": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_article_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_association_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_associations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_event_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_ingest_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshot_items": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_pairing_limits": {
+      "rows": 1,
+      "fingerprint": "634421ae7808df9f81464dfaee20a291"
+    },
+    "owner_pairings": {
+      "rows": 1,
+      "fingerprint": "7f247ccd95dc07a7651e3bee3c3a8a66"
+    },
+    "owner_principals": {
+      "rows": 1,
+      "fingerprint": "9e0e0189d0acd49cafccb5c48754fc18"
+    },
+    "owner_sessions": {
+      "rows": 1,
+      "fingerprint": "c69fcb3b2606736b836394be3f1035c3"
+    },
+    "private_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_attempts": {
+      "rows": 1,
+      "fingerprint": "21f0b79db9abb51796a629d6d8736e26"
+    },
+    "publication_module_controls": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_results": {
+      "rows": 5,
+      "fingerprint": "7d563ad414ed9928f2a9ddcf49f31172"
+    },
+    "publications": {
+      "rows": 1,
+      "fingerprint": "be3c0664e0a50af8bc2103d87bdf8397"
+    },
+    "query_records": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_anomaly_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_minute_bars": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_quote_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_quotes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_sector_flow_points": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_calculations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rule_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "research_backtest_cache": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "research_backtest_runs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_note_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_notes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_verifications": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_change_summaries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_changes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_factor_observations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_limit_rows": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_materialization_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_pending_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_results": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_run_topics": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_runs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_topic_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security_state_history": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "snapshots": {
+      "rows": 1,
+      "fingerprint": "2dab084c3e506ed0b791728ffde8a2d2"
+    },
+    "source_dependencies": {
+      "rows": 1,
+      "fingerprint": "256acc6755280fc4088b1cf37a952fbb"
+    },
+    "source_grants": {
+      "rows": 1,
+      "fingerprint": "e70d02e506686042ecc5089f0f249b7c"
+    },
+    "topic_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_import_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "watch_entries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_binding_seals": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_dependencies": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_records": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    }
+  },
+  "application_state_after": {
+    "ai_task_cancellations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_drafts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_task_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ai_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "alembic_version": {
+      "rows": 1,
+      "fingerprint": "8f1582ce88c5387b1f11004e0ede372b"
+    },
+    "analysis_job_cache": {
+      "rows": 1,
+      "fingerprint": "5dfbe3a2635df383c0048a8687b79b3c"
+    },
+    "analysis_jobs": {
+      "rows": 1,
+      "fingerprint": "8d994b0a9753668ebf2fd2abdd70b537"
+    },
+    "audit_events": {
+      "rows": 4,
+      "fingerprint": "613cda7a9a30191b8b3fb15913e65764"
+    },
+    "daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "import_batches": {
+      "rows": 1,
+      "fingerprint": "6dc2730d31a3af271285a667a95a0dae"
+    },
+    "index_daily_kline": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_disclosure_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_disclosure_seats": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_disclosures": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_import_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "lhb_seats": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "limit_up_record": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "market_import_tasks": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_article_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_association_reviews": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_associations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_event_articles": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_ingest_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_review_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshot_items": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "news_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "owner_pairing_limits": {
+      "rows": 1,
+      "fingerprint": "634421ae7808df9f81464dfaee20a291"
+    },
+    "owner_pairings": {
+      "rows": 1,
+      "fingerprint": "7f247ccd95dc07a7651e3bee3c3a8a66"
+    },
+    "owner_principals": {
+      "rows": 1,
+      "fingerprint": "9e0e0189d0acd49cafccb5c48754fc18"
+    },
+    "owner_sessions": {
+      "rows": 1,
+      "fingerprint": "c69fcb3b2606736b836394be3f1035c3"
+    },
+    "private_audit_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_attempts": {
+      "rows": 1,
+      "fingerprint": "21f0b79db9abb51796a629d6d8736e26"
+    },
+    "publication_module_controls": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "publication_results": {
+      "rows": 5,
+      "fingerprint": "7d563ad414ed9928f2a9ddcf49f31172"
+    },
+    "publications": {
+      "rows": 1,
+      "fingerprint": "be3c0664e0a50af8bc2103d87bdf8397"
+    },
+    "query_records": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_anomaly_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_minute_bars": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_quote_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_quotes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "realtime_sector_flow_points": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_calculations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rule_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_events": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshot_rules": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "regulation_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "research_backtest_cache": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "research_backtest_runs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_note_revisions": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_notes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "review_verifications": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_change_summaries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_changes": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_factor_observations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_limit_rows": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_materialization_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_pending_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_results": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_run_topics": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_runs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_topic_statuses": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_commands": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validation_inputs": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "role_validations": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "security_state_history": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "snapshots": {
+      "rows": 1,
+      "fingerprint": "2dab084c3e506ed0b791728ffde8a2d2"
+    },
+    "source_dependencies": {
+      "rows": 1,
+      "fingerprint": "256acc6755280fc4088b1cf37a952fbb"
+    },
+    "source_grants": {
+      "rows": 1,
+      "fingerprint": "e70d02e506686042ecc5089f0f249b7c"
+    },
+    "topic_import_attempts": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_import_batches": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "topic_snapshots": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "watch_entries": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_binding_seals": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_dependencies": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "withdrawal_records": {
+      "rows": 0,
+      "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+    }
+  },
+  "query_plan_evidence": {
+    "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113": {
+      "status": "explained",
+      "sql_relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "plan": {
+        "relations": [
+          "source_dependencies",
+          "withdrawal_dependencies",
+          "withdrawal_records"
+        ],
+        "indexes": [
+          "source_dependencies_pkey",
+          "withdrawal_dependencies_withdrawal_id_archive_type_archive__key",
+          "withdrawal_records_source"
+        ],
+        "nodes": [
+          "Bitmap Heap Scan",
+          "Bitmap Index Scan",
+          "Index Scan",
+          "Limit",
+          "Nested Loop"
+        ],
+        "node_count": 7,
+        "buffers": {
+          "shared_hit_blocks": 2,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    },
+    "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457": {
+      "status": "explained",
+      "sql_relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "plan": {
+        "relations": [
+          "source_dependencies",
+          "source_grants"
+        ],
+        "indexes": [
+          "source_grants_pkey"
+        ],
+        "nodes": [
+          "Index Scan",
+          "Nested Loop",
+          "Seq Scan"
+        ],
+        "node_count": 3,
+        "buffers": {
+          "shared_hit_blocks": 3,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    },
+    "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52": {
+      "status": "explained",
+      "sql_relations": [
+        "withdrawal_records"
+      ],
+      "plan": {
+        "relations": [
+          "withdrawal_records"
+        ],
+        "indexes": [
+          "withdrawal_records_source"
+        ],
+        "nodes": [
+          "Index Scan",
+          "Limit"
+        ],
+        "node_count": 2,
+        "buffers": {
+          "shared_hit_blocks": 2,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    },
+    "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2": {
+      "status": "explained",
+      "sql_relations": [
+        "publication_results"
+      ],
+      "plan": {
+        "relations": [
+          "publication_results"
+        ],
+        "indexes": [
+          "publication_results_pkey"
+        ],
+        "nodes": [
+          "Bitmap Heap Scan",
+          "Bitmap Index Scan",
+          "Sort"
+        ],
+        "node_count": 3,
+        "buffers": {
+          "shared_hit_blocks": 2,
+          "shared_read_blocks": 0,
+          "shared_dirtied_blocks": 0,
+          "shared_written_blocks": 0,
+          "local_hit_blocks": 0,
+          "local_read_blocks": 0,
+          "local_dirtied_blocks": 0,
+          "local_written_blocks": 0,
+          "temp_read_blocks": 0,
+          "temp_written_blocks": 0
+        }
+      }
+    }
+  },
+  "research_concurrent_load": {
+    "synthetic": true,
+    "label": "real_engine_repeated_until_public_rounds_finish",
+    "worker": "ResearchBacktestWorker",
+    "submitted_status": "queued",
+    "status": "succeeded",
+    "config_hash": "57530c23a9bad4def459f74ab7e51844c71492908f54aedfc3dd4e5af89fc536",
+    "result_config_hash": "57530c23a9bad4def459f74ab7e51844c71492908f54aedfc3dd4e5af89fc536",
+    "engine_iterations": 1,
+    "checkpoint_count": 180,
+    "securities": 100,
+    "trading_sessions": 61,
+    "runs": [
+      {
+        "round": 1,
+        "cache_condition": "steady_state_warmup_gc_fenced_caches_uncontrolled",
+        "request_count": 20,
+        "concurrency": 20,
+        "successful": 20,
+        "error_rate": 0.0,
+        "p50_seconds": 0.7001481999759562,
+        "p95_seconds": 1.0746290999813937,
+        "max_seconds": 1.113844599982258,
+        "latencies_seconds": [
+          0.8607909000129439,
+          0.25930769997648895,
+          0.4730459999991581,
+          1.113844599982258,
+          0.053468999976757914,
+          0.2576001999550499,
+          1.0746290999813937,
+          0.9657362999860197,
+          0.8562716000014916,
+          0.9650268999976106,
+          0.8559493999928236,
+          0.4689129000180401,
+          0.4683549999608658,
+          0.8545313000213355,
+          0.9630484000081196,
+          0.8539486000081524,
+          0.7001481999759562,
+          0.6996065000421368,
+          0.12944459996651858,
+          0.6969167999923229
+        ],
+        "wall_seconds": 1.1156226000166498,
+        "process_cpu_seconds": 1.171875,
+        "peak_memory_bytes": 341147648,
+        "rss_bytes": 333336576,
+        "memory_measurement": "windows_working_set",
+        "sql_statement_count": 100,
+        "path_metrics": {
+          "/api/snapshots/{id}": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.7001481999759562,
+            "p95_seconds": 0.8607909000129439,
+            "max_seconds": 0.8607909000129439,
+            "latencies_seconds": [
+              0.8607909000129439,
+              0.053468999976757914,
+              0.8562716000014916,
+              0.4683549999608658,
+              0.7001481999759562
+            ]
+          },
+          "/api/market/overview": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.6996065000421368,
+            "p95_seconds": 0.9650268999976106,
+            "max_seconds": 0.9650268999976106,
+            "latencies_seconds": [
+              0.25930769997648895,
+              0.2576001999550499,
+              0.9650268999976106,
+              0.8545313000213355,
+              0.6996065000421368
+            ]
+          },
+          "/api/rank/range": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.8559493999928236,
+            "p95_seconds": 1.0746290999813937,
+            "max_seconds": 1.0746290999813937,
+            "latencies_seconds": [
+              0.4730459999991581,
+              1.0746290999813937,
+              0.8559493999928236,
+              0.9630484000081196,
+              0.12944459996651858
+            ]
+          },
+          "/api/stock/{id}": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.8539486000081524,
+            "p95_seconds": 1.113844599982258,
+            "max_seconds": 1.113844599982258,
+            "latencies_seconds": [
+              1.113844599982258,
+              0.9657362999860197,
+              0.4689129000180401,
+              0.8539486000081524,
+              0.6969167999923229
+            ]
+          }
+        },
+        "worker_active_before": true,
+        "worker_active_after": true,
+        "checkpoint_count_before": 1,
+        "checkpoint_count_after": 8,
+        "sql_write_count": 0,
+        "observed_query_shapes": {
+          "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113": {
+            "normalized_sql": "SELECT withdrawal_records.id FROM withdrawal_records JOIN withdrawal_dependencies ON withdrawal_dependencies.withdrawal_id = withdrawal_records.id LEFT OUTER JOIN source_dependencies ON source_dependencies.id = withdrawal_dependencies.source_dependency_id WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR AND withdrawal_records.action IN (%(action_1_1)s::VARCHAR, %(action_1_2)s::VARCHAR) AND (source_dependencies.archive_type = %(archive_type_1)s::VARCHAR AND source_dependencies.archive_id = %(archive_id_1)s::UUID OR withdrawal_dependencies.archive_type = %(archive_type_2)s::VARCHAR AND withdrawal_dependencies.archive_id = %(archive_id_2)s::UUID) LIMIT %(param_1)s::INTEGER",
+            "verb": "SELECT",
+            "relations": [
+              "source_dependencies",
+              "withdrawal_dependencies",
+              "withdrawal_records"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.12598189996788278,
+                "min_seconds": 0.0017765999655239284,
+                "max_seconds": 0.10126699996180832
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.29207700002007186,
+                "min_seconds": 0.002182000025641173,
+                "max_seconds": 0.23257719998946413
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.1244957999442704,
+                "min_seconds": 0.002151499968022108,
+                "max_seconds": 0.10676629998488352
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.06057349999900907,
+                "min_seconds": 0.005497700010892004,
+                "max_seconds": 0.02703190001193434
+              }
+            }
+          },
+          "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457": {
+            "normalized_sql": "SELECT source_dependencies.id, source_dependencies.dependency_sequence, source_dependencies.source_id, source_dependencies.archive_type, source_dependencies.archive_id, source_dependencies.derived_type, source_dependencies.derived_id, source_dependencies.publication_id, source_dependencies.created_at, source_grants.\"grant\" AS current_grant FROM source_dependencies JOIN source_grants ON source_grants.source_id = source_dependencies.source_id WHERE source_dependencies.publication_id = %(publication_id_1)s::UUID",
+            "verb": "SELECT",
+            "relations": [
+              "source_dependencies",
+              "source_grants"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.05584750004345551,
+                "min_seconds": 0.0026648000348359346,
+                "max_seconds": 0.03523119998862967
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.04088609997415915,
+                "min_seconds": 0.002713699999731034,
+                "max_seconds": 0.02499750000424683
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.09316489996854216,
+                "min_seconds": 0.0018185999942943454,
+                "max_seconds": 0.07556409999961033
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.07979629997862503,
+                "min_seconds": 0.003432299999985844,
+                "max_seconds": 0.0345448000007309
+              }
+            }
+          },
+          "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52": {
+            "normalized_sql": "SELECT withdrawal_records.action FROM withdrawal_records WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR ORDER BY withdrawal_records.sequence DESC LIMIT %(param_1)s::INTEGER",
+            "verb": "SELECT",
+            "relations": [
+              "withdrawal_records"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.01973649999126792,
+                "min_seconds": 0.0021188000100664794,
+                "max_seconds": 0.0052152000134810805
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.2935676999622956,
+                "min_seconds": 0.0018466999754309654,
+                "max_seconds": 0.1769081999664195
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.35536160005722195,
+                "min_seconds": 0.0029549000319093466,
+                "max_seconds": 0.33986649999860674
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.034264399961102754,
+                "min_seconds": 0.004294899990782142,
+                "max_seconds": 0.016003700031433254
+              }
+            }
+          },
+          "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2": {
+            "normalized_sql": "SELECT publication_results.publication_id, publication_results.domain, xmin::text AS row_version FROM publication_results WHERE publication_results.publication_id IN (%(publication_id_1_1)s::UUID) ORDER BY publication_results.publication_id, publication_results.domain",
+            "verb": "SELECT",
+            "relations": [
+              "publication_results"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.3872555001289584,
+                "min_seconds": 0.002321500040125102,
+                "max_seconds": 0.147339400020428
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.27407529996708035,
+                "min_seconds": 0.0013285999884828925,
+                "max_seconds": 0.14837780001107603
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.1441339000593871,
+                "min_seconds": 0.0011491000186651945,
+                "max_seconds": 0.10026740003377199
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.5801710999221541,
+                "min_seconds": 0.0038435999886132777,
+                "max_seconds": 0.41105270001571625
+              }
+            }
+          },
+          "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9": {
+            "normalized_sql": "SELECT publications.id, publications.publication_sequence, publications.trade_date, publications.version, publications.supersedes, publications.status, publications.market_snapshot_id, publications.topic_snapshot_id, publications.news_input_id, publications.regulation_input_id, publications.role_input_id, publications.domains, publications.coverage, publications.quality_flags, publications.command_json, publications.command_hash, publications.created_at, publications.published_at FROM publications WHERE publications.id = %(id_1)s::UUID",
+            "verb": "SELECT",
+            "relations": [
+              "publications"
+            ],
+            "plan_role": "generic_publication_lookup",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.4009185000322759,
+                "min_seconds": 0.002702999976463616,
+                "max_seconds": 0.14793350000400096
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.3206552000483498,
+                "min_seconds": 0.004149199987296015,
+                "max_seconds": 0.18912140000611544
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.7151422000024468,
+                "min_seconds": 0.0042563999886624515,
+                "max_seconds": 0.28580569999758154
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 1.0775188999832608,
+                "min_seconds": 0.12718720000702888,
+                "max_seconds": 0.4325175000121817
+              }
+            }
+          }
+        },
+        "endpoint_shape_hashes": {
+          "/api/snapshots/{id}": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/market/overview": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/rank/range": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/stock/{id}": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ]
+        },
+        "query_attribution_groups": [
+          {
+            "scope": "shared_repository_projection",
+            "endpoints": [
+              "/api/market/overview",
+              "/api/rank/range",
+              "/api/snapshots/{id}",
+              "/api/stock/{id}"
+            ],
+            "sql_hashes": [
+              "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+              "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+              "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+              "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+              "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+            ]
+          }
+        ]
+      },
+      {
+        "round": 2,
+        "cache_condition": "steady_state_warmup_gc_fenced_caches_uncontrolled",
+        "request_count": 20,
+        "concurrency": 20,
+        "successful": 20,
+        "error_rate": 0.0,
+        "p50_seconds": 0.6716037000296637,
+        "p95_seconds": 1.0366283999755979,
+        "max_seconds": 1.1465388999786228,
+        "latencies_seconds": [
+          0.1785948000033386,
+          0.19430390000343323,
+          0.4426093000220135,
+          0.2523895000340417,
+          0.9056425000308082,
+          0.9818890999886207,
+          1.0366283999755979,
+          0.6719890999956988,
+          0.6720291000092402,
+          0.6716037000296637,
+          1.1465388999786228,
+          0.6707240999676287,
+          0.37375969998538494,
+          0.900440700002946,
+          0.8997181999729946,
+          0.667201699980069,
+          0.6672249999828637,
+          0.8985767000121996,
+          1.0302561999997124,
+          0.16684040002292022
+        ],
+        "wall_seconds": 1.152737199969124,
+        "process_cpu_seconds": 1.171875,
+        "peak_memory_bytes": 341147648,
+        "rss_bytes": 335642624,
+        "memory_measurement": "windows_working_set",
+        "sql_statement_count": 100,
+        "path_metrics": {
+          "/api/snapshots/{id}": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.6672249999828637,
+            "p95_seconds": 0.9056425000308082,
+            "max_seconds": 0.9056425000308082,
+            "latencies_seconds": [
+              0.1785948000033386,
+              0.9056425000308082,
+              0.6720291000092402,
+              0.37375969998538494,
+              0.6672249999828637
+            ]
+          },
+          "/api/market/overview": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.8985767000121996,
+            "p95_seconds": 0.9818890999886207,
+            "max_seconds": 0.9818890999886207,
+            "latencies_seconds": [
+              0.19430390000343323,
+              0.9818890999886207,
+              0.6716037000296637,
+              0.900440700002946,
+              0.8985767000121996
+            ]
+          },
+          "/api/rank/range": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 1.0302561999997124,
+            "p95_seconds": 1.1465388999786228,
+            "max_seconds": 1.1465388999786228,
+            "latencies_seconds": [
+              0.4426093000220135,
+              1.0366283999755979,
+              1.1465388999786228,
+              0.8997181999729946,
+              1.0302561999997124
+            ]
+          },
+          "/api/stock/{id}": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.667201699980069,
+            "p95_seconds": 0.6719890999956988,
+            "max_seconds": 0.6719890999956988,
+            "latencies_seconds": [
+              0.2523895000340417,
+              0.6719890999956988,
+              0.6707240999676287,
+              0.667201699980069,
+              0.16684040002292022
+            ]
+          }
+        },
+        "worker_active_before": true,
+        "worker_active_after": true,
+        "checkpoint_count_before": 8,
+        "checkpoint_count_after": 14,
+        "sql_write_count": 0,
+        "observed_query_shapes": {
+          "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113": {
+            "normalized_sql": "SELECT withdrawal_records.id FROM withdrawal_records JOIN withdrawal_dependencies ON withdrawal_dependencies.withdrawal_id = withdrawal_records.id LEFT OUTER JOIN source_dependencies ON source_dependencies.id = withdrawal_dependencies.source_dependency_id WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR AND withdrawal_records.action IN (%(action_1_1)s::VARCHAR, %(action_1_2)s::VARCHAR) AND (source_dependencies.archive_type = %(archive_type_1)s::VARCHAR AND source_dependencies.archive_id = %(archive_id_1)s::UUID OR withdrawal_dependencies.archive_type = %(archive_type_2)s::VARCHAR AND withdrawal_dependencies.archive_id = %(archive_id_2)s::UUID) LIMIT %(param_1)s::INTEGER",
+            "verb": "SELECT",
+            "relations": [
+              "source_dependencies",
+              "withdrawal_dependencies",
+              "withdrawal_records"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.07237419992452487,
+                "min_seconds": 0.0014456999488174915,
+                "max_seconds": 0.05870520003372803
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.2200153000303544,
+                "min_seconds": 0.0010686999885365367,
+                "max_seconds": 0.10687290003988892
+              },
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.1570258000283502,
+                "min_seconds": 0.002649800037033856,
+                "max_seconds": 0.13308830000460148
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.4385633000638336,
+                "min_seconds": 0.006254900014027953,
+                "max_seconds": 0.2529272000538185
+              }
+            }
+          },
+          "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457": {
+            "normalized_sql": "SELECT source_dependencies.id, source_dependencies.dependency_sequence, source_dependencies.source_id, source_dependencies.archive_type, source_dependencies.archive_id, source_dependencies.derived_type, source_dependencies.derived_id, source_dependencies.publication_id, source_dependencies.created_at, source_grants.\"grant\" AS current_grant FROM source_dependencies JOIN source_grants ON source_grants.source_id = source_dependencies.source_id WHERE source_dependencies.publication_id = %(publication_id_1)s::UUID",
+            "verb": "SELECT",
+            "relations": [
+              "source_dependencies",
+              "source_grants"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.13325269997585565,
+                "min_seconds": 0.0012197999749332666,
+                "max_seconds": 0.06198779999976978
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.12391660001594573,
+                "min_seconds": 0.002379799960181117,
+                "max_seconds": 0.06585090002045035
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.026789499912410975,
+                "min_seconds": 0.001561800017952919,
+                "max_seconds": 0.007027999963611364
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.3386973000597209,
+                "min_seconds": 0.00837850000243634,
+                "max_seconds": 0.1377459000214003
+              }
+            }
+          },
+          "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52": {
+            "normalized_sql": "SELECT withdrawal_records.action FROM withdrawal_records WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR ORDER BY withdrawal_records.sequence DESC LIMIT %(param_1)s::INTEGER",
+            "verb": "SELECT",
+            "relations": [
+              "withdrawal_records"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.02692229993408546,
+                "min_seconds": 0.0015711999731138349,
+                "max_seconds": 0.00810300000011921
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.02846140001202002,
+                "min_seconds": 0.0013171000173315406,
+                "max_seconds": 0.011053199996240437
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.3010405999375507,
+                "min_seconds": 0.001585699967108667,
+                "max_seconds": 0.28130159998545423
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.4692390000564046,
+                "min_seconds": 0.005017600022256374,
+                "max_seconds": 0.2583975999732502
+              }
+            }
+          },
+          "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2": {
+            "normalized_sql": "SELECT publication_results.publication_id, publication_results.domain, xmin::text AS row_version FROM publication_results WHERE publication_results.publication_id IN (%(publication_id_1_1)s::UUID) ORDER BY publication_results.publication_id, publication_results.domain",
+            "verb": "SELECT",
+            "relations": [
+              "publication_results"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.19748690002597868,
+                "min_seconds": 0.0009370000334456563,
+                "max_seconds": 0.14430189999984577
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.6660521000158042,
+                "min_seconds": 0.0012792000197805464,
+                "max_seconds": 0.2590127000003122
+              },
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.7425626000622287,
+                "min_seconds": 0.007366599980741739,
+                "max_seconds": 0.3778714000363834
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.2903096000663936,
+                "min_seconds": 0.005252000002656132,
+                "max_seconds": 0.09993770002620295
+              }
+            }
+          },
+          "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9": {
+            "normalized_sql": "SELECT publications.id, publications.publication_sequence, publications.trade_date, publications.version, publications.supersedes, publications.status, publications.market_snapshot_id, publications.topic_snapshot_id, publications.news_input_id, publications.regulation_input_id, publications.role_input_id, publications.domains, publications.coverage, publications.quality_flags, publications.command_json, publications.command_hash, publications.created_at, publications.published_at FROM publications WHERE publications.id = %(id_1)s::UUID",
+            "verb": "SELECT",
+            "relations": [
+              "publications"
+            ],
+            "plan_role": "generic_publication_lookup",
+            "endpoint_observations": {
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.3918036999530159,
+                "min_seconds": 0.0025923000066541135,
+                "max_seconds": 0.13961910002399236
+              },
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.5056466000387445,
+                "min_seconds": 0.0026402000221423805,
+                "max_seconds": 0.18643259996315464
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.41407210007309914,
+                "min_seconds": 0.0028952000429853797,
+                "max_seconds": 0.18523209996055812
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.4718904999899678,
+                "min_seconds": 0.011084199999459088,
+                "max_seconds": 0.15536719997180626
+              }
+            }
+          }
+        },
+        "endpoint_shape_hashes": {
+          "/api/snapshots/{id}": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/market/overview": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/rank/range": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/stock/{id}": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ]
+        },
+        "query_attribution_groups": [
+          {
+            "scope": "shared_repository_projection",
+            "endpoints": [
+              "/api/market/overview",
+              "/api/rank/range",
+              "/api/snapshots/{id}",
+              "/api/stock/{id}"
+            ],
+            "sql_hashes": [
+              "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+              "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+              "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+              "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+              "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+            ]
+          }
+        ]
+      },
+      {
+        "round": 3,
+        "cache_condition": "steady_state_warmup_gc_fenced_caches_uncontrolled",
+        "request_count": 20,
+        "concurrency": 20,
+        "successful": 20,
+        "error_rate": 0.0,
+        "p50_seconds": 0.894295800011605,
+        "p95_seconds": 1.1586514000082389,
+        "max_seconds": 1.1594062000513077,
+        "latencies_seconds": [
+          0.22124299994902685,
+          0.22023360000457615,
+          0.8983684999984689,
+          0.9060875999857672,
+          0.8979633999988437,
+          0.21835149999242276,
+          0.598252700001467,
+          0.5979877000208944,
+          0.9089137999690138,
+          0.894295800011605,
+          0.5958223000052385,
+          0.36352409998653457,
+          0.6273300999891944,
+          1.1586514000082389,
+          1.1571537999552675,
+          1.156117999984417,
+          1.1594062000513077,
+          1.1553146000369452,
+          1.1546697999583557,
+          0.2640838999650441
+        ],
+        "wall_seconds": 1.169195500027854,
+        "process_cpu_seconds": 1.15625,
+        "peak_memory_bytes": 347193344,
+        "rss_bytes": 339853312,
+        "memory_measurement": "windows_working_set",
+        "sql_statement_count": 100,
+        "path_metrics": {
+          "/api/snapshots/{id}": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.8979633999988437,
+            "p95_seconds": 1.1594062000513077,
+            "max_seconds": 1.1594062000513077,
+            "latencies_seconds": [
+              0.22124299994902685,
+              0.8979633999988437,
+              0.9089137999690138,
+              0.6273300999891944,
+              1.1594062000513077
+            ]
+          },
+          "/api/market/overview": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.894295800011605,
+            "p95_seconds": 1.1586514000082389,
+            "max_seconds": 1.1586514000082389,
+            "latencies_seconds": [
+              0.22023360000457615,
+              0.21835149999242276,
+              0.894295800011605,
+              1.1586514000082389,
+              1.1553146000369452
+            ]
+          },
+          "/api/rank/range": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.8983684999984689,
+            "p95_seconds": 1.1571537999552675,
+            "max_seconds": 1.1571537999552675,
+            "latencies_seconds": [
+              0.8983684999984689,
+              0.598252700001467,
+              0.5958223000052385,
+              1.1571537999552675,
+              1.1546697999583557
+            ]
+          },
+          "/api/stock/{id}": {
+            "request_count": 5,
+            "successful": 5,
+            "p50_seconds": 0.5979877000208944,
+            "p95_seconds": 1.156117999984417,
+            "max_seconds": 1.156117999984417,
+            "latencies_seconds": [
+              0.9060875999857672,
+              0.5979877000208944,
+              0.36352409998653457,
+              1.156117999984417,
+              0.2640838999650441
+            ]
+          }
+        },
+        "worker_active_before": true,
+        "worker_active_after": true,
+        "checkpoint_count_before": 14,
+        "checkpoint_count_after": 21,
+        "sql_write_count": 0,
+        "observed_query_shapes": {
+          "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113": {
+            "normalized_sql": "SELECT withdrawal_records.id FROM withdrawal_records JOIN withdrawal_dependencies ON withdrawal_dependencies.withdrawal_id = withdrawal_records.id LEFT OUTER JOIN source_dependencies ON source_dependencies.id = withdrawal_dependencies.source_dependency_id WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR AND withdrawal_records.action IN (%(action_1_1)s::VARCHAR, %(action_1_2)s::VARCHAR) AND (source_dependencies.archive_type = %(archive_type_1)s::VARCHAR AND source_dependencies.archive_id = %(archive_id_1)s::UUID OR withdrawal_dependencies.archive_type = %(archive_type_2)s::VARCHAR AND withdrawal_dependencies.archive_id = %(archive_id_2)s::UUID) LIMIT %(param_1)s::INTEGER",
+            "verb": "SELECT",
+            "relations": [
+              "source_dependencies",
+              "withdrawal_dependencies",
+              "withdrawal_records"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.36451650003436953,
+                "min_seconds": 0.0022360000293701887,
+                "max_seconds": 0.23560770001495257
+              },
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.34064390003914014,
+                "min_seconds": 0.0028894999995827675,
+                "max_seconds": 0.11024220002582297
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.18047910003224388,
+                "min_seconds": 0.004064699984155595,
+                "max_seconds": 0.06735150003805757
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.2146566000301391,
+                "min_seconds": 0.0023937999503687024,
+                "max_seconds": 0.09536740003386512
+              }
+            }
+          },
+          "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457": {
+            "normalized_sql": "SELECT source_dependencies.id, source_dependencies.dependency_sequence, source_dependencies.source_id, source_dependencies.archive_type, source_dependencies.archive_id, source_dependencies.derived_type, source_dependencies.derived_id, source_dependencies.publication_id, source_dependencies.created_at, source_grants.\"grant\" AS current_grant FROM source_dependencies JOIN source_grants ON source_grants.source_id = source_dependencies.source_id WHERE source_dependencies.publication_id = %(publication_id_1)s::UUID",
+            "verb": "SELECT",
+            "relations": [
+              "source_dependencies",
+              "source_grants"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.3920416999608278,
+                "min_seconds": 0.0019399999873712659,
+                "max_seconds": 0.2499705000082031
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.11089909996371716,
+                "min_seconds": 0.0012462000013329089,
+                "max_seconds": 0.04515039996476844
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.3335638999706134,
+                "min_seconds": 0.0022048999671824276,
+                "max_seconds": 0.10642939998069778
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.1684755000169389,
+                "min_seconds": 0.010976599995046854,
+                "max_seconds": 0.06381949997739866
+              }
+            }
+          },
+          "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52": {
+            "normalized_sql": "SELECT withdrawal_records.action FROM withdrawal_records WHERE withdrawal_records.source_id = %(source_id_1)s::VARCHAR ORDER BY withdrawal_records.sequence DESC LIMIT %(param_1)s::INTEGER",
+            "verb": "SELECT",
+            "relations": [
+              "withdrawal_records"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.20303050009533763,
+                "min_seconds": 0.001160199986770749,
+                "max_seconds": 0.10509700002148747
+              },
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.3776071000029333,
+                "min_seconds": 0.002707500010728836,
+                "max_seconds": 0.262976499972865
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.25274950003949925,
+                "min_seconds": 0.0017220000154338777,
+                "max_seconds": 0.18774310004664585
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.19649339991156012,
+                "min_seconds": 0.0258880999754183,
+                "max_seconds": 0.06523230002494529
+              }
+            }
+          },
+          "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2": {
+            "normalized_sql": "SELECT publication_results.publication_id, publication_results.domain, xmin::text AS row_version FROM publication_results WHERE publication_results.publication_id IN (%(publication_id_1_1)s::UUID) ORDER BY publication_results.publication_id, publication_results.domain",
+            "verb": "SELECT",
+            "relations": [
+              "publication_results"
+            ],
+            "plan_role": "payload_projection_read",
+            "endpoint_observations": {
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.4796510000596754,
+                "min_seconds": 0.0018413999932818115,
+                "max_seconds": 0.29496940004173666
+              },
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.470633800025098,
+                "min_seconds": 0.0019097000476904213,
+                "max_seconds": 0.1704285999876447
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.41471930005354807,
+                "min_seconds": 0.021020699990913272,
+                "max_seconds": 0.2289945000084117
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.6325906999409199,
+                "min_seconds": 0.03371719998540357,
+                "max_seconds": 0.19855929998448119
+              }
+            }
+          },
+          "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9": {
+            "normalized_sql": "SELECT publications.id, publications.publication_sequence, publications.trade_date, publications.version, publications.supersedes, publications.status, publications.market_snapshot_id, publications.topic_snapshot_id, publications.news_input_id, publications.regulation_input_id, publications.role_input_id, publications.domains, publications.coverage, publications.quality_flags, publications.command_json, publications.command_hash, publications.created_at, publications.published_at FROM publications WHERE publications.id = %(id_1)s::UUID",
+            "verb": "SELECT",
+            "relations": [
+              "publications"
+            ],
+            "plan_role": "generic_publication_lookup",
+            "endpoint_observations": {
+              "/api/snapshots/{id}": {
+                "count": 5,
+                "total_seconds": 0.6553701999946497,
+                "min_seconds": 0.002584400004707277,
+                "max_seconds": 0.2120872000232339
+              },
+              "/api/market/overview": {
+                "count": 5,
+                "total_seconds": 0.39125380001496524,
+                "min_seconds": 0.0027623999631032348,
+                "max_seconds": 0.18232020002324134
+              },
+              "/api/stock/{id}": {
+                "count": 5,
+                "total_seconds": 0.4309161999844946,
+                "min_seconds": 0.0026008000131696463,
+                "max_seconds": 0.18077569996239617
+              },
+              "/api/rank/range": {
+                "count": 5,
+                "total_seconds": 0.615611799992621,
+                "min_seconds": 0.05312890000641346,
+                "max_seconds": 0.19208439998328686
+              }
+            }
+          }
+        },
+        "endpoint_shape_hashes": {
+          "/api/snapshots/{id}": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/market/overview": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/rank/range": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ],
+          "/api/stock/{id}": [
+            "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+            "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+            "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+            "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+            "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+          ]
+        },
+        "query_attribution_groups": [
+          {
+            "scope": "shared_repository_projection",
+            "endpoints": [
+              "/api/market/overview",
+              "/api/rank/range",
+              "/api/snapshots/{id}",
+              "/api/stock/{id}"
+            ],
+            "sql_hashes": [
+              "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+              "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+              "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+              "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+              "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+            ]
+          }
+        ]
+      }
+    ],
+    "sql_attribution": "CURRENT_PUBLIC_PATH",
+    "worker_sql_context": null,
+    "stable_state_excluded_tables": [
+      "research_backtest_cache",
+      "research_backtest_runs"
+    ],
+    "application_state_before": {
+      "ai_task_cancellations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "ai_task_drafts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "ai_task_reviews": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "ai_tasks": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "alembic_version": {
+        "rows": 1,
+        "fingerprint": "8f1582ce88c5387b1f11004e0ede372b"
+      },
+      "analysis_job_cache": {
+        "rows": 1,
+        "fingerprint": "5dfbe3a2635df383c0048a8687b79b3c"
+      },
+      "analysis_jobs": {
+        "rows": 1,
+        "fingerprint": "8d994b0a9753668ebf2fd2abdd70b537"
+      },
+      "audit_events": {
+        "rows": 4,
+        "fingerprint": "613cda7a9a30191b8b3fb15913e65764"
+      },
+      "daily_kline": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "import_batches": {
+        "rows": 1,
+        "fingerprint": "6dc2730d31a3af271285a667a95a0dae"
+      },
+      "index_daily_kline": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_disclosure_revisions": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_disclosure_seats": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_disclosures": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_import_batches": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_seats": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "limit_up_record": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "market_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "market_import_tasks": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_article_revisions": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_articles": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_association_reviews": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_associations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_event_articles": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_ingest_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_review_audit_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_review_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_snapshot_items": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_snapshots": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "owner_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "owner_pairing_limits": {
+        "rows": 1,
+        "fingerprint": "634421ae7808df9f81464dfaee20a291"
+      },
+      "owner_pairings": {
+        "rows": 1,
+        "fingerprint": "7f247ccd95dc07a7651e3bee3c3a8a66"
+      },
+      "owner_principals": {
+        "rows": 1,
+        "fingerprint": "9e0e0189d0acd49cafccb5c48754fc18"
+      },
+      "owner_sessions": {
+        "rows": 1,
+        "fingerprint": "c69fcb3b2606736b836394be3f1035c3"
+      },
+      "private_audit_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "publication_attempts": {
+        "rows": 1,
+        "fingerprint": "21f0b79db9abb51796a629d6d8736e26"
+      },
+      "publication_module_controls": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "publication_results": {
+        "rows": 5,
+        "fingerprint": "7d563ad414ed9928f2a9ddcf49f31172"
+      },
+      "publications": {
+        "rows": 1,
+        "fingerprint": "be3c0664e0a50af8bc2103d87bdf8397"
+      },
+      "query_records": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_anomaly_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_minute_bars": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_quote_batches": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_quotes": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_sector_flow_points": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_calculations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_rule_statuses": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_rules": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshot_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshot_inputs": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshot_rules": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshots": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "research_backtest_cache": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "research_backtest_runs": {
+        "rows": 1,
+        "fingerprint": "0aa156f86736a9ce14dde0d5f9b886e3"
+      },
+      "review_note_revisions": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "review_notes": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "review_verifications": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_change_summaries": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_changes": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_factor_observations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_limit_rows": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_materialization_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_pending_validations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_results": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_run_topics": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_runs": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_topic_statuses": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_validation_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_validation_inputs": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_validations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "security": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "security_state_history": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "snapshots": {
+        "rows": 1,
+        "fingerprint": "2dab084c3e506ed0b791728ffde8a2d2"
+      },
+      "source_dependencies": {
+        "rows": 1,
+        "fingerprint": "256acc6755280fc4088b1cf37a952fbb"
+      },
+      "source_grants": {
+        "rows": 1,
+        "fingerprint": "e70d02e506686042ecc5089f0f249b7c"
+      },
+      "topic_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "topic_import_batches": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "topic_snapshots": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "watch_entries": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "withdrawal_binding_seals": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "withdrawal_dependencies": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "withdrawal_records": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      }
+    },
+    "application_state_after": {
+      "ai_task_cancellations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "ai_task_drafts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "ai_task_reviews": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "ai_tasks": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "alembic_version": {
+        "rows": 1,
+        "fingerprint": "8f1582ce88c5387b1f11004e0ede372b"
+      },
+      "analysis_job_cache": {
+        "rows": 1,
+        "fingerprint": "5dfbe3a2635df383c0048a8687b79b3c"
+      },
+      "analysis_jobs": {
+        "rows": 1,
+        "fingerprint": "8d994b0a9753668ebf2fd2abdd70b537"
+      },
+      "audit_events": {
+        "rows": 4,
+        "fingerprint": "613cda7a9a30191b8b3fb15913e65764"
+      },
+      "daily_kline": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "import_batches": {
+        "rows": 1,
+        "fingerprint": "6dc2730d31a3af271285a667a95a0dae"
+      },
+      "index_daily_kline": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_disclosure_revisions": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_disclosure_seats": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_disclosures": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_import_batches": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "lhb_seats": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "limit_up_record": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "market_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "market_import_tasks": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_article_revisions": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_articles": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_association_reviews": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_associations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_event_articles": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_ingest_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_review_audit_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_review_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_snapshot_items": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "news_snapshots": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "owner_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "owner_pairing_limits": {
+        "rows": 1,
+        "fingerprint": "634421ae7808df9f81464dfaee20a291"
+      },
+      "owner_pairings": {
+        "rows": 1,
+        "fingerprint": "7f247ccd95dc07a7651e3bee3c3a8a66"
+      },
+      "owner_principals": {
+        "rows": 1,
+        "fingerprint": "9e0e0189d0acd49cafccb5c48754fc18"
+      },
+      "owner_sessions": {
+        "rows": 1,
+        "fingerprint": "c69fcb3b2606736b836394be3f1035c3"
+      },
+      "private_audit_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "publication_attempts": {
+        "rows": 1,
+        "fingerprint": "21f0b79db9abb51796a629d6d8736e26"
+      },
+      "publication_module_controls": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "publication_results": {
+        "rows": 5,
+        "fingerprint": "7d563ad414ed9928f2a9ddcf49f31172"
+      },
+      "publications": {
+        "rows": 1,
+        "fingerprint": "be3c0664e0a50af8bc2103d87bdf8397"
+      },
+      "query_records": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_anomaly_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_minute_bars": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_quote_batches": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_quotes": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "realtime_sector_flow_points": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_calculations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_rule_statuses": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_rules": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshot_events": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshot_inputs": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshot_rules": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "regulation_snapshots": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "research_backtest_cache": {
+        "rows": 1,
+        "fingerprint": "64bb70dc5bbc05bf66ce45fea02babb2"
+      },
+      "research_backtest_runs": {
+        "rows": 1,
+        "fingerprint": "596a4449e192f8b3e4e088c1533a3a67"
+      },
+      "review_note_revisions": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "review_notes": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "review_verifications": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_change_summaries": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_changes": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_factor_observations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_limit_rows": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_materialization_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_pending_validations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_results": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_run_topics": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_runs": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_topic_statuses": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_validation_commands": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_validation_inputs": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "role_validations": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "security": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "security_state_history": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "snapshots": {
+        "rows": 1,
+        "fingerprint": "2dab084c3e506ed0b791728ffde8a2d2"
+      },
+      "source_dependencies": {
+        "rows": 1,
+        "fingerprint": "256acc6755280fc4088b1cf37a952fbb"
+      },
+      "source_grants": {
+        "rows": 1,
+        "fingerprint": "e70d02e506686042ecc5089f0f249b7c"
+      },
+      "topic_import_attempts": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "topic_import_batches": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "topic_snapshots": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "watch_entries": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "withdrawal_binding_seals": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "withdrawal_dependencies": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      },
+      "withdrawal_records": {
+        "rows": 0,
+        "fingerprint": "d41d8cd98f00b204e9800998ecf8427e"
+      }
+    }
+  }
+}

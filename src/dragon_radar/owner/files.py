@@ -2,7 +2,7 @@
 
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import BinaryIO
@@ -23,8 +23,10 @@ def output_path(path: Path) -> Path:
 
 
 @contextmanager
-def secure_output(path: Path) -> Iterator[BinaryIO]:
-    """Reserve a new file before issuance; never chmod a caller's mounted root."""
+def secure_output(
+    path: Path, *, on_durable: Callable[[], None] | None = None
+) -> Iterator[BinaryIO]:
+    """Reserve privately; optional durable check runs inside the rollback scope."""
     path = output_path(path)
     with ExitStack() as stack:
         if os.name == "nt":
@@ -67,6 +69,8 @@ def secure_output(path: Path) -> Iterator[BinaryIO]:
                 yield stream
                 stream.flush()
                 os.fsync(stream.fileno())
+                if on_durable is not None:
+                    on_durable()
         except BaseException:
             remove()
             raise

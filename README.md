@@ -1,45 +1,37 @@
 # DragonRadar
 
-面向本机使用、支持数据追溯的盘后市场研究平台。已实现数据底座、确定性计算及
-只读研究工作台，尚不是包含七个页面的完整 P0 应用。
-真实行情源、AI 服务、券商连接和公网分享均未启用。
+面向本机使用、支持数据追溯的盘后市场研究平台。已实现复盘工作台、
+确定性研究回测和纯本地模拟账本。真实数据与模型有效性、正式规则、
+公开部署许可及影子运行须独立验收。
 
 ## 当前开发进度
 
-截至 2026-09-15，首批“数据底座＋确定性计算”及中文文档已推送至
-`origin/feature/data-foundation`（`3fef804`），尚未合并到 `main`。
-第二批位于工程根目录 `.worktrees/research-workbench`，
-分支为 `feature/research-workbench`，本批独立审查、回归和容器验收已完成；
-代码保留在该开发分支，尚未推送或合并。
-第三批位于 `.worktrees/private-review`，分支为 `feature/private-review`，
-已完成本机私人复盘闭环；所有者入口、私人仓储、私人前端自动化验收
-、最终镜像重建及真实 HTTPS 浏览器验收已完成，未推送或合并。
+2026-11-17：主要功能整合到本地 `main`，后续从工程根目录开发。
+真实数据接入与生产验收环境暂缓，具体条件见 [后续待办](docs/TODO.md)。
+Task 17 历史实现基线为 `1adda8d`。
+Task 18 已完成本机开发验收：全量回归、研究并发性能门及需求追溯均通过，
+实际证据见 [Task 27 验收记录](docs/acceptance/task27-research.md)。
+本次工程整合记录见 [主分支整合记录](docs/integration/2026-11-17-main.md)。
 
 | 模块 | 进度 |
 | --- | --- |
-| 数据契约、来源授权、质量校验与问题隔离 | 已实现 |
-| 交易日窗口、区间收益、回撤、归一化比较、市场广度与收盘涨跌停计算 | 已实现 |
-| PostgreSQL 迁移、幂等导入、不可变快照、修订与审计 | 已实现 |
-| 本机管理 CLI、只读 API、Docker 启动脚本 | 已实现并完成本机联调 |
-| 证券列表与详情只读 API、搜索排序分页、历史缺口与单位 | 已实现 |
-| 市场总览、区间分析、个股抽屉及完整详情 | 已实现并完成第二批本机验收 |
-| 本机所有者配对、会话、CSRF 与 CLI 文件保护 | 已实现并通过独立审查 |
-| 私人笔记、自选、不可变修订、模板、确认与人工验证仓储 | 已实现并通过独立审查，提交 `7dca8e5` |
-| 私人业务 API 与私人复盘界面 | API 已通过两阶段审查并提交 `91de787`；前端规格与质量复审通过，待提交 |
-| 自动化验证 | 后端含真实TLS边界844项通过、总语句覆盖率96%；前端97项单测、80项只读E2E、64项私人E2E及双构建通过 |
-| 其余页面、真实数据源、正式角色规则、监管规则与 AI | 尚未实现 |
-| 公网分享、备份恢复验收、性能指标与影子运行 | 尚未完成 |
+| 数据底座、不可变发布、CLI、API 与部署隔离 | 已实现 |
+| 总览、消息、梯队、涨幅分析、个股、监管与本地复盘 | 已实现；正式数据/规则另验 |
+| 笔记、自选、备份恢复 | IndexedDB 为权威源，按本地 profile 分区 |
+| 实时行情展示、龙虎榜、词云、轮动、自然语言查询、情绪研究 | 已实现；真实输入另验 |
+| PIT 回测、因子体检、walk-forward、异步运行与取消 | 已实现；生产输入装配仍失败闭合 |
+| 本地模拟账本 | 已实现；仅研究模拟，无真实订单 |
+| AI 增益对照 | 同池实验框架已实现；真实评测缺失时 ai_variant 固定 disabled |
+| Task 18 最终验收 | 开发验收完成；详见新的验收记录 |
+| 真实数据、正式规则、真实模型评测、公开许可、20 交易日影子运行 | 五项独立外部门禁 blocked |
 
-以上不代表完整 P0 已验收。首批历史结果见
-[数据底座验收记录](docs/verification-data-foundation.md)，
-第二批范围和验证命令见[工作台测试说明](docs/workbench-testing.md)，
-实际测试和审查状态见[第二批验收记录](docs/verification-research-workbench.md)。
-第三批阶段证据见[私人复盘验证记录](docs/verification-private-review.md)，
-接口见[私人 API 契约](docs/private-review-api.md)，
-运行与证书步骤见[私人实例说明](docs/private-review-running.md)。
-本批独立入口为 `https://localhost:8030`，最终私人镜像已启动且正常库为空；
-项目 CA 已在明确授权后安装到当前用户 Windows Root 信任库；
-不得忽略证书警告或将该入口公开到网络。
+上述是实现状态，不代表生产就绪。历史阶段结果见
+[数据底座](docs/verification-data-foundation.md)、
+[早期工作台](docs/verification-research-workbench.md)、
+[早期私人复盘](docs/verification-private-review.md)。
+Reset 当前运行方式见 [运行说明](docs/reset-running.md)，
+2026-10-27 历史终验见 [Reset 全范围终验](docs/acceptance/reset-final.md)；
+其 Task 27 未实现结论由后续验收记录补充，不覆盖原始历史记录。
 
 ## 开发环境
 
@@ -100,14 +92,14 @@ argv/cwd/环境类别、正通过数、零失败与零跳过、日志及性能�
 Task29 全范围终验在编排器首位新增 `prd_contracts` 门禁
 （`uv run python scripts/check_prd_contracts.py`，同时纳入 full 与 focused），
 并新增 `tests/test_reset_full_scope.py`（57 项 REQ 与 EX01-16 逐项追溯、只读应用面
-与 Task 27 缺件边界）和 `web/tests/e2e/reset-full-scope.spec.ts`（固定快照跨导航、
+与 Task 27 研究实现边界）和 `web/tests/e2e/reset-full-scope.spec.ts`（固定快照跨导航、
 实时批次独立、龙虎榜合成授权、词云、轮动、NL 查询、离线笔记、授权撤回、主题/密度/
 命令面板；Task 27 段为通过性边界断言，不使用 `test.skip()`）。七个独立状态台账与
 真实门禁退出码见 [Reset 全范围终验](docs/acceptance/reset-final.md)。
-**开发完成不等于生产就绪**：Task 27（B01/B02、EX14/EX15）未实现，真实输入、官方
-规则、真实模型评测、公开部署许可、≥20 交易日影子运行五项外部门禁保持 `blocked`，
-不以合成回归替代。Windows 本地无法执行 Linux-only 私有 TLS、Linux Docker 生产隔离
-与完整编排器（既有平台 skip），这些项以 CI（Ubuntu）结果为准。
+**开发完成不等于生产就绪**：Task 27 的实现与后续验收见
+[研究验收记录](docs/acceptance/task27-research.md)。真实输入、官方规则、
+真实模型评测、公开部署许可、≥20 交易日影子运行五项外部门禁保持 `blocked`。
+平台相关检查按实际执行环境登记，合成回归不得替代真实材料。
 
 ## 第二批工作台
 
@@ -205,10 +197,9 @@ docker compose -f compose.yaml -f compose.dev.yaml stop
 FastAPI 分别装配只读与所有者应用。
 迁移脚本随包放在 `src/dragon_radar/migrations`，测试产物与缓存统一放在 `.temp/`。
 
-当前交付尚不满足 P0 发布条件。待完成内容包括其余页面、经批准的角色阈值、
-真实数据源接入、监管复核、AI 评测、公网分享、备份恢复演练、
-完整无障碍验收和规定的影子运行周期。
-本机 Caddy 同源网关和本批自动化无障碍扫描不替代这些发布条件。
+当前交付尚不满足生产发布条件。真实数据源与生产研究输入装配、
+正式规则复核、真实 AI 评测、公开许可和规定的影子运行须分别完成。
+本机 Caddy 网关、合成回归和自动化无障碍扫描不替代这些发布条件。
 
 数据库卷不是备份。禁止使用 `docker compose down -v` 更新或回退应用。
 应用镜像回退无法撤销不兼容的数据库迁移；今后升级前应备份并验证恢复流程。

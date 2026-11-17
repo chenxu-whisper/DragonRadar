@@ -783,9 +783,10 @@ describe('Task 16 ablation disabled-only contract', () => {
 describe('Task 16 mount and isolation contract', () => {
   it('env-folds the panel as a lazy reset-only export in the Analysis page module', () => {
     const source = read('src/pages/Analysis.tsx');
-    expect(source).toContain("import('../research/BacktestPanel')");
+    expect(source).toContain("import('../features/research/OwnerBacktestWorkbench')");
     expect(source).not.toContain("from '../research/BacktestPanel'");
     expect(source).toContain("VITE_RESET_WORKBENCH === '1'");
+    expect(source).toContain("VITE_PUBLIC_SHARING !== '1'");
     expect(source).toContain('ResetBacktestPanel');
   });
 
@@ -1000,9 +1001,13 @@ describe('Task 17 App manifest wiring and fold isolation contract', () => {
   it('replaces the hardcoded null manifest with a dynamically imported manifest subscription', () => {
     const source = read('src/App.tsx');
     expect(source).not.toContain('manifest={null}');
-    expect(source).toContain("import('./features/research/manifest-resource')");
-    expect(source).toContain('subscribeBacktestManifest');
-    expect(source).toContain('manifest={manifestResource.manifest}');
+    expect(source).not.toContain('subscribeBacktestManifest');
+    expect(source).not.toContain('manifestResource');
+    expect(source).toContain('snapshotId={state.snapshot}');
+    expect(source).toContain('ResetBacktestPanel && ownerResearchEnabled');
+    const ownerSource = read('src/features/research/OwnerBacktestWorkbench.tsx');
+    expect(ownerSource).toContain('subscribeBacktestManifest');
+    expect(ownerSource).toContain('manifest={manifestResource.manifest}');
     expect(source).toContain('ResetBacktestPanel');
     expect(source).toContain("state.view === 'analysis'");
     // Runtime research dependencies must stay dynamically imported so the

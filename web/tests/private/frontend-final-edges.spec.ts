@@ -273,6 +273,9 @@ test('配对失败后 focus 和 visibility 会话检查恢复', async ({ page })
   }));
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toBeVisible();
+  // The locked shell renders before the initial effect starts its GETs.
+  // Wait for the authoritative check to settle before taking a baseline.
+  await expect(page.getByRole('alert')).toHaveText('会话已锁定，请重新配对。');
   await sessionDrained();
   const sessionGetsBeforePair = sessionGets;
   await page.getByLabel('一次性配对码').fill('expired-code');

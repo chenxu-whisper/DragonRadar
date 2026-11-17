@@ -147,7 +147,7 @@ def performance_raw():
         }
         for index in range(1, 4)
     ]
-    return {
+    raw = {
         "fixture": {
             "kind": "synthetic",
             "counts": {"securities": 100, "trading_sessions": 61},
@@ -192,6 +192,39 @@ def performance_raw():
             "submitted_status": "queued",
             "worker_elapsed_seconds": 5.1,
             "status": "succeeded",
+        },
+        "research_concurrent_load": {
+            "synthetic": True,
+            "label": "real_engine_repeated_until_public_rounds_finish",
+            "worker": "ResearchBacktestWorker",
+            "submitted_status": "queued",
+            "status": "succeeded",
+            "config_hash": "a" * 64,
+            "result_config_hash": "a" * 64,
+            "engine_iterations": 1,
+            "checkpoint_count": 183,
+            "securities": 100,
+            "trading_sessions": 61,
+            "runs": [
+                {
+                    **run,
+                    "worker_active_before": True,
+                    "worker_active_after": True,
+                    "checkpoint_count_before": run["round"],
+                    "checkpoint_count_after": run["round"] + 1,
+                    "path_metrics": {
+                        path: {
+                            "request_count": 5,
+                            "successful": 5,
+                            "p50_seconds": 0.08,
+                            "p95_seconds": 0.15,
+                            "max_seconds": 0.25,
+                        }
+                        for path in paths
+                    },
+                }
+                for run in runs
+            ],
         },
         "observed_query_shapes": {
             shape_hashes[statement]: {
@@ -252,6 +285,303 @@ def performance_raw():
             if digest in projection_hashes
         },
     }
+    research = raw["research_concurrent_load"]
+    research.update(
+        sql_attribution="CURRENT_PUBLIC_PATH",
+        worker_sql_context=None,
+        stable_state_excluded_tables=[
+            "research_backtest_cache",
+            "research_backtest_runs",
+        ],
+        application_state_before={
+            **{
+                f"stable_{index}": {"rows": 1, "fingerprint": "a" * 32}
+                for index in range(9)
+            },
+            "research_backtest_runs": {"rows": 1, "fingerprint": "b" * 32},
+            "research_backtest_cache": {"rows": 0, "fingerprint": "c" * 32},
+        },
+    )
+    research["application_state_after"] = deepcopy(research["application_state_before"])
+    research["application_state_after"]["research_backtest_runs"]["fingerprint"] = (
+        "d" * 32
+    )
+    research["application_state_after"]["research_backtest_cache"]["rows"] = 1
+    raw["application_state_before"] = deepcopy(research["application_state_before"])
+    raw["application_state_after"] = deepcopy(raw["application_state_before"])
+    for run in research["runs"]:
+        run.update(
+            latencies_seconds=[0.08] * 10 + [0.15] * 9 + [0.25],
+            sql_write_count=0,
+            observed_query_shapes=deepcopy(raw["observed_query_shapes"]),
+            endpoint_shape_hashes=deepcopy(raw["endpoint_shape_hashes"]),
+            query_attribution_groups=deepcopy(raw["query_attribution_groups"]),
+        )
+        for shape in run["observed_query_shapes"].values():
+            for timing in shape["endpoint_observations"].values():
+                timing.update(count=5, total_seconds=0.05)
+        for metric in run["path_metrics"].values():
+            metric["latencies_seconds"] = [0.08, 0.08, 0.15, 0.15, 0.25]
+            metric["p50_seconds"] = 0.15
+            metric["p95_seconds"] = 0.25
+        # The round latency list is the exact concatenation of its path samples.
+        run["latencies_seconds"] = [
+            latency
+            for metric in run["path_metrics"].values()
+            for latency in metric["latencies_seconds"]
+        ]
+        run["p95_seconds"] = 0.25
+        run["p50_seconds"] = 0.15
+    return raw
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value.pop("sql_attribution"),
+        lambda value: value.update(sql_attribution="unattributed"),
+        lambda value: value.update(worker_sql_context="/api/stock/{id}"),
+        lambda value: value.pop("application_state_after"),
+        lambda value: value["application_state_after"]["stable_0"].update(rows=2),
+        lambda value: value["application_state_after"].pop("stable_0"),
+        lambda value: value["application_state_before"]["stable_0"].update(rows=True),
+        lambda value: value["stable_state_excluded_tables"].append("stable_0"),
+        lambda value: value["runs"][0].pop("observed_query_shapes"),
+        lambda value: value["runs"][0].update(sql_statement_count=999),
+        lambda value: value["runs"][0].update(sql_statement_count=0),
+        lambda value: value["runs"][0].update(sql_write_count=1),
+        lambda value: value["runs"][0].update(sql_write_count=False),
+        lambda value: value["runs"][0]["query_attribution_groups"][0][
+            "endpoints"
+        ].pop(),
+        lambda value: value["runs"][0]["endpoint_shape_hashes"].update(
+            {"/api/stock/{id}": []}
+        ),
+        lambda value: next(iter(value["runs"][0]["observed_query_shapes"].values()))[
+            "endpoint_observations"
+        ].update({"unattributed": {"count": 1}}),
+        lambda value: next(
+            iter(value["runs"][0]["observed_query_shapes"].values())
+        ).update(verb="UPDATE"),
+        lambda value: value["runs"][0].pop("latencies_seconds"),
+        lambda value: value["runs"][0]["latencies_seconds"].__setitem__(0, 10),
+        lambda value: value["runs"][0].update(concurrency=20.0),
+        lambda value: value["runs"][0]["path_metrics"]["/api/stock/{id}"].update(
+            request_count=5.0
+        ),
+        lambda value: value["application_state_after"]["stable_0"].update(
+            fingerprint="not-an-md5"
+        ),
+        lambda value: value["runs"][0]["path_metrics"]["/api/stock/{id}"][
+            "latencies_seconds"
+        ].__setitem__(0, float("nan")),
+        lambda value: next(iter(value["runs"][0]["observed_query_shapes"].values()))[
+            "endpoint_observations"
+        ]["/api/stock/{id}"].update(count=True),
+    ],
+)
+def test_research_sql_and_stable_state_guard_rejects_corruption(mutation):
+    value = performance_raw()["research_concurrent_load"]
+    assert VERIFIER["_research_load_errors"](value) == []
+    mutation(value)
+    assert VERIFIER["_research_load_errors"](value)
+
+
+def test_research_guard_rejects_legacy_unobserved_999_queries():
+    value = performance_raw()["research_concurrent_load"]
+    for field in (
+        "sql_attribution",
+        "worker_sql_context",
+        "stable_state_excluded_tables",
+        "application_state_before",
+        "application_state_after",
+    ):
+        value.pop(field)
+    for run in value["runs"]:
+        for field in (
+            "latencies_seconds",
+            "sql_write_count",
+            "observed_query_shapes",
+            "endpoint_shape_hashes",
+            "query_attribution_groups",
+        ):
+            run.pop(field)
+    value["runs"][0]["sql_statement_count"] = 999
+    assert VERIFIER["_research_load_errors"](value)
+
+
+def test_research_guard_rejects_observed_write_even_with_claimed_zero():
+    value = performance_raw()["research_concurrent_load"]
+    run = value["runs"][0]
+    statement = "UPDATE publications SET status = 'withdrawn'"
+    digest = hashlib.sha256(statement.encode()).hexdigest()
+    run["observed_query_shapes"][digest] = {
+        "normalized_sql": statement,
+        "verb": "UPDATE",
+        "relations": [],
+        "plan_role": None,
+        "endpoint_observations": {
+            "/api/stock/{id}": {
+                "count": 1,
+                "total_seconds": 0.01,
+                "min_seconds": 0.01,
+                "max_seconds": 0.01,
+            }
+        },
+    }
+    run["endpoint_shape_hashes"]["/api/stock/{id}"].append(digest)
+    run["endpoint_shape_hashes"]["/api/stock/{id}"].sort()
+    run["query_attribution_groups"] = VERIFIER["_attribution_groups"](
+        {path: set(hashes) for path, hashes in run["endpoint_shape_hashes"].items()}
+    )
+    run["sql_statement_count"] += 1
+
+    assert any(
+        "write" in error.lower() for error in VERIFIER["_research_load_errors"](value)
+    )
+
+
+@pytest.mark.parametrize("raise_in_window", [False, True])
+def test_public_sql_listener_captures_gets_not_worker_context_and_always_detaches(
+    monkeypatch, raise_in_window
+):
+    from types import SimpleNamespace
+
+    harness = runpy.run_path(
+        str(SCRIPT.parents[1] / "tests/performance/test_reset_queries.py")
+    )
+    capture = harness["_capture_public_sql"]
+    current_path = harness["CURRENT_PUBLIC_PATH"]
+    assert current_path.get() is None
+    listeners = {}
+    engine = object()
+    captured = []
+
+    def listen(actual_engine, name, callback):
+        assert actual_engine is engine
+        listeners[name] = callback
+
+    def remove(actual_engine, name, callback):
+        assert actual_engine is engine
+        assert listeners.pop(name) is callback
+
+    monkeypatch.setattr(harness["event"], "listen", listen)
+    monkeypatch.setattr(harness["event"], "remove", remove)
+
+    def emit(statement, path):
+        context = SimpleNamespace()
+        token = current_path.set(path)
+        try:
+            listeners["before_cursor_execute"](
+                None, None, statement, {}, context, False
+            )
+        finally:
+            current_path.reset(token)
+        listeners["after_cursor_execute"](None, None, statement, {}, context, False)
+
+    def exercise():
+        with capture(engine, captured):
+            emit("UPDATE research_backtest_runs SET status = 'succeeded'", None)
+            for path in harness["MEASURED_PATHS"]:
+                emit("SELECT id FROM publications", path)
+            emit("DELETE FROM publications", "/api/stock/{id}")
+            emit("SELECT id FROM publications", "unattributed")
+            if raise_in_window:
+                raise RuntimeError("request failed")
+
+    if raise_in_window:
+        with pytest.raises(RuntimeError, match="request failed"):
+            exercise()
+    else:
+        exercise()
+    assert listeners == {}
+    assert len(captured) == 6
+    assert {item["verb"] for item in captured} == {"SELECT", "DELETE"}
+    assert all(item["path"] is not None for item in captured)
+    assert all(item["duration_seconds"] >= 0 for item in captured)
+    shapes = harness["_observed_query_shapes"](captured)
+    assert all(harness["_endpoint_shape_hashes"](shapes).values())
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "sql_attribution",
+        "application_state_after",
+        "stable_state_excluded_tables",
+        "runs",
+    ],
+)
+def test_full_raw_artifact_binds_concurrent_sql_and_stable_state(tmp_path, field):
+    raw = performance_raw()
+    path = tmp_path / "performance.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    observations = {
+        "raw_artifact": artifact(path),
+        **{
+            key: deepcopy(raw[key])
+            for key in (
+                "warmup",
+                "runs",
+                "aggregate",
+                "fixture",
+                "environment",
+                "research_concurrent_load",
+            )
+        },
+    }
+    assert VERIFIER["_raw_performance"](observations)[1] == []
+    observations["research_concurrent_load"].pop(field)
+    assert any(
+        "does not match the raw artifact" in error
+        for error in VERIFIER["_raw_performance"](observations)[1]
+    )
+    raw["research_concurrent_load"].pop(field)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    observations["raw_artifact"] = artifact(path)
+    assert VERIFIER["_raw_performance"](observations)[1]
+
+
+def test_concurrent_fingerprints_cannot_omit_a_stable_baseline_table():
+    raw = performance_raw()
+    for phase in ("before", "after"):
+        raw["research_concurrent_load"][f"application_state_{phase}"].pop("stable_0")
+    assert any(
+        "full public baseline" in error
+        for error in VERIFIER["_performance_errors"](raw)
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda raw: raw.pop("research_concurrent_load"),
+        lambda raw: raw["research_concurrent_load"].update(status="failed"),
+        lambda raw: raw["research_concurrent_load"].update(engine_iterations=0),
+        lambda raw: raw["research_concurrent_load"].update(result_config_hash="b" * 64),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(
+            worker_active_after=False
+        ),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(
+            checkpoint_count_after=1
+        ),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(concurrency=19),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(
+            p95_seconds=2.01, max_seconds=2.01
+        ),
+        lambda raw: raw["research_concurrent_load"]["runs"][0]["path_metrics"][
+            "/api/stock/{id}"
+        ].update(p95_seconds=2.01, max_seconds=2.01),
+        lambda raw: raw["research_concurrent_load"].update(
+            checkpoint_count=float("nan")
+        ),
+    ],
+)
+def test_performance_contract_rejects_missing_or_invalid_concurrent_research(mutation):
+    raw = performance_raw()
+    mutation(raw)
+    validate = VERIFIER["_research_load_errors"]
+    assert validate(raw.get("research_concurrent_load"))
 
 
 def evidence_manifest(tmp_path):
@@ -282,6 +612,7 @@ def evidence_manifest(tmp_path):
                 "aggregate": raw["aggregate"],
                 "fixture": raw["fixture"],
                 "environment": raw["environment"],
+                "research_concurrent_load": raw["research_concurrent_load"],
             }
         elif gate == "public_no_write":
             observations = {
@@ -292,7 +623,7 @@ def evidence_manifest(tmp_path):
                 ),
                 "sql_write_count": 0,
                 "fingerprints_equal": True,
-                "application_table_count": 1,
+                "application_table_count": len(raw["application_state_before"]),
                 "endpoint_shape_hashes": raw["endpoint_shape_hashes"],
                 "query_attribution_groups": raw["query_attribution_groups"],
                 "query_plan_evidence": raw["query_plan_evidence"],

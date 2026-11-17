@@ -160,6 +160,7 @@ def test_analysis_worker_command_parser_accepts_bounded_options():
         "poll_seconds": 0.1,
         "lease_seconds": 3600,
         "max_attempts": 10,
+        "research_production_request": None,
     }
 
 

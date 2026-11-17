@@ -1,0 +1,5 @@
+
+> dragon-radar-workbench@0.1.0 test:contract-runtime
+> node scripts/test-reset-contract-runtime.mjs
+
+{"ownerTransport":{"authority":"https://localhost:8443","code":"session_unauthorized","hostHeader":"localhost:8443","publishedMapping":"127.0.0.1:32774->owner-caddy:8443","status":401,"testedFrom":"host","tlsServername":"localhost"},"project":"dragon-radar-contract-24460-1794804183266-1cc5e010","public":"http://127.0.0.1:32775","status":"passed"}

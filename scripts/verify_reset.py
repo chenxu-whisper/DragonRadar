@@ -937,6 +937,8 @@ def _query_evidence_errors(
     endpoint_hashes: Any,
     attribution_groups: Any,
     plans: Any,
+    *,
+    require_plans: bool = True,
 ) -> tuple[list[str], int, int]:
     errors: list[str] = []
     statement_count = 0
@@ -1015,7 +1017,8 @@ def _query_evidence_errors(
                 or not all(
                     type(value) in (int, float) for value in (total, minimum, maximum)
                 )
-                or not 0 <= minimum <= maximum
+                or not 0 <= minimum <= maximum < float("inf")
+                or not total < float("inf")
                 or not minimum * count <= total + 1e-12
                 or not total <= maximum * count + 1e-12
             ):
@@ -1034,6 +1037,7 @@ def _query_evidence_errors(
                 errors.append(f"Endpoint {path} has no observed SQL.")
             if (
                 not isinstance(hashes, list)
+                or not all(isinstance(item, str) for item in hashes)
                 or hashes != sorted(set(hashes))
                 or set(hashes) != derived_endpoint_hashes[path]
             ):
@@ -1045,6 +1049,8 @@ def _query_evidence_errors(
         errors.append(
             "Query attribution groups do not match the captured endpoint matrix."
         )
+    if not require_plans:
+        return errors, statement_count, write_count
     if not isinstance(plans, dict) or set(plans) != relevant_read_hashes:
         errors.append("Payload projection read plan coverage is incomplete.")
         plans = plans if isinstance(plans, dict) else {}
@@ -1076,6 +1082,232 @@ def _query_evidence_errors(
     return errors, statement_count, write_count
 
 
+def _research_load_errors(value: Any) -> list[str]:
+    label = "Concurrent research"
+    fields = {
+        "synthetic",
+        "label",
+        "worker",
+        "submitted_status",
+        "status",
+        "config_hash",
+        "result_config_hash",
+        "engine_iterations",
+        "checkpoint_count",
+        "securities",
+        "trading_sessions",
+        "runs",
+        "sql_attribution",
+        "worker_sql_context",
+        "stable_state_excluded_tables",
+        "application_state_before",
+        "application_state_after",
+    }
+    errors = _exact_fields(value, fields, label)
+    if errors:
+        return errors
+    if (
+        value["sql_attribution"] != "CURRENT_PUBLIC_PATH"
+        or value["worker_sql_context"] is not None
+    ):
+        errors.append(f"{label} SQL attribution must exclude only non-GET context.")
+    excluded = ["research_backtest_cache", "research_backtest_runs"]
+    if value["stable_state_excluded_tables"] != excluded:
+        errors.append(f"{label} stable-state exclusions are not the research tables.")
+    states = []
+    for phase in ("before", "after"):
+        state = value[f"application_state_{phase}"]
+        if not isinstance(state, dict) or not set(excluded) <= set(state):
+            errors.append(f"{label} application state {phase} is incomplete.")
+            states.append({})
+            continue
+        for table, item in state.items():
+            item_errors = _exact_fields(
+                item, {"rows", "fingerprint"}, f"{label} {phase} table {table}"
+            )
+            errors.extend(item_errors)
+            if not item_errors and (
+                type(item["rows"]) is not int
+                or item["rows"] < 0
+                or not isinstance(item["fingerprint"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", item["fingerprint"])
+            ):
+                errors.append(f"{label} {phase} table {table} fingerprint is invalid.")
+        states.append(
+            {table: item for table, item in state.items() if table not in excluded}
+        )
+    if len(states[0]) <= 8 or states[0] != states[1]:
+        errors.append(
+            f"{label} stable application table fingerprints changed or are incomplete."
+        )
+    if (
+        value["synthetic"] is not True
+        or value["label"] != "real_engine_repeated_until_public_rounds_finish"
+        or value["worker"] != "ResearchBacktestWorker"
+        or value["submitted_status"] != "queued"
+        or value["status"] != "succeeded"
+    ):
+        errors.append(f"{label} must use the real worker/engine and succeed.")
+    digest = value["config_hash"]
+    if (
+        not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or value["result_config_hash"] != digest
+    ):
+        errors.append(f"{label} result is not bound to the submitted config.")
+    for field, minimum in (
+        ("engine_iterations", 1),
+        ("checkpoint_count", 1),
+        ("securities", 100),
+        ("trading_sessions", 60),
+    ):
+        if type(value[field]) is not int or value[field] < minimum:
+            errors.append(f"{label} lacks valid {field}.")
+    runs = value["runs"]
+    if not isinstance(runs, list) or len(runs) != 3:
+        return [*errors, f"{label} requires three measured rounds."]
+    previous = 0
+    for index, run in enumerate(runs, 1):
+        if not isinstance(run, dict):
+            errors.append(f"{label} round {index} is malformed.")
+            continue
+        before = run.get("checkpoint_count_before")
+        after = run.get("checkpoint_count_after")
+        if (
+            run.get("worker_active_before") is not True
+            or run.get("worker_active_after") is not True
+            or type(before) is not int
+            or type(after) is not int
+            or not previous <= before < after
+            or type(value["checkpoint_count"]) is not int
+            or after > value["checkpoint_count"]
+        ):
+            errors.append(f"{label} round {index} did not overlap engine progress.")
+        if type(after) is int:
+            previous = after
+        if (
+            any(
+                type(run.get(field)) is not int
+                for field in ("round", "concurrency", "request_count", "successful")
+            )
+            or type(run.get("error_rate")) not in (int, float)
+            or run.get("round") != index
+            or run.get("concurrency") != PERFORMANCE_CONCURRENCY
+            or run.get("request_count") != PERFORMANCE_CONCURRENCY
+            or run.get("successful") != PERFORMANCE_CONCURRENCY
+            or run.get("error_rate") != 0
+            or run.get("cache_condition") != PERFORMANCE_RUN_CACHE_CONDITION
+        ):
+            errors.append(f"{label} round {index} is not 20/20 successful.")
+        metrics = run.get("path_metrics")
+        if not isinstance(metrics, dict) or set(metrics) != MEASURED_PATHS:
+            errors.append(f"{label} round {index} lacks ordinary GET coverage.")
+            metrics = {}
+        for path, metric in [("all GETs", run), *metrics.items()]:
+            if not isinstance(metric, dict):
+                errors.append(f"{label} round {index} {path} is malformed.")
+                continue
+            p50, p95, maximum = (
+                metric.get(field)
+                for field in ("p50_seconds", "p95_seconds", "max_seconds")
+            )
+            if (
+                not all(type(item) in (int, float) for item in (p50, p95, maximum))
+                or not 0 <= p50 <= p95 <= maximum < float("inf")
+                or p95 > 2
+            ):
+                errors.append(f"{label} round {index} {path} exceeds P95 budget.")
+            if path != "all GETs" and (
+                type(metric.get("request_count")) is not int
+                or type(metric.get("successful")) is not int
+                or metric.get("request_count") != PERFORMANCE_CONCURRENCY // 4
+                or metric.get("successful") != PERFORMANCE_CONCURRENCY // 4
+            ):
+                errors.append(f"{label} round {index} {path} is not 5/5 successful.")
+            samples = metric.get("latencies_seconds")
+            sample_count = (
+                PERFORMANCE_CONCURRENCY
+                if path == "all GETs"
+                else PERFORMANCE_CONCURRENCY // 4
+            )
+            if (
+                not isinstance(samples, list)
+                or len(samples) != sample_count
+                or any(
+                    type(sample) not in (int, float) or not 0 <= sample < float("inf")
+                    for sample in samples
+                )
+            ):
+                errors.append(f"{label} round {index} {path} lacks raw latencies.")
+                continue
+            ordered = sorted(samples)
+            if (p50, p95, maximum) != (
+                ordered[(len(ordered) + 1) // 2 - 1],
+                ordered[(95 * len(ordered) + 99) // 100 - 1],
+                ordered[-1],
+            ):
+                errors.append(
+                    f"{label} round {index} {path} latency summaries "
+                    "differ from samples."
+                )
+        samples = run.get("latencies_seconds")
+        path_samples = [
+            metric.get("latencies_seconds")
+            for metric in metrics.values()
+            if isinstance(metric, dict)
+        ]
+        if (
+            isinstance(samples, list)
+            and len(path_samples) == len(MEASURED_PATHS)
+            and all(isinstance(items, list) for items in path_samples)
+            and all(type(item) in (int, float) for item in samples)
+            and all(
+                type(item) in (int, float) for items in path_samples for item in items
+            )
+            and sorted(samples)
+            != sorted(item for items in path_samples for item in items)
+        ):
+            errors.append(
+                f"{label} round {index} path latencies do not cover all GETs."
+            )
+        query_errors, statement_count, write_count = _query_evidence_errors(
+            run.get("observed_query_shapes"),
+            run.get("endpoint_shape_hashes"),
+            run.get("query_attribution_groups"),
+            None,
+            require_plans=False,
+        )
+        errors.extend(f"{label} round {index}: {error}" for error in query_errors)
+        if (
+            type(run.get("sql_statement_count")) is not int
+            or run["sql_statement_count"] <= 0
+            or run["sql_statement_count"] != statement_count
+        ):
+            errors.append(
+                f"{label} round {index} SQL statement counts are inconsistent."
+            )
+        if (
+            type(run.get("sql_write_count")) is not int
+            or run["sql_write_count"] != write_count
+            or write_count != 0
+        ):
+            errors.append(
+                f"{label} round {index} public write SQL was observed or misreported."
+            )
+        shapes = run.get("observed_query_shapes")
+        if not query_errors and isinstance(shapes, dict):
+            for path in MEASURED_PATHS:
+                count = sum(
+                    shape["endpoint_observations"].get(path, {}).get("count", 0)
+                    for shape in shapes.values()
+                )
+                if count < PERFORMANCE_CONCURRENCY // 4:
+                    errors.append(
+                        f"{label} round {index} {path} lacks GET SQL coverage."
+                    )
+    return errors
+
+
 def _performance_errors(value: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(value, dict):
@@ -1090,6 +1322,7 @@ def _performance_errors(value: Any) -> list[str]:
                 "runs",
                 "aggregate",
                 "async_work",
+                "research_concurrent_load",
                 "observed_query_shapes",
                 "endpoint_shape_hashes",
                 "query_attribution_groups",
@@ -1100,6 +1333,26 @@ def _performance_errors(value: Any) -> list[str]:
             "Performance artifact",
         )
     )
+    errors.extend(_research_load_errors(value.get("research_concurrent_load")))
+    research = value.get("research_concurrent_load")
+    if isinstance(research, dict):
+        baseline = value.get("application_state_after")
+        excluded = {"research_backtest_cache", "research_backtest_runs"}
+        for phase in ("before", "after"):
+            concurrent = research.get(f"application_state_{phase}")
+            if (
+                not isinstance(baseline, dict)
+                or not isinstance(concurrent, dict)
+                or set(concurrent) != set(baseline)
+                or {
+                    key: item for key, item in concurrent.items() if key not in excluded
+                }
+                != {key: item for key, item in baseline.items() if key not in excluded}
+            ):
+                errors.append(
+                    "Concurrent research stable state does not match "
+                    "the full public baseline."
+                )
     legacy_fields = {"measured_path_explains", "public_sql_statements"} & set(value)
     if legacy_fields:
         errors.append(
@@ -1290,6 +1543,7 @@ def _performance_observations(
         "aggregate": value["aggregate"],
         "fixture": value["fixture"],
         "environment": value.get("environment"),
+        "research_concurrent_load": value["research_concurrent_load"],
     }
 
 
@@ -1598,6 +1852,7 @@ def _raw_performance(observations: Any) -> tuple[dict[str, Any] | None, list[str
             "aggregate",
             "fixture",
             "environment",
+            "research_concurrent_load",
         },
         "Performance observations",
     )
@@ -1618,7 +1873,14 @@ def _raw_performance(observations: Any) -> tuple[dict[str, Any] | None, list[str
         ]
     errors.extend(_performance_errors(raw))
     if isinstance(raw, dict):
-        for field in ("warmup", "runs", "aggregate", "fixture", "environment"):
+        for field in (
+            "warmup",
+            "runs",
+            "aggregate",
+            "fixture",
+            "environment",
+            "research_concurrent_load",
+        ):
             if observations[field] != raw.get(field):
                 errors.append(f"Performance {field} does not match the raw artifact.")
     return raw if isinstance(raw, dict) else None, errors
@@ -1909,7 +2171,12 @@ def _integrity_only_report(
 
 
 def main() -> int:
+    from dragon_radar.production.cli import add_arguments, evaluate_arguments
+    from dragon_radar.production.report import attach_external
+
     parser = argparse.ArgumentParser()
+    parser.add_argument("--production-evidence", action="store_true")
+    add_arguments(parser)
     parser.add_argument(
         "--mode",
         choices=("full", "focused"),
@@ -1956,6 +2223,8 @@ def main() -> int:
             ).encode(),
         )
         report, exit_status = _validate_execution(execution)
+    if args.production_evidence:
+        attach_external(report, evaluate_arguments(args, code_root=ROOT))
     rendered = json.dumps(report, ensure_ascii=True, indent=2) + "\n"
     _atomic_write(args.output, rendered.encode())
     sys.stdout.write(rendered)

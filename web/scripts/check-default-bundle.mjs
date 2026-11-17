@@ -26,9 +26,10 @@ while (pending.length) {
   }
 }
 
-const allScripts = readdirSync(resolve(dist, 'assets'))
-  .filter(file => file.endsWith('.js'))
+const allAssets = readdirSync(resolve(dist, 'assets'), { recursive: true })
+  .filter(file => statSync(resolve(dist, 'assets', file)).isFile())
   .map(file => resolve(dist, 'assets', file));
+const allScripts = allAssets.filter(file => file.endsWith('.js'));
 // 私有 marker：默认/reset/sharing 镜像的任何产物（含懒 chunk）都不得包含。
 const privateMarkers = [
   '我的复盘',
@@ -70,15 +71,16 @@ for (const file of researchScope) {
 // Task 17：owner-only 研究回测命名空间（/api/research/backtests|manifests）与本地
 // 模拟账本模块（仅研究模拟披露文案）。默认/分享构建的任何产物（含懒 chunk）都不得
 // 包含；reset 构建下二者只能存在于 env 折叠后的懒 chunk，不得进入 entry 静态闭包。
-const researchModuleMarkers = ['/api/research', '仅研究模拟'];
-const researchModuleScope = resetBuild ? [...staticAssets] : allScripts;
+const ownerResearchBuild = resetBuild && process.env.VITE_PUBLIC_SHARING !== '1';
+const researchModuleMarkers = ['/api/research', '仅研究模拟', '.backtest-panel'];
+const researchModuleScope = ownerResearchBuild ? [...staticAssets] : allAssets;
 for (const file of researchModuleScope) {
   const source = readFileSync(file, 'utf8');
   for (const marker of researchModuleMarkers) {
     if (source.includes(marker)) {
-      throw new Error(resetBuild
+      throw new Error(ownerResearchBuild
         ? `Owner-only research module marker "${marker}" reached the entry static closure: ${file}`
-        : `Default build emitted an owner-only research asset containing "${marker}": ${file}`);
+        : `Default/sharing build emitted an owner-only research asset containing "${marker}": ${file}`);
     }
   }
 }

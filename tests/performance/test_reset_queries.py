@@ -8,11 +8,16 @@ import math
 import os
 import platform
 import re
+import runpy
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from threading import Event, Lock
+from uuid import uuid4
 
 import pytest
 from factories import NOW, bar, batch, grant, state
@@ -32,6 +37,11 @@ from dragon_radar.owner.repository import OwnerRepository
 from dragon_radar.publication.models import PublicationCommand
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.publication.service import PublicationService
+from dragon_radar.research.engine import FactorFrame, FactorPoint, run_backtest
+from dragon_radar.research.models import BacktestConfig, BacktestSubmission
+from dragon_radar.research.pit import PitAnchor, PitFrame, UniversePolicy
+from dragon_radar.research.repository import ResearchRunRepository
+from dragon_radar.research.worker import ResearchBacktestWorker
 
 pytestmark = pytest.mark.anyio
 
@@ -74,8 +84,8 @@ PLAN_BUFFER_FIELDS = (
     "Temp Read Blocks",
     "Temp Written Blocks",
 )
-CURRENT_PUBLIC_PATH: ContextVar[str] = ContextVar(
-    "task20_current_public_path", default="unattributed"
+CURRENT_PUBLIC_PATH: ContextVar[str | None] = ContextVar(
+    "task20_current_public_path", default=None
 )
 WRITE_VERBS = {
     "INSERT",
@@ -191,6 +201,40 @@ def _application_state(database):
                 "fingerprint": row["fingerprint"],
             }
         return state
+
+
+@contextmanager
+def _capture_public_sql(engine, captured):
+    def start_query(_conn, _cursor, statement, parameters, context, _executemany):
+        path = CURRENT_PUBLIC_PATH.get()
+        context.task20_evidence = (
+            (
+                time.perf_counter(),
+                {
+                    "path": path,
+                    "verb": _statement_verb(statement),
+                    "statement": statement,
+                    "parameters": parameters,
+                },
+            )
+            if path is not None
+            else None
+        )
+
+    def finish_query(_conn, _cursor, _statement, _parameters, context, _executemany):
+        if context.task20_evidence is not None:
+            started, item = context.task20_evidence
+            captured.append({**item, "duration_seconds": time.perf_counter() - started})
+
+    event.listen(engine, "before_cursor_execute", start_query)
+    try:
+        event.listen(engine, "after_cursor_execute", finish_query)
+        try:
+            yield
+        finally:
+            event.remove(engine, "after_cursor_execute", finish_query)
+    finally:
+        event.remove(engine, "before_cursor_execute", start_query)
 
 
 def _memory_bytes() -> tuple[int, int, str]:
@@ -319,6 +363,7 @@ async def _run(
             "p50_seconds": _percentile(path_latencies, 0.50),
             "p95_seconds": _percentile(path_latencies, 0.95),
             "max_seconds": max(path_latencies),
+            "latencies_seconds": path_latencies,
         }
     peak, rss, memory_label = _memory_bytes()
     return {
@@ -331,6 +376,7 @@ async def _run(
         "p50_seconds": _percentile(latencies, 0.50),
         "p95_seconds": _percentile(latencies, 0.95),
         "max_seconds": max(latencies),
+        "latencies_seconds": latencies,
         "wall_seconds": elapsed,
         "process_cpu_seconds": cpu,
         "peak_memory_bytes": peak,
@@ -509,6 +555,222 @@ def _query_plan_evidence(database, captured, shapes):
     return plans
 
 
+async def _concurrent_research_load(
+    database, repository, owners, session, publication, fixture, paths, app
+):
+    """Real lease/engine load on explicit synthetic daily/factor projections.
+
+    Repeat deterministic engine work until the GET measurement ends, without
+    sleeping or replacing compute with a stub. This is contention evidence,
+    not a production factor materializer or strategy-effectiveness claim.
+    """
+    runs = ResearchRunRepository(
+        database,
+        owners,
+        PublicationRepository(database, repository, clock=lambda: NOW),
+        clock=lambda: NOW,
+    )
+    manifests = runs.input_manifest(session.token, publication.id)
+    config = BacktestConfig.model_validate_json(
+        json.dumps(
+            {
+                "snapshot_id": str(publication.id),
+                "strategy_id": "factor-cross-sectional-topn-v1",
+                "parameters": {"top_n": 10, "rebalance_period": 5},
+                "period": {
+                    "start": str(fixture.calendar.sessions[0]),
+                    "end": str(fixture.calendar.sessions[-1]),
+                },
+                "cost_model": {
+                    "commission_rate": "0.0003",
+                    "stamp_tax_rate": "0.001",
+                    "slippage_rate": "0.0005",
+                    "min_commission": "5",
+                },
+                "execution_model": {},
+                "experiment": {"random_seed": 27, "legs": ["baseline", "ai_variant"]},
+                "input_manifests": {
+                    key: value
+                    for key, value in manifests.items()
+                    if key != "snapshot_id"
+                },
+            }
+        )
+    )
+    queued = runs.submit(
+        session.token,
+        session.csrf,
+        BacktestSubmission(config=config, idempotency_key=uuid4()),
+    )
+    assert queued.status == "queued"
+    with database.engine.connect() as connection:
+        sequence = connection.scalar(
+            text("SELECT publication_sequence FROM publications WHERE id = :id"),
+            {"id": publication.id},
+        )
+    assert sequence is not None
+    frames = []
+    factors = []
+    for day in fixture.calendar.sessions:
+        daily_bars = tuple(item for item in fixture.bars if item.trade_date == day)
+        frames.append(
+            PitFrame(
+                trade_date=day,
+                publication_sequence=sequence,
+                market=fixture.model_copy(
+                    update={
+                        "trade_date": day,
+                        "as_of": datetime(day.year, day.month, day.day, 17, tzinfo=UTC),
+                        "bars": daily_bars,
+                    }
+                ),
+            )
+        )
+        factors.append(
+            FactorFrame(
+                trade_date=day,
+                factor_id="FAC-R01",
+                metric="synthetic_cross_section",
+                window="synthetic_daily",
+                unit="ratio",
+                points=tuple(
+                    FactorPoint(security_id=item.security_id, value=item.close)
+                    for item in daily_bars
+                    if item.security_id in fixture.expected_security_ids
+                ),
+            )
+        )
+    anchor = PitAnchor(
+        publication_sequence=sequence,
+        trade_date=publication.trade_date,
+        status="published",
+    )
+    active, stop = Event(), Event()
+    lock = Lock()
+    progress = {"checkpoints": 0, "iterations": 0}
+
+    def compute(snapshot, submitted_config, checkpoint):
+        assert snapshot.id == publication.id
+        assert submitted_config == config
+        progress["sql_context"] = CURRENT_PUBLIC_PATH.get()
+        assert progress["sql_context"] is None
+
+        def observed_checkpoint():
+            checkpoint()
+            with lock:
+                progress["checkpoints"] += 1
+            active.set()
+
+        try:
+            while True:
+                result = run_backtest(
+                    submitted_config,
+                    tuple(frames),
+                    tuple(factors),
+                    anchor=anchor,
+                    policy=UniversePolicy(),
+                    checkpoint=observed_checkpoint,
+                )
+                with lock:
+                    progress["iterations"] += 1
+                if stop.is_set():
+                    return result.model_dump(mode="json")
+        finally:
+            active.clear()
+
+    worker = ResearchBacktestWorker(
+        runs,
+        worker_id="task27-performance-research",
+        compute=compute,
+    )
+    measured = []
+    captured = []
+    state_before = _application_state(database)
+    # ThreadPoolExecutor does not inherit the request context. Worker ledger
+    # and cache writes therefore have None attribution, never a public path.
+    with (
+        _capture_public_sql(database.engine, captured),
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        future = executor.submit(worker.run_once)
+        try:
+            while not active.is_set():
+                if future.done():
+                    raise AssertionError(f"Research never started: {future.result()}")
+                await asyncio.sleep(0)
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://public.example",
+            ) as client:
+                gc.collect()
+                gc.disable()
+                try:
+                    for number in range(1, MEASURED_ROUNDS + 1):
+                        with lock:
+                            before = progress["checkpoints"]
+                        active_before = active.is_set() and not future.done()
+                        before_queries = len(captured)
+                        metrics, _latencies = await _run(
+                            client, paths, captured, number
+                        )
+                        with lock:
+                            after = progress["checkpoints"]
+                        round_captured = captured[before_queries:]
+                        shapes = _observed_query_shapes(round_captured)
+                        endpoint_hashes = _endpoint_shape_hashes(shapes)
+                        metrics.update(
+                            worker_active_before=active_before,
+                            worker_active_after=active.is_set() and not future.done(),
+                            checkpoint_count_before=before,
+                            checkpoint_count_after=after,
+                            sql_write_count=sum(
+                                item["verb"] in WRITE_VERBS for item in round_captured
+                            ),
+                            observed_query_shapes=shapes,
+                            endpoint_shape_hashes=endpoint_hashes,
+                            query_attribution_groups=_query_attribution_groups(
+                                endpoint_hashes
+                            ),
+                        )
+                        measured.append(metrics)
+                finally:
+                    gc.enable()
+        finally:
+            stop.set()
+            completed = await asyncio.wrap_future(future)
+    state_after = _application_state(database)
+    assert completed is not None and completed.id == queued.id
+    assert completed.status == "succeeded", completed.failure
+    assert completed.result is not None
+    assert len(completed.result["equity"]) == SESSION_COUNT
+    assert completed.result["research_only"] is True
+    evidence = {
+        "synthetic": True,
+        "label": "real_engine_repeated_until_public_rounds_finish",
+        "worker": "ResearchBacktestWorker",
+        "submitted_status": queued.status,
+        "status": completed.status,
+        "config_hash": config.config_hash,
+        "result_config_hash": completed.result["config_hash"],
+        "engine_iterations": progress["iterations"],
+        "checkpoint_count": progress["checkpoints"],
+        "securities": len(fixture.expected_security_ids),
+        "trading_sessions": len(fixture.calendar.sessions),
+        "runs": measured,
+        "sql_attribution": "CURRENT_PUBLIC_PATH",
+        "worker_sql_context": progress["sql_context"],
+        "stable_state_excluded_tables": [
+            "research_backtest_cache",
+            "research_backtest_runs",
+        ],
+        "application_state_before": state_before,
+        "application_state_after": state_after,
+    }
+    checker = runpy.run_path(str(Path(__file__).parents[2] / "scripts/verify_reset.py"))
+    assert checker["_research_load_errors"](evidence) == []
+    return evidence
+
+
 async def test_reset_public_queries_meet_budget_and_do_not_write(database, repository):
     embedded = _shared_grant()
     fixture = _performance_batch().model_copy(update={"grant": embedded})
@@ -613,27 +875,6 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
     assert tuple(_path_label(path) for path in paths) == MEASURED_PATHS
     captured = []
 
-    def start_query(_conn, _cursor, statement, parameters, context, _executemany):
-        context.task20_evidence = (
-            time.perf_counter(),
-            {
-                "path": CURRENT_PUBLIC_PATH.get(),
-                "verb": _statement_verb(statement),
-                "statement": statement,
-                "parameters": parameters,
-            },
-        )
-
-    def finish_query(_conn, _cursor, _statement, _parameters, context, _executemany):
-        finished = time.perf_counter()
-        started, item = context.task20_evidence
-        captured.append(
-            {
-                **item,
-                "duration_seconds": finished - started,
-            }
-        )
-
     public = public_publication_repository(database, repository, clock=lambda: NOW)
     app = create_public_app(repository=public)
     assert not any(
@@ -664,26 +905,25 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         assert warmup["request_count"] == WARMUP_WAVES * CONCURRENCY
         assert warmup["successful"] == warmup["request_count"]
         state_before = _application_state(database)
-        event.listen(database.engine, "before_cursor_execute", start_query)
-        event.listen(database.engine, "after_cursor_execute", finish_query)
         # Force a full collection after warmup, then fence cyclic GC for the
         # measured window so collector pauses cannot create tail latency on the
         # shared, CPU-contended CI runner. Re-enabled unconditionally below.
-        gc.collect()
-        gc.disable()
-        try:
-            measured = [
-                await _run(client, paths, captured, round_number)
-                for round_number in range(1, MEASURED_ROUNDS + 1)
-            ]
-            runs = [item[0] for item in measured]
-            all_latencies = [
-                latency for _run_metrics, latencies in measured for latency in latencies
-            ]
-        finally:
-            gc.enable()
-            event.remove(database.engine, "before_cursor_execute", start_query)
-            event.remove(database.engine, "after_cursor_execute", finish_query)
+        with _capture_public_sql(database.engine, captured):
+            gc.collect()
+            gc.disable()
+            try:
+                measured = [
+                    await _run(client, paths, captured, round_number)
+                    for round_number in range(1, MEASURED_ROUNDS + 1)
+                ]
+                runs = [item[0] for item in measured]
+                all_latencies = [
+                    latency
+                    for _run_metrics, latencies in measured
+                    for latency in latencies
+                ]
+            finally:
+                gc.enable()
     observed_query_shapes = _observed_query_shapes(captured)
     endpoint_shape_hashes = _endpoint_shape_hashes(observed_query_shapes)
     query_attribution_groups = _query_attribution_groups(endpoint_shape_hashes)
@@ -783,6 +1023,16 @@ async def test_reset_public_queries_meet_budget_and_do_not_write(database, repos
         if shape["plan_role"] == "payload_projection_read"
     }
     assert all(run["rss_bytes"] > 0 for run in evidence["runs"])
+    evidence["research_concurrent_load"] = await _concurrent_research_load(
+        database,
+        repository,
+        owners,
+        session,
+        publication,
+        fixture,
+        paths,
+        app,
+    )
     artifact = Path(".temp/acceptance/reset-performance.json")
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(

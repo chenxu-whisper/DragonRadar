@@ -73,6 +73,11 @@ def add_commands(commands: argparse._SubParsersAction) -> None:
     )
     worker.add_argument("--poll-seconds", type=_poll_seconds, default=1.0)
     worker.add_argument(
+        "--research-production-request",
+        type=Path,
+        help="Protected explicit request with pinned trust and signed research inputs",
+    )
+    worker.add_argument(
         "--lease-seconds",
         type=lambda value: _bounded_integer(
             value, minimum=1, maximum=3600, label="lease seconds"
@@ -156,6 +161,15 @@ def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
         # option. It runs on a daemon thread while analysis owns the main
         # thread, so the same worker identity and lease settings apply.
         research_runs = ResearchRunRepository(repository.database, owners, publications)
+        research_compute = fail_closed_research_compute
+        production_request = getattr(args, "research_production_request", None)
+        if production_request is not None:
+            from dragon_radar.research.production import load_production_compute
+
+            research_compute = load_production_compute(
+                production_request,
+                database=repository.database,
+            )
         analysis_worker = AnalysisJobWorker(
             jobs,
             worker_id=args.worker_id,
@@ -167,7 +181,7 @@ def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
             worker_id=args.worker_id,
             lease_for=timedelta(seconds=args.lease_seconds),
             max_attempts=args.max_attempts,
-            compute=fail_closed_research_compute,
+            compute=research_compute,
         )
         threading.Thread(
             target=research_worker.run_forever,

@@ -2028,7 +2028,15 @@ def build_release_manifest(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from dragon_radar.production.cli import (
+        add_arguments,
+        evaluate_arguments,
+        write_report,
+    )
+
     parser = argparse.ArgumentParser()
+    parser.add_argument("--production-evidence-output", type=Path)
+    add_arguments(parser)
     parser.add_argument(
         "--check",
         type=Path,
@@ -2049,6 +2057,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
+        if args.production_evidence_output is not None:
+            # Independent report: never upgrades the historical audit schema
+            # or self-asserts VERIFIED inside a committed release manifest.
+            external = evaluate_arguments(args, code_root=REPOSITORY_ROOT)
+            write_report(args.production_evidence_output, external)
         if args.check is not None:
             check_release_manifest(
                 REPOSITORY_ROOT,

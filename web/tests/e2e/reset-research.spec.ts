@@ -243,6 +243,7 @@ test.describe('Task 17 owner research backtest workbench', () => {
       .toBeLessThanOrEqual(await page.evaluate(() => document.documentElement.clientWidth));
     await expect(panel).toBeVisible();
 
+    await capturePage(page, 'research-result-200pct.png');
     expect(consoleErrors).toEqual([]);
   });
 
@@ -277,6 +278,7 @@ test.describe('Task 17 owner research backtest workbench', () => {
     // A terminal record must not schedule another 1s poll.
     await page.waitForTimeout(1_300);
     expect(research.runGets).toBe(getsAtCancel);
+    await capturePage(page, 'research-cancelled.png');
     expect(consoleErrors).toEqual([]);
   });
 
@@ -301,6 +303,7 @@ test.describe('Task 17 owner research backtest workbench', () => {
     expect(research.runGets).toBe(0);
     expect(research.calls.every(call =>
       call.method === 'GET' && call.path === `/api/research/manifests/${ID}`)).toBe(true);
+    await capturePage(page, 'research-manifest-375px.png');
     expect(consoleErrors).toEqual([]);
   });
 });
@@ -374,9 +377,17 @@ test.describe('Task 17 local simulation ledger', () => {
     await expect(restored.getByRole('table', { name: '模拟持仓' })).toContainText('TEST001');
     await expect(restored).toContainText('账本 revision 1');
     expect(allRequests.some(path => path.startsWith('/api/research/'))).toBe(false);
+    await capturePage(page, 'simulation-restored-375px.png');
     expect(consoleErrors).toEqual([]);
   });
 });
+
+async function capturePage(page: Page, name: string): Promise<void> {
+  // Capture from the page top so sticky navigation does not cover the middle
+  // of a tall element screenshot. Keep the rendered page and styles intact.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: test.info().outputPath(name), fullPage: true });
+}
 
 async function readSimulationStores(page: Page): Promise<{
   accounts: unknown[];

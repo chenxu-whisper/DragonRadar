@@ -2,9 +2,9 @@
 
 This suite does not replace the per-domain suites. It links the 57 PRD
 requirements and engineering extensions EX01-EX16 to their actually delivered
-evidence, pins the cross-domain snapshot-binding rules, and records the Task 27
-scope boundary (B01/B02) as an explicit blocked contract instead of silently
-skipping it.
+evidence and pins cross-domain snapshot-binding rules. Task 27 B01/B02 are
+implemented research-only capabilities; the historical final acceptance keeps
+its five independent external production gates blocked.
 """
 
 from __future__ import annotations
@@ -343,21 +343,27 @@ REQ_REGISTRY: dict[str, dict[str, object]] = {
     },
     "B01": {
         "tasks": "27、29",
-        "status": "blocked",
-        "blocked_reason": (
-            "Task 27 not implemented: EX14 PIT backtest / factor health check / "
-            "walk-forward"
+        "status": "implemented",
+        "research_only": True,
+        "evidence": (
+            f"{T}test_reset_backtest.py",
+            f"{T}test_reset_research_validation.py",
+            f"{T}performance/test_reset_queries.py",
+            f"{W}e2e/reset-research.spec.ts",
+            "docs/acceptance/task27-research.md",
         ),
-        "evidence": ("docs/acceptance/reset-final.md",),
     },
     "B02": {
         "tasks": "27、29",
-        "status": "blocked",
-        "blocked_reason": (
-            "Task 27 not implemented: EX15 local simulation ledger / AI uplift "
-            "comparison"
+        "status": "implemented",
+        "research_only": True,
+        "evidence": (
+            f"{T}test_reset_backtest.py",
+            f"{T}test_reset_research_validation.py",
+            f"{W}unit/reset-simulation.test.ts",
+            f"{W}e2e/reset-research.spec.ts",
+            "docs/acceptance/task27-research.md",
         ),
-        "evidence": ("docs/acceptance/reset-final.md",),
     },
     "X01": {
         "tasks": "19",
@@ -548,13 +554,22 @@ EX_REGISTRY: dict[str, tuple[str, str, str | None, tuple[str, ...]]] = {
         "27",
         "owner",
         "/api/research/backtests",
-        (f"{T}test_reset_backtest.py",),
+        (
+            f"{T}test_reset_backtest.py",
+            f"{W}e2e/reset-research.spec.ts",
+            "docs/acceptance/task27-research.md",
+        ),
     ),
     "EX15": (
         "27",
         "owner",
         "/api/research/backtests/{run_id}",
-        (f"{T}test_reset_backtest.py",),
+        (
+            f"{T}test_reset_backtest.py",
+            f"{T}performance/test_reset_queries.py",
+            f"{W}e2e/reset-research.spec.ts",
+            "docs/acceptance/task27-research.md",
+        ),
     ),
     "EX16": (
         "28",
@@ -569,8 +584,6 @@ EX_REGISTRY: dict[str, tuple[str, str, str | None, tuple[str, ...]]] = {
     ),
 }
 
-BLOCKED_REQS = {"B01", "B02"}
-BLOCKED_EX: set[str] = set()
 PRIVATE_PREFIXES = ("/api/owner", "/api/query", "/api/ai", "/api/research")
 
 STATE_ANCHORS = (
@@ -621,8 +634,6 @@ def test_req_registry_covers_exactly_the_57_prd_requirements():
 
 def test_delivered_requirements_carry_existing_automated_evidence():
     for req_id, entry in REQ_REGISTRY.items():
-        if req_id in BLOCKED_REQS:
-            continue
         evidence = entry["evidence"]
         automated = [
             path for path in evidence if path.startswith(("tests/", "web/tests/"))
@@ -632,20 +643,19 @@ def test_delivered_requirements_carry_existing_automated_evidence():
             assert (ROOT / path).is_file(), f"{req_id} evidence missing: {path}"
 
 
-def test_blocked_requirements_are_exactly_task27_and_carry_no_fake_evidence():
+def test_task27_requirements_are_implemented_with_research_only_evidence():
     blocked = {
         req_id
         for req_id, entry in REQ_REGISTRY.items()
         if entry.get("status") == "blocked"
     }
-    assert blocked == BLOCKED_REQS
-    for req_id in BLOCKED_REQS:
+    assert blocked == set()
+    for req_id in ("B01", "B02"):
         entry = REQ_REGISTRY[req_id]
-        assert "Task 27" in entry["blocked_reason"]
-        assert entry["evidence"] == ("docs/acceptance/reset-final.md",)
-        assert (ROOT / "docs/acceptance/reset-final.md").is_file(), (
-            f"{req_id} blocked scope must be recorded in reset-final.md"
-        )
+        assert entry["status"] == "implemented"
+        assert entry["research_only"] is True
+        assert "blocked_reason" not in entry
+        assert "docs/acceptance/task27-research.md" in entry["evidence"]
 
 
 # ---------------------------------------------------------------------------
@@ -660,12 +670,7 @@ def test_ex_registry_covers_all_sixteen_extensions_with_no_blocked_surface():
         for ex_id, (_task, surface, route, _evidence) in EX_REGISTRY.items()
         if surface == "none"
     }
-    assert blocked == BLOCKED_EX
-    for ex_id in BLOCKED_EX:
-        task, surface, route, evidence = EX_REGISTRY[ex_id]
-        assert task == "27"
-        assert route is None
-        assert evidence == ("docs/acceptance/reset-final.md",)
+    assert blocked == set()
 
 
 def test_all_ex_evidence_paths_exist():
@@ -756,10 +761,7 @@ def test_migration_head_is_0014_research_with_task27_revision():
     assert "0014_research" in revisions
 
 
-# Task 27 unfreezes in slices. Task 1 delivers the pure-kernel package
-# skeleton plus collectible test placeholders; every later-slice artifact
-# keeps its frozen absence until its owning task flips the contract.
-TASK27_SKELETON = (
+TASK27_ARTIFACTS = (
     "src/dragon_radar/research/__init__.py",
     "src/dragon_radar/research/models.py",
     "src/dragon_radar/research/pit.py",
@@ -771,32 +773,30 @@ TASK27_SKELETON = (
     "src/dragon_radar/research/ablation.py",
     "src/dragon_radar/research/repository.py",
     "src/dragon_radar/research/worker.py",
+    "src/dragon_radar/http/routes/research.py",
+    "web/src/features/research/BacktestPanel.tsx",
+    "web/src/features/research/OwnerBacktestWorkbench.tsx",
+    "web/src/features/research/SimulationPanel.tsx",
+    "web/src/repositories/local/simulation.ts",
     "tests/test_reset_backtest.py",
     "tests/test_reset_research_validation.py",
     "web/tests/unit/reset-simulation.test.ts",
     "web/tests/e2e/reset-research.spec.ts",
 )
 
-# Task 16 delivered the owner-only research workbench BacktestPanel, so no
-# later-slice artifacts remain frozen behind this gate.
-TASK27_LATER_ARTIFACTS: tuple[str, ...] = ()
 
-
-def test_task27_skeleton_present_but_later_slice_artifacts_remain_absent():
-    for relative in TASK27_SKELETON:
-        assert (ROOT / relative).is_file(), f"Task 27 skeleton missing: {relative}"
-
-    for relative in TASK27_LATER_ARTIFACTS:
-        assert not (ROOT / relative).exists(), (
-            f"Task 27 later-slice artifact appeared early: {relative}"
-        )
+def test_task27_implemented_artifacts_are_present():
+    for relative in TASK27_ARTIFACTS:
+        assert (ROOT / relative).is_file(), f"Task 27 artifact missing: {relative}"
 
     # Task 14 delivered the IDB v5 simulation repository, Task 15 added the
     # local SimulationPanel and Task 16 added the owner-only BacktestPanel;
+    # Task 18 isolates its manifest subscription behind a lazy owner wrapper.
     # SentimentPanel stays the Task 28 read-only surface.
     research_feature = ROOT / "web/src/features/research"
     assert {path.name for path in research_feature.glob("*.tsx")} == {
         "BacktestPanel.tsx",
+        "OwnerBacktestWorkbench.tsx",
         "SentimentPanel.tsx",
         "SimulationPanel.tsx",
     }

@@ -1,0 +1,5 @@
+
+> dragon-radar-workbench@0.1.0 test:e2e:production-isolation
+> node scripts/test-production-isolation.mjs
+
+{"private":"https://localhost:32772","public":"http://127.0.0.1:32773","status":"passed"}

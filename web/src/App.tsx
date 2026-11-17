@@ -18,11 +18,11 @@ import { Overview } from './pages/Overview';
 import { Analysis, ResetBacktestPanel, ResetQueryPanel } from './pages/Analysis';
 import type { LeadersProps } from './pages/Leaders';
 import type { SecurityDrawerProps, SecurityPageProps } from './pages/SecurityDetail';
-import type { BacktestManifestResource } from './features/research/manifest-resource';
 
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const publicSharing = import.meta.env.VITE_PUBLIC_SHARING === '1';
 const localReviewEnabled = resetEnabled && !publicSharing;
+const ownerResearchEnabled = resetEnabled && !publicSharing;
 const resetNavigation = [
   { view: 'overview', text: '总览', Icon: BarChart3 },
   { view: 'news', text: '消息', Icon: Newspaper },
@@ -140,12 +140,6 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const [paletteOpen, setPaletteOpen] = useState(false);
   // 命令索引只保存在内存：仅由已加载 reset 页面经 dr:index-items 上报，去重上限 500。
   const [index, setIndex] = useState<SearchIndex>(EMPTY_INDEX);
-  // Task 17 研究清单资源：null 即 fail-closed，BacktestPanel 保持提交禁用直到拿到
-  // 已校验的 owner manifest；动态订阅逻辑见下方 effect（默认构建整体折叠）。
-  const [manifestResource, setManifestResource] = useState<BacktestManifestResource>({
-    manifest: null,
-    loading: false,
-  });
   const context = stateSearch(state, privateEnabled, resetEnabled);
   const list = useResource<Snapshot[] | ResetSnapshotList>(resetEnabled
     ? `/api/snapshots/list?${new URLSearchParams({ ...(state.date ? { date: state.date } : {}), limit: '100', offset: '0' })}`
@@ -252,26 +246,6 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
       unbind?.();
     };
   }, []);
-  useEffect(() => {
-    // Task 17 研究清单通道：仅 reset 构建、analysis 视图且存在所选快照时订阅 owner
-    // manifest 端点。动态 import 使默认构建折叠整条研究依赖（不产出 research chunk）；
-    // 加载失败、请求失败或取消一律保持 null，由 BacktestPanel 自身的清单闸门 fail-closed。
-    if (!resetEnabled || denied || state.view !== 'analysis' || !state.snapshot) {
-      setManifestResource({ manifest: null, loading: false });
-      return;
-    }
-    const snapshotId = state.snapshot;
-    let cancelled = false;
-    let unsubscribe: (() => void) | undefined;
-    void import('./features/research/manifest-resource').then(mod => {
-      if (cancelled) return;
-      unsubscribe = mod.subscribeBacktestManifest(snapshotId, setManifestResource);
-    }).catch(() => { /* research chunk 不可用时静默降级，面板维持禁用 */ });
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, [state.snapshot, state.view, denied]);
   useEffect(() => {
     if (denied) { setIndex(EMPTY_INDEX); setPaletteOpen(false); }
   }, [denied]);
@@ -423,12 +397,12 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
             <ResetQueryPanel state={state} patch={patch} snapshot={snapshot} open={open} />
           </Suspense></LazyLoadBoundary>
         )}
-        {/* Task 16/17 研究回测面板：与白名单查询同构的 reset-only 主区持久挂载，仅在
-            analysis 视图下渲染；manifest 由 Task 17 owner 清单订阅注入，加载/失败期为
+        {/* Task 16/17 研究回测面板：与白名单查询同构的 owner-only 主区持久挂载，仅在
+            analysis 视图下渲染；manifest 在 owner 懒模块内订阅，加载/失败期为
             null，面板 fail-closed 禁用提交。 */}
-        {ResetBacktestPanel && resetEnabled && !denied && state.view === 'analysis' && (
+        {ResetBacktestPanel && ownerResearchEnabled && !denied && state.view === 'analysis' && (
           <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载研究回测…</p>}>
-            <ResetBacktestPanel manifest={manifestResource.manifest} />
+            <ResetBacktestPanel snapshotId={state.snapshot} />
           </Suspense></LazyLoadBoundary>
         )}
       </main>
