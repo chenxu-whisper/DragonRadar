@@ -1,0 +1,83 @@
+{
+  "trade_date": "2026-09-08",
+  "as_of": "2026-09-09T00:00:00Z",
+  "provenance": "retrospective",
+  "source_id": "synthetic-example",
+  "source_version": "synthetic-v1",
+  "adjustment_version": "synthetic-factor-v1",
+  "calendar_version": "synthetic-calendar-v1",
+  "pool_version": "synthetic-pool-v1",
+  "grant": {
+    "source_id": "synthetic-example",
+    "approved": true,
+    "reference": "Project-authored synthetic test material; not market data",
+    "starts_at": "2026-01-01T00:00:00Z",
+    "expires_at": "2030-01-01T00:00:00Z",
+    "local_storage": true,
+    "local_display": true,
+    "export": false,
+    "ai": false,
+    "sharing": false
+  },
+  "calendar": {
+    "exchange": "TEST",
+    "version": "synthetic-calendar-v1",
+    "sessions": ["2026-09-07", "2026-09-08"]
+  },
+  "expected_security_ids": ["SYNTH-A"],
+  "security_states": [
+    {
+      "security_id": "SYNTH-A",
+      "name": "Synthetic A - Not A Real Security",
+      "board": "synthetic-board",
+      "exchange": "TEST",
+      "effective_from": "2026-09-07",
+      "available_at": "2026-09-06T00:00:00Z",
+      "listing_date": "2020-01-01",
+      "suspended": false,
+      "is_st": false,
+      "source_id": "synthetic-example",
+      "source_version": "synthetic-v1",
+      "pool_version": "synthetic-pool-v1"
+    }
+  ],
+  "bars": [
+    {
+      "security_id": "SYNTH-A",
+      "trade_date": "2026-09-07",
+      "available_at": "2026-09-07T10:00:00Z",
+      "source_id": "synthetic-example",
+      "source_version": "synthetic-v1",
+      "close": "100",
+      "previous_close": "100",
+      "adjustment_factor": "1",
+      "adjustment_version": "synthetic-factor-v1",
+      "currency": "CNY",
+      "price_unit": "currency/share",
+      "volume_unit": "share",
+      "amount_unit": "currency",
+      "volume": "100",
+      "amount": "10000",
+      "limit_status": "no_limit"
+    },
+    {
+      "security_id": "SYNTH-A",
+      "trade_date": "2026-09-08",
+      "available_at": "2026-09-08T10:00:00Z",
+      "source_id": "synthetic-example",
+      "source_version": "synthetic-v1",
+      "close": "110",
+      "previous_close": "100",
+      "adjustment_factor": "1",
+      "adjustment_version": "synthetic-factor-v1",
+      "currency": "CNY",
+      "price_unit": "currency/share",
+      "volume_unit": "share",
+      "amount_unit": "currency",
+      "volume": "100",
+      "amount": "11000",
+      "limit_status": "no_limit"
+    }
+  ],
+  "complete_pages": true
+}

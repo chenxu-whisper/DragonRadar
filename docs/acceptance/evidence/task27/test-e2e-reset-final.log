@@ -1,0 +1,485 @@
+
+> dragon-radar-workbench@0.1.0 test:e2e:reset
+> playwright test --config playwright.reset.config.ts
+
+
+Running 170 tests using 2 workers
+
+  ✓    1 tests\e2e\reset-acceptance.spec.ts:270:5 › overview retains its responsive layout at 375px (3.7s)
+  ✓    2 tests\e2e\reset-analysis.spec.ts:173:1 › 20日排行展示基准、收益、回撤、成交额、题材、覆盖和排除 (4.4s)
+  ✓    3 tests\e2e\reset-acceptance.spec.ts:270:5 › overview retains its responsive layout at 1440px (3.0s)
+  ✓    4 tests\e2e\reset-analysis.spec.ts:198:1 › 基准与复权写入URL，且不可用复权不伪装为raw (3.5s)
+  ✓    5 tests\e2e\reset-acceptance.spec.ts:270:5 › news retains its responsive layout at 375px (3.0s)
+  ✓    6 tests\e2e\reset-analysis.spec.ts:213:1 › 最多比较五个标的，第六个不发请求，并切换归一化与回撤缺口 (4.0s)
+  ✓    7 tests\e2e\reset-acceptance.spec.ts:270:5 › news retains its responsive layout at 1440px (3.0s)
+  ✓    8 tests\e2e\reset-analysis.spec.ts:235:1 › 自定义休市区间展示后端调整结果 (3.4s)
+[WebServer] 12:42:58 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓    9 tests\e2e\reset-acceptance.spec.ts:270:5 › leaders retains its responsive layout at 375px (3.2s)
+[WebServer] 12:43:01 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   11 tests\e2e\reset-acceptance.spec.ts:270:5 › leaders retains its responsive layout at 1440px (3.2s)
+  ✓   10 tests\e2e\reset-analysis.spec.ts:247:1 › 详情使用同快照raw K线，并展示完整角色、封板和未知监管证据 (5.8s)
+[WebServer] 12:43:04 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   12 tests\e2e\reset-acceptance.spec.ts:270:5 › analysis retains its responsive layout at 375px (2.8s)
+[WebServer] 12:43:07 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:43:07 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   13 tests\e2e\reset-analysis.spec.ts:279:1 › close-only接口退化为收盘线，375px记录布局无页面横向溢出 (3.5s)
+  ✓   14 tests\e2e\reset-acceptance.spec.ts:270:5 › analysis retains its responsive layout at 1440px (3.0s)
+[WebServer] 12:43:11 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:43:11 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   16 tests\e2e\reset-acceptance.spec.ts:270:5 › stock retains its responsive layout at 375px (3.8s)
+  ✓   15 tests\e2e\reset-analysis.spec.ts:295:1 › 错误快照和畸形排行响应都清除旧数据且不泄漏payload (4.5s)
+[WebServer] 12:43:15 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:43:15 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   17 tests\e2e\reset-acceptance.spec.ts:270:5 › stock retains its responsive layout at 1440px (4.2s)
+  ✓   18 tests\e2e\reset-full-scope.spec.ts:205:1 › pinned daily publication survives 总览→梯队→涨幅 navigation while realtime stays an independent batch (6.4s)
+  ✓   19 tests\e2e\reset-acceptance.spec.ts:270:5 › regulation retains its responsive layout at 375px (3.6s)
+  ✓   20 tests\e2e\reset-full-scope.spec.ts:268:1 › LHB stock evidence is read-only and carries the synthetic authorization badge (3.6s)
+  ✓   21 tests\e2e\reset-acceptance.spec.ts:270:5 › regulation retains its responsive layout at 1440px (3.7s)
+  ✓   22 tests\e2e\reset-full-scope.spec.ts:337:1 › word cloud on 消息 view binds licensed terms to its own publication id (3.4s)
+  ✓   23 tests\e2e\reset-acceptance.spec.ts:270:5 › review retains its responsive layout at 375px (3.1s)
+  ✓   24 tests\e2e\reset-full-scope.spec.ts:357:1 › rotation timeline pins the anchor day to the current publication and is served under leaders (3.0s)
+  ✓   25 tests\e2e\reset-acceptance.spec.ts:270:5 › review retains its responsive layout at 1440px (3.2s)
+  ✓   26 tests\e2e\reset-full-scope.spec.ts:375:1 › NL query parse→preview→explicit confirm→execute binds the result to the pinned publication (3.9s)
+  ✓   27 tests\e2e\reset-acceptance.spec.ts:285:5 › overview works at layout-equivalent 200% and 375px (4.3s)
+  ✓   29 tests\e2e\reset-acceptance.spec.ts:285:5 › overview works at layout-equivalent 200% and 1440px (3.5s)
+  ✓   28 tests\e2e\reset-full-scope.spec.ts:441:1 › local note saves while offline and recovers after reload without any owner request (5.7s)
+  ✓   30 tests\e2e\reset-acceptance.spec.ts:285:5 › news works at layout-equivalent 200% and 375px (3.9s)
+  ✓   31 tests\e2e\reset-full-scope.spec.ts:466:1 › realtime authorization revocation hides the live batch and never falls back to the daily snapshot (3.9s)
+  ✓   32 tests\e2e\reset-acceptance.spec.ts:285:5 › news works at layout-equivalent 200% and 1440px (3.3s)
+  ✓   33 tests\e2e\reset-full-scope.spec.ts:479:1 › dark theme and compact density persist across navigation, and Ctrl+K keeps the pinned snapshot (5.2s)
+[WebServer] 12:43:48 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:43:48 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:43:49 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   34 tests\e2e\reset-acceptance.spec.ts:285:5 › leaders works at layout-equivalent 200% and 375px (4.5s)
+[WebServer] 12:43:52 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   35 tests\e2e\reset-full-scope.spec.ts:508:1 › Task 27 owner boundary: read-only views stay research-silent while analysis mounts the panel with a publication-bound manifest read (5.8s)
+[WebServer] 12:43:54 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:43:54 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   36 tests\e2e\reset-acceptance.spec.ts:285:5 › leaders works at layout-equivalent 200% and 1440px (5.7s)
+[WebServer] 12:43:58 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   37 tests\e2e\reset-leaders.spec.ts:14:1 › sector matrix never mixes full-market historical counts with filtered ladder rows (4.8s)
+[WebServer] 12:43:59 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:00 [vite] http proxy error: /api/compare/curves?snapshot_id=00000000-0000-4000-8000-000000000001&symbols=TEST001&start=2026-08-13&end=2026-09-10&benchmark=B000300&adj=raw
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   38 tests\e2e\reset-acceptance.spec.ts:285:5 › analysis works at layout-equivalent 200% and 375px (5.5s)
+[WebServer] 12:44:02 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   39 tests\e2e\reset-leaders.spec.ts:25:1 › renders the date-by-board matrix, tied candidates and honest comparison evidence (4.2s)
+[WebServer] 12:44:04 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:05 [vite] http proxy error: /api/compare/curves?snapshot_id=00000000-0000-4000-8000-000000000001&symbols=TEST001&start=2026-08-13&end=2026-09-10&benchmark=B000300&adj=raw
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   40 tests\e2e\reset-acceptance.spec.ts:285:5 › analysis works at layout-equivalent 200% and 1440px (4.5s)
+[WebServer] 12:44:05 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:07 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:07 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:08 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST002&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:08 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST002&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   41 tests\e2e\reset-leaders.spec.ts:44:1 › matrix securities share one drawer and expose six traceable evidence groups (6.3s)
+[WebServer] 12:44:08 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:08 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   42 tests\e2e\reset-acceptance.spec.ts:285:5 › stock works at layout-equivalent 200% and 375px (5.4s)
+[WebServer] 12:44:12 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:13 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:13 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:13 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST002&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:13 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST002&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   43 tests\e2e\reset-leaders.spec.ts:75:1 › all-sector matrix and candidate rows carry their own evidence sector without changing the filter (5.0s)
+[WebServer] 12:44:14 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:14 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   44 tests\e2e\reset-acceptance.spec.ts:285:5 › stock works at layout-equivalent 200% and 1440px (4.5s)
+[WebServer] 12:44:17 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   45 tests\e2e\reset-leaders.spec.ts:100:1 › renders role change details even when comparison summaries are empty (4.6s)
+  ✓   46 tests\e2e\reset-acceptance.spec.ts:285:5 › regulation works at layout-equivalent 200% and 375px (5.0s)
+[WebServer] 12:44:22 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   47 tests\e2e\reset-leaders.spec.ts:109:1 › keeps candidate and role-change fields readable without horizontal scrolling at 375px (6.0s)
+  ✓   48 tests\e2e\reset-acceptance.spec.ts:285:5 › regulation works at layout-equivalent 200% and 1440px (5.2s)
+[WebServer] 12:44:28 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:29 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   49 tests\e2e\reset-leaders.spec.ts:162:1 › all topics use the weakest status while a selected sector uses only its own status (4.8s)
+  ✓   50 tests\e2e\reset-acceptance.spec.ts:285:5 › review works at layout-equivalent 200% and 375px (4.7s)
+[WebServer] 12:44:32 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:34 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   51 tests\e2e\reset-leaders.spec.ts:178:1 › reset stock 404 is shown directly and never falls back to the legacy endpoint (4.8s)
+  ✓   52 tests\e2e\reset-acceptance.spec.ts:285:5 › review works at layout-equivalent 200% and 1440px (4.4s)
+[WebServer] 12:44:38 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:39 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:39 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:40 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:40 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   54 tests\e2e\reset-acceptance.spec.ts:314:1 › overview at 375px exports the current filter with immutable metadata (6.1s)
+  ✓   53 tests\e2e\reset-leaders.spec.ts:200:1 › malformed reset stock response uses the public error state and clears stale detail (7.0s)
+[WebServer] 12:44:45 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   56 tests\e2e\reset-leaders.spec.ts:219:1 › candidate coverage discloses valid, expected, excluded and missing counts (4.6s)
+  ✓   55 tests\e2e\reset-acceptance.spec.ts:336:1 › news at 1440px remains readable at 200% zoom and exports only the current page (5.6s)
+[WebServer] 12:44:50 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:52 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:52 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:52 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:53 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:53 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   58 tests\e2e\reset-acceptance.spec.ts:353:1 › leaders supports keyboard, reduced motion, drawer Escape, focus restoration and export (8.0s)
+  ✓   57 tests\e2e\reset-leaders.spec.ts:226:1 › preserves leaders filters through drawer, local watchlist and a bound note (9.1s)
+[WebServer] 12:44:55 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:58 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:58 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:58 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   59 tests\e2e\reset-acceptance.spec.ts:383:1 › analysis exports the rendered current page and declared benchmark/basis (4.4s)
+[WebServer] 12:44:59 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:44:59 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   60 tests\e2e\reset-leaders.spec.ts:267:1 › distinguishes no candidate, insufficient, unavailable, forbidden and offline states (4.6s)
+[WebServer] 12:45:02 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:45:02 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:45:03 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:45:03 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30&sector=SEC001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   61 tests\e2e\reset-acceptance.spec.ts:424:1 › stock detail exports its current raw date window without page overflow (4.6s)
+  ✓   62 tests\e2e\reset-leaders.spec.ts:298:1 › offline refresh retains only same-selection stale data and desktop/mobile never overflow (4.0s)
+  ✓   63 tests\e2e\reset-acceptance.spec.ts:461:1 › regulation exports rendered calculations and events with row rule versions (4.3s)
+  ✓   64 tests\e2e\reset-lhb.spec.ts:312:1 › renders same-name seats distinctly with null vs zero and a synthetic badge (4.6s)
+  ✓   66 tests\e2e\reset-lhb.spec.ts:342:1 › opens seat history with the keyboard and restores focus on escape (5.3s)
+  ✓   65 tests\e2e\reset-acceptance.spec.ts:475:1 › local review preserves conflicting draft and exposes explicit JSON backup only (10.5s)
+  ✓   67 tests\e2e\reset-lhb.spec.ts:365:1 › shows the unknown-identity placeholder and a 404 as an empty history, not an error (5.7s)
+  ✓   68 tests\e2e\reset-market.spec.ts:145:1 › explicit snapshot deep link does not depend on the first list page (4.0s)
+  ✓   69 tests\e2e\reset-lhb.spec.ts:386:1 › hides the late disclosure when as_of precedes its available time (4.2s)
+  ✓   70 tests\e2e\reset-market.spec.ts:156:1 › reset overview uses versioned APIs and persists drill-down context in URL (6.4s)
+  ✓   71 tests\e2e\reset-lhb.spec.ts:405:3 › has no page or panel overflow at 375px (5.9s)
+  ✓   72 tests\e2e\reset-market.spec.ts:215:1 › heatmap date clears stale snapshot and historical topic control is disabled (4.0s)
+  ✓   73 tests\e2e\reset-lhb.spec.ts:405:3 › has no page or panel overflow at 1440px (6.9s)
+[WebServer] 12:45:39 [vite] http proxy error: /api/topics/rotation?date=2026-09-09&snapshot_id=00000000-0000-4000-8000-000000000002&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   74 tests\e2e\reset-navigation.spec.ts:109:1 › implemented reset destinations retain a fixed historical snapshot and honest evidence states (6.7s)
+  ✓   75 tests\e2e\reset-lhb.spec.ts:405:3 › has no page or panel overflow at 200% equivalent (7.2s)
+[WebServer] 12:45:45 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:45:46 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST002&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   76 tests\e2e\reset-navigation.spec.ts:143:1 › per-page filter and sort survive navigation, drawer and browser back (7.7s)
+  ✓   77 tests\e2e\reset-news.spec.ts:12:1 › renders fixed-snapshot list, detail, source/type/query filters and pager (5.9s)
+  ✓   78 tests\e2e\reset-navigation.spec.ts:168:1 › review is available without snapshots or owner calls, including denied sources (4.7s)
+  ✓   79 tests\e2e\reset-news.spec.ts:60:1 › unlicensed article still shows title and source link with explicit limitation (3.5s)
+[WebServer] 12:45:56 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST002&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   81 tests\e2e\reset-news.spec.ts:71:1 › article security uses the single shared drawer and returns with news state intact (5.9s)
+  ✓   80 tests\e2e\reset-navigation.spec.ts:185:1 › standalone stock path returns to a usable root list (8.2s)
+  ✓   82 tests\e2e\reset-news.spec.ts:92:1 › security detail links back to associated news without losing snapshot context (6.5s)
+  ✓   83 tests\e2e\reset-navigation.spec.ts:195:1 › empty source still loads local review after reload (8.4s)
+  ✓   84 tests\e2e\reset-news.spec.ts:105:1 › malformed or mismatched responses clear stale article data (4.7s)
+[WebServer] 12:46:13 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&page=1&size=50
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:13 [vite] http proxy error: /api/news/wordcloud?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&top_n=40&type=all
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   86 tests\e2e\reset-news.spec.ts:123:1 › desktop uses two columns and 375px reflows without horizontal overflow (3.0s)
+  ✓   85 tests\e2e\reset-navigation.spec.ts:207:1 › late historical responses cannot replace a newly selected snapshot (4.9s)
+  ✓   88 tests\e2e\reset-navigation.spec.ts:222:1 › mobile navigation and local editor fit a 375px viewport (3.5s)
+  ✓   87 tests\e2e\reset-preferences.spec.ts:52:3 › 主题偏好 › 深色主题切换后落盘并在刷新后保留，URL、快照选择与业务数值不变，可再切回浅色 (6.1s)
+[WebServer] 12:46:20 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   89 tests\e2e\reset-query.spec.ts:168:1 › 解析预览出现前不执行；取消/修改不发 execute 且焦点回到解析按钮 (3.1s)
+  ✓   90 tests\e2e\reset-preferences.spec.ts:93:3 › 损坏偏好回退 › JSON 污染的主题值与非法密度值在首绘即回退浅色/舒适，坏值保留不被覆写 (3.4s)
+[WebServer] 12:46:24 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   91 tests\e2e\reset-query.spec.ts:192:1 › 显式确认才执行；execute body 闭集钉住快照；改文案后确认态作废 (3.7s)
+[WebServer] 12:46:26 [vite] http proxy error: /api/compare/curves?snapshot_id=00000000-0000-4000-8000-000000000001&symbols=TEST001&start=2026-08-13&end=2026-09-10&benchmark=B000300&adj=raw
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:27 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:27 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:28 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000002
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   93 tests\e2e\reset-query.spec.ts:234:1 › 结果绑定执行时快照：改日期出现旧快照条，回到原快照恢复 URL 且结果保留 (3.8s)
+[WebServer] 12:46:28 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   92 tests\e2e\reset-preferences.spec.ts:115:3 › 密度偏好 › 表格行高在 36/44 之间切换且容差 ±1px，不改动查询/排序/比较，刷新后恢复 (6.9s)
+[WebServer] 12:46:31 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   94 tests\e2e\reset-query.spec.ts:265:1 › 第二次解析阻塞期间执行查询按钮保持 disabled（parsing 中不可执行） (3.1s)
+  ✓   95 tests\e2e\reset-preferences.spec.ts:161:3 › 密度偏好 › 375px 紧凑密度下关键控件命中区不小于 44px 且关键状态不被横向裁切 (3.7s)
+  ✓   96 tests\e2e\reset-query.spec.ts:297:1 › 执行中按 Esc 不清空确认卡；阻塞放行后结果表正常出现 (4.0s)
+[WebServer] 12:46:35 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:38 [vite] http proxy error: /api/compare/curves?snapshot_id=00000000-0000-4000-8000-000000000001&symbols=TEST001&start=2026-08-13&end=2026-09-10&benchmark=B000300&adj=raw
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:38 [vite] http proxy error: /api/realtime/quotes?security_ids=TEST001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:38 [vite] http proxy error: /api/realtime/minutes?security_id=TEST001&date=2026-09-10
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:38 [vite] http proxy error: /api/realtime/anomalies?date=2026-09-10&security_id=TEST001&limit=50
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:46:39 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   98 tests\e2e\reset-query.spec.ts:325:1 › unsupported 原因列表、409/403/413 文案与空结果声明性不可用如实展示 (4.8s)
+  ✓   97 tests\e2e\reset-preferences.spec.ts:232:3 › 双主题对比度 › 正文/次要文字/实底蓝按钮/焦点环在浅深两主题均达到 WCAG 门槛 (8.4s)
+[WebServer] 12:46:45 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓   99 tests\e2e\reset-query.spec.ts:378:1 › 全键盘路径：IME 组合期 Enter 不解析，Esc 取消并焦点回触发器，执行后焦点入结果 (6.2s)
+[WebServer] 12:46:47 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  100 tests\e2e\reset-preferences.spec.ts:362:3 › 命令面板 › 按钮与 Ctrl+K 均可打开面板，分组/静态命令/当前标记完整，Esc 与 Tab 后 Esc 都把焦点还给触发按钮 (6.6s)
+[WebServer] 12:46:51 [vite] http proxy error: /api/research/manifests/00000000-0000-4000-8000-000000000001
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  101 tests\e2e\reset-query.spec.ts:418:1 › 深色主题下 375px 视口结果表格无页面级横向溢出 (5.6s)
+[WebServer] 12:46:53 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  102 tests\e2e\reset-preferences.spec.ts:405:3 › 命令面板 › 全键盘路径：方向键/Home/End 循环，Enter 执行主题后保持打开且更新当前标记，聚焦日期命令关闭并聚焦日期输入框 (5.6s)
+  ✓  103 tests\e2e\reset-query.spec.ts:441:1 › 未选快照时面板禁用并提示，且不产生任何 query 请求 (5.3s)
+  ✓  105 tests\e2e\reset-realtime.spec.ts:279:1 › browser JSON.parse exposes lexical source for Decimal decoding (715ms)
+[WebServer] 12:46:59 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  104 tests\e2e\reset-preferences.spec.ts:447:3 › 命令面板 › 无匹配时展示空态且 Enter 不触发任何动作 (5.2s)
+  ✓  106 tests\e2e\reset-realtime.spec.ts:300:1 › shows delayed source time, stream gap, unavailable flow, and auditable anomaly (6.5s)
+[WebServer] 12:47:05 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  107 tests\e2e\reset-preferences.spec.ts:464:3 › 命令面板 › IME 组合态：keyCode 229/isComposing 的 Ctrl+K 不开面板，组合中 Enter/Esc 放行，组合结束后恢复 (5.9s)
+  ✓  108 tests\e2e\reset-realtime.spec.ts:325:1 › keeps an unavailable funding point as a disconnected chart gap (6.4s)
+[WebServer] 12:47:11 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:47:14 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:47:14 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  110 tests\e2e\reset-realtime.spec.ts:351:1 › keeps same-minute sources as separate minute series with independent gaps (6.4s)
+[WebServer] 12:47:18 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  109 tests\e2e\reset-preferences.spec.ts:514:3 › 命令面板 › 导航类命令保留 snapshot/date：页面切换、证券进入详情、题材清空 security，执行后关闭并回焦 (13.1s)
+  ✓  112 tests\e2e\reset-preferences.spec.ts:555:3 › 命令面板 › 来源被拒时不渲染触发按钮，Ctrl+K 仍可打开但无复盘入口且股票/题材分组为空 (4.4s)
+  ✓  111 tests\e2e\reset-realtime.spec.ts:407:1 › splits mixed-unit flow series while retaining zero, gaps, and audit units (6.0s)
+[WebServer] 12:47:27 [vite] http proxy error: /api/topics/rotation?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&days=30
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  114 tests\e2e\reset-realtime.spec.ts:443:1 › keeps per-resource unavailable evidence when another resource has data (4.5s)
+  ✓  113 tests\e2e\reset-preferences.spec.ts:573:3 › 命令面板 › 打开/过滤/键盘导航期间不发起 /api/ 请求，且 localStorage 只允许出现两个偏好键 (6.3s)
+  ✓  115 tests\e2e\reset-realtime.spec.ts:459:1 › shows all resource evidence and the global empty state when all data is null (5.8s)
+  ✓  116 tests\e2e\reset-preferences.spec.ts:625:3 › 脏草稿守卫 › 本地复盘未保存时面板导航被拦截，显示内联提示且 URL 不变、面板保持打开 (5.0s)
+  ✓  118 tests\e2e\reset-preferences.spec.ts:644:5 › 视口与缩放 › 375×800 在 200% 缩放下面板开关均无横向溢出且交互可用 (5.5s)
+  ✓  117 tests\e2e\reset-realtime.spec.ts:477:1 › retry is keyboard reachable and restores the quote ledger without layout shift (6.6s)
+  ✓  119 tests\e2e\reset-preferences.spec.ts:644:5 › 视口与缩放 › 1440×900 在 200% 缩放下面板开关均无横向溢出且交互可用 (6.6s)
+  ✓  120 tests\e2e\reset-realtime.spec.ts:491:1 › shows revoked state and keyboard-reachable recovery without retaining evidence (7.2s)
+[WebServer] 12:47:52 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:47:53 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  121 tests\e2e\reset-preferences.spec.ts:678:3 › 减弱动效 › reduced-motion 下 K 线页面与命令面板交互无 pageerror (7.4s)
+  ✓  122 tests\e2e\reset-realtime.spec.ts:513:3 › has no overlap or page overflow at 375px (7.5s)
+  ✓  124 tests\e2e\reset-realtime.spec.ts:513:3 › has no overlap or page overflow at 1440px (8.1s)
+  ✓  123 tests\e2e\reset-recovery.spec.ts:91:1 › local export restores complete history and provenance in a fresh browser context (13.1s)
+  ✓  125 tests\e2e\reset-realtime.spec.ts:513:3 › has no overlap or page overflow at 200% equivalent (8.3s)
+  ✓  127 tests\e2e\reset-realtime.spec.ts:550:1 › does not request realtime endpoints without a selected security or sector (4.2s)
+  ✓  126 tests\e2e\reset-recovery.spec.ts:168:1 › damaged backup leaves an existing database unchanged (9.6s)
+  ✓  128 tests\e2e\reset-regulation.spec.ts:12:1 › renders completeness, calculations and formal events as independent regions (5.4s)
+  ✓  129 tests\e2e\reset-recovery.spec.ts:193:1 › out-of-order file reads cannot replace the newest backup preview (4.9s)
+  ✓  131 tests\e2e\reset-recovery.spec.ts:241:1 › decision change clears the decision-less preview until recomputation finishes (5.4s)
+[WebServer] 12:48:30 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  130 tests\e2e\reset-regulation.spec.ts:54:1 › unknown event source is not rendered as zero formal events (9.1s)
+[WebServer] 12:48:31 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  132 tests\e2e\reset-recovery.spec.ts:287:1 › oversized backup is rejected before reading the file body (5.9s)
+  ✓  133 tests\e2e\reset-regulation.spec.ts:72:1 › formal events remain visible when regulation status is unavailable (3.4s)
+  ✓  135 tests\e2e\reset-regulation.spec.ts:84:1 › validated status events are the fallback when the events request fails (4.5s)
+  ✓  134 tests\e2e\reset-research.spec.ts:172:3 › Task 17 owner research backtest workbench › manifest gate holds submit, then submit→poll→succeeded renders the materialised result at 1440px/200% (7.0s)
+  ✓  136 tests\e2e\reset-regulation.spec.ts:94:1 › complete numerical inputs do not activate a pending rule (5.1s)
+  ✓  137 tests\e2e\reset-research.spec.ts:249:3 › Task 17 owner research backtest workbench › cooperative cancel reaches the cancel route and freezes the polling loop at 已取消 (5.7s)
+[WebServer] 12:48:47 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  138 tests\e2e\reset-regulation.spec.ts:107:1 › security detail reports formal event count and event-source completeness (3.5s)
+[WebServer] 12:48:47 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  139 tests\e2e\reset-research.spec.ts:283:3 › Task 17 owner research backtest workbench › a malformed manifest fails closed at 375px without any backtest write (4.0s)
+  ✓  140 tests\e2e\reset-review.spec.ts:4:1 › local notes survive reload and offline; watchlist needs no owner session (7.1s)
+  ✓  142 tests\e2e\reset-review.spec.ts:42:1 › a mismatched URL date is never persisted before its snapshot summary is verified (3.3s)
+  ✓  141 tests\e2e\reset-research.spec.ts:309:3 › Task 17 local simulation ledger › opens a ledger, fills an order, survives reload from IndexedDB and never touches the network at 375px (11.4s)
+  ✓  144 tests\e2e\reset-rotation.spec.ts:49:1 › renders the deterministic two-sector rotation timeline pinned to serving snapshots (4.3s)
+  ✓  143 tests\e2e\reset-review.spec.ts:94:1 › two tabs preserve unsaved input and offer save-as on revision conflict (8.5s)
+  ✓  145 tests\e2e\reset-rotation.spec.ts:137:1 › refetches and re-paginates the window when the day selector changes (4.3s)
+[WebServer] 12:49:10 [vite] http proxy error: /api/news?date=2026-09-10&snapshot_id=00000000-0000-4000-8000-000000000001&security_id=TEST001&page=1&size=20
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:49:10 [vite] http proxy error: /api/lhb?date=2026-09-10&security_id=TEST001&page=1&size=20&as_of=2026-09-10T08%3A01%3A00Z
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  146 tests\e2e\reset-review.spec.ts:115:1 › stock drawer adds a local watch and opens a bound review (6.1s)
+  ✓  147 tests\e2e\reset-rotation.spec.ts:175:1 › filters lanes by sector and restores both lanes when the filter is cleared (5.6s)
+  ✓  148 tests\e2e\reset-sentiment-research.spec.ts:258:1 › research section stays independent of the raw sentiment observations (4.7s)
+  ✓  149 tests\e2e\reset-rotation.spec.ts:195:1 › opens historical evidence pinned to the serving snapshot and switches to the anchor node (4.8s)
+  ✓  150 tests\e2e\reset-sentiment-research.spec.ts:296:1 › reports the missing-component day honestly without zero fill (4.1s)
+  ✓  152 tests\e2e\reset-sentiment-research.spec.ts:322:1 › fail-closes a malformed block without rendering half-values (4.1s)
+  ✓  153 tests\e2e\reset-sentiment-research.spec.ts:338:1 › refetches the research block bound to snapshot and date switches (4.9s)
+  ✓  151 tests\e2e\reset-rotation.spec.ts:249:1 › clears the selected node on close, window change, sector change, in-app date change and anchor navigation (9.9s)
+  ✓  154 tests\e2e\reset-sentiment-research.spec.ts:363:1 › exposes the two-layer unavailable state for legacy publications (4.6s)
+  ✓  155 tests\e2e\reset-rotation.spec.ts:308:1 › opens and closes the evidence region entirely from the keyboard (5.8s)
+  ✓  156 tests\e2e\reset-sentiment-research.spec.ts:377:1 › toggles the research series by keyboard (6.9s)
+  ✓  157 tests\e2e\reset-rotation.spec.ts:324:1 › renders the no-publication empty state without lanes (7.0s)
+  ✓  159 tests\e2e\reset-rotation.spec.ts:334:1 › renders the empty-window state with the window line intact (6.5s)
+  ✓  158 tests\e2e\reset-sentiment-research.spec.ts:394:1 › is axe-clean without horizontal overflow at 375px (10.1s)
+  ✓  160 tests\e2e\reset-rotation.spec.ts:343:1 › fail-closes a malformed rotation response without rendering lanes (6.0s)
+  ✓  161 tests\e2e\reset-sentiment-research.spec.ts:426:1 › uses no promissory or forecast-style copy in the research section (5.5s)
+  ✓  162 tests\e2e\reset-rotation.spec.ts:356:1 › isolates a lazy rotation chunk failure inside the section boundary (5.7s)
+  ✓  163 tests\e2e\reset-wordcloud.spec.ts:17:1 › renders the licensed word cloud with provenance, decorative svg and the accessible ledger (5.3s)
+  ✓  165 tests\e2e\reset-wordcloud.spec.ts:72:1 › selects a term with the keyboard, filters the title/summary list and toggles off (6.3s)
+  ✓  164 tests\e2e\reset-rotation.spec.ts:372:1 › is axe-clean without horizontal overflow at 375px with evidence open (12.6s)
+  ✓  166 tests\e2e\reset-wordcloud.spec.ts:105:1 › refetches by group when news type changes (5.7s)
+  ✓  167 tests\e2e\reset-wordcloud.spec.ts:139:1 › renders the zero-licensed-text empty state for a group without words (4.2s)
+  ✓  168 tests\e2e\reset-wordcloud.spec.ts:156:1 › renders the no-publication empty state (2.1s)
+  ✓  169 tests\e2e\reset-wordcloud.spec.ts:165:1 › rejects a malformed word cloud block without stale content (3.2s)
+  ✓  170 tests\e2e\reset-wordcloud.spec.ts:175:1 › is axe-clean without horizontal overflow at 375px (6.1s)
+
+  170 passed (7.9m)

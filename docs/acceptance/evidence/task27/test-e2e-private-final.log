@@ -1,0 +1,168 @@
+
+> dragon-radar-workbench@0.1.0 test:e2e:private
+> playwright test --config playwright.private.config.ts
+
+
+Running 69 tests using 2 workers
+
+  ✓   1 tests\private\boundaries.spec.ts:5:1 › 市场401锁定全部内容、取消请求且同主体恢复 (2.7s)
+  ✓   2 tests\private\boundaries.spec.ts:22:1 › csrf403不清行情且保留正文可重新保存 (2.7s)
+  ✓   3 tests\private\boundaries.spec.ts:37:1 › popstate与快照切换取消离开保URL和输入 (2.1s)
+  ✓   4 tests\private\boundaries.spec.ts:55:1 › 无快照仍可编辑，笔记20/50/100分页遵循has_more (2.0s)
+  ✓   6 tests\private\boundaries.spec.ts:88:1 › 来源拒绝时自选名称和价格均显示来源不可用 (1.9s)
+  ✓   5 tests\private\boundaries.spec.ts:74:1 › inactive重复POST要求明确带当前版本恢复 (2.5s)
+  ✓   7 tests\private\boundaries.spec.ts:109:1 › 验证输入受离开防护，切页后恢复且不进入storage或URL (3.0s)
+  ✓   8 tests\private\boundaries.spec.ts:131:1 › 来源恢复必须重读私人facts，不重新展示撤权前缓存 (2.8s)
+  ✓   9 tests\private\boundaries.spec.ts:155:1 › 来源恢复重新GET并为脏草稿恢复新facts且保留原创 (2.5s)
+  ✓  10 tests\private\boundaries.spec.ts:178:1 › 403验证事实撤权保留人工历史与待提交更正 (2.6s)
+  ✓  12 tests\private\boundaries.spec.ts:225:1 › 已有草稿以当前快照另存，不移动原笔记引用 (2.3s)
+  ✓  11 tests\private\boundaries.spec.ts:195:1 › 期限锁定、配对提交清码、退出取消与确认丢弃 (3.8s)
+  ✓  13 tests\private\boundaries.spec.ts:236:1 › 退出在撤销响应等待期间立即隐藏并阻止保存 (2.3s)
+  ✓  14 tests\private\boundaries.spec.ts:255:1 › 区间列表与行情详情均提供私人记录动作 (2.8s)
+  ✓  15 tests\private\boundaries.spec.ts:263:1 › 200字符security ID快捷笔记发送合法可辨识标题 (2.4s)
+  ✓  16 tests\private\final-quality.spec.ts:19:1 › fork 后回到旧笔记，详情失败也不显示或保存新笔记 (2.6s)
+  ✓  17 tests\private\final-quality.spec.ts:43:1 › 普通新建迟到成功不覆盖已接受导航 (2.9s)
+  ✓  18 tests\private\final-quality.spec.ts:59:1 › 快捷新建迟到成功不派发打开笔记导航 (3.0s)
+  ✓  19 tests\private\final-quality.spec.ts:75:1 › fork 迟到成功不 replace 已接受导航 (3.0s)
+  ✓  20 tests\private\final-quality.spec.ts:91:1 › 取消离开后普通新建迟到成功仍打开新笔记 (2.1s)
+  ✓  21 tests\private\final-quality.spec.ts:107:1 › 正文与确认校验关联字段并聚焦首个无效控件 (2.4s)
+  ✓  22 tests\private\final-quality.spec.ts:131:1 › 人工验证校验关联快照和依据并聚焦首个无效控件 (1.7s)
+  ✓  23 tests\private\final-quality.spec.ts:148:1 › 验证快照列表失败显示脱敏状态，重试后保留草稿并可提交 (2.7s)
+  ✓  24 tests\private\final-quality.spec.ts:191:1 › 人工验证成功后清空该笔记草稿、刷新历史且离开不再提示 (2.4s)
+  ✓  25 tests\private\final-quality.spec.ts:218:3 › 人工验证确定失败保留全部输入 (2.6s)
+  ✓  26 tests\private\final-quality.spec.ts:218:3 › 人工验证结果未知保留全部输入 (2.7s)
+  ✓  27 tests\private\final-quality.spec.ts:256:1 › 取消切换笔记时 URL 和当前 subtab 均保持 (2.4s)
+  ✓  28 tests\private\final-quality.spec.ts:278:1 › 取消打开完整详情时 URL 和 SecurityDrawer 均保持 (3.3s)
+  ✓  29 tests\private\final-quality.spec.ts:297:1 › 取消主导航时 URL 和移动菜单均保持 (2.3s)
+  ✓  30 tests\private\frontend-final-edges.spec.ts:7:1 › 私人入口加载期间显示可访问状态 (1.5s)
+  ✓  32 tests\private\frontend-final-edges.spec.ts:53:1 › 配对 POST 在途时禁用撤销 (1.6s)
+  ✓  31 tests\private\frontend-final-edges.spec.ts:28:1 › 私人入口 chunk 失败显示固定错误且恢复后可重试 (2.9s)
+  ✓  33 tests\private\frontend-final-edges.spec.ts:78:1 › 配对期间 focus 不以旧 Cookie 检查且成功后执行权威检查 (1.9s)
+  ✓  34 tests\private\frontend-final-edges.spec.ts:115:1 › 配对前在途的旧会话检查不会覆盖配对后的权威检查 (2.0s)
+  ✓  35 tests\private\frontend-final-edges.spec.ts:175:1 › 卸载后在途配对成功不会启动新的会话检查 (2.5s)
+  ✓  36 tests\private\frontend-final-edges.spec.ts:243:1 › 配对失败后 focus 和 visibility 会话检查恢复 (2.8s)
+  ✓  37 tests\private\frontend-final-edges.spec.ts:295:1 › 验证详情延迟和失败属于读取状态，恢复后可提交且保留草稿 (2.9s)
+  ✓  38 tests\private\merge-recovery.spec.ts:5:1 › 合并中间输入Esc保留，401同主体恢复，异主体销毁 (3.3s)
+  ✓  39 tests\private\private-deep-link.spec.ts:7:1 › 私人构建保留私人深链 (2.4s)
+  ✓  40 tests\private\review.spec.ts:6:1 › 编辑回读、响应丢失原键重试、确认与另存 (2.7s)
+  ✓  42 tests\private\review.spec.ts:50:1 › 401隐藏并恢复同主体草稿，切主体销毁 (2.6s)
+  ✓  41 tests\private\review.spec.ts:25:1 › 两窗口冲突三栏、Esc焦点与手工合并 (5.2s)
+  ✓  43 tests\private\review.spec.ts:78:1 › 来源403保留原创可保存，离开取消保持URL (2.7s)
+  ✓  44 tests\private\review.spec.ts:95:1 › 模板每次新建，自选移除和撤销 (3.2s)
+  ✓  45 tests\private\review.spec.ts:112:1 › 自选版本冲突采用服务端状态后可继续操作 (2.5s)
+  ✓  46 tests\private\review.spec.ts:147:1 › 人工验证显式快照与更正保留历史链 (3.0s)
+  ✓  47 tests\private\review.spec.ts:171:3 › 私人编辑 375px、200%缩放、减少动态与axe (3.8s)
+  ✓  48 tests\private\review.spec.ts:171:3 › 私人编辑 768px、200%缩放、减少动态与axe (3.7s)
+  ✓  49 tests\private\review.spec.ts:171:3 › 私人编辑 1024px、200%缩放、减少动态与axe (3.6s)
+  ✓  50 tests\private\review.spec.ts:171:3 › 私人编辑 1440px、200%缩放、减少动态与axe (3.2s)
+[WebServer] 12:55:52 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:55:52 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  51 tests\private\task-panel.spec.ts:20:1 › input signature change aborts a pending submit and ignores its completion (2.3s)
+[WebServer] 12:55:53 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:55:53 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  52 tests\private\task-panel.spec.ts:37:1 › unmount aborts a pending submit (2.0s)
+[WebServer] 12:55:55 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:55:55 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  53 tests\private\task-panel.spec.ts:48:1 › input change aborts stale cancel completion without restoring the old task (2.3s)
+[WebServer] 12:55:55 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:55:55 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  54 tests\private\task-panel.spec.ts:75:1 › input change aborts stale review completion without restoring the old draft (2.0s)
+[WebServer] 12:55:57 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:55:57 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  55 tests\private\task-panel.spec.ts:104:1 › input change aborts stale adoption and suppresses its completion message (2.1s)
+[WebServer] 12:55:57 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:55:57 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  56 tests\private\use-command.spec.ts:28:3 › slot 变化的首次 render 立即为空闲且旧结果不能落地 (2.3s)
+  ✓  57 tests\private\use-command.spec.ts:28:3 › owner 变化的首次 render 立即为空闲且旧结果不能落地 (1.7s)
+[WebServer] 12:55:59 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:55:59 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:00 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:00 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  58 tests\private\use-command.spec.ts:28:3 › epoch 变化的首次 render 立即为空闲且旧结果不能落地 (1.9s)
+  ✓  59 tests\private\use-command.spec.ts:91:3 › slot 切换后旧请求成功会结算原 slot 且不污染新上下文 (2.0s)
+[WebServer] 12:56:01 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:01 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  60 tests\private\use-command.spec.ts:106:3 › slot 切换后旧请求确定失败会结算原 slot 且不显示错误或冲突 (1.9s)
+  ✓  61 tests\private\use-command.spec.ts:125:3 › slot 切换后旧请求不确定失败仍保留原 slot 命令 (1.9s)
+[WebServer] 12:56:03 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:03 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  62 tests\private\use-command.spec.ts:91:3 › epoch 切换后旧请求成功会结算原 slot 且不污染新上下文 (1.7s)
+  ✓  63 tests\private\use-command.spec.ts:106:3 › epoch 切换后旧请求确定失败会结算原 slot 且不显示错误或冲突 (1.9s)
+[WebServer] 12:56:05 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:05 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  64 tests\private\use-command.spec.ts:125:3 › epoch 切换后旧请求不确定失败仍保留原 slot 命令 (1.7s)
+[WebServer] 12:56:05 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:05 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:07 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:07 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  65 tests\private\use-command.spec.ts:143:1 › 冲突错误不会泄漏到新 slot 的首次 render (2.0s)
+[WebServer] 12:56:07 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:07 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  66 tests\private\use-command.spec.ts:168:1 › 可清理当前上下文的错误与冲突反馈 (2.0s)
+  ✓  67 tests\private\use-command.spec.ts:196:1 › 清理反馈不会删除结果未知的 pending 命令 (2.1s)
+[WebServer] 12:56:09 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+[WebServer] 12:56:09 [vite] http proxy error: /api/owner/v1/session
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8020
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1645:16)
+  ✓  68 tests\private\use-command.spec.ts:221:3 › 旧 slot 的反馈清理函数不会清理新上下文 (2.2s)
+  ✓  69 tests\private\use-command.spec.ts:221:3 › 旧 epoch 的反馈清理函数不会清理新上下文 (2.2s)
+
+  69 passed (1.5m)

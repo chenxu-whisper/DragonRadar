@@ -1,0 +1,10 @@
+services:
+  api:
+    networks:
+      - backend
+      - local_dev
+    ports:
+      - "127.0.0.1:${DRAGON_API_PORT:-8000}:8000"
+
+networks:
+  local_dev:

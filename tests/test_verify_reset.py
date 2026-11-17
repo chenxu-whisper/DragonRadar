@@ -1,0 +1,1758 @@
+import hashlib
+import json
+import runpy
+import subprocess
+import sys
+from copy import deepcopy
+from dataclasses import FrozenInstanceError, dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+SCRIPT = Path(__file__).parents[1] / "scripts" / "verify_reset.py"
+VERIFIER = runpy.run_path(str(SCRIPT))
+REQUIRED_GATES = tuple(VERIFIER["REQUIRED_GATES"])
+GATE_SPECS = VERIFIER["GATE_SPECS"]
+RECOVERY_DRILLS = tuple(VERIFIER["RECOVERY_DRILLS"])
+
+
+@dataclass(frozen=True)
+class FakeRunResult:
+    started_at: datetime
+    ended_at: datetime
+    exit_status: int
+    stdout: bytes
+    stderr: bytes = b""
+    timed_out: bool = False
+
+
+class RecordingRunner:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.calls = []
+
+    def run(self, *, argv, cwd, environment, timeout_seconds):
+        self.calls.append(
+            {
+                "argv": argv,
+                "cwd": cwd,
+                "environment": environment,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return next(self.results)
+
+
+def invoke(tmp_path, *args):
+    output = tmp_path / "report.json"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), *args, "--output", str(output)],
+        cwd=SCRIPT.parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, output
+
+
+def git_head():
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=SCRIPT.parents[1],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+
+
+def artifact(path):
+    content = path.read_bytes()
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "bytes": len(content),
+    }
+
+
+def command_record(tmp_path, gate, index, spec, *, skipped=0, exit_status=0):
+    log = tmp_path / f"{gate}-{index}.log"
+    log.write_text(f"{gate}: independently generated output\n", encoding="utf-8")
+    return {
+        "argv": list(spec["command"]),
+        "cwd": spec["cwd"],
+        "environment_class": spec.get("environment_class", "default"),
+        "exit_status": exit_status,
+        "timed_out": False,
+        "observed_counts": {
+            "passed": int(exit_status == 0),
+            "failed": int(exit_status != 0),
+            "skipped": skipped,
+            "output_lines": 1,
+        },
+        "artifact": artifact(log),
+    }
+
+
+def performance_raw():
+    buffer_counts = {
+        "shared_hit_blocks": 2,
+        "shared_read_blocks": 0,
+        "shared_dirtied_blocks": 0,
+        "shared_written_blocks": 0,
+        "local_hit_blocks": 0,
+        "local_read_blocks": 0,
+        "local_dirtied_blocks": 0,
+        "local_written_blocks": 0,
+        "temp_read_blocks": 0,
+        "temp_written_blocks": 0,
+    }
+    paths = (
+        "/api/snapshots/{id}",
+        "/api/market/overview",
+        "/api/rank/range",
+        "/api/stock/{id}",
+    )
+    normalized_sql = (
+        "SELECT publications.id FROM publications WHERE publications.id = %(id)s",
+        "SELECT payload FROM publication_results WHERE publication_id = %(id)s",
+        "SELECT source_id FROM source_dependencies WHERE publication_id = %(id)s",
+        "SELECT id FROM withdrawal_records WHERE source_id = %(source_id)s",
+        "SELECT withdrawal_id FROM withdrawal_dependencies "
+        "WHERE archive_id = %(archive_id)s",
+    )
+    shape_hashes = {
+        statement: hashlib.sha256(statement.encode("utf-8")).hexdigest()
+        for statement in normalized_sql
+    }
+    generic_lookup_hash = shape_hashes[normalized_sql[0]]
+    projection_hashes = sorted(set(shape_hashes.values()) - {generic_lookup_hash})
+    runs = [
+        {
+            "round": index,
+            "cache_condition": ("steady_state_warmup_gc_fenced_caches_uncontrolled"),
+            "request_count": 20,
+            "concurrency": 20,
+            "successful": 20,
+            "error_rate": 0.0,
+            "p50_seconds": 0.08,
+            "p95_seconds": 0.15,
+            "max_seconds": 0.25,
+            "wall_seconds": 0.35,
+            "process_cpu_seconds": 0.15,
+            "peak_memory_bytes": 100,
+            "rss_bytes": 100,
+            "memory_measurement": "test",
+            "sql_statement_count": 100,
+        }
+        for index in range(1, 4)
+    ]
+    raw = {
+        "fixture": {
+            "kind": "synthetic",
+            "counts": {"securities": 100, "trading_sessions": 61},
+            "data_volume": {"market_archive_bytes": 1},
+        },
+        "environment": {
+            "postgresql": "17",
+            "os_cold_cache_controlled": False,
+            "gc_fenced": True,
+            "cache_claim": (
+                "multi_wave_warmup_then_gc_fenced_measured_caches_uncontrolled"
+            ),
+        },
+        "warmup": {
+            "paths": [
+                "/api/snapshots/{id}",
+                "/api/market/overview",
+                "/api/rank/range",
+                "/api/stock/{id}",
+            ],
+            "wave_count": 3,
+            "request_count": 60,
+            "concurrency": 20,
+            "successful": 60,
+        },
+        "runs": runs,
+        "aggregate": {
+            "round_count": 3,
+            "request_count": 60,
+            "successful": 60,
+            "error_rate": 0.0,
+            "p50_seconds": 0.08,
+            "p95_seconds": 0.15,
+            "max_seconds": 0.25,
+            "wall_seconds": 1.05,
+            "process_cpu_seconds": 0.45,
+        },
+        "async_work": {
+            "synthetic": True,
+            "label": "controlled_worker_delay",
+            "submission_seconds": 0.1,
+            "submitted_status": "queued",
+            "worker_elapsed_seconds": 5.1,
+            "status": "succeeded",
+        },
+        "research_concurrent_load": {
+            "synthetic": True,
+            "label": "real_engine_repeated_until_public_rounds_finish",
+            "worker": "ResearchBacktestWorker",
+            "submitted_status": "queued",
+            "status": "succeeded",
+            "config_hash": "a" * 64,
+            "result_config_hash": "a" * 64,
+            "engine_iterations": 1,
+            "checkpoint_count": 183,
+            "securities": 100,
+            "trading_sessions": 61,
+            "runs": [
+                {
+                    **run,
+                    "worker_active_before": True,
+                    "worker_active_after": True,
+                    "checkpoint_count_before": run["round"],
+                    "checkpoint_count_after": run["round"] + 1,
+                    "path_metrics": {
+                        path: {
+                            "request_count": 5,
+                            "successful": 5,
+                            "p50_seconds": 0.08,
+                            "p95_seconds": 0.15,
+                            "max_seconds": 0.25,
+                        }
+                        for path in paths
+                    },
+                }
+                for run in runs
+            ],
+        },
+        "observed_query_shapes": {
+            shape_hashes[statement]: {
+                "normalized_sql": statement,
+                "verb": "SELECT",
+                "relations": [
+                    statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+                ],
+                "plan_role": (
+                    "generic_publication_lookup"
+                    if shape_hashes[statement] == generic_lookup_hash
+                    else "payload_projection_read"
+                ),
+                "endpoint_observations": {
+                    path: {
+                        "count": 15,
+                        "total_seconds": 0.15,
+                        "min_seconds": 0.005,
+                        "max_seconds": 0.02,
+                    }
+                    for path in paths
+                },
+            }
+            for statement in normalized_sql
+        },
+        "endpoint_shape_hashes": {
+            path: sorted(shape_hashes.values()) for path in paths
+        },
+        "query_attribution_groups": [
+            {
+                "scope": "shared_repository_projection",
+                "endpoints": sorted(paths),
+                "sql_hashes": sorted(shape_hashes.values()),
+            }
+        ],
+        "application_state_before": {"table": {"rows": 1, "fingerprint": "a"}},
+        "application_state_after": {"table": {"rows": 1, "fingerprint": "a"}},
+        "query_plan_evidence": {
+            digest: {
+                "status": "explained",
+                "sql_relations": [
+                    statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+                ],
+                "plan": {
+                    "relations": [
+                        statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+                    ],
+                    "indexes": [f"{relation}_test_idx"],
+                    "nodes": ["Index Scan"],
+                    "node_count": 1,
+                    "buffers": buffer_counts,
+                },
+            }
+            for statement, digest in shape_hashes.items()
+            for relation in [
+                statement.split(" FROM ", maxsplit=1)[1].split(maxsplit=1)[0]
+            ]
+            if digest in projection_hashes
+        },
+    }
+    research = raw["research_concurrent_load"]
+    research.update(
+        sql_attribution="CURRENT_PUBLIC_PATH",
+        worker_sql_context=None,
+        stable_state_excluded_tables=[
+            "research_backtest_cache",
+            "research_backtest_runs",
+        ],
+        application_state_before={
+            **{
+                f"stable_{index}": {"rows": 1, "fingerprint": "a" * 32}
+                for index in range(9)
+            },
+            "research_backtest_runs": {"rows": 1, "fingerprint": "b" * 32},
+            "research_backtest_cache": {"rows": 0, "fingerprint": "c" * 32},
+        },
+    )
+    research["application_state_after"] = deepcopy(research["application_state_before"])
+    research["application_state_after"]["research_backtest_runs"]["fingerprint"] = (
+        "d" * 32
+    )
+    research["application_state_after"]["research_backtest_cache"]["rows"] = 1
+    raw["application_state_before"] = deepcopy(research["application_state_before"])
+    raw["application_state_after"] = deepcopy(raw["application_state_before"])
+    for run in research["runs"]:
+        run.update(
+            latencies_seconds=[0.08] * 10 + [0.15] * 9 + [0.25],
+            sql_write_count=0,
+            observed_query_shapes=deepcopy(raw["observed_query_shapes"]),
+            endpoint_shape_hashes=deepcopy(raw["endpoint_shape_hashes"]),
+            query_attribution_groups=deepcopy(raw["query_attribution_groups"]),
+        )
+        for shape in run["observed_query_shapes"].values():
+            for timing in shape["endpoint_observations"].values():
+                timing.update(count=5, total_seconds=0.05)
+        for metric in run["path_metrics"].values():
+            metric["latencies_seconds"] = [0.08, 0.08, 0.15, 0.15, 0.25]
+            metric["p50_seconds"] = 0.15
+            metric["p95_seconds"] = 0.25
+        # The round latency list is the exact concatenation of its path samples.
+        run["latencies_seconds"] = [
+            latency
+            for metric in run["path_metrics"].values()
+            for latency in metric["latencies_seconds"]
+        ]
+        run["p95_seconds"] = 0.25
+        run["p50_seconds"] = 0.15
+    return raw
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value.pop("sql_attribution"),
+        lambda value: value.update(sql_attribution="unattributed"),
+        lambda value: value.update(worker_sql_context="/api/stock/{id}"),
+        lambda value: value.pop("application_state_after"),
+        lambda value: value["application_state_after"]["stable_0"].update(rows=2),
+        lambda value: value["application_state_after"].pop("stable_0"),
+        lambda value: value["application_state_before"]["stable_0"].update(rows=True),
+        lambda value: value["stable_state_excluded_tables"].append("stable_0"),
+        lambda value: value["runs"][0].pop("observed_query_shapes"),
+        lambda value: value["runs"][0].update(sql_statement_count=999),
+        lambda value: value["runs"][0].update(sql_statement_count=0),
+        lambda value: value["runs"][0].update(sql_write_count=1),
+        lambda value: value["runs"][0].update(sql_write_count=False),
+        lambda value: value["runs"][0]["query_attribution_groups"][0][
+            "endpoints"
+        ].pop(),
+        lambda value: value["runs"][0]["endpoint_shape_hashes"].update(
+            {"/api/stock/{id}": []}
+        ),
+        lambda value: next(iter(value["runs"][0]["observed_query_shapes"].values()))[
+            "endpoint_observations"
+        ].update({"unattributed": {"count": 1}}),
+        lambda value: next(
+            iter(value["runs"][0]["observed_query_shapes"].values())
+        ).update(verb="UPDATE"),
+        lambda value: value["runs"][0].pop("latencies_seconds"),
+        lambda value: value["runs"][0]["latencies_seconds"].__setitem__(0, 10),
+        lambda value: value["runs"][0].update(concurrency=20.0),
+        lambda value: value["runs"][0]["path_metrics"]["/api/stock/{id}"].update(
+            request_count=5.0
+        ),
+        lambda value: value["application_state_after"]["stable_0"].update(
+            fingerprint="not-an-md5"
+        ),
+        lambda value: value["runs"][0]["path_metrics"]["/api/stock/{id}"][
+            "latencies_seconds"
+        ].__setitem__(0, float("nan")),
+        lambda value: next(iter(value["runs"][0]["observed_query_shapes"].values()))[
+            "endpoint_observations"
+        ]["/api/stock/{id}"].update(count=True),
+    ],
+)
+def test_research_sql_and_stable_state_guard_rejects_corruption(mutation):
+    value = performance_raw()["research_concurrent_load"]
+    assert VERIFIER["_research_load_errors"](value) == []
+    mutation(value)
+    assert VERIFIER["_research_load_errors"](value)
+
+
+def test_research_guard_rejects_legacy_unobserved_999_queries():
+    value = performance_raw()["research_concurrent_load"]
+    for field in (
+        "sql_attribution",
+        "worker_sql_context",
+        "stable_state_excluded_tables",
+        "application_state_before",
+        "application_state_after",
+    ):
+        value.pop(field)
+    for run in value["runs"]:
+        for field in (
+            "latencies_seconds",
+            "sql_write_count",
+            "observed_query_shapes",
+            "endpoint_shape_hashes",
+            "query_attribution_groups",
+        ):
+            run.pop(field)
+    value["runs"][0]["sql_statement_count"] = 999
+    assert VERIFIER["_research_load_errors"](value)
+
+
+def test_research_guard_rejects_observed_write_even_with_claimed_zero():
+    value = performance_raw()["research_concurrent_load"]
+    run = value["runs"][0]
+    statement = "UPDATE publications SET status = 'withdrawn'"
+    digest = hashlib.sha256(statement.encode()).hexdigest()
+    run["observed_query_shapes"][digest] = {
+        "normalized_sql": statement,
+        "verb": "UPDATE",
+        "relations": [],
+        "plan_role": None,
+        "endpoint_observations": {
+            "/api/stock/{id}": {
+                "count": 1,
+                "total_seconds": 0.01,
+                "min_seconds": 0.01,
+                "max_seconds": 0.01,
+            }
+        },
+    }
+    run["endpoint_shape_hashes"]["/api/stock/{id}"].append(digest)
+    run["endpoint_shape_hashes"]["/api/stock/{id}"].sort()
+    run["query_attribution_groups"] = VERIFIER["_attribution_groups"](
+        {path: set(hashes) for path, hashes in run["endpoint_shape_hashes"].items()}
+    )
+    run["sql_statement_count"] += 1
+
+    assert any(
+        "write" in error.lower() for error in VERIFIER["_research_load_errors"](value)
+    )
+
+
+@pytest.mark.parametrize("raise_in_window", [False, True])
+def test_public_sql_listener_captures_gets_not_worker_context_and_always_detaches(
+    monkeypatch, raise_in_window
+):
+    from types import SimpleNamespace
+
+    harness = runpy.run_path(
+        str(SCRIPT.parents[1] / "tests/performance/test_reset_queries.py")
+    )
+    capture = harness["_capture_public_sql"]
+    current_path = harness["CURRENT_PUBLIC_PATH"]
+    assert current_path.get() is None
+    listeners = {}
+    engine = object()
+    captured = []
+
+    def listen(actual_engine, name, callback):
+        assert actual_engine is engine
+        listeners[name] = callback
+
+    def remove(actual_engine, name, callback):
+        assert actual_engine is engine
+        assert listeners.pop(name) is callback
+
+    monkeypatch.setattr(harness["event"], "listen", listen)
+    monkeypatch.setattr(harness["event"], "remove", remove)
+
+    def emit(statement, path):
+        context = SimpleNamespace()
+        token = current_path.set(path)
+        try:
+            listeners["before_cursor_execute"](
+                None, None, statement, {}, context, False
+            )
+        finally:
+            current_path.reset(token)
+        listeners["after_cursor_execute"](None, None, statement, {}, context, False)
+
+    def exercise():
+        with capture(engine, captured):
+            emit("UPDATE research_backtest_runs SET status = 'succeeded'", None)
+            for path in harness["MEASURED_PATHS"]:
+                emit("SELECT id FROM publications", path)
+            emit("DELETE FROM publications", "/api/stock/{id}")
+            emit("SELECT id FROM publications", "unattributed")
+            if raise_in_window:
+                raise RuntimeError("request failed")
+
+    if raise_in_window:
+        with pytest.raises(RuntimeError, match="request failed"):
+            exercise()
+    else:
+        exercise()
+    assert listeners == {}
+    assert len(captured) == 6
+    assert {item["verb"] for item in captured} == {"SELECT", "DELETE"}
+    assert all(item["path"] is not None for item in captured)
+    assert all(item["duration_seconds"] >= 0 for item in captured)
+    shapes = harness["_observed_query_shapes"](captured)
+    assert all(harness["_endpoint_shape_hashes"](shapes).values())
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "sql_attribution",
+        "application_state_after",
+        "stable_state_excluded_tables",
+        "runs",
+    ],
+)
+def test_full_raw_artifact_binds_concurrent_sql_and_stable_state(tmp_path, field):
+    raw = performance_raw()
+    path = tmp_path / "performance.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    observations = {
+        "raw_artifact": artifact(path),
+        **{
+            key: deepcopy(raw[key])
+            for key in (
+                "warmup",
+                "runs",
+                "aggregate",
+                "fixture",
+                "environment",
+                "research_concurrent_load",
+            )
+        },
+    }
+    assert VERIFIER["_raw_performance"](observations)[1] == []
+    observations["research_concurrent_load"].pop(field)
+    assert any(
+        "does not match the raw artifact" in error
+        for error in VERIFIER["_raw_performance"](observations)[1]
+    )
+    raw["research_concurrent_load"].pop(field)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    observations["raw_artifact"] = artifact(path)
+    assert VERIFIER["_raw_performance"](observations)[1]
+
+
+def test_concurrent_fingerprints_cannot_omit_a_stable_baseline_table():
+    raw = performance_raw()
+    for phase in ("before", "after"):
+        raw["research_concurrent_load"][f"application_state_{phase}"].pop("stable_0")
+    assert any(
+        "full public baseline" in error
+        for error in VERIFIER["_performance_errors"](raw)
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda raw: raw.pop("research_concurrent_load"),
+        lambda raw: raw["research_concurrent_load"].update(status="failed"),
+        lambda raw: raw["research_concurrent_load"].update(engine_iterations=0),
+        lambda raw: raw["research_concurrent_load"].update(result_config_hash="b" * 64),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(
+            worker_active_after=False
+        ),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(
+            checkpoint_count_after=1
+        ),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(concurrency=19),
+        lambda raw: raw["research_concurrent_load"]["runs"][0].update(
+            p95_seconds=2.01, max_seconds=2.01
+        ),
+        lambda raw: raw["research_concurrent_load"]["runs"][0]["path_metrics"][
+            "/api/stock/{id}"
+        ].update(p95_seconds=2.01, max_seconds=2.01),
+        lambda raw: raw["research_concurrent_load"].update(
+            checkpoint_count=float("nan")
+        ),
+    ],
+)
+def test_performance_contract_rejects_missing_or_invalid_concurrent_research(mutation):
+    raw = performance_raw()
+    mutation(raw)
+    validate = VERIFIER["_research_load_errors"]
+    assert validate(raw.get("research_concurrent_load"))
+
+
+def evidence_manifest(tmp_path):
+    raw_path = tmp_path / "performance.json"
+    raw = performance_raw()
+    raw_path.write_text(json.dumps(raw), encoding="utf-8")
+    performance_commands = [
+        command_record(tmp_path, "performance", index, spec)
+        for index, spec in enumerate(GATE_SPECS["performance"], start=1)
+    ]
+    records = []
+    for gate in REQUIRED_GATES:
+        specs = GATE_SPECS.get(gate, GATE_SPECS["performance"])
+        commands = (
+            deepcopy(performance_commands)
+            if gate in {"public_no_write", "async_over_five_seconds"}
+            else [
+                command_record(tmp_path, gate, index, spec)
+                for index, spec in enumerate(specs, start=1)
+            ]
+        )
+        observations = {}
+        if gate == "performance":
+            observations = {
+                "raw_artifact": artifact(raw_path),
+                "warmup": raw["warmup"],
+                "runs": raw["runs"],
+                "aggregate": raw["aggregate"],
+                "fixture": raw["fixture"],
+                "environment": raw["environment"],
+                "research_concurrent_load": raw["research_concurrent_load"],
+            }
+        elif gate == "public_no_write":
+            observations = {
+                "sql_statement_count": sum(
+                    timing["count"]
+                    for shape in raw["observed_query_shapes"].values()
+                    for timing in shape["endpoint_observations"].values()
+                ),
+                "sql_write_count": 0,
+                "fingerprints_equal": True,
+                "application_table_count": len(raw["application_state_before"]),
+                "endpoint_shape_hashes": raw["endpoint_shape_hashes"],
+                "query_attribution_groups": raw["query_attribution_groups"],
+                "query_plan_evidence": raw["query_plan_evidence"],
+            }
+        elif gate == "async_over_five_seconds":
+            observations = raw["async_work"]
+        elif gate == "recovery_drills":
+            observations = {"drills": list(RECOVERY_DRILLS)}
+        records.append(
+            {"gate_id": gate, "commands": commands, "observations": observations}
+        )
+    return {
+        "schema": "dragon-radar.task20-evidence",
+        "schema_version": 3,
+        "mode": "full",
+        "generated_at": "2026-10-08T00:00:00+00:00",
+        "tested_commit": git_head(),
+        "environment": {
+            "platform": "test",
+            "python": "3.12",
+            "node": "22",
+            "postgresql_evidence_available": True,
+        },
+        "repository": {
+            "before": {
+                "head": git_head(),
+                "tracked_clean": True,
+                "disallowed_changes": [],
+            },
+            "after": {
+                "head": git_head(),
+                "tracked_clean": True,
+                "disallowed_changes": [],
+            },
+        },
+        "records": records,
+    }
+
+
+def write_manifest(tmp_path, manifest):
+    path = tmp_path / "evidence.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
+
+
+def test_count_parser_uses_test_count_from_ansi_colored_output():
+    count_output = VERIFIER["_counts"]
+    output = (
+        "\x1b[32m1 passed\x1b[39m\n"
+        "\x1b[2mTests\x1b[22m \x1b[1m\x1b[32m14 passed\x1b[39m"
+    )
+
+    assert count_output(output, 0)["passed"] == 14
+
+
+def test_count_parser_maps_node_test_tap_block_without_key_error():
+    # `npm test` ends with the node:test gates, whose TAP summary emits
+    # "# pass" / "# fail" rather than pytest's "passed" / "failed"; the
+    # parser must normalize both aliases (regression: KeyError "pass"
+    # crashed the harness after the frontend_tests gate).
+    count_output = VERIFIER["_counts"]
+    output = "\n".join(
+        [
+            "Test Files  32 passed",
+            "Tests  1025 passed",
+            "1..10",
+            "# tests 10",
+            "# pass 10",
+            "# fail 0",
+            "# cancelled 0",
+            "# skipped 0",
+            "# todo 0",
+            "# duration_ms 88.294201",
+        ]
+    )
+
+    counts = count_output(output, 0, fallback_from_exit=False)
+
+    assert counts["passed"] == 1025
+    assert counts["failed"] == 0
+    assert counts["skipped"] == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("passed", {"passed": 1, "failed": 0}),
+        ("failed", {"passed": 0, "failed": 1}),
+    ],
+)
+def test_count_parser_uses_machine_readable_status(status, expected):
+    count_output = VERIFIER["_counts"]
+
+    counts = count_output(
+        json.dumps({"project": "task20", "status": status}),
+        0,
+        fallback_from_exit=False,
+    )
+
+    assert counts["passed"] == expected["passed"]
+    assert counts["failed"] == expected["failed"]
+
+
+def test_allowlisted_command_graph_is_immutable():
+    with pytest.raises(TypeError):
+        GATE_SPECS["full_backend"] = ()
+    with pytest.raises(FrozenInstanceError):
+        GATE_SPECS["full_backend"][0].timeout_seconds = 1
+    assert isinstance(GATE_SPECS["full_backend"][0]["command"], tuple)
+
+
+@pytest.mark.parametrize(
+    ("status_lines", "expected_changes"),
+    [
+        ([], []),
+        (["?? .temp/acceptance/result.json"], []),
+        (["?? .temp/result.json", "?? docs/untracked.md"], ["?? docs/untracked.md"]),
+        ([" M src/dragon_radar/api.py"], [" M src/dragon_radar/api.py"]),
+        ([" M .temp/tracked.json"], [" M .temp/tracked.json"]),
+    ],
+)
+def test_repository_state_ignores_only_untracked_temp(status_lines, expected_changes):
+    classify = VERIFIER["_repository_state_from_status"]
+
+    state = classify("1" * 40, status_lines)
+
+    assert state["tracked_clean"] is (not expected_changes)
+    assert state["disallowed_changes"] == expected_changes
+
+
+def test_repository_evidence_requires_stable_clean_head():
+    errors = VERIFIER["_repository_errors"]
+    clean = {
+        "head": "1" * 40,
+        "tracked_clean": True,
+        "disallowed_changes": [],
+    }
+
+    assert errors(clean, clean) == []
+    assert any(
+        "HEAD changed" in error for error in errors(clean, {**clean, "head": "2" * 40})
+    )
+    assert any(
+        "not clean" in error
+        for error in errors(
+            clean,
+            {
+                **clean,
+                "tracked_clean": False,
+                "disallowed_changes": [" M README.md"],
+            },
+        )
+    )
+
+
+def test_execution_refuses_dirty_repository_before_running(tmp_path, monkeypatch):
+    run_gates = VERIFIER["_run_gates"]
+    monkeypatch.setitem(
+        run_gates.__globals__,
+        "_repository_state",
+        lambda: {
+            "head": git_head(),
+            "tracked_clean": False,
+            "disallowed_changes": [" M README.md"],
+        },
+    )
+    runner = RecordingRunner([])
+
+    with pytest.raises(RuntimeError, match="preflight.*not clean"):
+        run_gates("focused", tmp_path, runner)
+
+    assert runner.calls == []
+
+
+def test_subprocess_runner_resolves_windows_command_shim(monkeypatch, tmp_path):
+    runner = VERIFIER["SubprocessRunner"]()
+    run = VERIFIER["SubprocessRunner"].run
+    calls = []
+
+    monkeypatch.setattr(
+        run.__globals__["shutil"],
+        "which",
+        lambda command: "C:/Program Files/nodejs/npm.cmd",
+    )
+
+    def completed(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"ok", b"")
+
+    monkeypatch.setattr(run.__globals__["subprocess"], "run", completed)
+
+    result = runner.run(
+        argv=("npm", "--version"),
+        cwd=tmp_path,
+        environment={},
+        timeout_seconds=5,
+    )
+
+    assert calls[0][0] == ("C:/Program Files/nodejs/npm.cmd", "--version")
+    assert calls[0][1]["shell"] is False
+    assert result.exit_status == 0
+
+
+def test_evidence_artifact_snapshot_is_immutable_and_content_addressed(tmp_path):
+    snapshot_artifact = VERIFIER["_snapshot_artifact"]
+    source = tmp_path / "performance.json"
+    source.write_bytes(b'{"run":"first"}')
+
+    recorded = snapshot_artifact(source, tmp_path / "artifacts")
+    source.write_bytes(b'{"run":"overwritten"}')
+    snapshot = Path(recorded["path"])
+
+    assert snapshot.read_bytes() == b'{"run":"first"}'
+    assert snapshot.name == f"reset-performance-{recorded['sha256']}.json"
+    assert recorded["bytes"] == len(b'{"run":"first"}')
+
+
+def test_performance_contract_requires_realistic_warmed_multi_round_fixture():
+    errors = VERIFIER["_performance_errors"]
+    valid = performance_raw()
+
+    assert errors(valid) == []
+
+    undersized = deepcopy(valid)
+    undersized["fixture"]["counts"]["securities"] = 99
+    assert any("100 securities" in error for error in errors(undersized))
+
+    false_cold = deepcopy(valid)
+    false_cold["runs"][0]["cache_condition"] = "cold_process"
+    assert any("cold" in error.lower() for error in errors(false_cold))
+
+    legacy_run_label = deepcopy(valid)
+    legacy_run_label["runs"][0]["cache_condition"] = "post_warmup_caches_uncontrolled"
+    assert any("cache claim" in error.lower() for error in errors(legacy_run_label))
+
+    single_wave_warmup = deepcopy(valid)
+    single_wave_warmup["warmup"] = {
+        "paths": valid["warmup"]["paths"],
+        "request_count": 20,
+        "concurrency": 20,
+        "successful": 20,
+    }
+    assert any("warmup" in error.lower() for error in errors(single_wave_warmup))
+
+    inconsistent_warmup = deepcopy(valid)
+    inconsistent_warmup["warmup"]["request_count"] = 40
+    assert any("warmup" in error.lower() for error in errors(inconsistent_warmup))
+
+    missing_gc_fence = deepcopy(valid)
+    del missing_gc_fence["environment"]["gc_fenced"]
+    assert any("gc" in error.lower() for error in errors(missing_gc_fence))
+
+    disabled_gc_fence = deepcopy(valid)
+    disabled_gc_fence["environment"]["gc_fenced"] = False
+    assert any("gc" in error.lower() for error in errors(disabled_gc_fence))
+
+    legacy_cache_claim = deepcopy(valid)
+    legacy_cache_claim["environment"]["cache_claim"] = (
+        "warmup_then_measured_caches_uncontrolled"
+    )
+    assert any("cache claim" in error.lower() for error in errors(legacy_cache_claim))
+
+    no_aggregate = deepcopy(valid)
+    del no_aggregate["aggregate"]
+    assert any("aggregate" in error.lower() for error in errors(no_aggregate))
+
+
+def test_performance_contract_rejects_endpoint_map_not_matching_observed_shapes():
+    errors = VERIFIER["_performance_errors"]
+    valid = performance_raw()
+
+    hard_coded = deepcopy(valid)
+    hard_coded["endpoint_shape_hashes"]["/api/market/overview"] = [
+        next(iter(valid["observed_query_shapes"]))
+    ]
+
+    assert any("observed shape set" in error.lower() for error in errors(hard_coded))
+
+
+def test_performance_contract_rejects_legacy_distinct_endpoint_representatives():
+    errors = VERIFIER["_performance_errors"]
+    legacy = performance_raw()
+    hashes = iter(legacy["observed_query_shapes"])
+    legacy["measured_path_explains"] = {
+        path: {"sql_sha256": next(hashes)} for path in legacy["endpoint_shape_hashes"]
+    }
+
+    assert any("legacy" in error.lower() for error in errors(legacy))
+
+
+def test_performance_contract_rejects_endpoint_plan_representatives():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    hashes = iter(fabricated["observed_query_shapes"])
+    fabricated["endpoint_plans"] = {
+        path: {"sql_sha256": next(hashes)}
+        for path in fabricated["endpoint_shape_hashes"]
+    }
+
+    assert any("field" in error.lower() for error in errors(fabricated))
+
+
+def test_performance_contract_rejects_tampered_attribution_group():
+    errors = VERIFIER["_performance_errors"]
+    tampered = performance_raw()
+    tampered["query_attribution_groups"][0]["endpoints"].pop()
+
+    assert any("attribution groups" in error.lower() for error in errors(tampered))
+
+
+def test_performance_contract_rejects_missing_shared_shape_plan():
+    errors = VERIFIER["_performance_errors"]
+    missing = performance_raw()
+    missing["query_plan_evidence"].pop(next(iter(missing["query_plan_evidence"])))
+
+    assert any("plan coverage" in error.lower() for error in errors(missing))
+
+
+def test_performance_contract_rejects_uncaptured_plan_hash():
+    errors = VERIFIER["_performance_errors"]
+    uncaptured = performance_raw()
+    plan = deepcopy(next(iter(uncaptured["query_plan_evidence"].values())))
+    uncaptured["query_plan_evidence"]["f" * 64] = plan
+
+    plan_errors = errors(uncaptured)
+    assert any("plan coverage" in error.lower() for error in plan_errors)
+    assert any("captured payload projection" in error.lower() for error in plan_errors)
+
+
+def test_performance_contract_rejects_extra_normalized_plan_relation():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    plan = next(iter(fabricated["query_plan_evidence"].values()))["plan"]
+    plan["relations"].append("fabricated_relation")
+    plan["relations"].sort()
+
+    assert any("plan relations" in error.lower() for error in errors(fabricated))
+
+
+def test_performance_contract_rejects_endpoint_without_observed_sql():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    missing_path = "/api/stock/{id}"
+    reassigned_path = "/api/snapshots/{id}"
+    for shape in fabricated["observed_query_shapes"].values():
+        shape["endpoint_observations"].pop(missing_path)
+        timing = shape["endpoint_observations"][reassigned_path]
+        timing["count"] *= 2
+        timing["total_seconds"] *= 2
+    fabricated["endpoint_shape_hashes"][missing_path] = []
+    fabricated["query_attribution_groups"] = VERIFIER["_attribution_groups"](
+        {
+            path: set(hashes)
+            for path, hashes in fabricated["endpoint_shape_hashes"].items()
+        }
+    )
+
+    assert any("no observed sql" in error.lower() for error in errors(fabricated))
+
+
+def test_performance_contract_rejects_fabricated_distinct_endpoint_mappings():
+    errors = VERIFIER["_performance_errors"]
+    fabricated = performance_raw()
+    hashes = iter(fabricated["observed_query_shapes"])
+    fabricated["endpoint_shape_hashes"] = {
+        path: [next(hashes)] for path in fabricated["endpoint_shape_hashes"]
+    }
+
+    mapping_errors = errors(fabricated)
+    assert (
+        len(
+            [error for error in mapping_errors if "observed shape set" in error.lower()]
+        )
+        == 4
+    )
+
+
+def test_default_full_mode_cannot_self_certify_from_performance_json(tmp_path):
+    performance = tmp_path / "performance.json"
+    performance.write_text('{"runs":[]}', encoding="utf-8")
+
+    result, output = invoke(tmp_path, "--performance-evidence", str(performance))
+
+    assert result.returncode != 0
+    assert not output.exists()
+    assert "--performance-evidence" in result.stderr
+
+
+def test_validate_mode_requires_every_task20_gate_and_never_marks_development_pass(
+    tmp_path,
+):
+    manifest = evidence_manifest(tmp_path)
+    manifest["records"] = [
+        record for record in manifest["records"] if record["gate_id"] != "full_backend"
+    ]
+    evidence = write_manifest(tmp_path, manifest)
+
+    result, output = invoke(
+        tmp_path,
+        "--validate-existing",
+        str(evidence),
+    )
+
+    assert result.returncode != 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["overall_status"] == "blocked"
+    assert report["automated_acceptance"]["status"] == "unverified"
+    assert report["integrity_validation"]["status"] == "fail"
+    assert report["source"]["trust"] == "INTEGRITY_ONLY"
+    assert "development_complete" not in report
+    assert report["gates"]["full_backend"]["status"] == "missing"
+    assert set(report["gates"]) == set(REQUIRED_GATES)
+
+
+def record(manifest, gate):
+    return next(item for item in manifest["records"] if item["gate_id"] == gate)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "gate"),
+    [
+        (lambda manifest: manifest.update(schema="wrong"), None),
+        (lambda manifest: manifest.update(schema_version=1), None),
+        (lambda manifest: manifest.update(mode="focused"), None),
+        (lambda manifest: manifest.update(tested_commit="0" * 40), None),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0].update(
+                argv=["python", "-c", "print('fabricated')"]
+            ),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0].update(
+                cwd="web"
+            ),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0].update(
+                environment_class="private-review"
+            ),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0][
+                "observed_counts"
+            ].update(failed=1),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0][
+                "observed_counts"
+            ].update(passed=0),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0][
+                "observed_counts"
+            ].update(passed=2),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0][
+                "observed_counts"
+            ].update(skipped=1),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0][
+                "artifact"
+            ].update(sha256="0" * 64),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend")["commands"][0][
+                "artifact"
+            ].update(sha256=123),
+            "full_backend",
+        ),
+        (
+            lambda manifest: Path(
+                record(manifest, "full_backend")["commands"][0]["artifact"]["path"]
+            ).unlink(),
+            "full_backend",
+        ),
+        (
+            lambda manifest: record(manifest, "performance")["observations"]["runs"][
+                0
+            ].update(p95_seconds=0.9),
+            "performance",
+        ),
+        (
+            lambda manifest: record(manifest, "performance")["observations"]["runs"][
+                0
+            ].update(error_rate=0.1),
+            "performance",
+        ),
+        (
+            lambda manifest: record(manifest, "full_backend").update(status="pass"),
+            "full_backend",
+        ),
+        (
+            lambda manifest: manifest["records"].append(
+                deepcopy(record(manifest, "full_backend"))
+            ),
+            "full_backend",
+        ),
+    ],
+)
+def test_validate_mode_rejects_adversarial_evidence(tmp_path, mutation, gate):
+    manifest = evidence_manifest(tmp_path)
+    mutation(manifest)
+    evidence = write_manifest(tmp_path, manifest)
+
+    result, output = invoke(
+        tmp_path,
+        "--validate-existing",
+        str(evidence),
+    )
+
+    assert result.returncode != 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["automated_acceptance"]["status"] != "pass"
+    if gate:
+        assert report["gates"][gate]["status"] == "fail"
+
+
+def test_parent_commit_is_allowed_only_for_strict_evidence_only_head():
+    approved = VERIFIER["_approved_tested_commit"]
+    parent = "1" * 40
+    head = "2" * 40
+
+    assert approved(
+        parent,
+        head=head,
+        parent=parent,
+        changed_paths=["docs/acceptance/reset-base.md"],
+    ) == (True, "HEAD^")
+    assert approved(
+        parent,
+        head=head,
+        parent=parent,
+        changed_paths=["README.md", "docs/acceptance/reset-base.md"],
+    ) == (False, None)
+
+
+def test_fabricated_all_pass_json_is_integrity_only_and_cannot_pass_acceptance(
+    tmp_path,
+):
+    evidence = write_manifest(tmp_path, evidence_manifest(tmp_path))
+
+    result, output = invoke(
+        tmp_path,
+        "--validate-existing",
+        str(evidence),
+    )
+
+    assert result.returncode != 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["automated_acceptance"]["status"] == "unverified"
+    assert report["integrity_validation"]["status"] == "pass"
+    assert report["source"]["trust"] == "INTEGRITY_ONLY"
+    assert report["overall_status"] == "blocked"
+    assert report["real_input"]["status"] == "blocked"
+    assert report["official_rules"]["status"] == "blocked"
+    assert report["real_model_evaluation"]["status"] == "blocked"
+    assert report["public_sharing_permit"]["status"] == "blocked"
+    assert report["shadow_run_20_trading_days"]["status"] == "blocked"
+    for gate in REQUIRED_GATES:
+        assert report["gates"][gate]["status"] == "pass"
+        command = report["gates"][gate]["commands"][0]
+        assert command["argv"]
+        assert command["exit_status"] == 0
+        assert command["observed_counts"]["skipped"] == 0
+        assert command["artifact"]["sha256"]
+        assert command["environment_class"]
+    assert report["source"]["tested_commit"] == git_head()
+    assert report["source"]["commit_relation"] == "HEAD"
+    assert "postgresql+psycopg://" not in result.stdout
+
+
+def test_self_hashed_logs_and_fake_exit_zero_remain_unverified(tmp_path):
+    manifest = evidence_manifest(tmp_path)
+    for item in manifest["records"]:
+        for command in item["commands"]:
+            command["exit_status"] = 0
+            command["timed_out"] = False
+            command["observed_counts"] = {
+                "passed": 1,
+                "failed": 0,
+                "skipped": 0,
+                "output_lines": 1,
+            }
+    evidence = write_manifest(tmp_path, manifest)
+
+    result, output = invoke(tmp_path, "--validate-existing", str(evidence))
+
+    assert result.returncode != 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["automated_acceptance"]["status"] == "unverified"
+    assert report["source"]["trust"] == "INTEGRITY_ONLY"
+
+
+def test_execution_mode_invokes_exact_allowlisted_graph_and_uses_runner_results(
+    tmp_path,
+):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 10, 8, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+            stderr=f"runner-stderr-{index}\n".encode(),
+        )
+        for index in range(len(specs))
+    ]
+    runner = RecordingRunner(results)
+
+    records = execute("full", tmp_path, runner)
+
+    assert [call["argv"] for call in runner.calls] == [
+        tuple(spec["command"]) for spec in specs
+    ]
+    assert len(records) == len(REQUIRED_GATES)
+    first = records[0]["commands"][0]
+    assert first["started_at"] == started.isoformat()
+    assert first["ended_at"] == (started + timedelta(seconds=1)).isoformat()
+    assert Path(first["stdout_artifact"]["path"]).read_bytes() == b"1 passed\n"
+    assert Path(first["stderr_artifact"]["path"]).read_bytes() == b"runner-stderr-0\n"
+
+
+def test_execution_rejects_omitted_command_result(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    runner = RecordingRunner([])
+
+    with pytest.raises(RuntimeError, match="did not execute"):
+        execute("full", tmp_path, runner)
+
+
+def test_execution_rejects_exit_zero_with_failed_native_output(tmp_path):
+    validate_result = VERIFIER["_command_result_errors"]
+    result = FakeRunResult(
+        started_at=datetime(2026, 10, 8, tzinfo=UTC),
+        ended_at=datetime(2026, 10, 8, 0, 0, 1, tzinfo=UTC),
+        exit_status=0,
+        stdout=b"1 failed\n",
+    )
+
+    errors = validate_result(result, requires_test_counts=True)
+
+    assert any("native output" in error for error in errors)
+
+
+def test_execution_rejects_exit_zero_without_native_output():
+    validate_result = VERIFIER["_command_result_errors"]
+    result = FakeRunResult(
+        started_at=datetime(2026, 10, 8, tzinfo=UTC),
+        ended_at=datetime(2026, 10, 8, 0, 0, 1, tzinfo=UTC),
+        exit_status=0,
+        stdout=b"",
+    )
+
+    errors = validate_result(result, requires_test_counts=True)
+
+    assert any("native output" in error for error in errors)
+
+
+def test_performance_isolation_factory_is_off_without_explicit_marker():
+    factory = VERIFIER["_performance_isolation"]
+
+    assert factory({}) is None
+    assert factory({"DRAGON_TASK20_COMPOSE_PROJECT": "dragon-radar-task20-1-1"}) is None
+
+
+def test_performance_isolation_factory_fails_closed_without_project_or_state(
+    tmp_path, monkeypatch
+):
+    factory = VERIFIER["_performance_isolation"]
+    marker = VERIFIER["PERF_ISOLATION_ENV"]
+    project_env = VERIFIER["TASK20_COMPOSE_PROJECT_ENV"]
+    state_file = tmp_path / "compose.env"
+    monkeypatch.setitem(
+        VERIFIER["_performance_isolation"].__globals__,
+        "TASK20_STACK_ENV_FILE",
+        state_file,
+    )
+
+    with pytest.raises(RuntimeError, match=project_env):
+        factory({marker: "1"})
+
+    with pytest.raises(RuntimeError, match="compose.env"):
+        factory({marker: "1", project_env: "dragon-radar-task20-1-1"})
+
+    state_file.write_text("DRAGON_DB_PASSWORD=secret\n", encoding="utf-8")
+    isolation = factory({marker: "1", project_env: "dragon-radar-task20-1-1"})
+    assert isinstance(isolation, VERIFIER["PrivateStackIsolation"])
+
+
+def test_private_stack_isolation_runs_compose_stop_and_wait_up_bypassing_runner(
+    tmp_path,
+):
+    root = VERIFIER["ROOT"]
+    invoked = []
+
+    def invoke(argv, *, cwd, env, timeout):
+        invoked.append({"argv": argv, "cwd": cwd, "env": env, "timeout": timeout})
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    state_file = tmp_path / "compose.env"
+    state_file.write_text("DRAGON_DB_PASSWORD=secret\n", encoding="utf-8")
+    isolation = VERIFIER["PrivateStackIsolation"](
+        project="dragon-radar-task20-7-2",
+        env_file=state_file,
+        invoke=invoke,
+    )
+
+    isolation.suspend()
+    isolation.resume()
+
+    expected_prefix = (
+        "docker",
+        "compose",
+        "--project-name",
+        "dragon-radar-task20-7-2",
+        "--project-directory",
+        str(root),
+        "--env-file",
+        str(state_file),
+        "-f",
+        str(root / "compose.yaml"),
+        "-f",
+        str(root / "compose.private.yaml"),
+    )
+    assert invoked[0]["argv"] == expected_prefix + ("stop",)
+    assert invoked[1]["argv"] == expected_prefix + (
+        "up",
+        "--detach",
+        "--wait",
+        "web",
+        "api",
+    )
+    assert invoked[0]["timeout"] < invoked[1]["timeout"]
+    assert all(call["cwd"] == root for call in invoked)
+    assert all(isinstance(call["env"], dict) for call in invoked)
+
+
+def test_private_stack_isolation_raises_when_compose_reports_failure(tmp_path):
+    def invoke(argv, *, cwd, env, timeout):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="docker denied")
+
+    isolation = VERIFIER["PrivateStackIsolation"](
+        project="dragon-radar-task20-7-2",
+        env_file=tmp_path / "compose.env",
+        invoke=invoke,
+    )
+
+    with pytest.raises(RuntimeError, match="suspend"):
+        isolation.suspend()
+
+
+class ScriptedIsolation:
+    def __init__(self, events):
+        self.events = events
+
+    def suspend(self):
+        self.events.append("suspend")
+
+    def resume(self):
+        self.events.append("resume")
+
+
+def test_performance_gate_suspends_before_command_and_resumes_after(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 2, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            self.calls.append(
+                {
+                    "argv": argv,
+                    "cwd": cwd,
+                    "environment": environment,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            events.append(("command", argv))
+            return next(self.results)
+
+    runner = EventRunner(results)
+
+    records = execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    performance_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and event[1][-1] == "tests/performance/test_reset_queries.py"
+    )
+    assert events.index("suspend") < performance_index < events.index("resume")
+    # Full mode isolates two heavyweight windows from the resumed private
+    # stack: the P95 measurement and the full backend coverage suite.
+    assert events.count("suspend") == 2
+    assert events.count("resume") == 2
+    assert [call["argv"] for call in runner.calls] == [
+        tuple(spec["command"]) for spec in specs
+    ]
+    assert len(records) == len(REQUIRED_GATES)
+
+
+def test_performance_isolation_resumes_even_when_performance_command_raises(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+            self.calls = []
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            self.calls.append(argv)
+            if argv[-1] == "tests/performance/test_reset_queries.py":
+                raise RuntimeError("runner exploded")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 2, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 2, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(4)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="runner exploded"):
+        execute("focused", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    assert events == ["suspend", "resume"]
+
+
+def test_full_backend_gateway_command_runs_against_live_stack_before_suspend():
+    gateway_spec, bulk_spec = GATE_SPECS["full_backend"]
+
+    # The live TLS gateway checks (DRAGON_TEST_PRIVATE_CA gated) must hit the
+    # running private edge, so this command runs with the stack up.
+    assert tuple(gateway_spec["command"]) == (
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "-rs",
+        "tests/test_private_https.py",
+    )
+    assert gateway_spec.get("suspend_private_stack") is False
+
+    # The bulk suite is the contention-sensitive window: it suspends the
+    # stack and must not re-run the live gateway checks it just executed.
+    bulk_command = tuple(bulk_spec["command"])
+    assert bulk_command[:5] == ("uv", "run", "pytest", "-q", "-rs")
+    assert bulk_command.count("--deselect") == 2
+    assert "tests/performance/test_reset_queries.py" in bulk_command
+    assert "tests/test_private_https.py" in bulk_command
+    assert bulk_spec.get("suspend_private_stack") is True
+    assert bulk_spec["timeout_seconds"] == 2400
+
+    (performance_spec,) = GATE_SPECS["performance"]
+    assert performance_spec.get("suspend_private_stack") is True
+
+
+def test_full_backend_gateway_command_runs_with_stack_up(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 3, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            events.append(("command", argv))
+            return next(self.results)
+
+    execute("full", tmp_path, EventRunner(results), isolation=ScriptedIsolation(events))
+
+    gateway_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    gateway_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and tuple(event[1]) == gateway_command
+    )
+    suspend_indices = [
+        index for index, event in enumerate(events) if event == "suspend"
+    ]
+    # The live gateway command must complete during the stack-up window that
+    # follows the performance resume, before the bulk suite suspends it again.
+    assert gateway_index < suspend_indices[1]
+
+
+def test_full_backend_gateway_failure_propagates_without_suspending_stack(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    gateway_command = tuple(GATE_SPECS["full_backend"][0]["command"])
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            if tuple(argv) == gateway_command:
+                raise RuntimeError("gateway unreachable")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 3, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 3, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(40)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="gateway unreachable"):
+        execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    # Only the performance window isolated the stack; the full_backend bulk
+    # suspend never starts when the live gateway command fails fail-closed.
+    assert events == ["suspend", "resume"]
+
+
+def test_full_backend_gate_suspends_private_stack_and_resumes_after(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    specs = [
+        spec
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 3, tzinfo=UTC)
+    results = [
+        FakeRunResult(
+            started_at=started + timedelta(seconds=index),
+            ended_at=started + timedelta(seconds=index + 1),
+            exit_status=0,
+            stdout=b"1 passed\n",
+        )
+        for index in range(len(specs))
+    ]
+    events = []
+
+    class EventRunner(RecordingRunner):
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            events.append(("command", argv))
+            return next(self.results)
+
+    runner = EventRunner(results)
+
+    execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    full_backend_command = tuple(GATE_SPECS["full_backend"][1]["command"])
+    full_backend_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple)
+        and event[0] == "command"
+        and tuple(event[1]) == full_backend_command
+    )
+    suspend_indices = [
+        index for index, event in enumerate(events) if event == "suspend"
+    ]
+    resume_indices = [index for index, event in enumerate(events) if event == "resume"]
+    assert len(suspend_indices) == 2
+    assert len(resume_indices) == 2
+    assert suspend_indices[1] < full_backend_index < resume_indices[1]
+
+
+def test_full_backend_isolation_resumes_even_when_suite_command_raises(tmp_path):
+    execute = VERIFIER["_execute_gates"]
+    full_backend_command = tuple(GATE_SPECS["full_backend"][1]["command"])
+    events = []
+
+    class RaisingRunner:
+        def __init__(self, results):
+            self.results = iter(results)
+
+        def run(self, *, argv, cwd, environment, timeout_seconds):
+            if tuple(argv) == full_backend_command:
+                raise RuntimeError("suite timed out externally")
+            return next(self.results)
+
+    runner = RaisingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 3, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 3, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for _ in range(40)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="suite timed out externally"):
+        execute("full", tmp_path, runner, isolation=ScriptedIsolation(events))
+
+    assert events.count("suspend") == 2
+    assert events.count("resume") == 2
+    assert events[-1] == "resume"
+
+
+def test_perf_isolation_marker_is_stripped_from_gate_command_environments(
+    tmp_path, monkeypatch
+):
+    execute = VERIFIER["_execute_gates"]
+    marker = VERIFIER["PERF_ISOLATION_ENV"]
+    monkeypatch.setenv(marker, "1")
+    monkeypatch.setenv("DRAGON_TASK20_COMPOSE_PROJECT", "dragon-radar-task20-1-1")
+    focused_specs = [
+        spec
+        for gate in VERIFIER["FOCUSED_GATES"]
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+        for spec in GATE_SPECS[gate]
+    ]
+    started = datetime(2026, 11, 2, tzinfo=UTC)
+    runner = RecordingRunner(
+        [
+            FakeRunResult(
+                started_at=started + timedelta(seconds=index),
+                ended_at=started + timedelta(seconds=index + 1),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for index in range(len(focused_specs))
+        ]
+    )
+
+    execute("focused", tmp_path, runner)
+
+    assert runner.calls
+    assert all(marker not in call["environment"] for call in runner.calls)
+
+
+def test_full_execution_manifest_passes_only_in_execution_context(
+    tmp_path, monkeypatch
+):
+    run_gates = VERIFIER["_run_gates"]
+    validate_execution = VERIFIER["_validate_execution"]
+    performance_path = tmp_path / "reset-performance.json"
+    performance_path.write_text(json.dumps(performance_raw()), encoding="utf-8")
+    monkeypatch.setitem(
+        run_gates.__globals__,
+        "PERFORMANCE_ARTIFACT",
+        performance_path,
+    )
+    clean_repository = {
+        "head": git_head(),
+        "tracked_clean": True,
+        "disallowed_changes": [],
+    }
+    monkeypatch.setitem(
+        run_gates.__globals__,
+        "_repository_state",
+        lambda: deepcopy(clean_repository),
+    )
+    command_count = sum(
+        len(GATE_SPECS[gate])
+        for gate in REQUIRED_GATES
+        if gate not in {"public_no_write", "async_over_five_seconds"}
+    )
+    started = datetime(2026, 10, 8, tzinfo=UTC)
+    runner = RecordingRunner(
+        [
+            FakeRunResult(
+                started_at=started + timedelta(seconds=index),
+                ended_at=started + timedelta(seconds=index + 1),
+                exit_status=0,
+                stdout=b"1 passed\n",
+            )
+            for index in range(command_count)
+        ]
+    )
+
+    execution = run_gates("full", tmp_path, runner)
+    report, exit_status = validate_execution(execution)
+
+    assert exit_status == 0
+    assert report["automated_acceptance"]["status"] == "pass"
+    assert report["source"]["trust"] == "EXECUTED"
+    assert all(item["status"] == "pass" for item in report["gates"].values())

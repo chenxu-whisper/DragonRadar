@@ -1,0 +1,182 @@
+{
+  "schema": "dragon-radar.task20-performance-summary",
+  "schema_version": 2,
+  "implementation_commit": "e29cf5bc242f7cb518ed30a25e96b57c05512f5e",
+  "fixture": {
+    "kind": "synthetic",
+    "securities": 100,
+    "trading_sessions": 61,
+    "market_archive_bytes": 3597209,
+    "publication_payload_bytes": 509039
+  },
+  "cache_claim": "warmup_then_measured_caches_uncontrolled",
+  "aggregate": {
+    "request_count": 60,
+    "successful": 60,
+    "error_rate": 0.0,
+    "p50_seconds": 1.0649794000200927,
+    "p95_seconds": 1.5180771998129785,
+    "max_seconds": 1.5713685001246631,
+    "sql_statement_count": 300,
+    "captured_sql_shape_count": 5,
+    "planned_sql_shape_count": 4,
+    "sql_write_count": 0,
+    "application_table_fingerprints_equal": true,
+    "application_table_count": 72
+  },
+  "runs": [
+    {
+      "round": 1,
+      "p50_seconds": 1.0653773001395166,
+      "p95_seconds": 1.5186787999700755,
+      "max_seconds": 1.5713685001246631,
+      "process_cpu_seconds": 1.71875,
+      "rss_bytes": 270077952
+    },
+    {
+      "round": 2,
+      "p50_seconds": 1.1022435000631958,
+      "p95_seconds": 1.5047144999261945,
+      "max_seconds": 1.5340642998926342,
+      "process_cpu_seconds": 1.640625,
+      "rss_bytes": 271147008
+    },
+    {
+      "round": 3,
+      "p50_seconds": 0.9161765999160707,
+      "p95_seconds": 1.4840281000360847,
+      "max_seconds": 1.4849636000581086,
+      "process_cpu_seconds": 1.515625,
+      "rss_bytes": 271335424
+    }
+  ],
+  "async_work": {
+    "submission_seconds": 0.25642689992673695,
+    "worker_elapsed_seconds": 5.414923599921167,
+    "status": "succeeded"
+  },
+  "endpoint_shape_hashes": {
+    "/api/snapshots/{id}": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/market/overview": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/rank/range": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ],
+    "/api/stock/{id}": [
+      "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+      "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+      "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+      "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+      "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+    ]
+  },
+  "query_attribution_groups": [
+    {
+      "scope": "shared_repository_projection",
+      "endpoints": [
+        "/api/market/overview",
+        "/api/rank/range",
+        "/api/snapshots/{id}",
+        "/api/stock/{id}"
+      ],
+      "sql_hashes": [
+        "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113",
+        "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457",
+        "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52",
+        "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2",
+        "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9"
+      ]
+    }
+  ],
+  "excluded_plan_shapes": {
+    "ae551f84a4f398eee263382f3a3be2460d8f8905964a608d8df956de8d39d3d9": {
+      "role": "generic_publication_lookup",
+      "relations": [
+        "publications"
+      ]
+    }
+  },
+  "query_plans": {
+    "00a23f04e2fb2d2f3e64c624e44f25617a72087337a84f725a66513ad2000113": {
+      "relations": [
+        "source_dependencies",
+        "withdrawal_dependencies",
+        "withdrawal_records"
+      ],
+      "indexes": [
+        "source_dependencies_pkey",
+        "withdrawal_dependencies_withdrawal_id_archive_type_archive__key",
+        "withdrawal_records_source"
+      ],
+      "nodes": [
+        "Bitmap Heap Scan",
+        "Bitmap Index Scan",
+        "Index Scan",
+        "Limit",
+        "Nested Loop"
+      ],
+      "node_count": 7,
+      "shared_hit_blocks": 2
+    },
+    "1ab292a6f97162933cec50529ab40f24242e422cfd9f921055ec7cba72cbc457": {
+      "relations": [
+        "source_dependencies",
+        "source_grants"
+      ],
+      "indexes": [
+        "source_grants_pkey"
+      ],
+      "nodes": [
+        "Index Scan",
+        "Nested Loop",
+        "Seq Scan"
+      ],
+      "node_count": 3,
+      "shared_hit_blocks": 3
+    },
+    "75b201e81c0f64e108e36cb7dad872f303f177d55c7449ccf97f18cb2afc2d52": {
+      "relations": [
+        "withdrawal_records"
+      ],
+      "indexes": [
+        "withdrawal_records_source"
+      ],
+      "nodes": [
+        "Index Scan",
+        "Limit"
+      ],
+      "node_count": 2,
+      "shared_hit_blocks": 2
+    },
+    "913b981394bc95e023042baa19a6e0ddcb491f25c2bc318c724db6b87c5d5ad2": {
+      "relations": [
+        "publication_results"
+      ],
+      "indexes": [
+        "publication_results_pkey"
+      ],
+      "nodes": [
+        "Bitmap Heap Scan",
+        "Bitmap Index Scan",
+        "Sort"
+      ],
+      "node_count": 3,
+      "shared_hit_blocks": 2
+    }
+  }
+}

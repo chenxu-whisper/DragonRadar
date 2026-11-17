@@ -1,0 +1,13 @@
+
+> dragon-radar-workbench@0.1.0 test:e2e:reset
+> playwright test --config playwright.reset.config.ts reset-research.spec.ts --trace on --output C:\Users\Admin\AppData\Local\Temp\DragonRadar-task18-20261116\research-ui-traces
+
+
+Running 4 tests using 1 worker
+
+  ✓  1 tests\e2e\reset-research.spec.ts:172:3 › Task 17 owner research backtest workbench › manifest gate holds submit, then submit→poll→succeeded renders the materialised result at 1440px/200% (4.4s)
+  ✓  2 tests\e2e\reset-research.spec.ts:250:3 › Task 17 owner research backtest workbench › cooperative cancel reaches the cancel route and freezes the polling loop at 已取消 (3.0s)
+  ✓  3 tests\e2e\reset-research.spec.ts:285:3 › Task 17 owner research backtest workbench › a malformed manifest fails closed at 375px without any backtest write (1.6s)
+  ✓  4 tests\e2e\reset-research.spec.ts:312:3 › Task 17 local simulation ledger › opens a ledger, fills an order, survives reload from IndexedDB and never touches the network at 375px (3.7s)
+
+  4 passed (16.2s)

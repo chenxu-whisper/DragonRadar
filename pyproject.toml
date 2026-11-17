@@ -1,10 +1,19 @@
-﻿﻿[project]
+[project]
 name = "dragon-radar"
 version = "0.1.0"
-description = "Add your description here"
+description = "Traceable end-of-day market research and deterministic analytics"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "alembic>=1.19.2",
+    "fastapi>=0.141.1",
+    "psycopg[binary]>=3.3.5",
+    "pydantic>=2.12,<3",
+    "simplejson>=3.20.1",
+    "sqlalchemy>=2.0.52",
+    "tzdata>=2026.3",
+    "uvicorn>=0.52.4",
+]
 
 [project.scripts]
 dragon-radar = "dragon_radar:main"
@@ -15,20 +24,36 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.6",
 ]
+
+[tool.uv.workspace]
+members = []
 
 [tool.pytest.ini_options]
 cache_dir = ".temp/pytest_cache"
+testpaths = ["tests"]
+markers = [
+    "windows_only: probe exercises Windows-only platform behavior (junctions); deselected off win32",
+    "requires_restore_container: named labeled PostgreSQL container drill via DRAGON_TEST_POSTGRES_CONTAINER/DRAGON_TEST_DATABASE_URL; deselected without it",
+]
 
 [tool.ruff]
 cache-dir = ".temp/ruff_cache"
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 cache_dir = ".temp/mypy_cache"
 
 [tool.coverage.run]
 data_file = ".temp/coverage/.coverage"
+source = ["dragon_radar"]
 
 [tool.coverage.html]
 directory = ".temp/coverage/htmlcov"

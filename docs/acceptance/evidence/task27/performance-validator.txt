@@ -1,0 +1,35 @@
+import hashlib
+import json
+import runpy
+from pathlib import Path
+
+root = Path(r"E:\ByteDance\Projects\Code\DragonRadar\.worktrees\task27-research")
+raw = root / ".temp/acceptance/reset-performance.json"
+value = json.loads(raw.read_text(encoding="utf-8"))
+verifier = runpy.run_path(str(root / "scripts/verify_reset.py"))
+errors = verifier["_performance_errors"](value)
+research = value["research_concurrent_load"]
+excluded = set(research["stable_state_excluded_tables"])
+stable_before = {key: item for key, item in research["application_state_before"].items() if key not in excluded}
+stable_after = {key: item for key, item in research["application_state_after"].items() if key not in excluded}
+summary = {
+    "raw_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+    "validator_errors": errors,
+    "ordinary_aggregate": value["aggregate"],
+    "ordinary_no_write": verifier["_public_observations"](value),
+    "async_work": value["async_work"],
+    "research_status": research["status"],
+    "research_securities": research["securities"],
+    "research_trading_sessions": research["trading_sessions"],
+    "research_round_p95_seconds": [item["p95_seconds"] for item in research["runs"]],
+    "research_round_request_counts": [item["request_count"] for item in research["runs"]],
+    "research_round_sql_write_counts": [item["sql_write_count"] for item in research["runs"]],
+    "research_stable_fingerprints_equal": stable_before == stable_after,
+    "research_changed_tables": [key for key, item in research["application_state_before"].items() if item != research["application_state_after"].get(key)],
+    "research_stable_state_excluded_tables": sorted(excluded),
+    "research_config_hash_matches": research["config_hash"] == research["result_config_hash"],
+}
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+if errors:
+    raise SystemExit(1)
+print("PERFORMANCE VALIDATION EXIT=0")

@@ -1,0 +1,116 @@
+type ObjectValue = Record<string, unknown>;
+export type ResetStockValidationError = 'malformed' | 'date_mismatch' | 'security_mismatch';
+export type LegacyStockValidationError = 'malformed' | 'security_mismatch';
+
+function record(value: unknown): value is ObjectValue {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function nullableStrings(value: ObjectValue, keys: string[]): boolean {
+  return keys.every(key => value[key] === null || typeof value[key] === 'string');
+}
+
+function quoteFields(value: ObjectValue): boolean {
+  return nullableStrings(
+    value,
+    ['currency', 'price_unit', 'volume_unit', 'amount_unit', 'close', 'amount'],
+  ) &&
+    (value.suspended === null || typeof value.suspended === 'boolean') &&
+    Array.isArray(value.missing_reasons) &&
+    value.missing_reasons.every(reason => typeof reason === 'string');
+}
+
+export function validateLegacySecurityResponse(
+  data: unknown,
+  id: string,
+): LegacyStockValidationError | null {
+  const result = record(data) ? data.result : undefined;
+  if (!record(result) || !record(result.security) ||
+    typeof result.security.security_id !== 'string' || !quoteFields(result.security) ||
+    !nullableStrings(result.security, ['name', 'exchange', 'board', 'change']) ||
+    result.security.change_unit !== 'fraction' ||
+    !Array.isArray(result.history) || !result.history.every(point =>
+      record(point) && typeof point.trade_date === 'string' && quoteFields(point) &&
+      nullableStrings(point, ['open', 'high', 'low', 'volume'])) ||
+    (result.chart_type !== 'candlestick' && result.chart_type !== 'line') ||
+    typeof result.price_basis !== 'string' || typeof result.basis !== 'string') {
+    return 'malformed';
+  }
+  return result.security.security_id === id ? null : 'security_mismatch';
+}
+
+function nullableFiniteNumber(value: unknown): boolean {
+  return value === null || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function nullableNonnegativeInteger(value: unknown): boolean {
+  return value === null || (Number.isSafeInteger(value) && (value as number) >= 0);
+}
+
+function nullableBoolean(value: unknown): boolean {
+  return value === null || typeof value === 'boolean';
+}
+
+export function validateResetStockResponse(
+  data: unknown,
+  id: string,
+  tradeDate: string | null,
+): ResetStockValidationError | null {
+  if (!record(data)) return 'malformed';
+  if (!record(data.coverage) || !record(data.basis)) return 'malformed';
+  const coverage = data.coverage;
+  const basis = data.basis;
+  const coverageFields = ['expected', 'valid', 'excluded', 'missing'] as const;
+  if (
+    typeof data.trade_date !== 'string' ||
+    typeof data.as_of !== 'string' || !Number.isFinite(Date.parse(data.as_of)) ||
+    typeof data.snapshot_id !== 'string' ||
+    typeof data.source !== 'string' ||
+    typeof data.source_version !== 'string' ||
+    !Array.isArray(data.quality_flags) || data.quality_flags.some(value => typeof value !== 'string') ||
+    typeof data.rule_version !== 'string' ||
+    !coverageFields.every(key => Number.isSafeInteger(coverage[key]) && (coverage[key] as number) >= 0) ||
+    coverage.expected !== (coverage.valid as number) + (coverage.excluded as number) + (coverage.missing as number) ||
+    !nullableStrings(basis, ['unit', 'currency', 'price_type', 'benchmark'])
+  ) return 'malformed';
+  if (tradeDate && data.trade_date !== tradeDate) return 'date_mismatch';
+  if (data.data === null) {
+    return typeof data.reason === 'string' && data.reason.length > 0 ? null : 'malformed';
+  }
+  if (!record(data.data)) return 'malformed';
+  const payload = data.data;
+  if (!record(payload.quote) || !record(payload.seal) || !record(payload.regulation)) return 'malformed';
+  const quote = payload.quote;
+  const seal = payload.seal;
+  const regulation = payload.regulation;
+  const sealFields = [
+    'is_limit_up', 'touched_limit', 'first_seal_time', 'last_seal_time',
+    'break_count', 'seal_amount', 'seal_amount_unit', 'continuous_boards',
+  ];
+  if (
+    typeof payload.security_id !== 'string' ||
+    (payload.name !== null && typeof payload.name !== 'string') ||
+    !['last', 'change_ratio', 'amount'].every(key => nullableFiniteNumber(quote[key])) ||
+    !Array.isArray(payload.roles) ||
+    !payload.roles.every(item => record(item) &&
+      typeof item.role_type === 'string' &&
+      typeof item.evidence_status === 'string' &&
+      typeof item.sector_id === 'string') ||
+    (payload.role_reason !== undefined && typeof payload.role_reason !== 'string') ||
+    !nullableBoolean(seal.is_limit_up) ||
+    !nullableBoolean(seal.touched_limit) ||
+    !nullableStrings(seal, ['first_seal_time', 'last_seal_time']) ||
+    !nullableNonnegativeInteger(seal.break_count) ||
+    !nullableFiniteNumber(seal.seal_amount) ||
+    (seal.seal_amount_unit !== null && typeof seal.seal_amount_unit !== 'string') ||
+    !nullableNonnegativeInteger(seal.continuous_boards) ||
+    (seal.reason !== null && typeof seal.reason !== 'string') ||
+    (typeof seal.reason === 'string' && sealFields.some(key => seal[key] !== null)) ||
+    !nullableNonnegativeInteger(regulation.formal_event_count) ||
+    !['complete', 'unknown'].includes(String(regulation.event_source_completeness)) ||
+    (regulation.event_source_completeness === 'complete' &&
+      regulation.formal_event_count === null) ||
+    (regulation.reason !== null && typeof regulation.reason !== 'string')
+  ) return 'malformed';
+  return payload.security_id === id ? null : 'security_mismatch';
+}

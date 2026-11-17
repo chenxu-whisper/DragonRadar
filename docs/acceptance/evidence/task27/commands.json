@@ -1,0 +1,138 @@
+{
+  "scope": "Local command runs; aggregated suites also cover CSV units, reset acceptance and recovery probes. No remote CI or formal verify_reset full report is asserted.",
+  "credentials": "Database credential values are omitted; all PostgreSQL runs used only dragon_test. The Linux shard logs retain each full pytest argument list.",
+  "commands": [
+    {
+      "name": "prd_contracts",
+      "command": "uv run python scripts/check_prd_contracts.py",
+      "exit_code": 0,
+      "log": "prd-final.log"
+    },
+    {
+      "name": "static",
+      "command": "uv run ruff check .; uv run ruff format --check .; uv run python -m compileall -q src tests scripts; git diff --check",
+      "exit_code": 0,
+      "log": "static-final.log"
+    },
+    {
+      "name": "full_backend",
+      "command": "docker run --init --rm --name dragon-radar-task18-linux-backend --network container:dragon-radar-foundation-test-db --mount \"type=bind,source=E:\\ByteDance\\Projects\\Code\\DragonRadar\\.worktrees\\task27-research,target=/source,readonly\" --mount \"type=bind,source=C:\\Users\\Admin\\AppData\\Local\\Temp\\DragonRadar-task18-20261116,target=/evidence\" --env DRAGON_TEST_DATABASE_URL dragon-radar-task18-linux-tests:local python /evidence/linux_backend.py",
+      "exit_code": 0,
+      "log": "linux-backend-final.log"
+    },
+    {
+      "name": "windows_junctions",
+      "command": "uv run pytest tests/test_release_migrations.py -m windows_only -q -rs -W error",
+      "exit_code": 0,
+      "log": "windows-junction-final.log"
+    },
+    {
+      "name": "frontend_tests",
+      "command": "npm test",
+      "exit_code": 0,
+      "log": "frontend-unit-final.log"
+    },
+    {
+      "name": "frontend_types",
+      "command": "npm exec -- tsc --noEmit",
+      "exit_code": 0,
+      "log": "frontend-type-final.log"
+    },
+    {
+      "name": "default_build_bundle",
+      "command": "npm run build; npm run check:bundle",
+      "exit_code": 0,
+      "log": "build-default-final.log"
+    },
+    {
+      "name": "private_build",
+      "command": "VITE_PRIVATE_REVIEW=1 npm run build",
+      "exit_code": 0,
+      "log": "build-private-final.log"
+    },
+    {
+      "name": "owner_reset_build",
+      "command": "VITE_RESET_WORKBENCH=1 VITE_PRIVATE_REVIEW=1 VITE_PRIVATE_AI=0 VITE_PUBLIC_SHARING=0 npm run build",
+      "exit_code": 0,
+      "log": "build-reset-final.log"
+    },
+    {
+      "name": "sharing_build_bundle",
+      "command": "VITE_RESET_WORKBENCH=1 VITE_PUBLIC_SHARING=1 VITE_PRIVATE_REVIEW=0 VITE_PRIVATE_AI=0 npm run build; npm run check:bundle",
+      "exit_code": 0,
+      "log": "build-sharing-final.log"
+    },
+    {
+      "name": "e2e_legacy",
+      "command": "npm run test:e2e",
+      "exit_code": 0,
+      "log": "test-e2e-final.log"
+    },
+    {
+      "name": "e2e_reset",
+      "command": "npm run test:e2e:reset",
+      "exit_code": 0,
+      "log": "test-e2e-reset-final.log"
+    },
+    {
+      "name": "e2e_private",
+      "command": "npm run test:e2e:private",
+      "exit_code": 0,
+      "log": "test-e2e-private-final.log"
+    },
+    {
+      "name": "e2e_ai_public",
+      "command": "npm run test:e2e:ai:public",
+      "exit_code": 0,
+      "log": "test-e2e-ai-public-final.log"
+    },
+    {
+      "name": "e2e_ai_private",
+      "command": "npm run test:e2e:ai:private",
+      "exit_code": 0,
+      "log": "test-e2e-ai-private-final.log"
+    },
+    {
+      "name": "research_ui",
+      "command": "npm run test:e2e:reset -- reset-research.spec.ts --trace on --output [external research-ui-traces]",
+      "exit_code": 0,
+      "log": "research-ui-final.log"
+    },
+    {
+      "name": "production_isolation",
+      "command": "npm run test:e2e:production-isolation",
+      "exit_code": 0,
+      "log": "test-e2e-production-isolation-final.log"
+    },
+    {
+      "name": "contract_runtime",
+      "command": "npm run test:contract-runtime",
+      "exit_code": 0,
+      "log": "test-contract-runtime-final.log"
+    },
+    {
+      "name": "live_tls",
+      "command": "tls-gate.ps1: uv run pytest tests/test_private_https.py -q -rs [real temporary TLS stack]",
+      "exit_code": 0,
+      "log": "tls.log"
+    },
+    {
+      "name": "restore",
+      "command": "restore-gate.ps1: uv run pytest [named labeled temporary PostgreSQL restore probe] -q -rs",
+      "exit_code": 0,
+      "log": "restore-final.log"
+    },
+    {
+      "name": "performance",
+      "command": "uv run pytest -q -rs tests/performance/test_reset_queries.py",
+      "exit_code": 0,
+      "log": "performance-final.log"
+    },
+    {
+      "name": "performance_validation",
+      "command": "uv run python [external validate_performance.py]",
+      "exit_code": 0,
+      "log": "performance-validation-final.log"
+    }
+  ]
+}

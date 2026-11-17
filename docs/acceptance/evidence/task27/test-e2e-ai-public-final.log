@@ -1,0 +1,10 @@
+
+> dragon-radar-workbench@0.1.0 test:e2e:ai:public
+> playwright test --config playwright.ai-public.config.ts
+
+
+Running 1 test using 1 worker
+
+  ✓  1 tests\e2e\reset-ai-public.spec.ts:5:1 › public Reset denies review deep links without opening IndexedDB (1.5s)
+
+  1 passed (4.6s)

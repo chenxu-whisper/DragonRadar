@@ -1,0 +1,43 @@
+Task20 clean focused and full acceptance at e29cf5bc242f7cb518ed30a25e96b57c05512f5e
+
+[csv_units]
+Test Files  1 passed (1)
+Tests       15 passed (15)
+
+[reset_acceptance_e2e]
+35 passed (1.2m)
+
+[recovery_drills]
+8 passed in 13.85s
+5 passed (15.8s)
+1 passed (4.2s)
+
+[performance]
+1 passed in 18.99s
+
+[full_backend]
+2565 passed, 0 failed, 0 skipped in 1763.69s (0:29:23)
+
+[quality]
+All checks passed!
+223 files already formatted
+compileall exit 0
+
+[frontend_tests]
+Test Files  24 passed (24)
+Tests       335 passed (335)
+node tests  8 passed
+
+[frontend_builds]
+default build passed
+private build passed
+entry bundle 315419 bytes
+
+[frontend_e2e]
+legacy 80 passed
+reset 86 passed
+private 69 passed
+AI public 1 passed
+AI private 4 passed
+production isolation 1 passed
+contract runtime 1 passed

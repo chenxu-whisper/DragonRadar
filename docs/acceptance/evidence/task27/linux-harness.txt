@@ -1,0 +1,95 @@
+import os
+import shutil
+import subprocess
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+source = Path("/source")
+workspace = Path("/workspace")
+shutil.copytree(
+    source,
+    workspace,
+    ignore=shutil.ignore_patterns(
+        ".git", ".venv", "node_modules", ".temp", "dist", "__pycache__",
+        ".review-tmp", ".screenshots",
+    ),
+)
+os.chdir(workspace)
+subprocess.run(
+    ["git", "clone", "--no-checkout", "/evidence/source-head.bundle",
+     "/tmp/acceptance-git"],
+    check=True,
+)
+shutil.copytree("/tmp/acceptance-git/.git", workspace / ".git")
+os.environ["UV_CACHE_DIR"] = "/tmp/uv-cache"
+os.environ["PYTHONPYCACHEPREFIX"] = "/tmp/pycache"
+sync = subprocess.run(["uv", "sync", "--locked"], check=False)
+if sync.returncode:
+    raise SystemExit(sync.returncode)
+
+# Four isolated pytest processes retain every collected node. Database fixtures
+# use UUID schemas, and each process receives its own pytest temporary directory
+# and coverage file. Live TLS and performance are measured separately.
+selection = [
+    "--deselect", "tests/performance/test_reset_queries.py",
+    "--deselect", "tests/test_private_https.py",
+]
+collection = subprocess.run(
+    ["uv", "run", "--no-sync", "pytest", "--collect-only", "-q", *selection],
+    capture_output=True, text=True, check=False,
+)
+Path("/evidence/linux-collection-final.log").write_text(collection.stdout)
+if collection.returncode:
+    print(collection.stdout, collection.stderr, flush=True)
+    raise SystemExit(collection.returncode)
+nodes = [line for line in collection.stdout.splitlines() if line.startswith("tests/")]
+assert nodes and len(nodes) == len(set(nodes))
+weights = Counter(node.split("::", 1)[0] for node in nodes)
+shards = [[] for _ in range(4)]
+shard_counts = [0] * 4
+for file, count in sorted(weights.items(), key=lambda item: (-item[1], item[0])):
+    index = min(range(4), key=lambda candidate: shard_counts[candidate])
+    shards[index].append(file)
+    shard_counts[index] += count
+assert sum(shard_counts) == len(nodes)
+assert {file for shard in shards for file in shard} == set(weights)
+print(f"Collected {len(nodes)} nodes in four complete file shards", flush=True)
+
+
+def run_shard(index):
+    environment = os.environ.copy()
+    environment["COVERAGE_FILE"] = f"/evidence/linux-final.coverage.{index}"
+    command = [
+        "uv", "run", "--no-sync", "pytest", "-q", "-rs", "-x",
+        "--tb=short", "-W", "error",
+        "--cov=dragon_radar", "--cov-report=term-missing",
+        f"--cov-report=xml:/evidence/linux-coverage-final-{index}.xml",
+        f"--basetemp=/tmp/pytest-shard-{index}", *shards[index],
+    ]
+    with Path(f"/evidence/linux-backend-final-{index}.log").open("w") as output:
+        output.write(f"RUN {command}\n")
+        output.flush()
+        result = subprocess.run(command, env=environment, stdout=output,
+                                stderr=subprocess.STDOUT, check=False)
+        output.write(f"\nEXIT={result.returncode}\n")
+    print(f"SHARD {index}: {shard_counts[index]} nodes EXIT={result.returncode}",
+          flush=True)
+    return result.returncode
+
+
+with ThreadPoolExecutor(max_workers=4) as executor:
+    results = list(executor.map(run_shard, range(4)))
+if any(results):
+    raise SystemExit(1)
+os.environ["COVERAGE_FILE"] = "/evidence/linux-final.coverage"
+for command in [
+    ["uv", "run", "--no-sync", "coverage", "combine", "--keep", "/evidence"],
+    ["uv", "run", "--no-sync", "coverage", "xml",
+     "-o", "/evidence/linux-coverage-final.xml"],
+    ["uv", "run", "--no-sync", "coverage", "report"],
+]:
+    result = subprocess.run(command, check=False)
+    if result.returncode:
+        raise SystemExit(result.returncode)
+print("FULL BACKEND EXIT=0", flush=True)

@@ -1,0 +1,47 @@
+"""Licensed realtime evidence contracts and deterministic rules."""
+
+from dragon_radar.realtime.anomalies import detect_anomalies
+from dragon_radar.realtime.models import (
+    AnomalyEvent,
+    AnomalyReadResult,
+    AnomalyResult,
+    AnomalyRule,
+    MinuteBarInput,
+    MinuteBarRecord,
+    MinuteBatchInput,
+    MinuteReadResult,
+    PermissionSnapshot,
+    QuoteBatchInput,
+    QuoteInput,
+    QuoteReadResult,
+    QuoteRecord,
+    RealtimeImportResult,
+    SectorFlowBatchInput,
+    SectorFlowPoint,
+    SectorFlowReadResult,
+    SectorFlowRecord,
+    SourceCompleteness,
+)
+
+__all__ = [
+    "AnomalyEvent",
+    "AnomalyReadResult",
+    "AnomalyResult",
+    "AnomalyRule",
+    "MinuteBarInput",
+    "MinuteBarRecord",
+    "MinuteBatchInput",
+    "MinuteReadResult",
+    "PermissionSnapshot",
+    "QuoteBatchInput",
+    "QuoteInput",
+    "QuoteReadResult",
+    "QuoteRecord",
+    "RealtimeImportResult",
+    "SectorFlowBatchInput",
+    "SectorFlowPoint",
+    "SectorFlowReadResult",
+    "SectorFlowRecord",
+    "SourceCompleteness",
+    "detect_anomalies",
+]

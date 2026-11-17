@@ -1,0 +1,22 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: deploy/workbench.Dockerfile
+    ports:
+      - "127.0.0.1:${DRAGON_WEB_PORT:-8020}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+      - workbench_local
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+networks:
+  workbench_local:

@@ -1,0 +1,932 @@
+"""Source dependency, withdrawal, retention, and recovery contracts."""
+
+from uuid import uuid4
+
+import pytest
+from factories import DAYS, NOW, batch, grant
+from sqlalchemy import delete, insert, select, text
+from sqlalchemy.exc import DBAPIError
+from topic_factories import topic_batch
+
+from dragon_radar.publication.models import PublicationCommand, RetentionPolicy
+from dragon_radar.publication.retention import PublicationCache, RetentionService
+from dragon_radar.publication.service import PublicationService
+from dragon_radar.publication.tables import (
+    publication_module_controls,
+    publication_results,
+    source_dependencies,
+    withdrawal_binding_seals,
+    withdrawal_dependencies,
+    withdrawal_records,
+)
+from dragon_radar.storage.models import source_grants
+from dragon_radar.storage.repository import Conflict, Forbidden, Repository
+from dragon_radar.topics.repository import TopicRepository
+
+
+@pytest.fixture
+def published(database, repository):
+    topic_repository = TopicRepository(database, clock=lambda: NOW)
+    market = repository.publish(
+        repository.import_batch(batch(), key="retention-market").id
+    )
+    topic = topic_repository.publish(
+        topic_repository.import_batch(topic_batch(), key="retention-topic").id
+    )
+    service = PublicationService(database, repository, clock=lambda: NOW)
+    command = PublicationCommand(
+        trade_date=DAYS[-1],
+        market_snapshot_id=market.id,
+        topic_snapshot_id=topic.id,
+        disabled_domains=("news", "regulation", "role"),
+    )
+    return service, service.publish(command, key="retention-publication")
+
+
+def test_publication_indexes_source_archive_and_derived_result(published, database):
+    _service, record = published
+    with database.engine.connect() as connection:
+        rows = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert {(row["archive_type"], row["derived_type"]) for row in rows} == {
+        ("market_import_batch", "market"),
+        ("topic_import_batch", "topic"),
+    }
+    assert all(row["source_id"] == "synthetic" for row in rows)
+    assert all(row["derived_id"] == record.id for row in rows)
+
+
+def test_display_withdrawal_blocks_reads_clears_cache_and_preserves_storage(
+    published, database, repository
+):
+    service, record = published
+    cache = PublicationCache()
+    cache.put("synthetic", record.id, {"protected": True})
+    retention = RetentionService(database, repository, cache=cache, clock=lambda: NOW)
+    with database.engine.connect() as connection:
+        before = {
+            table: connection.scalar(text(f"SELECT count(*) FROM {table}"))
+            for table in ("import_batches", "snapshots", "publication_results")
+        }
+
+    withdrawal = retention.withdraw_display("synthetic")
+
+    assert withdrawal.scope == "display"
+    assert withdrawal.action == "blocked"
+    assert withdrawal.cutoff_dependency_sequence is None
+    assert cache.get(record.id) is None
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(record.id)
+    assert service.repository.list_snapshots() == []
+    with database.engine.connect() as connection:
+        after = {
+            table: connection.scalar(text(f"SELECT count(*) FROM {table}"))
+            for table in before
+        }
+    assert after == before
+
+
+def test_display_withdrawal_cannot_be_bypassed_by_registering_a_new_grant(
+    published, database, repository
+):
+    service, record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_display("synthetic")
+
+    repository.register_source(grant())
+
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(record.id)
+
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+    assert service.repository.get_snapshot(record.id).id == record.id
+
+
+def test_storage_withdrawal_without_policy_disables_modules_without_deleting(
+    published, database, repository
+):
+    service, record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    with database.engine.connect() as connection:
+        before = connection.scalar(
+            select(text("count(*)")).select_from(publication_results)
+        )
+
+    withdrawal = retention.withdraw_storage("synthetic")
+
+    assert withdrawal.action == "blocked"
+    assert withdrawal.policy_reference is None
+    assert withdrawal.cutoff_dependency_sequence is None
+    with database.engine.connect() as connection:
+        current = connection.execute(
+            select(source_grants.c.grant).where(
+                source_grants.c.source_id == "synthetic"
+            )
+        ).scalar_one()
+        controls = (
+            connection.execute(
+                select(publication_module_controls).where(
+                    publication_module_controls.c.source_id == "synthetic"
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert (
+            connection.scalar(select(text("count(*)")).select_from(publication_results))
+            == before
+        )
+    assert current["local_storage"] is False
+    assert current["local_display"] is False
+    assert {row["module"] for row in controls} == {"market", "topic"}
+    assert all(row["enabled"] is False for row in controls)
+    assert all(row["blocked_by_withdrawal"] is True for row in controls)
+    retention.replay_withdrawals("synthetic")
+    with pytest.raises(Conflict):
+        retention.restore_source("synthetic", grant())
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(record.id)
+
+
+def test_display_block_cannot_mask_pending_storage_policy_requirement(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage("synthetic")
+    retention.withdraw_display("synthetic")
+    retention.replay_withdrawals("synthetic")
+
+    with pytest.raises(Conflict):
+        retention.restore_source("synthetic", grant())
+
+    with database.engine.connect() as connection:
+        controls = (
+            connection.execute(
+                select(publication_module_controls).where(
+                    publication_module_controls.c.source_id == "synthetic"
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert controls
+    assert all(not row["enabled"] for row in controls)
+    assert all(row["blocked_by_withdrawal"] for row in controls)
+
+
+def test_approved_storage_policy_survives_later_display_block(
+    published, database, repository
+):
+    service, record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-storage-before-display",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.withdraw_display("synthetic")
+    retention.replay_withdrawals("synthetic")
+
+    restored = retention.restore_source("synthetic", grant())
+
+    assert restored.action == "restored"
+    with database.engine.connect() as connection:
+        controls = (
+            connection.execute(
+                select(publication_module_controls).where(
+                    publication_module_controls.c.source_id == "synthetic"
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert controls
+    assert all(row["enabled"] for row in controls)
+    assert all(not row["blocked_by_withdrawal"] for row in controls)
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(record.id)
+
+
+def test_restore_rejects_replay_below_latest_pending_block(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    blocked = retention.withdraw_display("synthetic")
+    with database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=uuid4(),
+                source_id="synthetic",
+                scope="display",
+                action="replayed",
+                policy_reference=None,
+                details={"through_sequence": blocked.sequence - 1},
+                occurred_at=NOW,
+            )
+        )
+
+    with pytest.raises(Conflict):
+        retention.restore_source("synthetic", grant())
+
+
+def test_replay_ignores_withdrawals_before_latest_restore(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-closed-ledger",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
+    with pytest.raises(Conflict):
+        retention.replay_withdrawals("synthetic")
+
+
+def test_approved_policy_deidentifies_derived_content_and_keeps_tombstones(
+    published, database, repository
+):
+    _service, record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    policy = RetentionPolicy(
+        reference="approved-policy-2026-09",
+        approved=True,
+        action="deidentify",
+    )
+
+    withdrawal = retention.withdraw_storage("synthetic", policy=policy)
+
+    assert withdrawal.action == "deidentified"
+    with database.engine.connect() as connection:
+        ready = (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == record.id,
+                    publication_results.c.domain.in_(("market", "topic")),
+                )
+            )
+            .mappings()
+            .all()
+        )
+        ledger = (
+            connection.execute(
+                select(withdrawal_records)
+                .where(withdrawal_records.c.source_id == "synthetic")
+                .order_by(withdrawal_records.c.sequence)
+            )
+            .mappings()
+            .all()
+        )
+    assert all(row["status"] == "disabled" for row in ready)
+    assert all(row["payload"] == {} for row in ready)
+    assert all(row["coverage"] == {} for row in ready)
+    assert all(row["quality_flags"] == ["withdrawn"] for row in ready)
+    assert [row["action"] for row in ledger] == ["blocked", "deidentified"]
+    assert all("protected" not in str(row["details"]) for row in ledger)
+
+
+def test_destructive_withdrawal_captures_dependency_sequence_cutoff(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-sequence-cutoff",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+
+    assert "dependency_sequence" in source_dependencies.c
+    assert "cutoff_dependency_sequence" in withdrawal_records.c
+    assert withdrawal.cutoff_dependency_sequence is not None
+    with database.engine.connect() as connection:
+        ledger = (
+            connection.execute(
+                select(withdrawal_records)
+                .where(withdrawal_records.c.source_id == "synthetic")
+                .order_by(withdrawal_records.c.sequence)
+            )
+            .mappings()
+            .all()
+        )
+        dependency_sequences = connection.execute(
+            select(source_dependencies.c.dependency_sequence).where(
+                source_dependencies.c.source_id == "synthetic"
+            )
+        ).scalars()
+    assert ledger[0]["action"] == "blocked"
+    assert ledger[0]["cutoff_dependency_sequence"] is None
+    assert ledger[1]["action"] == "deidentified"
+    assert ledger[1]["cutoff_dependency_sequence"] == max(dependency_sequences)
+
+
+def test_restore_requires_retention_action_then_ledger_replay(
+    published, database, repository
+):
+    service, record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-delete-v1",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    with pytest.raises(Conflict):
+        retention.restore_source("synthetic", grant())
+
+    replay = retention.replay_withdrawals("synthetic")
+    restored = retention.restore_source("synthetic", grant())
+
+    assert replay.action == "replayed"
+    assert restored.action == "restored"
+    with database.engine.connect() as connection:
+        ledger = (
+            connection.execute(
+                select(withdrawal_records)
+                .where(withdrawal_records.c.source_id == "synthetic")
+                .order_by(withdrawal_records.c.sequence)
+            )
+            .mappings()
+            .all()
+        )
+        controls = (
+            connection.execute(
+                select(publication_module_controls).where(
+                    publication_module_controls.c.source_id == "synthetic"
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["action"] for row in ledger] == [
+        "blocked",
+        "deidentified",
+        "replayed",
+        "restored",
+    ]
+    assert [row["cutoff_dependency_sequence"] is None for row in ledger] == [
+        True,
+        False,
+        True,
+        True,
+    ]
+    assert ledger[2]["details"]["through_sequence"] == ledger[1]["sequence"]
+    assert controls
+    assert all(row["enabled"] for row in controls)
+    assert all(not row["blocked_by_withdrawal"] for row in controls)
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(record.id)
+    with pytest.raises(Forbidden):
+        service.publish(
+            PublicationCommand.model_validate_json(record.command_json),
+            key="must-not-republish-purged-inputs",
+        )
+
+
+def test_destructive_withdrawal_only_applies_to_dependencies_existing_at_withdrawal(
+    published, database, repository
+):
+    service, old_record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-deidentify-v2",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
+    market = repository.publish(
+        repository.import_batch(
+            batch(),
+            key="restored-market",
+        ).id
+    )
+    topic_repository = TopicRepository(database, clock=lambda: NOW)
+    topic = topic_repository.publish(
+        topic_repository.import_batch(
+            topic_batch(),
+            key="restored-topic",
+        ).id
+    )
+    new_record = service.publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            topic_snapshot_id=topic.id,
+            disabled_domains=("news", "regulation", "role"),
+        ),
+        key="restored-publication",
+    )
+
+    assert service.repository.get_snapshot(new_record.id).id == new_record.id
+    with pytest.raises(Forbidden):
+        service.repository.get_snapshot(old_record.id)
+    with database.engine.connect() as connection:
+        bound = connection.scalar(
+            text(
+                "SELECT count(*) FROM withdrawal_dependencies "
+                "WHERE withdrawal_id = :withdrawal_id"
+            ),
+            {"withdrawal_id": withdrawal.id},
+        )
+    assert bound > 0
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            delete(publication_results).where(
+                publication_results.c.publication_id == new_record.id,
+                publication_results.c.domain == "market",
+            )
+        )
+
+
+def _withdrawal_dependency_values(**values):
+    legacy_defaults = {
+        "source_id": "synthetic",
+        "derived_type": None,
+        "derived_id": None,
+        "publication_id": None,
+    }
+    return {
+        **{
+            name: value
+            for name, value in legacy_defaults.items()
+            if name in withdrawal_dependencies.c
+        },
+        **values,
+    }
+
+
+def test_database_rejects_binding_old_withdrawal_to_future_dependency(
+    published, database, repository
+):
+    _service, _old_record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-future-binding",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+
+    future_repository = Repository(database, clock=lambda: NOW)
+    market = future_repository.publish(
+        future_repository.import_batch(batch(), key="future-binding-market").id
+    )
+    topics = TopicRepository(database, clock=lambda: NOW)
+    topic = topics.publish(
+        topics.import_batch(topic_batch(), key="future-binding-topic").id
+    )
+    future_record = PublicationService(
+        database, future_repository, clock=lambda: NOW
+    ).publish(
+        PublicationCommand(
+            trade_date=DAYS[-1],
+            market_snapshot_id=market.id,
+            topic_snapshot_id=topic.id,
+            disabled_domains=("news", "regulation", "role"),
+        ),
+        key="future-binding-publication",
+    )
+    with database.engine.connect() as connection:
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == future_record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+        cutoff = connection.scalar(
+            select(withdrawal_records.c.cutoff_dependency_sequence).where(
+                withdrawal_records.c.id == withdrawal.id
+            )
+        )
+    assert dependency["dependency_sequence"] > cutoff
+
+    values = {
+        "id": uuid4(),
+        "withdrawal_id": withdrawal.id,
+        "source_dependency_id": dependency["id"],
+        "created_at": NOW,
+    }
+    if "source_id" in withdrawal_dependencies.c:
+        values = _withdrawal_dependency_values(
+            **values,
+            archive_type=dependency["archive_type"],
+            archive_id=dependency["archive_id"],
+            derived_type=dependency["derived_type"],
+            derived_id=dependency["derived_id"],
+            publication_id=dependency["publication_id"],
+        )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(insert(withdrawal_dependencies).values(**values))
+
+
+def test_destructive_withdrawal_seals_bindings_in_its_transaction(
+    published, database, repository
+):
+    _service, _record = published
+    withdrawal = RetentionService(
+        database, repository, clock=lambda: NOW
+    ).withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-sealed-bindings",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+
+    with database.engine.connect() as connection:
+        sealed_at = connection.scalar(
+            select(withdrawal_binding_seals.c.sealed_at).where(
+                withdrawal_binding_seals.c.withdrawal_id == withdrawal.id
+            )
+        )
+
+    assert sealed_at == NOW
+
+
+def test_sealed_withdrawal_rejects_future_archive_only_binding(
+    published, database, repository
+):
+    _service, _record = published
+    retention = RetentionService(database, repository, clock=lambda: NOW)
+    withdrawal = retention.withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-sealed-future-archive",
+            approved=True,
+            action="delete",
+        ),
+    )
+    retention.replay_withdrawals("synthetic")
+    retention.restore_source("synthetic", grant())
+    future_archive = repository.import_batch(
+        batch(),
+        key="future-archive-only-binding",
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                id=uuid4(),
+                withdrawal_id=withdrawal.id,
+                source_dependency_id=None,
+                archive_type="market_import_batch",
+                archive_id=future_archive.id,
+                created_at=NOW,
+            )
+        )
+
+
+def test_database_requires_destructive_withdrawal_binding_seal(database):
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=uuid4(),
+                source_id="synthetic",
+                scope="storage",
+                action="deleted",
+                policy_reference="approved-but-unsealed",
+                cutoff_dependency_sequence=0,
+                details={},
+                occurred_at=NOW,
+            )
+        )
+
+
+def test_database_rejects_incomplete_destructive_withdrawal_seal(published, database):
+    _service, _record = published
+    withdrawal_id = uuid4()
+    with database.engine.connect() as connection:
+        cutoff = connection.scalar(
+            select(text("max(dependency_sequence)")).select_from(source_dependencies)
+        )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="storage",
+                action="deleted",
+                policy_reference="approved-incomplete-seal",
+                cutoff_dependency_sequence=cutoff,
+                details={},
+                occurred_at=NOW,
+            )
+        )
+        connection.execute(
+            insert(withdrawal_binding_seals).values(
+                withdrawal_id=withdrawal_id,
+                sealed_at=NOW,
+            )
+        )
+
+
+def test_database_rejects_seal_for_non_destructive_withdrawal(database, repository):
+    withdrawal = RetentionService(
+        database, repository, clock=lambda: NOW
+    ).withdraw_display("synthetic")
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_binding_seals).values(
+                withdrawal_id=withdrawal.id,
+                sealed_at=NOW,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE withdrawal_binding_seals SET sealed_at = sealed_at",
+        "DELETE FROM withdrawal_binding_seals",
+        "TRUNCATE withdrawal_binding_seals",
+    ],
+)
+def test_withdrawal_binding_seals_are_append_only(
+    published, database, repository, statement
+):
+    _service, _record = published
+    RetentionService(database, repository, clock=lambda: NOW).withdraw_storage(
+        "synthetic",
+        policy=RetentionPolicy(
+            reference="approved-immutable-seal",
+            approved=True,
+            action="deidentify",
+        ),
+    )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(text(statement))
+
+
+def test_database_rejects_mixed_withdrawal_dependency_shape(published, database):
+    _service, record = published
+    with database.engine.connect() as connection:
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+    withdrawal_id = uuid4()
+    values = _withdrawal_dependency_values(
+        id=uuid4(),
+        withdrawal_id=withdrawal_id,
+        source_dependency_id=dependency["id"],
+        archive_type=dependency["archive_type"],
+        archive_id=dependency["archive_id"],
+        created_at=NOW,
+    )
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="storage",
+                action="deleted",
+                policy_reference="shape-test",
+                cutoff_dependency_sequence=dependency["dependency_sequence"],
+                details={},
+                occurred_at=NOW,
+            )
+        )
+        connection.execute(insert(withdrawal_dependencies).values(**values))
+
+
+@pytest.mark.parametrize(
+    ("scope", "action", "policy_reference", "cutoff"),
+    [
+        ("display", "deidentified", "forged-policy", 1),
+        ("display", "deleted", "forged-policy", 1),
+        ("storage", "deidentified", None, 1),
+        ("storage", "deleted", "forged-policy", None),
+        ("display", "blocked", "forged-policy", None),
+        ("display", "blocked", None, 1),
+        ("storage", "replayed", "forged-policy", None),
+        ("display", "restored", "forged-policy", None),
+    ],
+)
+def test_database_rejects_invalid_withdrawal_scope_action_policy(
+    published,
+    database,
+    scope,
+    action,
+    policy_reference,
+    cutoff,
+):
+    _service, record = published
+    with database.engine.connect() as connection:
+        before = (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == record.id
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=uuid4(),
+                source_id="synthetic",
+                scope=scope,
+                action=action,
+                policy_reference=policy_reference,
+                cutoff_dependency_sequence=cutoff,
+                details={},
+                occurred_at=NOW,
+            )
+        )
+
+    with database.engine.connect() as connection:
+        after = (
+            connection.execute(
+                select(publication_results).where(
+                    publication_results.c.publication_id == record.id
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert after == before
+
+
+def test_result_retention_trigger_rejects_display_deleted_legacy_record(
+    published, database
+):
+    _service, record = published
+    withdrawal_id = uuid4()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_records DROP CONSTRAINT IF EXISTS "
+                "withdrawal_records_scope_action_policy"
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_records "
+                "DISABLE TRIGGER withdrawal_records_binding_sealed"
+            )
+        )
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="display",
+                action="deleted",
+                policy_reference="forged-display-policy",
+                cutoff_dependency_sequence=0,
+                details={},
+                occurred_at=NOW,
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_records "
+                "ENABLE TRIGGER withdrawal_records_binding_sealed"
+            )
+        )
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_dependencies "
+                "DISABLE TRIGGER withdrawal_dependencies_insert_guard"
+            )
+        )
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                id=uuid4(),
+                withdrawal_id=withdrawal_id,
+                source_dependency_id=dependency["id"],
+                created_at=NOW,
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE withdrawal_dependencies "
+                "ENABLE TRIGGER withdrawal_dependencies_insert_guard"
+            )
+        )
+
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            delete(publication_results).where(
+                publication_results.c.publication_id == record.id,
+                publication_results.c.domain == "market",
+            )
+        )
+
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(text("count(*)"))
+                .select_from(publication_results)
+                .where(
+                    publication_results.c.publication_id == record.id,
+                    publication_results.c.domain == "market",
+                )
+            )
+            == 1
+        )
+
+
+def test_archive_tombstone_uniqueness_cannot_be_bypassed_by_null(published, database):
+    _service, record = published
+    with database.engine.connect() as connection:
+        dependency = (
+            connection.execute(
+                select(source_dependencies).where(
+                    source_dependencies.c.publication_id == record.id,
+                    source_dependencies.c.derived_type == "market",
+                )
+            )
+            .mappings()
+            .one()
+        )
+    withdrawal_id = uuid4()
+    common = {
+        "withdrawal_id": withdrawal_id,
+        "source_dependency_id": None,
+        "archive_type": dependency["archive_type"],
+        "archive_id": dependency["archive_id"],
+        "created_at": NOW,
+    }
+    with pytest.raises(DBAPIError), database.engine.begin() as connection:
+        connection.execute(
+            insert(withdrawal_records).values(
+                id=withdrawal_id,
+                source_id="synthetic",
+                scope="storage",
+                action="deidentified",
+                policy_reference="approved-tombstone-unique",
+                cutoff_dependency_sequence=dependency["dependency_sequence"],
+                details={},
+                occurred_at=NOW,
+            )
+        )
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                **_withdrawal_dependency_values(id=uuid4(), **common)
+            )
+        )
+        connection.execute(
+            insert(withdrawal_dependencies).values(
+                **_withdrawal_dependency_values(id=uuid4(), **common)
+            )
+        )
