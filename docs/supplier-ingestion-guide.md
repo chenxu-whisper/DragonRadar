@@ -5,7 +5,7 @@
 
 完整配置格式、采集 API、归档恢复和质量检查说明见
 [使用文档](supplier-ingestion.md)。真实接入暂缓，见 [TODO](TODO.md)。
-设计及批准范围见 [supplier-ingestion-design.md](supplier-ingestion-design.md)。
+批准范围与接口边界统一见上述工程契约。
 
 采集配置预检（默认不联网、不写采集档案）：
 
@@ -64,7 +64,7 @@ grant=current_grant)`，传入独立保存的摘要和当前完整授权；读�
 报告不是完成标记，消费以实际样本读取核验为准。接收时间、精确Decimal、日历与
 complete_pages不变，仍为retrospective、PITunverified、productionfalse。
 这不授予额外导出/分享/AI权利，也不替代生产签章。完整格式、失败清理及API见
-工作树文档“不可变标准样本包”和 [N1规格](supplier-sample-archive-plan.md)。
+工程契约中的“不可变标准样本包”。
 
 已保存标准包可独立核验，不再依赖原始采集归档：
 
@@ -82,7 +82,7 @@ sample、sha256和grant必需，output可选；stdout始终输出安全JSON。
 报告先独占预留再读取输入，拒绝覆盖和输入冲突；
 写入/fsync失败清理输出；成功/失败诊断均在最终fsync后重新授权，
 期间授权失效在文件关闭前回滚报告并返回blocked。
-详细错误映射见 [N1B规格](supplier-normalized-sample-cli-plan.md)。
+详细错误映射见 [工程契约](supplier-ingestion.md)。
 
 canonical 样本验收：
 
@@ -107,6 +107,5 @@ uv run --no-sync python scripts/verify_supplier_sample.py ".temp/sample.json" --
 样本通过后继续独立生产证据链、正式 CI 和真实逐日观察验收。
 
 数据库回归使用既有 `dragon-radar-foundation-test-db` 容器的
-`127.0.0.1:55432/dragon_test`。连接配置见工作树 `docs/reset-running.md`；
-仅设置测试连接变量不会改变生产连接。运行结果及临时 schema 清理证据见
-[工程交付记录](supplier-ingestion-implementation.md)。
+`127.0.0.1:55432/dragon_test`。连接配置见项目根目录
+[README](../README.md)；仅设置测试连接变量不会改变生产连接。

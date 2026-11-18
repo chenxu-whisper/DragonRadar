@@ -97,7 +97,8 @@ subject 已按用户声明填写“陈旭”，audience 填“陈旭（本机 ow
 1. 确定真实授权主体与供应商，按上述市场和数据域申请存储/本机展示权利。
    未来若启用模型或公开分享，另取得相应 AI/再分发权利。
    用户要求将首选改为同花顺 iFinD 数据接口（Python SDK/HTTP），Choice 为备选；
-   详见 `docs/supplier-selection.md` 和 `docs/data-license-application.md`。
+   完整申请需求见 `docs/data-license-application.md`；
+   工程接入边界见 [供应商契约](supplier-ingestion.md)。
    用户已声明主体为陈旭（个人），没有现有账号；
    联系邮箱为1070669767@qq.com。iFinD 申请邮件已于2026年11月16日15:59发送，
    QQ 邮箱确认“投递成功”，记录见 `docs/data-license-submission-ifind.md`；

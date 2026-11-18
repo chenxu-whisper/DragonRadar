@@ -30,11 +30,13 @@ from dragon_radar.news.service import (
 from dragon_radar.news.wordcloud import TOKENIZER_V1, WORDCLOUD_GROUPS
 from dragon_radar.owner.security import (
     BoundaryError,
+    OwnerRead,
     OwnerWrite,
     invalid_request,
     json_object,
 )
 from dragon_radar.publication.models import PublishedSnapshot
+from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
 router = APIRouter()
@@ -466,6 +468,8 @@ class _NewsReviewRoute(APIRoute):
                 return error_response(404, "NOT_FOUND", "Resource not found")
             except Conflict:
                 return error_response(409, "VERSION_CONFLICT", "Version conflict")
+            except DataUnavailable:
+                return error_response(503, "DATA_UNAVAILABLE", "Data unavailable")
             except (SQLAlchemyError, StorageUnavailable):
                 return error_response(503, "STORAGE_UNAVAILABLE", "Storage unavailable")
             except (BoundaryError, ValueError):
@@ -476,6 +480,51 @@ class _NewsReviewRoute(APIRoute):
 
 def install_news_review_routes(app: FastAPI) -> None:
     owner_router = APIRouter(route_class=_NewsReviewRoute)
+
+    @owner_router.get("/api/news/{article_id}/associations/review-state")
+    def association_state(article_id: UUID, request: Request, owner: OwnerRead):
+        query, trade_date, snapshot_id = _selection(request, detail=True)
+        if set(query) != {"date", "snapshot_id"} or snapshot_id is None:
+            raise invalid_request()
+        reviews = request.app.state.news_repository
+        publications = request.app.state.publication_repository
+        if not isinstance(reviews, NewsRepository) or not isinstance(
+            publications, PublicationRepository
+        ):
+            raise StorageUnavailable
+        with reviews.database.engine.begin() as connection:
+            identity = owner.authorize(connection, reviews.owners)
+            snapshot = publications.get_ai_snapshot(
+                connection, snapshot_id, ai_domains=()
+            )
+            if snapshot is None:
+                raise NotFound("Publication not found")
+            if snapshot.trade_date != trade_date:
+                raise Conflict("Publication date mismatch")
+            payload, _coverage, _reason = _payload(snapshot)
+            if payload is None:
+                raise DataUnavailable
+            matches = [
+                item
+                for item in payload["articles"]
+                if item["article_id"] == str(article_id)
+            ]
+            if len(matches) != 1:
+                raise NotFound("Published article not found")
+            article = matches[0]
+            return DecimalJSONResponse(
+                {
+                    "owner_id": str(identity.owner_id),
+                    "article_id": str(article_id),
+                    "article_revision_id": article["revision_id"],
+                    "article_revision": article["revision"],
+                    "snapshot_id": str(snapshot.id),
+                    "trade_date": snapshot.trade_date.isoformat(),
+                    "associations": reviews.association_review_state(
+                        connection, identity.owner_id, article
+                    ),
+                }
+            )
 
     @owner_router.post("/api/news/{article_id}/associations/review")
     def review_association(article_id: UUID, request: Request, owner: OwnerWrite):

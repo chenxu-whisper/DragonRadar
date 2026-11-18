@@ -13,7 +13,7 @@ test('renders completeness, calculations and formal events as independent region
   await mockRegulation(page);
   await page.goto(regulationUrl);
 
-  await expect(page.getByRole('heading', { name: '监管', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '监管观察', exact: true })).toBeVisible();
   const completeness = page.getByRole('region', { name: '数据完整性' });
   const calculations = page.getByRole('region', { name: '数值计算状态' });
   const events = page.getByRole('region', { name: '已披露正式事件与限制' });
@@ -77,8 +77,8 @@ test('formal events remain visible when regulation status is unavailable', async
   const events = page.getByRole('region', { name: '已披露正式事件与限制' });
   await expect(events).toContainText('4 条正式记录');
   await expect(events.getByRole('link', { name: '公告原文' })).toHaveCount(4);
-  await expect(page.getByRole('region', { name: '数据完整性' })).toHaveCount(0);
-  await expect(page.getByRole('region', { name: '数值计算状态' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '数据完整性' })).toContainText('模块数据不可用');
+  await expect(page.getByRole('region', { name: '数值计算状态' })).toContainText('模块数据不可用');
 });
 
 test('validated status events are the fallback when the events request fails', async ({ page }) => {

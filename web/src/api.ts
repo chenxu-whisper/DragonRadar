@@ -19,8 +19,19 @@ export class ApiError extends Error {
 }
 
 export async function request<T>(path: string, options: { signal?: AbortSignal; snapshot?: string } = {}): Promise<T> {
-  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment\/research|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|regulation\/(?:status|events)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|topics\/rotation|search)(?:[?#]|$)/i.test(path);
+  const resetPath = /^\/api\/(?:snapshots\/(?:list|[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12})|market\/(?:overview|sector-flow|sentiment\/research|sentiment|heatmap)|limit-up\/(?:ladder|continuity)|role\/(?:candidates|evidence)|regulation\/(?:status|events)|rank\/range|compare\/curves|stock\/[^/?#]+(?:\/kline)?|news(?:\/[^/?#]+)?|topics\/[^/?#]+|search)(?:[?#]|$)/i.test(path);
   if ((!path.startsWith('/api/v1/') && !resetPath) || path.includes('\\')) throw new ApiError(400, '仅允许同源只读接口。');
+  const topicDetailPath = path.match(/^\/api\/topics\/([^/?#]+)(?:[?#]|$)/);
+  if (topicDetailPath && topicDetailPath[1] !== 'rotation') {
+    const selectors = new URLSearchParams(path.split('?', 2)[1] ?? '');
+    let id: string;
+    try { id = decodeURIComponent(topicDetailPath[1]); }
+    catch { throw new ApiError(400, '题材标识无效。'); }
+    if (!id.trim() || /[/\\?#]/.test(id) || id === '.' || id === '..' ||
+      !selectors.get('snapshot_id') || !/^\d{4}-\d{2}-\d{2}$/.test(selectors.get('date') ?? '')) {
+      throw new ApiError(400, '仅允许同源只读接口。');
+    }
+  }
   // Inspect the raw segment before URL/fetch can normalize "." and ".." away.
   const securityPath = path.match(/^\/api\/v1\/snapshots\/[^/?#]+\/securities\/([^/?#]+)\/?(?:[?#]|$)/);
   let securityId: string | undefined;
@@ -58,6 +69,16 @@ export async function request<T>(path: string, options: { signal?: AbortSignal; 
       throw new ApiError(409, '响应快照与当前选择不匹配，已丢弃该响应。');
     }
     const query = new URLSearchParams(path.split('?', 2)[1] ?? '');
+    const topicPath = path.match(/^\/api\/topics\/([^/?#]+)(?:[?#]|$)/);
+    if (topicPath && topicPath[1] !== 'rotation') {
+      let topicId: string;
+      try { topicId = decodeURIComponent(topicPath[1]); }
+      catch { throw new ApiError(400, '题材标识无效。'); }
+      const { validateTopicDetail } = await import('./features/workbench/topic-validation');
+      const failure = validateTopicDetail(data, topicId, query);
+      if (failure === 'selection_mismatch') throw new ApiError(409, '题材响应与当前选择不匹配，已丢弃该响应。');
+      if (failure) throw new ApiError(502, '题材详情响应格式无效，已丢弃该响应。', failure);
+    }
     const analysisPath = path.match(/^\/api\/(rank\/range|compare\/curves)(?:[?#]|$)/);
     const klinePath = path.match(/^\/api\/stock\/([^/?#]+)\/kline(?:[?#]|$)/);
     if (analysisPath || klinePath) {

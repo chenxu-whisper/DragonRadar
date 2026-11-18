@@ -1,3 +1,0 @@
-# Preserve archived development documents as copied.
-* -text
-.gitattributes text eol=lf

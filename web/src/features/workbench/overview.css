@@ -1,0 +1,42 @@
+.overview-workbench { min-width: 0; }
+.overview-workbench section { min-width: 0; scroll-margin-top: 160px; }
+.overview-workbench .overview-indexes h2 { margin-bottom: 12px; }
+.overview-workbench .index-strip { max-width: 100%; }
+.overview-workbench .index-strip > div, .overview-workbench .index-strip > button { overflow-wrap: anywhere; }
+.overview-workbench .index-strip > button { min-width: 180px; flex: 1 0 180px; padding: 12px 16px; border: 0; border-radius: 0; background: var(--bg-surface); text-align: left; white-space: normal; display: block; }
+.overview-workbench .index-strip > button:hover { background: var(--bg-surface-2); }
+.overview-workbench .index-strip > button:focus-visible { outline-offset: -3px; }
+.research-drawer p, .research-drawer small, .research-drawer dd { overflow-wrap: anywhere; }
+.research-drawer .factor-index dd { margin-left: 0; }
+.overview-ecology { margin-top: 16px; padding: 16px 20px; border: 1px solid var(--border); background: var(--bg-surface-2); }
+.overview-ecology dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 12px 0 0; }
+.overview-ecology dt { color: var(--text-secondary); font-size: 12px; }
+.overview-ecology dd { margin: 4px 0; font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.overview-ecology dd small { display: block; color: var(--text-secondary); font-size: 12px; font-weight: 400; }
+.overview-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin-top: 16px; border: 1px solid var(--border); background: var(--border); }
+.overview-summary > section { padding: 18px; background: var(--bg-surface); }
+.overview-summary .market-observations { grid-template-columns: minmax(0, 1fr); }
+.overview-summary .market-observations dd { font-size: 16px; }
+.overview-topic-top { margin: 0; padding-left: 20px; }
+.overview-topic-top li { margin-bottom: 8px; }
+.overview-topic-top a { display: block; padding: 8px 0; min-height: 44px; text-align: left; white-space: normal; }
+.overview-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.overview-workbench .chart { height: 300px; }
+.overview-workbench table { font-variant-numeric: tabular-nums; }
+.overview-heatmap td { padding: 4px; text-align: center; }
+.overview-heatmap button { width: 100%; min-width: 60px; font-weight: 650; }
+.overview-daily-review { padding: 20px; border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--bg-muted-panel); }
+.overview-workbench p, .overview-workbench small { overflow-wrap: anywhere; }
+.overview-workbench .toolbar select { max-width: 100%; }
+.overview-workbench .toolbar label { min-width: 0; }
+@media (max-width: 1100px) {
+  .overview-summary { grid-template-columns: minmax(0, 1fr); }
+  .overview-ecology dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .overview-summary > section, .overview-ecology, .overview-daily-review { padding: 14px; }
+  .overview-ecology dl { grid-template-columns: minmax(0, 1fr); }
+  .overview-workbench .factor-grid { grid-template-columns: minmax(0, 1fr); }
+  .overview-workbench .toolbar label { width: 100%; }
+  .overview-workbench .toolbar select { width: 100%; }
+}

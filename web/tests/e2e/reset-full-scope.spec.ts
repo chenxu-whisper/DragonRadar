@@ -222,19 +222,19 @@ test('pinned daily publication survives 总览→梯队→涨幅 navigation whil
   expect(probes.realtimeUrls.every(u => u.searchParams.get('snapshot_id') === null
     && u.searchParams.get('snapshot') === null)).toBe(true);
 
-  await nav(page, '梯队').click();
+  await nav(page, '龙头梯队').click();
   await expect(page).toHaveURL(/view=leaders/);
   await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
   await expect(page.getByRole('table', { name: '日期与板数矩阵' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '题材轮动时间轴' })).toBeVisible();
 
-  await nav(page, '涨幅').click();
+  await nav(page, '涨幅分析').click();
   await expect(page).toHaveURL(/view=analysis/);
   await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
   await expect(page.getByRole('region', { name: '白名单查询面板' })).toBeVisible();
   await expect(page.getByLabel('快照版本')).toHaveValue(ID);
 
-  await nav(page, '总览').click();
+  await nav(page, '市场总览').click();
   await expect(page.getByRole('heading', { name: '市场总览', exact: true })).toBeVisible();
   // Primary navigation keeps the global publication/date but intentionally clears
   // the per-view security selection (useLocation destination contract); sector is
@@ -493,7 +493,7 @@ test('dark theme and compact density persist across navigation, and Ctrl+K keeps
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
 
-  await nav(page, '总览').click();
+  await nav(page, '市场总览').click();
   await expect(page.getByRole('heading', { name: '市场总览', exact: true })).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -516,12 +516,12 @@ test('Task 27 owner boundary: read-only views stay research-silent while analysi
   await expect(page.getByRole('region', { name: '研究回测' })).toHaveCount(0);
   expect(probes.researchCalls).toEqual([]);
 
-  await nav(page, '梯队').click();
+  await nav(page, '龙头梯队').click();
   await expect(page.getByRole('heading', { name: '题材轮动时间轴' })).toBeVisible();
   await expect(page.getByRole('region', { name: '研究回测' })).toHaveCount(0);
   expect(probes.researchCalls).toEqual([]);
 
-  await nav(page, '涨幅').click();
+  await nav(page, '涨幅分析').click();
   await expect(page.getByRole('region', { name: '白名单查询面板' })).toBeVisible();
 
   // Owner surface mounts only on analysis and keeps its research-only disclosure.

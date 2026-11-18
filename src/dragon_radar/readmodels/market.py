@@ -467,6 +467,67 @@ def _research_point(day: date, facts: _DailySentimentFacts) -> dict:
     )
 
 
+def _continuity_detail(batch, facts, bars, sessions):
+    position = sessions.index(facts.trade_date)
+
+    def members(ids, promotion=False):
+        rows = []
+        for security_id in sorted(ids):
+            current_state = state_at(batch, security_id, facts.trade_date)
+            observation, reasons = _observation(
+                batch, bars, security_id, facts.trade_date
+            )
+            if current_state is not None and current_state.suspended:
+                status, reasons = "excluded", ("security_suspended",)
+            elif promotion and observation is not None and not reasons:
+                status = "valid"
+            elif not promotion and security_id in facts.returns:
+                status, reasons = "valid", ()
+            else:
+                status = "missing"
+                reasons = reasons or ("daily_return_unavailable",)
+            value = facts.returns.get(security_id) if status == "valid" else None
+            rows.append(
+                {
+                    "security_id": security_id,
+                    "name": current_state.name if current_state is not None else None,
+                    "status": status,
+                    "return": value,
+                    "direction": (
+                        "up" if value > 0 else "down" if value < 0 else "flat"
+                    )
+                    if value is not None
+                    else None,
+                    "sealed": security_id in facts.sealed
+                    if status == "valid"
+                    else None,
+                    "reasons": list(reasons),
+                }
+            )
+        return {
+            "members": rows,
+            "coverage": _coverage(
+                len(rows),
+                sum(row["status"] == "valid" for row in rows),
+                sum(row["status"] == "excluded" for row in rows),
+                sum(row["status"] == "missing" for row in rows),
+            ),
+        }
+
+    promotion = members(facts.prior_ge2, True)
+    feedback = members(facts.prior_limit_up)
+    feedback["direction_counts"] = {
+        direction: sum(row["direction"] == direction for row in feedback["members"])
+        for direction in ("up", "down", "flat")
+    }
+    return {
+        "trade_date": facts.trade_date,
+        "previous_trade_date": sessions[position - 1] if position else None,
+        "promotion": promotion,
+        "feedback": feedback,
+    }
+
+
 def _sentiment(
     batch: MarketBatch,
     returns: dict[str, Decimal],
@@ -548,6 +609,11 @@ def _sentiment(
             series.append(point)
         if day == batch.trade_date:
             current = point if point is not None else daily(day, facts)
+            current = {
+                **current,
+                "continuity_detail_version": 1,
+                "continuity_detail": _continuity_detail(batch, facts, bars, sessions),
+            }
     assert current is not None
     # The current day also lives in ``series``; drop its date on a fresh dict
     # so the materialized series point keeps its trade_date key.

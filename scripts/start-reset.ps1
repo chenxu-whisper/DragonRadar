@@ -38,7 +38,7 @@ if (-not (Test-Path -LiteralPath $secret)) {
 Assert-PrivateFile $secret
 $settings = @{}
 foreach ($line in [System.IO.File]::ReadAllLines($secret)) {
-    if ($line -notmatch '^([A-Z0-9_]+)=(.+)$') {
+    if ($line -notmatch '^([A-Z0-9_]+)=(.+)$' -or $settings.ContainsKey($Matches[1])) {
         throw "Reset configuration is malformed."
     }
     $settings[$Matches[1]] = $Matches[2]
@@ -56,8 +56,14 @@ foreach ($required in @(
 if ($settings["DRAGON_PUBLIC_BIND"] -ne "127.0.0.1") {
     throw "Automatic non-loopback public binding is not allowed by this starter."
 }
-$configuredPublicPort = [int]$settings["DRAGON_PUBLIC_PORT"]
-$configuredOwnerPort = [int]$settings["DRAGON_OWNER_PORT"]
+$configuredPublicPort = 0
+$configuredOwnerPort = 0
+if (
+    -not [int]::TryParse($settings["DRAGON_PUBLIC_PORT"], [ref]$configuredPublicPort) -or
+    -not [int]::TryParse($settings["DRAGON_OWNER_PORT"], [ref]$configuredOwnerPort)
+) {
+    throw "Reset port configuration is invalid."
+}
 if (
     $configuredPublicPort -lt 1024 -or $configuredPublicPort -gt 65535 -or
     $configuredOwnerPort -lt 1024 -or $configuredOwnerPort -gt 65535 -or
@@ -81,10 +87,11 @@ $compose = @(
     "--project-name", "dragon-radar-reset",
     "--project-directory", $root,
     "--env-file", $secret,
-    "-f", (Join-Path $root "compose.reset.yaml")
+    "-f", (Join-Path $root "compose.yaml")
 )
 $oldValues = @{}
-foreach ($name in $settings.Keys) {
+$environmentNames = @(Get-ResetEnvironmentNames $settings)
+foreach ($name in $environmentNames) {
     $oldValues[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
 }
@@ -118,7 +125,7 @@ try {
     Write-Output "Owner CA certificate: $certificate"
     Write-Output "Certificate trust has NOT been installed."
 } finally {
-    foreach ($name in $settings.Keys) {
+    foreach ($name in $environmentNames) {
         [Environment]::SetEnvironmentVariable(
             $name,
             $oldValues[$name],

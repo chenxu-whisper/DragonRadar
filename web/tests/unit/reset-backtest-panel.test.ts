@@ -1003,7 +1003,7 @@ describe('Task 17 App manifest wiring and fold isolation contract', () => {
     expect(source).not.toContain('manifest={null}');
     expect(source).not.toContain('subscribeBacktestManifest');
     expect(source).not.toContain('manifestResource');
-    expect(source).toContain('snapshotId={state.snapshot}');
+    expect(source).toContain("snapshotId={snapshot?.snapshot_id || ''}");
     expect(source).toContain('ResetBacktestPanel && ownerResearchEnabled');
     const ownerSource = read('src/features/research/OwnerBacktestWorkbench.tsx');
     expect(ownerSource).toContain('subscribeBacktestManifest');

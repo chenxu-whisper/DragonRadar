@@ -7,6 +7,7 @@ import { IntervalForm } from '../../components/IntervalForm';
 import { analysisRange, analysisSortDescriptor } from './query';
 import { CsvExportButton } from '../../export/CsvExportButton';
 import { reportIndexItems } from '../preferences/commands';
+import { UnavailableModules } from '../workbench/PageStructure';
 
 export interface ResetAnalysisProps {
   state: ResearchState;
@@ -84,6 +85,7 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
     <IntervalForm state={state} patch={patch} reset />
     {error && <p role="alert" className="notice error">{error}</p>}
     <ResourceStatus resource={resource} name="涨幅排行" />
+    {!rankData && <UnavailableModules view="analysis" ids={['ranking']} loading={resource.loading} />}
     {response?.data === null && <p className="notice" role="status">
       {state.adj !== 'raw' ? '当前来源无法证明该复权口径' : '当前区间分析不可用'}
     </p>}
@@ -93,7 +95,7 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
         <span>{response.data.window_days} 日区间 · 基准收益 {ratio(response.data.benchmark_return)}</span>
         <span>有效 {response.coverage.valid} / 应有 {response.coverage.expected} · 排除 {response.coverage.excluded} · 缺失 {response.coverage.missing}</span>
       </div>
-      <div className="section-heading"><h2>涨幅排行</h2><div>
+      <div id="workbench-ranking" tabIndex={-1} className="section-heading"><h2>涨幅排行</h2><div>
         <span className="muted">空值不参与有效排序，以 — 展示</span>
         <CsvExportButton
           scope="analysis-current-page"

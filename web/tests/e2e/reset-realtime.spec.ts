@@ -496,7 +496,9 @@ test('shows revoked state and keyboard-reachable recovery without retaining evid
   await expect(panel.getByText('实时来源授权已撤销')).toBeVisible();
   await expect(panel.getByText(BATCH, { exact: true })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: '市场总览' })).toBeVisible();
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await expect(page.getByText('合成测试来源', { exact: false }).first()).toBeVisible();
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   const retry = panel.getByRole('button', { name: '重新检查实时来源' });
   await retry.focus();
   await expect(retry).toBeFocused();

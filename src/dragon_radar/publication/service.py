@@ -269,9 +269,20 @@ class PublicationService:
 
     @staticmethod
     def _market_materialization(context, topic_context=None) -> DomainMaterialization:
-        _row, archive, batch = context
+        row, archive, batch = context
         topic_batch = topic_context[2] if topic_context is not None else None
         payload = materialize_market(batch, topic_batch)
+        if topic_context is not None:
+            from dragon_radar.readmodels.topic_details import materialize_topic_details
+
+            payload["topic_details"] = materialize_topic_details(
+                batch,
+                topic_batch,
+                row["id"],
+                topic_context[0]["id"],
+                payload["sector_flow"]["sectors"],
+                payload["search"]["securities"],
+            )
         payload["analysis"] = materialize_analysis(batch, topic_batch)
         payload["stocks"] = materialize_stocks(batch)
         wire_coverage = payload["overview"]["breadth"]["coverage"]
@@ -297,6 +308,8 @@ class PublicationService:
                 "snapshot_id": str(row["id"]),
                 "batch_id": str(row["batch_id"]),
                 "source_version": batch.source_version,
+                "taxonomy_version": batch.taxonomy_version,
+                "membership_version": batch.membership_version,
             },
             coverage=archive["quality_report"].get("coverage", {}),
             quality_flags=tuple(

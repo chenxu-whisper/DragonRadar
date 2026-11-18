@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useState, type ComponentType, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { ArrowLeft, BarChart3, ChartNoAxesCombined, ChevronLeft, Menu, Radar, Newspaper, Layers, ShieldCheck, NotebookPen } from 'lucide-react';
 import { useLocation } from './hooks/useLocation';
 import { AccessProvider, useAccess, useResource } from './hooks/useResource';
@@ -18,17 +18,20 @@ import { Overview } from './pages/Overview';
 import { Analysis, ResetBacktestPanel, ResetQueryPanel } from './pages/Analysis';
 import type { LeadersProps } from './pages/Leaders';
 import type { SecurityDrawerProps, SecurityPageProps } from './pages/SecurityDetail';
+import type { LocalWatch } from './repositories/local/repository';
+import { ApiError, request } from './api';
+import { allowNavigation } from './features/review/navigation';
 
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const publicSharing = import.meta.env.VITE_PUBLIC_SHARING === '1';
 const localReviewEnabled = resetEnabled && !publicSharing;
 const ownerResearchEnabled = resetEnabled && !publicSharing;
 const resetNavigation = [
-  { view: 'overview', text: '总览', Icon: BarChart3 },
-  { view: 'news', text: '消息', Icon: Newspaper },
-  { view: 'leaders', text: '梯队', Icon: Layers },
-  { view: 'analysis', text: '涨幅', Icon: ChartNoAxesCombined },
-  { view: 'regulation', text: '监管', Icon: ShieldCheck },
+  { view: 'overview', text: '市场总览', Icon: BarChart3 },
+  { view: 'news', text: '市场消息', Icon: Newspaper },
+  { view: 'leaders', text: '龙头梯队', Icon: Layers },
+  { view: 'analysis', text: '涨幅分析', Icon: ChartNoAxesCombined },
+  { view: 'regulation', text: '监管观察', Icon: ShieldCheck },
   ...(!publicSharing
     ? [{ view: 'review', text: '我的复盘', Icon: NotebookPen } as const]
     : []),
@@ -70,6 +73,7 @@ const Regulation = import.meta.env.VITE_RESET_WORKBENCH === '1'
 const SecurityDrawer = lazy(async () => ({
   default: (await import('./pages/SecurityDetail')).SecurityDrawer as ComponentType<SecurityDrawerProps>,
 }));
+const ResearchDrawer = resetEnabled ? lazy(() => import('./features/workbench/ResearchDrawer')) : null;
 const SecurityPage = lazy(async () => ({
   default: (await import('./pages/SecurityDetail')).SecurityPage as ComponentType<SecurityPageProps>,
 }));
@@ -80,6 +84,12 @@ const Comparison = lazy(async () => ({
 const CommandPalette = resetEnabled
   ? lazy(async () => ({ default: (await import('./components/CommandPalette')).CommandPalette }))
   : null;
+const GlobalSearch = resetEnabled ? lazy(() => import('./features/workbench/GlobalSearch')) : null;
+type GlobalSelection = { snapshot: string; date: string } & (
+  | { kind: 'security'; security_id: string; code: string | null; name: string | null }
+  | { kind: 'topic'; sector_id: string; name: string }
+  | { kind: 'article'; article_id: string; title: string }
+);
 
 /**
  * 面板白名单的页面视图与文案：仅 reset 构建生成，直接沿用已按 publicSharing 收窄的
@@ -93,6 +103,10 @@ const paletteViewLabels: Record<string, string> = resetEnabled
   ? Object.fromEntries(resetNavigation.map(({ view, text }) => [view, text]))
   : {};
 const EMPTY_INDEX: SearchIndex = { securities: [], sectors: [] };
+const ModuleNavigation = resetEnabled ? lazy(async () => ({ default: (await import('./features/workbench/PageStructure')).ModuleNavigation })) : null;
+const CapabilityNavigation = resetEnabled ? lazy(async () => ({ default: (await import('./features/workbench/PageStructure')).CapabilityNavigation })) : null;
+const EmptyPage = resetEnabled ? lazy(async () => ({ default: (await import('./features/workbench/PageStructure')).EmptyPage })) : null;
+const LhbEntry = resetEnabled ? lazy(async () => ({ default: (await import('./features/workbench/PageStructure')).LhbEntry })) : null;
 const paletteFallback = (
   <div className="command-palette-scrim">
     <div className="command-palette command-palette-loading" role="dialog" aria-modal="true" aria-label="命令面板" aria-busy="true">
@@ -112,7 +126,9 @@ class PaletteErrorBoundary extends Component<{ onClose: () => void; children: Re
   render() { return this.state.failed ? null : this.props.children; }
 }
 
-function ResetReviewActions(props: { snapshot: string; security: string }) {
+function ResetReviewActions(props: { snapshot: string; security: string; context?: {
+  trade_date: string | null; security_name: string | null; sector_id: string | null; sector_name: string | null;
+} }) {
   return LocalReviewActions
     ? <Suspense fallback={<span className="muted">正在加载本地操作…</span>}><LocalReviewActions {...props} /></Suspense>
     : null;
@@ -132,12 +148,17 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   const PrivateWorkspace = privateFeatures?.Workspace;
   const ReviewActions = privateFeatures?.ReviewActions;
   const { state, patch, destination, urlFor } = useLocation(privateEnabled, resetEnabled, localReviewEnabled);
-  const { denied, retry } = useAccess();
+  const { denied, retry, revoke } = useAccess();
   const [notice, setNotice] = useState(() => parseState(window.location.search, privateEnabled, resetEnabled, window.location.pathname, localReviewEnabled).notices.join(' '));
   const [menu, setMenu] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
-  const [drawer, setDrawer] = useState<{ id: string; sector?: string; trigger: HTMLElement; context: string } | null>(null);
+  const [drawer, setDrawer] = useState<{
+    kind: 'security' | 'index' | 'topic'; id: string; sector?: string; trigger: HTMLElement; context: string;
+    topicPage?: number; topicSize?: number; focusMember?: string; boundState?: ResearchState;
+  } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [searchTrigger, setSearchTrigger] = useState<HTMLElement | null>(null);
+  const watchGeneration = useRef(0);
   // 命令索引只保存在内存：仅由已加载 reset 页面经 dr:index-items 上报，去重上限 500。
   const [index, setIndex] = useState<SearchIndex>(EMPTY_INDEX);
   const context = stateSearch(state, privateEnabled, resetEnabled);
@@ -156,6 +177,15 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     ? resetSummary.data ? legacySnapshot(resetSummary.data) : undefined
     : summary.data;
   const snapshot = selectedSummary && (!state.date || state.date === selectedSummary.trade_date) ? selectedSummary : undefined;
+  const historicalSummary = useResource<ResetSnapshot>(
+    resetEnabled && drawer?.boundState && drawer.boundState.snapshot !== state.snapshot
+      ? `/api/snapshots/${drawer.boundState.snapshot}` : null,
+    drawer?.boundState?.snapshot, refreshToken,
+  );
+  const drawerState = drawer?.boundState || state;
+  const drawerSnapshot = drawerState.snapshot === state.snapshot ? snapshot
+    : historicalSummary.data && historicalSummary.data.trade_date === drawerState.date
+      ? legacySnapshot(historicalSummary.data) : undefined;
   useEffect(() => {
     if (!privateEnabled) return;
     const openNote = (event: Event) => { setDrawer(null); patch({ view: 'review', note: (event as CustomEvent<string>).detail }, true); };
@@ -165,16 +195,22 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   useEffect(() => {
     if (!localReviewEnabled) return;
     const openReview = (event: Event) => {
-      setDrawer(null);
-      patch({
+      const detail = (event as CustomEvent<string | { security: string; snapshot: string; date: string; sector?: string }>).detail;
+      const security = typeof detail === 'string' ? detail : detail.security;
+      const change: Partial<ResearchState> = {
         view: 'review',
-        security: (event as CustomEvent<string>).detail,
-        return_view: state.view === 'leaders' ? 'leaders' : state.view === 'analysis' ? 'analysis' : state.view === 'news' ? 'news' : 'overview',
-      });
+        security,
+        return_view: state.view === 'stock' ? state.return_view : state.view === 'review' ? 'review' : state.view === 'regulation' ? 'regulation' : state.view === 'leaders' ? 'leaders' : state.view === 'analysis' ? 'analysis' : state.view === 'news' ? 'news' : 'overview',
+        return_snapshot: state.view === 'stock' || state.view === 'review' ? state.return_snapshot || state.snapshot : state.snapshot,
+        return_date: state.view === 'stock' || state.view === 'review' ? state.return_date || state.date : state.date,
+        return_sector: state.view === 'stock' || state.view === 'review' ? state.return_sector ?? state.sector : state.sector,
+        ...(typeof detail !== 'string' ? { snapshot: detail.snapshot, date: detail.date, sector: detail.sector || '' } : {}),
+      };
+      if (patch(change)) setDrawer(null);
     };
     window.addEventListener('local-open-review', openReview);
     return () => window.removeEventListener('local-open-review', openReview);
-  }, [patch, state.view]);
+  }, [patch, state.view, state.return_view, state.snapshot, state.date, state.sector, state.return_snapshot, state.return_date, state.return_sector]);
   useEffect(() => {
     if (!state.snapshot && availableSnapshots.length && !denied) {
       const chosen = availableSnapshots[0];
@@ -187,7 +223,11 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
       patch({ date: selectedSummary.trade_date }, true);
     }
   }, [selectedSummary, state.date, patch]);
-  useEffect(() => { setDrawer(null); }, [context, denied, privateFeatures?.locked]);
+  useEffect(() => {
+    watchGeneration.current += 1;
+    setDrawer(current => denied || privateFeatures?.locked || current?.context !== context ? null : current);
+    setSearchTrigger(null);
+  }, [context, denied, privateFeatures?.locked]);
   useEffect(() => {
     // 偏好落盘统一回放到自包含引导：同标签 dr:prefs-changed、跨标签 storage、
     // 系统深浅色变化（bootstrap 内部仅在无显式 dr:theme 时跟随系统）。
@@ -219,6 +259,8 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         // 不打开面板、不拦截默认行为。
         if (document.querySelector('dialog[open]')) return;
         event.preventDefault();
+        watchGeneration.current += 1;
+        setSearchTrigger(null);
         setPaletteOpen(true);
       }
     };
@@ -247,7 +289,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     };
   }, []);
   useEffect(() => {
-    if (denied) { setIndex(EMPTY_INDEX); setPaletteOpen(false); }
+    if (denied) { setIndex(EMPTY_INDEX); setPaletteOpen(false); setSearchTrigger(null); }
   }, [denied]);
   /** 面板导航动作映射：不 eval、不拼 URL、不发请求，全部经 patch 守卫（脏草稿返回 false）。 */
   const paletteNavigate = (action: Extract<CommandAction, { kind: 'goto' | 'security' | 'sector' }>): boolean => {
@@ -263,16 +305,18 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   };
   // 触发按钮节点在 App 内按构建标志生成：非 reset/私人构建整体死代码消除，
   // SnapshotHeader 只负责摆放（denied 时在其内隐藏），不静态持有按钮文案/class。
-  const paletteTrigger = resetEnabled ? (
+  const paletteTrigger = resetEnabled ? (<>
+    <button type="button" className="command-palette-trigger" aria-haspopup="dialog"
+      onClick={event => { watchGeneration.current += 1; setPaletteOpen(false); setDrawer(null); setSearchTrigger(event.currentTarget); }}>全局搜索</button>
     <button
       type="button"
       className="command-palette-trigger"
-      onClick={() => setPaletteOpen(true)}
+      onClick={() => { watchGeneration.current += 1; setDrawer(null); setSearchTrigger(null); setPaletteOpen(true); }}
       aria-haspopup="dialog"
       aria-label="打开命令面板（Ctrl+K）"
       title="打开命令面板（Ctrl+K）"
     >命令搜索<kbd aria-hidden="true">Ctrl K</kbd></button>
-  ) : null;
+  </>) : null;
   // denied 时面板不提供 review 命令（规格 L108）；模块常量 paletteViews 保持不变。
   const paletteAllowedViews = denied
     ? paletteViews.filter(view => view !== 'review')
@@ -283,8 +327,68 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
     if (result.error) setNotice(result.error);
     else if (patch({ compare: result.ids })) setNotice('');
   };
-  const open = (id: string, sector: string | undefined, trigger: HTMLElement) =>
-    setDrawer({ id, sector, trigger, context });
+  const open = (id: string, sector: string | undefined, trigger: HTMLElement) => {
+    watchGeneration.current += 1;
+    setSearchTrigger(null); setPaletteOpen(false);
+    setDrawer(current => current?.kind === 'security' && current.id === id && current.context === context
+      && (!current.boundState || current.boundState.snapshot === state.snapshot)
+      ? null : { kind: 'security', id, sector, trigger, context });
+  };
+  const openResearch = (kind: 'index' | 'topic', id: string, trigger: HTMLElement) => {
+    watchGeneration.current += 1;
+    setSearchTrigger(null); setPaletteOpen(false);
+    setDrawer({ kind, id, trigger, context, topicPage: 1, topicSize: 50 });
+  };
+  const openHistorical = (selection: { snapshot: string; date: string; sector: string; security: string }, trigger: HTMLElement) => {
+    if (!allowNavigation()) return;
+    watchGeneration.current += 1;
+    setPaletteOpen(false); setSearchTrigger(null);
+    setDrawer(current => current?.kind === 'security' && current.id === selection.security
+      && current.boundState?.snapshot === selection.snapshot && current.boundState.date === selection.date
+      && current.context === context ? null : { kind: 'security', id: selection.security, sector: selection.sector, trigger, context,
+      boundState: { ...state, snapshot: selection.snapshot, date: selection.date, sector: selection.sector,
+        return_view: state.view === 'stock' ? state.return_view : state.view === 'review' ? 'review' : state.view === 'regulation' ? 'regulation' : state.view === 'leaders' ? 'leaders' : state.view === 'analysis' ? 'analysis' : state.view === 'news' ? 'news' : 'overview',
+        return_snapshot: state.snapshot, return_date: state.date, return_sector: state.sector },
+    });
+  };
+  const openWatch = async (watch: LocalWatch): Promise<boolean> => {
+    if (denied) { setNotice('原始发布的来源访问已被拒绝，请恢复授权后再打开。'); return false; }
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : document.getElementById('main')!;
+    const generation = ++watchGeneration.current;
+    try {
+      const original = await request<ResetSnapshot>(`/api/snapshots/${watch.snapshot_id}`, { snapshot: watch.snapshot_id });
+      if (generation !== watchGeneration.current) return false;
+      if (watch.context?.trade_date && watch.context.trade_date !== original.trade_date) {
+        throw new Error('原始发布与保存的交易日期不匹配。');
+      }
+      const next: ResearchState = { ...state, snapshot: original.snapshot_id, date: original.trade_date,
+        security: watch.security_id, sector: watch.context?.sector_id || '', view: 'review',
+        return_view: 'review', return_snapshot: state.snapshot, return_date: state.date, return_sector: state.sector,
+      };
+      // patch enforces leave guards on URL changes. Opening the same saved
+      // publication still needs a late guard after this asynchronous read.
+      if (new URL(urlFor(next), window.location.href).href === window.location.href && !allowNavigation()) return false;
+      if (!patch(next)) return false;
+      setDrawer({ kind: 'security', id: watch.security_id, sector: watch.context?.sector_id || undefined,
+        trigger, context: stateSearch(next, privateEnabled, resetEnabled), boundState: next });
+      setNotice('');
+      return true;
+    } catch (failure) {
+      if (generation !== watchGeneration.current) return false;
+      if (failure instanceof ApiError && failure.status === 403) revoke();
+      setNotice(`无法解析自选的原始发布：${failure instanceof Error ? failure.message : '读取失败'}`);
+      return false;
+    }
+  };
+  const selectGlobal = (result: GlobalSelection, trigger: HTMLElement) => {
+    if (result.snapshot !== state.snapshot || result.date !== state.date) return;
+    if (result.kind === 'article') {
+      if (patch({ view: 'news', article: result.article_id, security: '', page: 1 })) setSearchTrigger(null);
+    } else if (allowNavigation()) {
+      if (result.kind === 'security') open(result.security_id, undefined, trigger);
+      else openResearch('topic', result.sector_id, trigger);
+    }
+  };
   const ActiveReviewActions = resetEnabled ? ResetReviewActions : ReviewActions;
   const navigate = (view: 'overview' | 'analysis'): Partial<ResearchState> => ({
     view, security: '', page: 1, sort: 'security_id', order: 'asc',
@@ -308,6 +412,9 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
           if (shouldHandleSpaClick(event)) { event.preventDefault(); if (patch({ view: 'review' })) setMenu(false); }
         }}>{privateFeatures.navigationLabel}</a>}
       </nav>
+      {CapabilityNavigation && <Suspense fallback={null}>
+        <CapabilityNavigation state={state} destination={destination} urlFor={urlFor} patch={patch} />
+      </Suspense>}
       <div className="sidebar-note"><strong>只读 · 快照研究</strong><p>以指定版本为依据。<br />未知不等于零。</p><span>不含实时交易与投资建议</span></div>
     </aside>
     <div className="workspace">
@@ -323,16 +430,25 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         paletteTrigger={paletteTrigger}
       />
       <main id="main" tabIndex={-1}>
+        {ModuleNavigation && <Suspense fallback={null}>
+          <ModuleNavigation state={state} destination={destination} urlFor={urlFor} patch={patch} contentReady={Boolean(snapshot)} />
+        </Suspense>}
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')}>关闭提示</button></div>}
         {LocalReview && state.view === 'review'
           ? <section aria-label="本地复盘">
-            {state.return_view === 'leaders' && <a className="back-link" href={urlFor({ ...state, view: 'leaders', security: '', return_view: 'overview' })}
+            <a className="back-link" href={urlFor({ ...state, view: state.return_view, security: '', return_view: 'overview',
+              snapshot: state.return_snapshot || state.snapshot, date: state.return_date || state.date,
+              sector: state.return_sector ?? state.sector,
+              return_snapshot: '', return_date: '', return_sector: undefined })}
               onClick={event => {
                 if (shouldHandleSpaClick(event)) {
                   event.preventDefault();
-                  patch({ view: 'leaders', security: '', return_view: 'overview' });
+                  patch({ view: state.return_view, security: '', return_view: 'overview',
+                    snapshot: state.return_snapshot || state.snapshot, date: state.return_date || state.date,
+                    sector: state.return_sector ?? state.sector,
+                    return_snapshot: '', return_date: '', return_sector: undefined });
                 }
-              }}><ArrowLeft size={18} />返回梯队</a>}
+              }}><ArrowLeft size={18} />{state.return_view === 'leaders' ? '返回梯队' : `返回${paletteViewLabels[state.return_view] || '市场总览'}`}</a>
             <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载本地复盘…</p>}>
               <LocalReview
                 snapshot={state.snapshot || undefined}
@@ -340,6 +456,9 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
                 security={state.security || undefined}
                 asOf={selectedSummary?.result.published_at}
                 version={selectedSummary ? `v${selectedSummary.result.revision}` : undefined}
+                section={state.section}
+                onSectionChange={section => { patch({ section }); }}
+                onOpenWatch={openWatch}
               />
             </Suspense></LazyLoadBoundary>
           </section>
@@ -350,10 +469,15 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
           {resetEnabled
             ? <ResourceStatus resource={resetSummary} name="快照" />
             : <ResourceStatus resource={summary} name="快照" />}
-          {!state.snapshot && availableSnapshots.length === 0 && !list.loading && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
+          {!snapshot && EmptyPage && <Suspense fallback={<p role="status">正在加载页面结构…</p>}>
+            <EmptyPage state={state} loading={list.loading || resetSummary.loading}
+              failed={Boolean(list.error || resetSummary.error)} />
+          </Suspense>}
+          {!resetEnabled && !state.snapshot && availableSnapshots.length === 0 && !list.loading && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
           {snapshot && <>
             {!resetEnabled && <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />}
-            {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled} />}
+            {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} openResearch={openResearch} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled}
+              publicationAsOf={snapshot.result.published_at} publicationVersion={`v${snapshot.result.revision}`} />}
             {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} snapshot={snapshot} reset={resetEnabled} ReviewActions={ActiveReviewActions} />}
             {News && state.view === 'news' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载消息…</p>}>
               <News
@@ -366,7 +490,7 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
               />
             </Suspense></LazyLoadBoundary>}
             {Leaders && state.view === 'leaders' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载梯队…</p>}>
-              <Leaders state={state} patch={patch} open={open} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />
+              <Leaders state={state} patch={patch} open={open} onOpenHistorical={openHistorical} refreshToken={refreshToken} ReviewActions={ActiveReviewActions} />
             </Suspense></LazyLoadBoundary>}
             {Regulation && state.view === 'regulation' &&
               <Suspense fallback={null}>
@@ -382,28 +506,40 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
               </Suspense></LazyLoadBoundary>
             </>}
             <SnapshotEvidence snapshot={snapshot} />
-            {drawer && drawer.context === context && state.view !== 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载证券详情…</p>}>
-              <SecurityDrawer state={state} snapshot={snapshot} id={drawer.id} sector={drawer.sector} trigger={drawer.trigger} close={() => setDrawer(null)}
-                patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
-            </Suspense></LazyLoadBoundary>}
           </>}
         </>}
+        {!denied && drawer && drawer.context === context && state.view !== 'stock' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载详情…</p>}>
+          {drawer.kind === 'security' ? <SecurityDrawer state={drawerState} snapshot={drawerSnapshot} id={drawer.id} sector={drawer.sector} trigger={drawer.trigger} close={() => setDrawer(null)}
+            backToTopic={drawer.sector && drawer.topicPage ? () => setDrawer({ ...drawer, kind: 'topic', id: drawer.sector!, focusMember: drawer.id }) : undefined}
+            patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} ReviewActions={ActiveReviewActions} />
+            : ResearchDrawer && <ResearchDrawer kind={drawer.kind} id={drawer.id} state={drawerState} trigger={drawer.trigger}
+              close={() => setDrawer(null)} patch={patch} refreshToken={refreshToken} page={drawer.topicPage ?? 1} size={drawer.topicSize ?? 50} focusMember={drawer.focusMember}
+              changePage={(page, size) => setDrawer({ ...drawer, topicPage: page, topicSize: size, focusMember: undefined })}
+              openMember={id => setDrawer({ ...drawer, kind: 'security', sector: drawer.id, id, focusMember: undefined })} />}
+        </Suspense></LazyLoadBoundary>}
+        {LhbEntry && !denied && state.view === 'overview' && <Suspense fallback={null}>
+          <LhbEntry state={state} patch={patch} />
+        </Suspense>}
         {/* Task 26 规格复审裁决（等效挂载；交叉引用见 pages/Analysis.tsx:15-22 折叠导出注释）：
             白名单面板挂在 Workbench 主区而非 Analysis reset 分支内——Analysis 树随 snapshot
             切换卸载重建，挂在分支内会使「结果绑定旧快照」漂移条无法存活；默认构建由 env 折叠
             保证零 query chunk。裁决全文随 docs/acceptance/reset-query.md（切片 2 后补）留痕。 */}
         {ResetQueryPanel && resetEnabled && !denied && state.view === 'analysis' && (
+          <section id="workbench-query" tabIndex={-1} className="workbench-tool-section">
           <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载白名单查询…</p>}>
             <ResetQueryPanel state={state} patch={patch} snapshot={snapshot} open={open} />
           </Suspense></LazyLoadBoundary>
+          </section>
         )}
         {/* Task 16/17 研究回测面板：与白名单查询同构的 owner-only 主区持久挂载，仅在
             analysis 视图下渲染；manifest 在 owner 懒模块内订阅，加载/失败期为
             null，面板 fail-closed 禁用提交。 */}
         {ResetBacktestPanel && ownerResearchEnabled && !denied && state.view === 'analysis' && (
+          <div id="workbench-backtest" tabIndex={-1} className="workbench-tool-section">
           <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载研究回测…</p>}>
-            <ResetBacktestPanel snapshotId={state.snapshot} />
+            <ResetBacktestPanel snapshotId={snapshot?.snapshot_id || ''} />
           </Suspense></LazyLoadBoundary>
+          </div>
         )}
       </main>
       {!denied && snapshot && (resetEnabled ? ['overview', 'analysis'].includes(state.view) : state.view !== 'stock') && state.compare.length > 0 && <div className="compare-shortcut" aria-label="比较快捷操作">
@@ -418,6 +554,12 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
         <button onClick={() => { if (patch({ compare: [] })) setNotice(''); }}>取消选择</button>
       </div>}
       <footer>只读研究 · 指标来自所选快照 · 数据缺失与排除单独披露</footer>
+      {GlobalSearch && searchTrigger && !denied && snapshot && <PaletteErrorBoundary onClose={() => setSearchTrigger(null)}>
+        <Suspense fallback={<p role="status">正在加载全局搜索…</p>}>
+          <GlobalSearch state={state} refreshToken={refreshToken} trigger={searchTrigger}
+            onClose={() => setSearchTrigger(null)} onSelect={selectGlobal} />
+        </Suspense>
+      </PaletteErrorBoundary>}
       {CommandPalette && paletteOpen && (
         <PaletteErrorBoundary onClose={() => setPaletteOpen(false)}>
           <Suspense fallback={paletteFallback}>

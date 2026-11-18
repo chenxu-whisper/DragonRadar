@@ -71,7 +71,7 @@ versions, methods, regulation_rules, rule_scope, official_source_hosts
 
 versions 恰为 `code/dataset/rules/model/prompt/retrieval`。
 `code=source-sha256:<摘要>`；`source_identity` 绑定当前源码、测试、前端、工具链及
-`deploy/` 中的构建和服务配置，
+根目录 `compose.yaml`、`Dockerfile` 及 `containers/` 中的构建和网关配置，
 包括未提交变化。忽略构建缓存与生成报告，不能用旧 commit 摘要证明新源码。
 其他版本必须与实际候选配置一致。methods 为批准的方法映射；
 regulation_rules 为排序后的 `rule_id:rule_version` 集合；

@@ -7,10 +7,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.exc import SQLAlchemyError
 
+from dragon_radar.ai.evidence import read_evidence
 from dragon_radar.ai.models import AITaskRecord
 from dragon_radar.ai.repository import AITaskRateLimited
 from dragon_radar.ai.service import AIService
-from dragon_radar.http.errors import StorageUnavailable, error_response
+from dragon_radar.http.errors import DataUnavailable, StorageUnavailable, error_response
+from dragon_radar.http.selection import query_integer, query_values
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.owner.security import (
     BoundaryError,
@@ -37,6 +39,8 @@ class _AIRoute(APIRoute):
                 return error_response(404, "NOT_FOUND", "Resource not found")
             except Conflict:
                 return error_response(409, "VERSION_CONFLICT", "Version conflict")
+            except DataUnavailable:
+                return error_response(503, "DATA_UNAVAILABLE", "Data unavailable")
             except AITaskRateLimited:
                 return error_response(429, "RATE_LIMITED", "Too many requests")
             except (SQLAlchemyError, StorageUnavailable):
@@ -136,6 +140,32 @@ def install_ai_routes(app: FastAPI) -> None:
         _no_query(request)
         record = _service(request).tasks.get(owner.token, task_id)
         return DecimalJSONResponse(_safe_record(record))
+
+    @router.get("/api/ai/task/{task_id}/evidence/{evidence_id}")
+    def citation(task_id: UUID, evidence_id: str, request: Request, owner: OwnerRead):
+        query = query_values(request, {"revision", "snapshot_id"})
+        if set(query) != {"revision", "snapshot_id"}:
+            raise invalid_request()
+        if (
+            not evidence_id
+            or len(evidence_id) > 100
+            or not all(
+                char.isascii() and (char.isalnum() or char in "_-")
+                for char in evidence_id
+            )
+        ):
+            raise invalid_request()
+        revision = query_integer(query["revision"], 1, 1000000)
+        return DecimalJSONResponse(
+            read_evidence(
+                _service(request),
+                owner.token,
+                task_id,
+                revision,
+                UUID(query["snapshot_id"]),
+                evidence_id,
+            )
+        )
 
     @router.post("/api/ai/task/{task_id}/cancel")
     def cancel_task(task_id: UUID, request: Request, owner: OwnerWrite):

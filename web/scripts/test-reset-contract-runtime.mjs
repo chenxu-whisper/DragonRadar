@@ -11,16 +11,17 @@ import {
   ownerTransportRequestOptions,
   parseLoopbackBinding,
 } from './reset-contract-runtime-support.mjs';
+import { composeChildEnvironment } from './production-isolation-support.mjs';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(webRoot, '..');
 const runId = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
 const project = `dragon-radar-contract-${runId}`.toLowerCase();
-const state = resolve(root, '.temp', 'reset-contract-runtime', runId);
+const state = resolve(root, '..', '.temp', 'reset-contract-runtime', runId);
 const envFile = resolve(state, 'compose.env');
 const overrideFile = resolve(state, 'compose.override.yaml');
 const composeFiles = [
-  resolve(root, 'compose.reset.yaml'),
+  resolve(root, 'compose.yaml'),
   overrideFile,
 ];
 
@@ -34,7 +35,7 @@ function run(command, args, options = {}) {
     encoding: 'utf8',
     timeout: options.timeout ?? 1_200_000,
     maxBuffer: 32 * 1024 * 1024,
-    env: { ...process.env, ...options.env },
+    env: composeChildEnvironment({ ...process.env, ...options.env }),
   });
   if (result.error) throw result.error;
   if (!(options.allowed ?? [0]).includes(result.status)) {
@@ -347,11 +348,16 @@ let cleanupError;
 let composePrepared = false;
 try {
   mkdirSync(state, { recursive: true });
+  mkdirSync(resolve(state, 'owner-secrets'), { recursive: true });
   run('docker', ['version'], { timeout: 30_000 });
   const publicEdgeSubnet = selectPublicEdgeSubnet();
   writeFileSync(
     envFile,
-    `DRAGON_DB_PASSWORD=${randomBytes(24).toString('hex')}\n`,
+    [
+      `DRAGON_DB_PASSWORD=${randomBytes(24).toString('hex')}`,
+      `DRAGON_OWNER_SECRETS_DIR=${resolve(state, 'owner-secrets').replaceAll('\\', '/')}`,
+      '',
+    ].join('\n'),
     { encoding: 'utf8', mode: 0o600 },
   );
   writeFileSync(

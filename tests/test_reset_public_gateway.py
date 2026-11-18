@@ -727,19 +727,25 @@ def test_owner_cli_rejects_every_bind_override(arguments, monkeypatch, database_
 
 
 def test_reset_compose_and_caddy_static_isolation_contracts():
-    compose = (ROOT / "compose.reset.yaml").read_text(encoding="utf-8")
-    private_compose = (ROOT / "compose.private.yaml").read_text(encoding="utf-8")
-    public_dockerfile = (ROOT / "deploy/public.Dockerfile").read_text(encoding="utf-8")
-    public_caddy = (ROOT / "deploy/public.Caddyfile").read_text(encoding="utf-8")
-    private_caddy = (ROOT / "deploy/private.Caddyfile").read_text(encoding="utf-8")
-    owner_caddy = (ROOT / "deploy/owner.Caddyfile").read_text(encoding="utf-8")
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    public_dockerfile = (ROOT / "containers/public.Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    public_caddy = (ROOT / "containers/public.Caddyfile").read_text(encoding="utf-8")
+    owner_caddy = (ROOT / "containers/owner.Caddyfile").read_text(encoding="utf-8")
+    for obsolete in (
+        "compose.reset.yaml",
+        "compose.private.yaml",
+        "compose.dev.yaml",
+        "compose.workbench.yaml",
+        "scripts/start-local.ps1",
+        "scripts/start-private.ps1",
+        "scripts/private-owner.ps1",
+    ):
+        assert not (ROOT / obsolete).exists()
 
     assert "network_mode: service:owner-caddy" in compose
-    assert "network_mode: service:web" in private_compose
-    assert 'serve-owner", "--host", "127.0.0.1", "--port", "8001"' in private_compose
-    assert "http://127.0.0.1:8001/health/ready" in private_compose
-    assert "api:8000" not in private_caddy
-    assert "127.0.0.1:8001" in private_caddy
+    assert "http://127.0.0.1:8001/health/ready" in compose
     assert 'serve-owner", "--host", "127.0.0.1", "--port", "8001"' in compose
     assert "127.0.0.1:${DRAGON_OWNER_PORT:-8031}:8443" in compose
     assert "networks: [owner-data, owner-edge]" in compose
@@ -752,7 +758,13 @@ def test_reset_compose_and_caddy_static_isolation_contracts():
     assert "ipv4_address: 172.30.19.2" in compose
     assert "ipv4_address: 172.30.19.3" in compose
     assert "subnet: 172.30.19.0/28" in compose
-    assert "dockerfile: deploy/public.Dockerfile" in compose
+    assert "dockerfile: containers/public.Dockerfile" in compose
+    assert "dockerfile: containers/owner.Dockerfile" in compose
+    assert "networks: [worker-data]" in compose
+    assert "tls internal" in owner_caddy
+    assert "skip_install_trust" in owner_caddy
+    assert "respond @wrongHost 403" in owner_caddy
+    assert "respond @api 404" in owner_caddy
     assert "VITE_RESET_WORKBENCH=1" in public_dockerfile
     assert "VITE_PUBLIC_SHARING=1" in public_dockerfile
     assert "npm run build && npm run check:bundle" in public_dockerfile
@@ -785,7 +797,7 @@ def test_reset_start_script_and_running_documentation_contracts():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "Initialize-PrivateDirectory" in script
     assert "RandomNumberGenerator" in script
-    assert "compose.reset.yaml" in script
+    assert '"compose.yaml"' in script
     assert " migrate" in script
     assert "--wait" in script
     assert "DRAGON_DB_PASSWORD=" in script
@@ -799,4 +811,4 @@ def test_reset_start_script_and_running_documentation_contracts():
         "model",
     ):
         assert phrase.lower() in docs.lower()
-    assert r".\tests\test_reset_start_script.ps1" in workflow
+    assert r".\scripts\test_reset_start_script.ps1" in workflow

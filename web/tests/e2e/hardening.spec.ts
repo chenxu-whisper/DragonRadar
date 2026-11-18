@@ -125,7 +125,9 @@ test('new date removes old rows until its matching summary arrives', async ({ pa
   });
   await page.getByLabel('交易日期', { exact: true }).fill('2026-09-09');
   await expect(page.getByRole('table', { name: '证券列表' })).toHaveCount(0);
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await expect(page.getByText('尚未载入匹配快照，来源与覆盖未知')).toBeVisible();
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   release();
   await expect(page.getByRole('table', { name: '证券列表' })).toBeVisible();
 });

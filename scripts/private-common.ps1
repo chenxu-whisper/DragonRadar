@@ -107,14 +107,25 @@ function Save-PrivatePublicFile {
     Assert-PrivateFile $Path
 }
 
-function Get-PrivateCompose {
+function Get-ResetEnvironmentNames {
+    param([Parameter(Mandatory = $true)][hashtable]$Settings)
+    $names = @($Settings.Keys)
+    foreach ($item in Get-ChildItem Env:) {
+        if ($item.Name -match '^(COMPOSE_|DRAGON_AI_|DRAGON_OWNER_|DRAGON_PUBLIC_|DRAGON_PRIVATE_)' -or
+            $item.Name -in @("DRAGON_DB_PASSWORD", "DRAGON_WEB_PORT", "DRAGON_E2E_STATE_DIR")) {
+            $names += $item.Name
+        }
+    }
+    return @($names | Sort-Object -Unique)
+}
+
+function Get-ResetCompose {
     param([Parameter(Mandatory = $true)][string]$Root)
-    $secret = Join-Path $Root ".temp/private-secrets/compose.env"
+    $secret = Join-Path $Root ".temp/reset-secrets/compose.env"
     Assert-PrivateFile $secret
     return @(
-        "compose", "--project-name", "dragon-radar-private-review",
+        "compose", "--project-name", "dragon-radar-reset",
         "--project-directory", $Root, "--env-file", $secret,
-        "-f", (Join-Path $Root "compose.yaml"),
-        "-f", (Join-Path $Root "compose.private.yaml")
+        "-f", (Join-Path $Root "compose.yaml")
     )
 }

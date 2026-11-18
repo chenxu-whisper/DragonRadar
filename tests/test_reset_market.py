@@ -803,15 +803,13 @@ async def test_legacy_market_jsonb_projects_overview_and_controls_new_views(
                 "/api/market/heatmap",
             )
         ]
-        unavailable.append(
-            await client.get(
-                "/api/search",
-                params={
-                    "q": "A",
-                    "date": str(record.trade_date),
-                    "snapshot_id": str(record.id),
-                },
-            )
+        search_response = await client.get(
+            "/api/search",
+            params={
+                "q": "A",
+                "date": str(record.trade_date),
+                "snapshot_id": str(record.id),
+            },
         )
 
     assert overview.status_code == 200
@@ -834,6 +832,22 @@ async def test_legacy_market_jsonb_projects_overview_and_controls_new_views(
         assert response.status_code == 200
         assert response.json()["data"] is None
         assert "materialization_unavailable" in response.json()["quality_flags"]
+    assert search_response.status_code == 200
+    search_data = search_response.json()["data"]
+    assert search_data["groups"] == {
+        "securities": [],
+        "topics": [],
+        "messages": [],
+    }
+    assert search_data["total"] == 0
+    assert search_data["group_status"] == {
+        group: {
+            "status": "unavailable",
+            "total": None,
+            "reason": f"{group}_materialization_unavailable",
+        }
+        for group in ("securities", "topics", "messages")
+    }
 
 
 @pytest.mark.anyio

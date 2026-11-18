@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, type ComponentType, type KeyboardEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentType, type KeyboardEvent } from 'react';
 import { ArrowLeft, ExternalLink, X } from 'lucide-react';
 import { formatDecimal, label, reasons } from '../format';
 import { useResource } from '../hooks/useResource';
@@ -14,7 +14,9 @@ import { newsListPath } from '../features/news/api';
 import type { NewsListResponse } from '../features/news/types';
 import { CsvExportButton } from '../export/CsvExportButton';
 
-type ReviewActionComponent = ComponentType<{ snapshot: string; security: string }>;
+type ReviewActionComponent = ComponentType<{ snapshot: string; security: string; context?: {
+  trade_date: string | null; security_name: string | null; sector_id: string | null; sector_name: string | null;
+} }>;
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
 const EvidencePanel = resetEnabled
   ? lazy(async () => ({ default: (await import('../features/roles/EvidencePanel')).EvidencePanel }))
@@ -22,6 +24,8 @@ const EvidencePanel = resetEnabled
 const SeatsPanel = resetEnabled
   ? lazy(async () => ({ default: (await import('../features/lhb/SeatsPanel')).SeatsPanel }))
   : null;
+const StockFormalEvents = resetEnabled ? lazy(() => import('../features/regulation/StockFormalEvents')) : null;
+const StockHistoryTable = resetEnabled ? lazy(() => import('../features/workbench/StockHistoryTable')) : null;
 const SecurityAITools = import.meta.env.VITE_PRIVATE_AI === '1'
   ? lazy(() => import('../features/ai/SecurityAITools'))
   : null;
@@ -37,6 +41,11 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
     ? `/api/stock/${encodeURIComponent(id)}?${new URLSearchParams({ date: state.date, snapshot_id: state.snapshot })}`
     : null, state.snapshot, refreshToken);
   const modernData = modern.data?.data;
+  const [selectedSector, setSelectedSector] = useState('');
+  const [eventsOpen, setEventsOpen] = useState(false);
+  const roleSectors = [...new Set(modernData?.roles.map(role => role.sector_id) || [])];
+  const entrySectorValid = Boolean(evidenceSector && roleSectors.includes(evidenceSector));
+  const actualSector = roleSectors.includes(selectedSector) ? selectedSector : entrySectorValid ? evidenceSector : undefined;
   const relatedNewsEnabled = resetEnabled && Boolean(modernData) && !modern.loading && !modern.error;
   const relatedNews = useResource<NewsListResponse>(relatedNewsEnabled
     ? newsListPath({
@@ -125,7 +134,11 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       : <ResourceStatus resource={resource} name="证券详情" />}
     {modernData && <>
       <div className="detail-heading"><h2>{modernData.name || '名称未知'}</h2><span>{modernData.security_id}</span></div>
-      {ReviewActions && <ReviewActions snapshot={state.snapshot} security={id} />}
+      <p className="muted">{state.date} · 发布 {state.snapshot}</p>
+      {ReviewActions && <ReviewActions snapshot={state.snapshot} security={id} context={{
+        trade_date: state.date, security_name: modernData.name,
+        sector_id: actualSector || null, sector_name: null,
+      }} />}
       {SecurityAITools && snapshot && <Suspense fallback={<p role="status">正在加载 AI 个股解释…</p>}>
         <SecurityAITools
           snapshotId={state.snapshot}
@@ -145,6 +158,12 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
       <p className="detail-reasons">正式监管事件：{modernData.regulation.formal_event_count === null ? '未知' : modernData.regulation.formal_event_count}</p>
       <p className="detail-reasons">事件来源完整性：{modernData.regulation.event_source_completeness === 'complete' ? '完整' : '未知'}
         {modernData.regulation.reason ? ` · ${reasonLabel(modernData.regulation.reason)}` : ''}</p>
+      <button type="button" aria-expanded={eventsOpen} onClick={() => setEventsOpen(value => !value)}>
+        查看正式监管事件
+      </button>
+      {StockFormalEvents && eventsOpen && <Suspense fallback={<p role="status">正在加载该股正式监管事件…</p>}>
+        <StockFormalEvents snapshot={state.snapshot} date={state.date} security={id} refreshToken={refreshToken} />
+      </Suspense>}
       <p className="detail-reasons">收盘涨停 {yesNo(modernData.seal.is_limit_up)} · 盘中触及 {yesNo(modernData.seal.touched_limit)}</p>
       <p className="detail-reasons">首封 {modernData.seal.first_seal_time || '—'} · 末封 {modernData.seal.last_seal_time || '—'} · 开板 {modernData.seal.break_count ?? '—'} · 封单 {displayNumber(modernData.seal.seal_amount)} {modernData.seal.seal_amount_unit ? label(modernData.seal.seal_amount_unit) : '—'} · 连板 {modernData.seal.continuous_boards ?? '—'}
         {modernData.seal.reason ? ` · ${reasonLabel(modernData.seal.reason)}` : ''}</p>
@@ -152,6 +171,15 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         ? modernData.roles.map(role => `${roleLabel(role.role_type)}：${evidenceStatusLabel(role.evidence_status)}`).join('；')
         : '暂无角色证据'}</p>
       {modernData.role_reason && <p className="detail-reasons">角色状态：{reasonLabel(modernData.role_reason)}</p>}
+      {evidenceSector && !entrySectorValid && <p className="notice" role="status">当前入口题材不属于该证券的角色证据上下文。</p>}
+      {roleSectors.length ? <label>角色证据题材
+        <select value={actualSector || ''} onChange={event => setSelectedSector(event.target.value)}>
+          <option value="">选择已归档角色题材</option>
+          {roleSectors.map(sector => <option key={sector} value={sector}>
+            {sector} · {[...new Set(modernData.roles.filter(role => role.sector_id === sector).map(role => roleLabel(role.role_type)))].join(' / ')}
+          </option>)}
+        </select>
+      </label> : <p className="notice" role="status">当前发布未归档该证券的角色题材，角色证据不可用。</p>}
       <CsvExportButton
         scope="stock-current-filter"
         label="导出当前筛选 CSV"
@@ -214,16 +242,9 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
           description={`${modernData.security_id} ${canDrawCandles ? '历史日线图' : '历史收盘价线图'}，未复权价格，缺失处断开。`}
         />
         <details className="evidence"><summary>查看完整行情数据（{rawData.points.length} 个交易日）</summary>
-          <TableScroll label="完整行情数据">
-            <table aria-label="完整行情数据" className="responsive-record-table"><thead><tr>
-              <th>交易日期</th><th>开盘</th><th>最高</th><th>最低</th><th>收盘</th><th>成交量</th><th>成交额</th>
-            </tr></thead><tbody>{rawData.points.map(point => <tr key={point.trade_date}>
-              <th data-label="交易日期">{point.trade_date}</th>
-              <td data-label="开盘">{displayNumber(point.open)}</td><td data-label="最高">{displayNumber(point.high)}</td>
-              <td data-label="最低">{displayNumber(point.low)}</td><td data-label="收盘">{displayNumber(point.close)}</td>
-              <td data-label="成交量">{displayNumber(point.volume)}</td><td data-label="成交额">{displayNumber(point.amount)}</td>
-            </tr>)}</tbody></table>
-          </TableScroll>
+          {StockHistoryTable && <Suspense fallback={<p role="status">正在加载行情数据表…</p>}>
+            <StockHistoryTable key={`${state.snapshot}:${id}:${rawQuery}`} points={rawData.points} />
+          </Suspense>}
         </details>
       </>}
       <details className="evidence"><summary>证券原始证据</summary>
@@ -256,23 +277,23 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         </tr>)}</tbody></table></TableScroll>
       </details>
     </>}
-    {EvidencePanel && evidenceSector && <Suspense fallback={<p role="status" className="status">正在加载角色证据…</p>}>
+    {EvidencePanel && actualSector && <Suspense fallback={<p role="status" className="status">正在加载角色证据…</p>}>
       <EvidencePanel
         snapshot={state.snapshot}
         date={state.date}
-        sector={evidenceSector}
+        sector={actualSector}
         security={id}
         refreshToken={refreshToken}
       />
     </Suspense>}
-    {SeatsPanel && snapshot && <Suspense fallback={<p role="status" className="status">正在加载龙虎榜席位证据…</p>}>
+    {SeatsPanel && snapshot && <div id="workbench-lhb" tabIndex={-1}><Suspense fallback={<p role="status" className="status">正在加载龙虎榜席位证据…</p>}>
       <SeatsPanel
         date={state.date}
         securityId={id}
         asOf={snapshot.result.published_at}
         refreshToken={refreshToken}
       />
-    </Suspense>}
+    </Suspense></div>}
     {relatedNewsEnabled && <section className="related-news" aria-label="关联消息">
       <h3>关联消息</h3>
       <ResourceStatus resource={relatedNews} name="关联消息" />
@@ -283,7 +304,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
             onClick={event => {
               if (shouldHandleSpaClick(event)) {
                 event.preventDefault();
-                patch({ view: 'news', article: article.article_id, security: '' });
+                patch({ ...state, view: 'news', article: article.article_id, security: '', page: 1 });
               }
             }}
           >{article.title}</a>
@@ -294,9 +315,9 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
 }
 export interface SecurityDrawerProps {
   state: ResearchState; id: string; sector?: string; trigger: HTMLElement; close: () => void; patch: Patch; refreshToken: number;
-  snapshot?: Snapshot; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
+  snapshot?: Snapshot; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent; backToTopic?: () => void;
 }
-export function SecurityDrawer({ state, snapshot, id, sector, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityDrawerProps) {
+export function SecurityDrawer({ state, snapshot, id, sector, trigger, close, patch, refreshToken, allowPrivate = false, ReviewActions, backToTopic }: SecurityDrawerProps) {
   const dialog = useRef<HTMLDialogElement>(null), closeButton = useRef<HTMLButtonElement>(null);
   const openGeneration = useRef(0);
   useEffect(() => {
@@ -319,7 +340,7 @@ export function SecurityDrawer({ state, snapshot, id, sector, trigger, close, pa
       queueMicrotask(() => {
         if (generation !== openGeneration.current) return;
         if (element.open) element.close();
-        if (opener.isConnected) opener.focus();
+        if (!document.querySelector('dialog[open]') && opener.isConnected) opener.focus();
       });
     };
   }, [trigger]);
@@ -367,22 +388,31 @@ export function SecurityDrawer({ state, snapshot, id, sector, trigger, close, pa
     ...state,
     view: 'stock' as const,
     security: id,
-    return_view: state.view === 'leaders' ? 'leaders' as const : state.view === 'analysis' ? 'analysis' as const : state.view === 'news' ? 'news' as const : 'overview' as const,
+    sector: sector || state.sector,
+    return_view: resetEnabled && state.view === 'review' ? 'review' as const : resetEnabled && state.view === 'regulation' ? 'regulation' as const : state.view === 'leaders' ? 'leaders' as const : state.view === 'analysis' ? 'analysis' as const : state.view === 'news' ? 'news' as const : 'overview' as const,
+    return_snapshot: state.return_snapshot || state.snapshot,
+    return_date: state.return_date || state.date,
+    return_sector: state.return_sector ?? state.sector,
   };
   return <dialog ref={dialog} className="security-drawer" aria-labelledby="drawer-title" onKeyDown={trapTab} onCancel={e => { e.preventDefault(); close(); }}>
     <div className="drawer-toolbar"><h2 id="drawer-title">证券详情 · 只读</h2><button ref={closeButton} onClick={close} aria-label="关闭详情" title="关闭详情（退出键）"><X size={20} /></button></div>
+    {backToTopic && <button onClick={backToTopic}><ArrowLeft size={16} />返回题材详情</button>}
     <a className="fullpage-link" href={stateSearch(next, allowPrivate, resetEnabled)} onClick={e => { if (shouldHandleSpaClick(e)) { e.preventDefault(); if (patch(next)) close(); } }}><ExternalLink size={16} />打开完整详情</a>
-    <DetailContent state={state} snapshot={snapshot} id={id} evidenceSector={sector} refreshToken={refreshToken} ReviewActions={ReviewActions} patch={patch} />
+    <DetailContent key={`${state.snapshot}:${id}:${sector || ''}`} state={state} snapshot={snapshot} id={id} evidenceSector={sector} refreshToken={refreshToken} ReviewActions={ReviewActions} patch={patch} />
   </dialog>;
 }
 export interface SecurityPageProps {
   state: ResearchState; snapshot?: Snapshot; patch: Patch; refreshToken: number; allowPrivate?: boolean; ReviewActions?: ReviewActionComponent;
 }
 export function SecurityPage({ state, snapshot, patch, refreshToken, allowPrivate = false, ReviewActions }: SecurityPageProps) {
-  const back = { ...state, view: state.return_view, security: '' };
+  const back = { ...state, view: state.return_view, security: '',
+    snapshot: state.return_snapshot || state.snapshot, date: state.return_date || state.date,
+    sector: state.return_sector ?? state.sector,
+    return_snapshot: '', return_date: '', return_sector: undefined,
+  };
   return <>
     <a className="back-link" href={stateSearch(back, allowPrivate, resetEnabled)} onClick={event => { if (shouldHandleSpaClick(event)) { event.preventDefault(); patch(back); } }}><ArrowLeft size={18} />返回研究列表</a>
     <h1>证券详情</h1>
-    {state.security ? <DetailContent state={state} snapshot={snapshot} id={state.security} evidenceSector={state.sector || undefined} refreshToken={refreshToken} ReviewActions={ReviewActions} patch={patch} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
+    {state.security ? <DetailContent key={`${state.snapshot}:${state.security}:${state.sector}`} state={state} snapshot={snapshot} id={state.security} evidenceSector={state.sector || undefined} refreshToken={refreshToken} ReviewActions={ReviewActions} patch={patch} /> : <p className="empty">未指定证券，请返回研究列表选择。</p>}
   </>;
 }

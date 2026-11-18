@@ -29,16 +29,39 @@ export interface RoleSelection {
   sector?: string;
   role?: RoleName;
   security?: string;
+  days?: number;
 }
 
 export interface LadderStock {
   security_id: string;
-  name: string;
+  name: string | null;
   roles: RoleName[];
   sector_id: string;
+  change_ratio?: number | null;
+  change_reasons?: string[];
+  role_reasons?: string[];
+  topics?: { sector_id: string; name: string | null }[];
+  role_evidence?: { role_type: RoleName; sector_id: string; evidence_status: string }[];
+  seal?: {
+    is_limit_up: boolean | null; touched_limit: boolean | null;
+    first_seal_time: string | null; last_seal_time: string | null;
+    break_count: number | null; seal_amount: number | null;
+    seal_amount_unit: string | null; continuous_boards: number | null; reason: string | null;
+  };
+}
+
+export interface LadderHistoryRow {
+  trade_date: string; snapshot_id: string | null; rule_version: string | null;
+  status: 'available' | 'unavailable'; reasons: string[];
+  coverage: WorkbenchCoverage | null; columns: number[] | null;
+  total: number | null; cells: LadderData['cells'] | null;
 }
 
 export interface LadderData {
+  history?: {
+    days: number; sector: string | null; window: { start: string; end: string };
+    rows: LadderHistoryRow[];
+  };
   columns: number[];
   total: number;
   cells: {
@@ -55,6 +78,10 @@ export interface LadderData {
 }
 
 export interface ContinuityData {
+  details?: {
+    status: 'available' | 'unavailable'; version: number | null; reasons: string[];
+    data: ContinuityDetail | null;
+  };
   promote_rate: LadderData['promote_rate'];
   promote_rate_quality: { coverage: WorkbenchCoverage; reasons: string[] };
   yesterday_limit_up_median_return: number | null;
@@ -66,6 +93,18 @@ export interface ContinuityData {
   tradable_count: number;
 }
 
+export interface ContinuityMember {
+  security_id: string; name: string | null; status: 'valid' | 'excluded' | 'missing';
+  return: number | null; direction: 'up' | 'down' | 'flat' | null;
+  sealed: boolean | null; reasons: string[];
+}
+export interface ContinuityDetail {
+  trade_date: string; previous_trade_date: string | null;
+  promotion: { coverage: WorkbenchCoverage; members: ContinuityMember[] };
+  feedback: { coverage: WorkbenchCoverage; members: ContinuityMember[];
+    direction_counts: { up: number; down: number; flat: number } };
+}
+
 export interface RoleStatus {
   sector_id: string;
   status: 'ready' | 'simplified' | 'watch_only' | 'pending_validation' | 'insufficient' | 'no_candidate';
@@ -75,7 +114,7 @@ export interface RoleStatus {
 
 export interface RoleCandidate {
   security_id: string;
-  name: string;
+  name: string | null;
   rank: number;
   evidence_status: 'candidate';
   sector_id: string;
@@ -92,6 +131,8 @@ export interface RoleChangeSummary {
 }
 
 export interface RoleChange {
+  name?: string | null;
+  rank?: number | null;
   id: string;
   sector_id: string;
   security_id: string;

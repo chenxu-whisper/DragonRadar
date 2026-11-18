@@ -136,7 +136,7 @@ const responsiveViews: {
   },
   {
     view: 'news',
-    heading: '消息',
+    heading: '市场消息',
     url: `/?view=news&snapshot=${NEWS_SNAPSHOT}&date=2026-09-10`,
     meaningful: page => page.getByRole('button', { name: '导出当前页 CSV' }),
     interact: async page => {
@@ -149,7 +149,7 @@ const responsiveViews: {
   },
   {
     view: 'leaders',
-    heading: '梯队',
+    heading: '龙头梯队',
     url: `/?view=leaders&snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByRole('combobox', { name: '角色筛选' }),
     interact: async page => {
@@ -186,7 +186,7 @@ const responsiveViews: {
   },
   {
     view: 'regulation',
-    heading: '监管',
+    heading: '监管观察',
     url: `/?view=regulation&snapshot=${ID}&date=2026-09-10`,
     meaningful: page => page.getByRole('region', { name: '数据完整性' }),
     interact: async page => {
@@ -337,7 +337,7 @@ test('news at 1440px remains readable at 200% zoom and exports only the current 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await mockNews(page);
   await page.goto(`/?view=news&snapshot=${NEWS_SNAPSHOT}&date=2026-09-10&news_type=announcement`);
-  await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '市场消息', exact: true })).toBeVisible();
   await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
   await expectNoPageOverflow(page);
   await expect(page.getByRole('button', { name: '导出当前页 CSV' })).toBeVisible();
@@ -461,7 +461,7 @@ test('stock detail exports its current raw date window without page overflow', a
 test('regulation exports rendered calculations and events with row rule versions', async ({ page }) => {
   await mockRegulation(page);
   await page.goto(`/?view=regulation&snapshot=${ID}&date=2026-09-10`);
-  await expect(page.getByRole('heading', { name: '监管' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '监管观察' })).toBeVisible();
   const pending = page.waitForEvent('download');
   await page.getByRole('button', { name: '导出当前筛选 CSV' }).click();
   const csv = await downloadText(await pending);

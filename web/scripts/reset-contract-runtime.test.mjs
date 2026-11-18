@@ -89,6 +89,9 @@ test('runtime setup is cleanup-bounded and does not reserve host ports', () => {
     /owner:\s*`https:\/\/\$\{ownerBinding\.host\}:\$\{ownerBinding\.port\}`/,
   );
   assert.match(source, /publishedMapping:/);
+  assert.match(source, /resolve\(root, 'compose\.yaml'\)/);
+  assert.doesNotMatch(source, /compose\.reset\.yaml/);
+  assert.match(source, /composeChildEnvironment/);
 });
 
 test('CI runs the contract runtime harness as an independent strict Linux job', () => {

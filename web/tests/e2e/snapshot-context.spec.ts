@@ -19,7 +19,9 @@ test('same-date version change clears comparison and honors selected version', a
   await page.goto(`/?snapshot=${ID}&compare=TEST001`);
   await expect(page.getByLabel('快照版本', { exact: true }).locator('option')).toHaveCount(2);
   await page.getByLabel('快照版本', { exact: true }).selectOption(OLD);
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await expect(page.getByText(/版本性质.*修订第 2 版/)).toBeVisible();
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await expect(page.getByLabel('比较 TEST001', { exact: true })).not.toBeChecked();
   await expect(page).not.toHaveURL(/compare=/);
 });

@@ -18,7 +18,7 @@ test('renders fixed-snapshot list, detail, source/type/query filters and pager',
   await mockNews(page);
   await page.goto(newsUrl);
 
-  await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '市场消息', exact: true })).toBeVisible();
   const list = page.getByRole('region', { name: '消息列表' });
   await expect(list.getByRole('button', { name: /机器人公司签署/ })).toBeVisible();
   await expect(list.getByRole('button', { name: /行业跟踪/ })).toBeVisible();

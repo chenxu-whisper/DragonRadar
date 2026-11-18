@@ -1,6 +1,6 @@
 # Workbench API Contract
 
-Frozen 2026-09-20 for Task01. Normative companion to [PRD](../DragonRadar_开发需求PRD.md) and [DEC01-12](../superpowers/specs/2026-09-20-prd-reset-decisions.md). This document specifies behavior, not implementation or test results.
+Frozen 2026-09-20 for Task01. Normative companion to [PRD](../DragonRadar_开发需求PRD.md) and the historical DEC01-12 decisions (available in Git history). This document specifies behavior, not implementation or test results.
 
 ## Application And Selection
 
@@ -92,3 +92,187 @@ The original PRD 29 numbers and examples remain intact. All entries below are se
 Realtime outputs additionally bind quote_batch_id/minute revision because a daily snapshot alone cannot pin intraday state. Exact batch selection never substitutes a newer batch; as_of forbids later available_at. Stale data retains source timestamps and is labeled delayed, never presented as live. Background ingestion is separately authorized; public GET never initiates subscription or recomputation.
 
 Research endpoints never read private notes or simulation portfolios from the server. Simulation repositories are local IndexedDB `simulation_accounts`, `simulation_orders`, `simulation_fills`, `simulation_commands`, partitioned by local_profile_id; atomic command/revision semantics match Task04. Scenario rules are explicit research assumptions, not an assertion about current exchange rules.
+
+## IG04–IG11 Interaction Contracts
+
+These additions retain the original 29 interface numbers and EX01–EX16. They
+do not imply production acceptance or change the migration head.
+
+### Roles and archived history
+
+Reset URLs accept canonical `roles` multi-selection and retain legacy `role`.
+Selections use OR highlighting; each role keeps its own candidates, evidence
+status, changes and coverage. Repeated securities are not counted as independent
+observations, and role denominators are never added together.
+
+`GET /api/limit-up/ladder` accepts bounded `days` (1–250). Historical cells
+contain the actual selected historical publication's securities, date, rule
+version and coverage. History resolution respects the original anchor's
+publication watermark. Missing or unauthorized history is never substituted
+with the current pool or a later historical revision. Anchor heatmap counts
+and historical publication lists have separately disclosed provenance.
+
+New market publications archive fixed-yesterday-pool feedback under
+`continuity_detail_version: 1`. The continuity read parses this block only;
+legacy materialization retains available summary values and explicitly marks
+detail unavailable. Invalid version, membership, coverage or direction data
+fails closed. Stock cards disclose actual returns, topic/role evidence, seal
+times and their unavailable reasons without reading every stock separately.
+
+### Local origin and manual verification
+
+Watch records may preserve `context` with nullable `trade_date`,
+`security_name`, `sector_id` and `sector_name`. Duplicate add, remove and undo
+retain the original watch identity, publication, added time and context.
+Legacy records resolve their own publication; an unresolved origin cannot use
+the current publication. New context participates in command identity and
+backup validation.
+
+Explicit note confirmation appends a new immutable confirmed revision.
+Verification records reference that revision and use manual outcomes
+`supported`, `weakened`, `refuted` or `not_due`. Corrections append a record
+with `supersedes`; they do not rewrite original judgments or market facts.
+New records with an available evaluation require archived `fact_interval`
+and `context` containing requested and actual interval bounds, publication
+trade date, as-of time, source, source version and rule version. Requested
+bounds are the confirmed note's trade date through its verification date,
+including the original baseline. `snapshot_id` pins the evaluation publication.
+Reopening displays saved provenance and facts. Legacy omitted facts remain
+unknown. `not_due` has null snapshot/context/facts; unavailable or unauthorized
+facts cannot automatically become a human conclusion. No subjective win rate
+is inferred.
+
+Reset-only `return_snapshot`, `return_date` and `return_sector` preserve
+origin navigation. An explicitly empty `return_sector` differs from an absent
+field. Opening historical evidence does not alter the root selection;
+full-page and local-review returns restore the original selection and sector.
+
+### Owner association review and citation location
+
+`GET /api/news/{article_id}/associations/review-state?date=YYYY-MM-DD&snapshot_id=PUB`
+requires a live owner session and authorized archived article. It binds the
+article revision and each actual association ID, returns the association's
+current review revision, and discloses only the caller's audit entries.
+The existing EX03 command uses this association revision, independently of
+article revision and AI task review. A 409 retains the user's decision until
+explicit reread and reconfirmation; an unknown command outcome retries the
+original idempotency key. Accepted/rejected audit and pending new topic
+publication are distinct. Published members and associations remain immutable.
+
+`GET /api/ai/task/{task_id}/evidence/{evidence_id}?revision=DRAFT_REVISION&snapshot_id=PUB`
+requires the initiating owner, exact task/draft/publication binding, and a
+manifest-backed citation. The server resolves an actual archived article
+field, validates its identity and value, and returns only the referenced
+authorized fragment and locator. Display permission is independent of AI
+processing permission. Every read checks current and archived display grants
+and withdrawal; revocation clears displayed fragments and late responses
+cannot restore them. Old input with no resolvable article identity returns an
+explicit unavailable reason rather than a guessed article or paragraph.
+Both GET routes are confined to exact owner gateway paths and private chunks.
+
+### Stock evidence and grouped search
+
+Stock role evidence uses actual `roles[].sector_id` from the selected stock
+publication. An unrelated entry sector is disclosed and cannot trigger an
+evidence read; absent archived role topics remain unavailable. The selected
+sector binds all six evidence groups. Formal event expansion reads the same
+publication's regulation archive and filters actual events by security ID;
+unknown completeness never implies zero. Stock, topic and search interactions
+maintain one native modal and restore opener focus on close.
+
+`GET /api/search?q=QUERY&date=YYYY-MM-DD&snapshot_id=PUB&page=1&size=50`
+adds archived `securities`, `topics` and `messages` groups while retaining basic
+q-only compatibility. The data shape is
+`{query,page,size,total,groups,group_status}`; `groups` contains the three
+named result lists, and `group_status` records their independent readiness,
+total and unavailable reason. An unavailable group's total is null; a ready
+group with no match has total zero. Paging applies to the combined result set
+in stable security/topic/message order. Size defaults to 50 and accepts
+20/50/100.
+Missing archives differ from zero matches. Search does not use a loaded command
+index as a complete source. Clients bind query, page, size, publication and date
+before enabling target navigation.
+
+Applicable member, role candidate/change, topic, news, ranking, global search
+and expanded stock-history lists use 20/50/100 paging, default 50. Actual
+identity/name and numerical fields support bidirectional sorting with missing
+values last; security ID and archived code are distinct fields. News preserves
+its publication-time ordering. Small metric summaries, fixed six-role evidence,
+finite date/board matrices and small association previews remain explicit
+exceptions. Page exports identify their visible page and filter scope.
+
+## Stage1 Archived Topic Details
+
+`GET /api/topics/{sector_id}?snapshot_id=UNIFIED_PUBLICATION&date=YYYY-MM-DD&page=1&size=50`
+uses existing authorized publication selection. A date or publication ID is required;
+when both are supplied their dates must match. Page defaults to 1 (range
+1..2147483647); size defaults to 50 (range 1..100). Duplicate/unknown query keys
+and invalid bounds return 400 `INVALID_PARAM`. `/api/topics/rotation` remains the
+separate historical route and is never treated as a sector ID.
+
+The shared HTTP envelope always uses the unified publication `snapshot_id`.
+`data` has exactly these fields:
+
+```typescript
+type ArchivedTopicDetail = {
+  sector: ResetSector; // Same full aggregate archived for sector-flow/overview.
+  topic_basis: {
+    source: string; source_version: string;
+    as_of: string; source_time: string | null; cutoff: string;
+    market_snapshot_id: string; topic_snapshot_id: string;
+    taxonomy_version: string; membership_version: string;
+  };
+  definition: {
+    effective_from: string; effective_to: string | null;
+    available_at: string; source_reference: string;
+  };
+  membership_coverage: {
+    expected: number | null; received: number | null; known: number;
+    status: "complete" | "unavailable"; reason: string | null;
+    complete_as_of: string | null;
+  };
+  members: Array<{
+    security_id: string; code: string | null; name: string | null;
+    effective_from: string; effective_to: string | null;
+    available_at: string; evidence_refs: string[];
+  }>;
+  total: number; page: number; size: number;
+};
+```
+
+Dates are ISO calendar dates; timestamps are timezone-aware ISO timestamps.
+Descriptor snapshot IDs are the actual archived market/topic context-row IDs,
+not unified publication IDs. The detail is frozen in the market publication
+payload's optional `topic_details` block (`schema: "dragon-radar.topic-details"`,
+`schema_version: 1`). No migration or read-time reconstruction is required.
+
+Definitions and memberships must be available at or before
+`min(market.as_of, topic.as_of)` and effective on the selected market trade date,
+using `[effective_from, effective_to)` intervals. Membership is independent of
+return/role readiness. Identities must match the visible archived market identity
+list; unavailable, mismatched, or unknown identities remain null, never fall back
+to the security ID as a name. Members are ordered by security ID before pagination;
+`total` and coverage `known` count the entire visible archived subset, not the page.
+
+Missing coverage has `expected:null`, `received:null`, `complete_as_of:null`,
+`status:"unavailable"`, and `reason:"topic_coverage_unavailable"`; known members
+remain visible without claiming a complete set. A visible unavailable coverage cell
+preserves its reported expected/received counts, completion timestamp, and reason.
+`complete` requires `expected = received = known`, with a visible completion
+timestamp and null reason. Aggregate return coverage remains distinct from
+membership coverage.
+
+A selected publication without the optional block, including old/no-topic
+archives, returns 200 with `data:null` and `materialization_unavailable`. An
+unresolved publication returns the existing `no_data` envelope. A valid archive
+with an unknown sector returns 404 `NOT_FOUND`; date mismatch returns 400;
+revoked/unlicensed reads return 403. A present but corrupt block returns 503
+`DATA_UNAVAILABLE`, including schema, fact visibility, ID binding, identity, and
+count inconsistencies. GET only validates and slices the archive, never rebuilds
+it or loads live topic inputs. Only this GET is added to the public read allowlist;
+no topic history, management, ingestion, index, or AI endpoint is added.
+
+The owner Reset read allowlist mounts this same GET behind its existing owner
+gate. Taxonomy/membership versions are independently frozen in the topic
+publication result and checked against the detail descriptor; the reader does not
+trust self-reported detail versions as its validation baseline.

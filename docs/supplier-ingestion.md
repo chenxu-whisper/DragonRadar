@@ -1,7 +1,7 @@
 # 供应商采集、映射与离线样本验收
 
 本轮实现标准库 HTTPS 采集、采集预检 CLI、显式字段映射及样本验收 CLI。
-代码位于 `.worktrees/task27-research`。下列命令从该工作树执行，使用已有 `uv` 环境。
+代码已整合到本地 `main`。下列命令从项目根目录执行，使用已有 `uv` 环境。
 真实 iFinD 账号、接口参数、字段定义、限额和存储权利须以供应商实际交付为准；
 本轮未访问厂商服务，也未生成生产许可、签章、原始历史接收证明或数据库记录。
 
@@ -410,7 +410,7 @@ stdout返回fail。成功和失败诊断均在最终flush/fsync后重新授权�
 ## 4. 本地验证
 
 ```powershell
-uv run --no-sync pytest tests/test_supplier_transport.py tests/test_supplier_collection.py tests/test_supplier_collection_cli.py tests/test_supplier_archive_mapping.py tests/test_supplier_archive_sample_cli.py tests/test_supplier_sample_archive.py tests/test_supplier_sample_archive_cli.py tests/test_supplier_mapping.py tests/test_supplier_sample.py tests/test_supplier_sample_cli.py -q -W error
+uv run --no-sync pytest tests/test_supplier_collection.py tests/test_supplier_collection_cli.py tests/test_supplier_archive_sample_cli.py tests/test_supplier_sample_archive.py tests/test_supplier_sample_archive_cli.py tests/test_supplier_sample.py -q -W error
 uv run --no-sync ruff check .
 uv run --no-sync ruff format --check .
 uv run --no-sync python -m compileall -q src scripts tests

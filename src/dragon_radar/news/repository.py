@@ -543,6 +543,84 @@ class NewsRepository:
         with self.database.engine.begin() as connection:
             return self.snapshot_context(connection, snapshot_id)["snapshot"]
 
+    def association_review_state(
+        self, connection: Connection, owner_id: UUID, article: Mapping
+    ) -> list[dict]:
+        """Project live association revisions separately from frozen PUB facts."""
+        ids = [
+            UUID(item["association_id"])
+            for item in [*article["securities"], *article["topics"]]
+        ]
+        rows = (
+            connection.execute(
+                select(news_associations.c.id).where(
+                    news_associations.c.id.in_(ids),
+                    news_associations.c.article_revision_id
+                    == UUID(article["revision_id"]),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(rows) != len(ids) or len(set(ids)) != len(ids):
+            raise NotFound("Published association lineage unavailable")
+        reviews = (
+            connection.execute(
+                select(news_association_reviews)
+                .where(news_association_reviews.c.association_id.in_(ids))
+                .order_by(
+                    news_association_reviews.c.association_id,
+                    news_association_reviews.c.revision.desc(),
+                )
+            )
+            .mappings()
+            .all()
+        )
+        audits = (
+            connection.execute(
+                select(news_review_audit_events)
+                .where(
+                    news_review_audit_events.c.owner_id == owner_id,
+                    news_review_audit_events.c.action == "news_association_reviewed",
+                    news_review_audit_events.c.object_id.in_(
+                        [str(item) for item in ids]
+                    ),
+                )
+                .order_by(
+                    news_review_audit_events.c.occurred_at,
+                    news_review_audit_events.c.id,
+                )
+            )
+            .mappings()
+            .all()
+        )
+        latest = {}
+        for review in reviews:
+            latest.setdefault(review["association_id"], review)
+        return [
+            {
+                "association_id": str(item),
+                "revision": latest[item]["revision"] if item in latest else 0,
+                "status": (
+                    "accepted" if latest[item]["decision"] == "accept" else "rejected"
+                )
+                if item in latest
+                else "unreviewed",
+                "decision": latest[item]["decision"] if item in latest else None,
+                "own_audit": [
+                    {
+                        "audit_id": str(audit["id"]),
+                        "decision": audit["details"]["decision"],
+                        "revision": audit["details"]["revision"],
+                        "reviewed_at": audit["occurred_at"].isoformat(),
+                    }
+                    for audit in audits
+                    if audit["object_id"] == str(item)
+                ],
+            }
+            for item in ids
+        ]
+
     def _review_for_owner(
         self,
         connection: Connection,

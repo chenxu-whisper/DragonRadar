@@ -33,6 +33,7 @@ import {
 } from './tasks';
 import type { AdoptionStrategy } from '../local-review/adoption-command';
 import { TaskOperationGeneration } from './operation-generation';
+import CitationSource from './CitationSource';
 
 export type { AdoptionStrategy } from '../local-review/adoption-command';
 
@@ -46,6 +47,7 @@ export interface TaskPanelProps {
   securityId?: string;
   note?: NoteFields;
   noteSnapshotId?: string;
+  marketContext?: string;
   onAdopt?: (
     text: string,
     context: {
@@ -92,6 +94,23 @@ function failureMessage(error: unknown): string {
   return 'AI 操作未完成，请重试。';
 }
 
+function validateTaskContext(next: AITask, props: TaskPanelProps, taskId?: string): AITask {
+  if (
+    next.snapshot_id !== props.snapshotId
+    || Date.parse(next.as_of) !== Date.parse(props.asOf)
+    || next.version !== props.version
+    || next.task_type !== props.taskType
+    || (taskId !== undefined && next.task_id !== taskId)
+  ) {
+    throw new AIClientError(
+      502,
+      'task_context_mismatch',
+      'AI 任务与当前发布或任务标识不一致，未显示或采用返回结果。',
+    );
+  }
+  return next;
+}
+
 export function TaskPanel(props: TaskPanelProps) {
   const [selectedFields, setSelectedFields] = useState<NoteField[]>([]);
   const [task, setTask] = useState<AITask>();
@@ -100,6 +119,7 @@ export function TaskPanel(props: TaskPanelProps) {
   const [busy, setBusy] = useState(false);
   const [editText, setEditText] = useState('');
   const [editing, setEditing] = useState(false);
+  const [citationBlocked, setCitationBlocked] = useState(false);
   const [conflict, setConflict] = useState<'editor' | 'snapshot' | false>(false);
   const operations = useRef(new TaskOperationGeneration());
   const submission = useRef<{ signature: string; command: AICommand } | undefined>(undefined);
@@ -117,6 +137,7 @@ export function TaskPanel(props: TaskPanelProps) {
       : undefined,
     [note, props.securityId, props.snapshotId, selectedFields],
   );
+  const sendingText = note ? selection?.text || '' : props.marketContext || '';
   const inputSignature = JSON.stringify([
     props.taskType,
     props.snapshotId,
@@ -126,6 +147,7 @@ export function TaskPanel(props: TaskPanelProps) {
     props.articleId,
     props.securityId,
     props.noteSnapshotId,
+    props.marketContext,
     selection?.text || '',
   ]);
 
@@ -137,6 +159,7 @@ export function TaskPanel(props: TaskPanelProps) {
     setBusy(false);
     setConflict(false);
     setEditing(false);
+    setCitationBlocked(false);
     submission.current = undefined;
     reviewCommands.current.clear();
     submittedEditorSignature.current = '';
@@ -152,7 +175,9 @@ export function TaskPanel(props: TaskPanelProps) {
     const timer = window.setTimeout(async () => {
       try {
         const next = await getAITask(task.task_id, controller.signal);
-        if (operations.current.current === currentGeneration) setTask(next);
+        if (operations.current.current === currentGeneration) {
+          setTask(validateTaskContext(next, props, task.task_id));
+        }
       } catch (failure) {
         if (operations.current.current === currentGeneration) setError(failureMessage(failure));
       }
@@ -174,14 +199,14 @@ export function TaskPanel(props: TaskPanelProps) {
         signature: inputSignature,
         command: createAICommand(
           submissionPath(props.taskType),
-          commandBody(props, selection?.text || ''),
+          commandBody(props, sendingText),
         ),
       };
     }
     submittedEditorSignature.current = note ? editorSignature(note) : '';
     try {
       const next = await submitAITask(submission.current.command, operation.signal);
-      if (operations.current.isCurrent(operation)) setTask(next);
+      if (operations.current.isCurrent(operation)) setTask(validateTaskContext(next, props));
     } catch (failure) {
       if (operations.current.isCurrent(operation)) setError(failureMessage(failure));
     } finally {
@@ -215,7 +240,9 @@ export function TaskPanel(props: TaskPanelProps) {
       ) {
         try {
           const next = await getAITask(task.task_id, operation.signal);
-          if (operations.current.isCurrent(operation)) setTask(next);
+          if (operations.current.isCurrent(operation)) {
+            setTask(validateTaskContext(next, props, task.task_id));
+          }
         } catch (refreshFailure) {
           if (operations.current.isCurrent(operation)) {
             setError(failureMessage(refreshFailure));
@@ -257,9 +284,11 @@ export function TaskPanel(props: TaskPanelProps) {
     setError('');
     try {
       await reviewAITask(command, operation.signal);
+      if (operations.current.isCurrent(operation)) setCitationBlocked(true);
       const next = await getAITask(task.task_id, operation.signal);
       if (operations.current.isCurrent(operation)) {
-        setTask(next);
+        setTask(validateTaskContext(next, props, task.task_id));
+        setCitationBlocked(next.human_review_status === 'rejected');
         setEditing(false);
         setStatus('人工审核已记录。');
       }
@@ -272,7 +301,9 @@ export function TaskPanel(props: TaskPanelProps) {
       ) {
         try {
           const next = await getAITask(task.task_id, operation.signal);
-          if (operations.current.isCurrent(operation)) setTask(next);
+          if (operations.current.isCurrent(operation)) {
+            setTask(validateTaskContext(next, props, task.task_id));
+          }
         } catch (refreshFailure) {
           if (operations.current.isCurrent(operation)) {
             setError(failureMessage(refreshFailure));
@@ -286,6 +317,12 @@ export function TaskPanel(props: TaskPanelProps) {
 
   const adopt = async (strategy: AdoptionStrategy) => {
     if (!task?.content_draft || !props.onAdopt) return;
+    try {
+      validateTaskContext(task, props, task.task_id);
+    } catch (failure) {
+      setError(failureMessage(failure));
+      return;
+    }
     if (
       strategy !== 'save_as_new'
       && props.noteSnapshotId
@@ -327,7 +364,7 @@ export function TaskPanel(props: TaskPanelProps) {
   };
 
   const presentation = task ? taskPresentation(task) : undefined;
-  const canSubmit = props.taskType !== 'daily_review' || Boolean(selection?.text);
+  const canSubmit = props.taskType !== 'daily_review' || Boolean(sendingText.trim());
   return <section className="ai-task-panel" aria-label={`AI ${taskLabels[props.taskType]}`}>
     <div className="ai-task-heading">
       <h3><Bot size={18} />AI {taskLabels[props.taskType]}</h3>
@@ -351,6 +388,14 @@ export function TaskPanel(props: TaskPanelProps) {
           {props.securityId ? ` · 证券 ${props.securityId}` : ''}</small>
       </div>
     </fieldset>}
+    {!note && props.marketContext !== undefined && <div
+      className="ai-scope-preview"
+      aria-label="发送内容预览"
+    >
+      <strong>将发送的原文</strong>
+      <pre>{sendingText || '尚无快照事实'}</pre>
+      <small>{sendingText.length} 字符 · 快照 {props.snapshotId}</small>
+    </div>}
     <div className="ai-task-actions">
       <button
         type="button"
@@ -397,12 +442,8 @@ export function TaskPanel(props: TaskPanelProps) {
         {task.content_draft.missing_evidence.map((item, index) =>
           <li key={`${item.text}:${index}`}>{item.text}</li>)}
       </ul></section>}
-      <details><summary>引用与来源</summary><ul>
-        {task.content_draft.citations.map((item, index) =>
-          <li key={`${item.evidence_id}:${index}`}>
-            {item.source_identity} · {item.evidence_position} · {item.available_at}
-          </li>)}
-      </ul></details>
+      <CitationSource task={task} blocked={busy || citationBlocked}
+        articleId={props.taskType === 'summarize' ? props.articleId : undefined} />
       <div className="ai-task-actions">
         {props.onAdopt && <button
           type="button"

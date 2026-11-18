@@ -12,7 +12,8 @@ import './review.css';
 function PrivateToolbar() {
   const { check, logout } = useSession();
   return <section className="session-toolbar" aria-label="私人会话">
-    <span>本机私人会话 · 仅内存草稿</span>
+    <span>{import.meta.env.VITE_RESET_WORKBENCH === '1'
+      ? '本机私人会话 · 复盘保存在此浏览器' : '本机私人会话 · 仅内存草稿'}</span>
     <button onClick={() => void check()}>检查会话</button>
     <button onClick={() => void logout()}>退出私人会话</button>
   </section>;

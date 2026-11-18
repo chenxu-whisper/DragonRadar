@@ -287,6 +287,10 @@ def role_publication(database, repository):
         "missing": 0,
     }
     market_payload["overview"]["sentiment"]["yesterday_limit_up_return_reason"] = None
+    # This fixture supplies legacy summary-only observations, independently of
+    # the current publisher's fixed-pool details.
+    market_payload["overview"]["sentiment"].pop("continuity_detail", None)
+    market_payload["overview"]["sentiment"].pop("continuity_detail_version", None)
     market_payload["heatmap"] = {
         "columns": [1, 2],
         "cells": [
@@ -658,6 +662,12 @@ async def test_continuity_reuses_decimal_materialization(role_publication):
             "reasons": [],
         },
         "tradable_count": 2,
+        "details": {
+            "status": "unavailable",
+            "version": None,
+            "data": None,
+            "reasons": ["continuity_detail_unavailable"],
+        },
     }
     assert (
         body["data"]["promote_rate"]["rate"].as_tuple() == Decimal("0.5000").as_tuple()

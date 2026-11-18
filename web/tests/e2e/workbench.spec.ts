@@ -24,7 +24,9 @@ test('overview, server pagination, drawer focus and fullpage back preserve conte
   await mockMarket(page);
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '市场总览' })).toBeVisible();
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await expect(page.getByText('合成测试来源', { exact: false }).first()).toBeVisible();
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await expect(page.getByRole('button', { name: '合成测试证券1', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '下一页', exact: true }).click();
   await expect(page).toHaveURL(/page=2/);
@@ -104,7 +106,9 @@ test('same-condition network failure retains timestamp with degraded notice then
 test('older direct snapshot and late results never relabel old data', async ({ page }) => {
   await mockMarket(page, { delayOld: true });
   await page.goto(`/?snapshot=${OLD}`);
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await expect(page.getByText(/版本性质.*回溯记录/)).toBeVisible();
+  await page.getByLabel('来源、覆盖率与版本详情').click();
   await page.getByLabel('交易日期', { exact: true }).fill('2026-09-10');
   await expect(page).toHaveURL(new RegExp(ID));
   await page.getByLabel('交易日期', { exact: true }).fill('2026-09-09');

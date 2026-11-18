@@ -22,5 +22,5 @@
 
 现状：五项外部生产门禁缺项保持 `blocked`，
 正式自动化验收保持 `unverified`；本次合并不构成生产发布。
-详细材料与启动条件见 [下一阶段计划](next-development-plan.md)、
-[需求进度对照](prd-development-progress-2026-11-17.md)。
+详细材料与启动条件见 [生产输入契约](production-inputs.md)、
+[证明配置指南](proofs/README.md) 和 [需求进度对照](prd-development-progress-2026-11-17.md)。

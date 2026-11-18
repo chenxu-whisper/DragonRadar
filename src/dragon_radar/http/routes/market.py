@@ -24,6 +24,7 @@ from dragon_radar.readmodels.market import (
     MARKET_READ_MODEL_SCHEMA,
     MARKET_READ_MODEL_SCHEMA_VERSION,
 )
+from dragon_radar.readmodels.search import archived_search
 from dragon_radar.readmodels.sentiment_research import (
     ResearchBlockError,
     parse_archived_research_block,
@@ -100,7 +101,7 @@ def _published_payload(snapshot: PublishedSnapshot) -> tuple[dict, dict, bool]:
 def _published_response(
     snapshot: PublishedSnapshot,
     data: dict | None,
-    coverage: dict,
+    coverage: dict | None,
     *,
     materialization_unavailable: bool = False,
 ):
@@ -249,10 +250,14 @@ def heatmap(request: Request):
 
 @router.get("/api/search")
 def search(request: Request):
-    query = query_values(request, {"q", "date", "snapshot_id"})
+    query = query_values(request, {"q", "date", "snapshot_id", "page", "size"})
     term = query.get("q", "").strip()
     if not 1 <= len(term) <= 50:
         raise ValueError("Search query must be from 1 to 50 characters")
+    page = query_integer(query.get("page", "1"), 1, 100000)
+    size = query_integer(query.get("size", "50"), 1, 100)
+    if size not in {20, 50, 100}:
+        raise ValueError("Search page size must be 20, 50 or 100")
     has_date = "date" in query
     has_snapshot = "snapshot_id" in query
     if has_date != has_snapshot:
@@ -269,31 +274,18 @@ def search(request: Request):
         trade_date = snapshot.trade_date if snapshot is not None else None
     if snapshot is None or not isinstance(snapshot, PublishedSnapshot):
         return DecimalJSONResponse(empty_envelope(trade_date))
-    payload, coverage, materialized = _published_payload(snapshot)
-    if not materialized:
-        return _published_response(
-            snapshot, None, coverage, materialization_unavailable=True
-        )
-    folded = term.casefold()
-    results = []
-    for item in payload["search"]["securities"]:
-        match_field = next(
-            (
-                field
-                for field in ("security_id", "code", "name")
-                if item.get(field) is not None and folded in str(item[field]).casefold()
-            ),
-            None,
-        )
-        if match_field is not None:
-            results.append({**item, "match_field": match_field})
-    data = {
-        "query": term,
-        "groups": {
-            "securities": results,
-            "topics": [],
-            "messages": [],
-        },
-        "total": len(results),
-    }
+    # Search groups do not require the other market views to be materialized.
+    stored = next((item for item in snapshot.results if item.domain == "market"), None)
+    payload = (
+        _restore_decimals(dict(stored.payload))
+        if stored is not None and stored.status == "ready"
+        else {}
+    )
+    if ("schema" in payload or "schema_version" in payload) and (
+        payload.get("schema") != MARKET_READ_MODEL_SCHEMA
+        or payload.get("schema_version") != MARKET_READ_MODEL_SCHEMA_VERSION
+    ):
+        raise DataUnavailable
+    coverage = archived_coverage(dict(stored.coverage)) if stored is not None else None
+    data = archived_search(payload, snapshot, term, page, size)
     return _published_response(snapshot, data, coverage)

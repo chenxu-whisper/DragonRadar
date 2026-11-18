@@ -1,0 +1,31 @@
+.leaders-controls fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+}
+.leaders-controls fieldset label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.leaders-controls fieldset input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+.matrix-security[data-role-highlighted="true"] {
+  border-left-color: var(--blue);
+  background: var(--bg-elevated, transparent);
+}
+.ladder-matrix th {
+  overflow-wrap: anywhere;
+}
+.ladder-cell small {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}

@@ -90,6 +90,7 @@ function query(selection: Pick<RoleSelection, 'date' | 'snapshot'>): URLSearchPa
 export function ladderPath(selection: RoleSelection): string {
   const params = query(selection);
   if (selection.sector) params.set('sector', selection.sector);
+  if (selection.days !== undefined) params.set('days', String(selection.days));
   return `/api/limit-up/ladder?${params}`;
 }
 
@@ -124,17 +125,18 @@ function promotion(value: unknown) {
   };
 }
 
-export function validateLadder(value: unknown, selection: Pick<RoleSelection, 'snapshot' | 'date' | 'sector'>): RoleEnvelope<LadderData> {
-  const root = envelope(value, selection);
-  if (root.data === null) return root as unknown as RoleEnvelope<LadderData>;
-  const data = object(root.data);
+function validateCells(data: ObjectValue, selection: Pick<RoleSelection, 'sector'>): void {
   if (!Array.isArray(data.columns) || !Array.isArray(data.cells)) throw new ApiError(502, '梯队矩阵响应格式无效，已丢弃该响应。');
   const columns = data.columns.map(integer);
+  if (new Set(columns).size !== columns.length || columns.some(board => board < 1)) throw new ApiError(502, '梯队板数列无效');
   const seen = new Set<string>();
+  const seenBoards = new Set<number>();
   let sum = 0;
   for (const rawCell of data.cells) {
     const cell = object(rawCell);
     const boards = integer(cell.boards);
+    if (seenBoards.has(boards)) throw new ApiError(502, '梯队矩阵包含重复板数');
+    seenBoards.add(boards);
     if (!columns.includes(boards) || !Array.isArray(cell.stocks)) throw new ApiError(502, '梯队矩阵板数无效，已丢弃该响应。');
     const count = integer(cell.count);
     if (count !== cell.stocks.length) throw new ApiError(502, '梯队矩阵计数不一致，已丢弃该响应。');
@@ -142,17 +144,87 @@ export function validateLadder(value: unknown, selection: Pick<RoleSelection, 's
     for (const rawStock of cell.stocks) {
       const stock = object(rawStock);
       const id = text(stock.security_id);
-      text(stock.name);
+      nullableText(stock.name);
       const sector = text(stock.sector_id);
       if (selection.sector && sector !== selection.sector) throw new ApiError(409, '梯队响应题材与当前请求不匹配，已丢弃该响应。');
       if (seen.has(id)) throw new ApiError(502, '梯队响应包含重复证券，已丢弃该响应。');
       seen.add(id);
       if (!Array.isArray(stock.roles)) throw new ApiError(502, '梯队响应角色字段无效，已丢弃该响应。');
       stock.roles.forEach(role);
+      if (stock.change_ratio !== undefined) numberOrNull(stock.change_ratio);
+      if (stock.change_reasons !== undefined) texts(stock.change_reasons);
+      if (stock.role_reasons !== undefined) texts(stock.role_reasons);
+      const topics = stock.topics;
+      if (topics !== undefined) {
+        if (!Array.isArray(topics)) throw new ApiError(502, '梯队题材无效');
+        const ids = new Set<string>();
+        for (const rawTopic of topics) {
+          const topic = object(rawTopic);
+          const id = text(topic.sector_id);
+          if (!id || ids.has(id) || (selection.sector && id !== selection.sector)) throw new ApiError(502, '梯队题材身份无效');
+          ids.add(id); nullableText(topic.name);
+        }
+        if (!ids.has(sector)) throw new ApiError(502, '梯队题材身份无效');
+      }
+      if (stock.role_evidence !== undefined) {
+        if (!Array.isArray(stock.role_evidence)) throw new ApiError(502, '梯队角色证据无效');
+        for (const rawEvidence of stock.role_evidence) {
+          const evidence = object(rawEvidence);
+          role(evidence.role_type); text(evidence.evidence_status);
+          const evidenceSector = text(evidence.sector_id);
+          if (topics === undefined ? evidenceSector !== sector
+            : !(topics as ObjectValue[]).some(topic => topic.sector_id === evidenceSector)) throw new ApiError(502, '梯队证据题材无效');
+        }
+      }
+      if (stock.seal !== undefined) {
+        const seal = object(stock.seal);
+        for (const key of ['is_limit_up', 'touched_limit']) {
+          if (seal[key] !== null && typeof seal[key] !== 'boolean') throw new ApiError(502, '封板事实无效');
+        }
+        for (const key of ['first_seal_time', 'last_seal_time']) {
+          const time = nullableText(seal[key]);
+          if (time !== null && !/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?$/.test(time)) throw new ApiError(502, '封板时间无效');
+        }
+        for (const key of ['break_count', 'continuous_boards']) if (seal[key] !== null) integer(seal[key]);
+        numberOrNull(seal.seal_amount); nullableText(seal.seal_amount_unit); nullableText(seal.reason);
+      }
     }
   }
   if (integer(data.total) !== sum) throw new ApiError(502, '梯队矩阵总数不一致，已丢弃该响应。');
+}
+
+export function validateLadder(value: unknown, selection: Pick<RoleSelection, 'snapshot' | 'date' | 'sector' | 'days'>): RoleEnvelope<LadderData> {
+  const root = envelope(value, selection);
+  if (root.data === null) return root as unknown as RoleEnvelope<LadderData>;
+  const data = object(root.data);
+  validateCells(data, selection);
   promotion(data.promote_rate);
+  if (data.history !== undefined) {
+    const history = object(data.history);
+    const days = integer(history.days);
+    if (days < 1 || days > 250 || (selection.days !== undefined && days !== selection.days)
+      || history.sector !== (selection.sector ?? null)) throw new ApiError(502, '梯队历史窗口无效');
+    const window = object(history.window);
+    const start = rotationDay(window.start); const end = rotationDay(window.end);
+    if (end !== selection.date || start > end || !Array.isArray(history.rows)
+      || history.rows.length > days || history.rows.length === 0) throw new ApiError(502, '梯队历史窗口无效');
+    let previous = '';
+    for (const rawRow of history.rows) {
+      const row = object(rawRow); const day = rotationDay(row.trade_date);
+      if (day <= previous || day < start || day > end) throw new ApiError(502, '梯队历史日期无效');
+      previous = day;
+      const reasons = texts(row.reasons);
+      if (row.snapshot_id !== null) canonicalUuid(row.snapshot_id);
+      nullableText(row.rule_version);
+      if (day === selection.date && row.snapshot_id !== selection.snapshot) throw new ApiError(409, '梯队历史锚点快照不匹配');
+      if (row.status === 'available') {
+        canonicalUuid(row.snapshot_id); text(row.rule_version); coverage(row.coverage);
+        validateCells(row, selection);
+      } else if (row.status !== 'unavailable' || !reasons.length || reasons.some(reason => !reason)
+        || ['cells', 'columns', 'total', 'coverage'].some(key => row[key] !== null)) throw new ApiError(502, '梯队历史缺失原因无效');
+    }
+    if (previous !== end || object(history.rows[0]).trade_date !== start) throw new ApiError(502, '梯队历史边界无效');
+  }
   return root as unknown as RoleEnvelope<LadderData>;
 }
 
@@ -170,6 +242,7 @@ export function validateContinuity(value: unknown, selection: Pick<RoleSelection
   coverage(feedback.coverage);
   texts(feedback.reasons);
   integer(data.tradable_count);
+  if (data.details !== undefined) validateContinuityDetails(object(data.details), data, selection);
   return root as unknown as RoleEnvelope<ContinuityData>;
 }
 
@@ -198,7 +271,7 @@ export function validateCandidates(
   for (const raw of data.candidates) {
     const candidate = object(raw);
     text(candidate.security_id);
-    text(candidate.name);
+    nullableText(candidate.name);
     const sector = text(candidate.sector_id);
     if (selection.sector && sector !== selection.sector) throw new ApiError(409, '候选响应题材与当前请求不匹配，已丢弃该响应。');
     if (integer(candidate.rank) < 1 || candidate.evidence_status !== 'candidate') throw new ApiError(502, '候选排名无效，已丢弃该响应。');
@@ -206,6 +279,8 @@ export function validateCandidates(
   }
   for (const raw of data.change_summaries) {
     const change = object(raw);
+    const changeRole = text(change.role);
+    if (changeRole !== selection.role && INTERNAL_ROLE_NAMES[changeRole] !== selection.role) throw new ApiError(409, '角色变化响应角色不匹配');
     const sector = text(change.sector_id);
     if (selection.sector && sector !== selection.sector) throw new ApiError(409, '变化响应题材与当前请求不匹配，已丢弃该响应。');
     if (!['comparable', 'not_comparable'].includes(text(change.comparison_status))
@@ -214,6 +289,10 @@ export function validateCandidates(
   }
   for (const raw of data.role_changes) {
     const change = object(raw);
+    const changeRole = text(change.role);
+    if (changeRole !== selection.role && INTERNAL_ROLE_NAMES[changeRole] !== selection.role) throw new ApiError(409, '角色变化响应角色不匹配');
+    if (change.name !== undefined) nullableText(change.name);
+    if (change.rank !== undefined && change.rank !== null) integer(change.rank);
     text(change.id);
     const sector = text(change.sector_id);
     if (selection.sector && sector !== selection.sector) throw new ApiError(409, '变化响应题材与当前请求不匹配，已丢弃该响应。');
@@ -229,6 +308,94 @@ export function validateCandidates(
   }
   if (integer(data.total) !== data.candidates.length) throw new ApiError(502, '候选总数不一致，已丢弃该响应。');
   return root as unknown as RoleEnvelope<CandidatesData>;
+}
+
+const INTERNAL_ROLE_NAMES: Record<string, RoleName> = {
+  emotion: 'emotion_leader', trend: 'trend_leader', core: 'zhongjun',
+  follower: 'genfeng', catchup: 'buZhang', relay: 'jieli',
+};
+
+function validateContinuityDetails(details: ObjectValue, summary: ObjectValue, selection: Pick<RoleSelection, 'date'>): void {
+  const reasons = texts(details.reasons);
+  if (details.status === 'unavailable') {
+    if (!reasons.length || reasons.some(reason => !reason) || details.data !== null
+      || (details.version !== null && typeof details.version !== 'number')) throw new ApiError(502, '昨日反馈详情不可用状态无效');
+    return;
+  }
+  if (details.status !== 'available' || details.version !== 1) throw new ApiError(502, '昨日反馈详情版本无效');
+  const data = object(details.data);
+  if (rotationDay(data.trade_date) !== selection.date) throw new ApiError(409, '昨日反馈日期不匹配');
+  if (data.previous_trade_date !== null && rotationDay(data.previous_trade_date) >= selection.date) throw new ApiError(502, '昨日反馈基期无效');
+  const validReturns: number[] = [];
+  const idsByPool: Set<string>[] = [];
+  const membersByPool: Map<string, ObjectValue>[] = [];
+  for (const key of ['promotion', 'feedback']) {
+    const pool = object(data[key]); const cov = coverage(pool.coverage);
+    if (!Array.isArray(pool.members)) throw new ApiError(502, '昨日固定池无效');
+    const ids = new Set<string>(); const counts = { valid: 0, excluded: 0, missing: 0 };
+    const members = new Map<string, ObjectValue>();
+    const directions = { up: 0, down: 0, flat: 0 }; let sealed = 0;
+    for (const raw of pool.members) {
+      const row = object(raw); const id = text(row.security_id);
+      if (!id || ids.has(id)) throw new ApiError(502, '昨日固定池重复证券');
+      ids.add(id); nullableText(row.name);
+      members.set(id, row);
+      const status = text(row.status) as keyof typeof counts;
+      if (!(status in counts)) throw new ApiError(502, '昨日固定池状态无效');
+      counts[status]++;
+      const value = numberOrNull(row.return);
+      const direction = value === null ? null : value > 0 ? 'up' : value < 0 ? 'down' : 'flat';
+      if (row.direction !== direction) throw new ApiError(502, '昨日收益方向无效');
+      const memberReasons = texts(row.reasons);
+      if (row.sealed !== null && typeof row.sealed !== 'boolean') throw new ApiError(502, '昨日封板事实无效');
+      if (status !== 'valid' && (value !== null || row.sealed !== null || !memberReasons.length)) throw new ApiError(502, '昨日缺失事实不能补值');
+      if (key === 'feedback' && status === 'valid') {
+        if (value === null || direction === null) throw new ApiError(502, '昨日有效收益缺失');
+        validReturns.push(value); directions[direction]++;
+      }
+      if (row.sealed === true) sealed++;
+    }
+    idsByPool.push(ids);
+    membersByPool.push(members);
+    if (cov.expected !== ids.size || Object.entries(counts).some(([key, count]) => cov[key as keyof WorkbenchCoverage] !== count)) throw new ApiError(502, '昨日固定池覆盖率不一致');
+    if (key === 'feedback') {
+      const archived = object(pool.direction_counts);
+      if (Object.entries(directions).some(([key, count]) => integer(archived[key]) !== count)) throw new ApiError(502, '昨日方向统计不一致');
+      const expected = coverage(object(summary.yesterday_limit_up_feedback).coverage);
+      if (Object.keys(cov).some(key => cov[key as keyof WorkbenchCoverage] !== expected[key as keyof WorkbenchCoverage])) throw new ApiError(502, '昨日汇总覆盖率不一致');
+    } else {
+      const promote = object(summary.promote_rate);
+      const expected = coverage(object(summary.promote_rate_quality).coverage);
+      if (cov.expected !== promote.yesterday_ge2 || cov.valid !== promote.tradable || sealed !== promote.today_sealed
+        || Object.keys(cov).some(key => cov[key as keyof WorkbenchCoverage] !== expected[key as keyof WorkbenchCoverage])) throw new ApiError(502, '晋级汇总不一致');
+    }
+  }
+  if ([...idsByPool[0]].some(id => !idsByPool[1].has(id))) throw new ApiError(502, '晋级池不属于昨日涨停池');
+  for (const [id, promotion] of membersByPool[0]) {
+    const feedback = membersByPool[1].get(id)!;
+    const promotionReasons = new Set(texts(promotion.reasons));
+    const feedbackReasons = new Set(texts(feedback.reasons));
+    // Promotion needs today's observation; feedback additionally needs a return reference.
+    const returnUnavailable = promotion.status === 'valid'
+      && promotion.return === null && promotion.direction === null
+      && typeof promotion.sealed === 'boolean' && promotionReasons.size === 0
+      && feedback.status === 'missing' && feedback.return === null
+      && feedback.direction === null && feedback.sealed === null
+      && feedbackReasons.size === 1 && feedbackReasons.has('daily_return_unavailable');
+    const sameFacts = promotion.status === feedback.status
+      && numberOrNull(promotion.return) === numberOrNull(feedback.return)
+      && promotion.direction === feedback.direction && promotion.sealed === feedback.sealed
+      && promotionReasons.size === feedbackReasons.size
+      && [...promotionReasons].every(reason => feedbackReasons.has(reason));
+    if (!sameFacts && !returnUnavailable) throw new ApiError(502, '昨日固定池共享证券事实不一致');
+  }
+  validReturns.sort((a, b) => a - b);
+  const middle = Math.floor(validReturns.length / 2);
+  const median = validReturns.length === 0 ? null : validReturns.length % 2
+    ? validReturns[middle] : (validReturns[middle - 1] + validReturns[middle]) / 2;
+  const archivedMedian = numberOrNull(summary.yesterday_limit_up_median_return);
+  if (median === null ? archivedMedian !== null : archivedMedian === null
+    || Math.abs(median - archivedMedian) > 1e-12) throw new ApiError(502, '昨日收益中位数不一致');
 }
 
 export function validateEvidence(

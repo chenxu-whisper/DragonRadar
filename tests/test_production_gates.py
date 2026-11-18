@@ -8,6 +8,18 @@ from hashlib import sha256
 import pytest
 
 
+def test_source_identity_binds_container_edge_configuration(tmp_path):
+    from dragon_radar.production.cli import source_identity
+
+    folder = tmp_path / "containers"
+    folder.mkdir()
+    edge = folder / "owner.Caddyfile"
+    edge.write_text("respond 403\n", encoding="utf-8")
+    original = source_identity(tmp_path)
+    edge.write_text("respond 404\n", encoding="utf-8")
+    assert source_identity(tmp_path) != original
+
+
 def module():
     name = "dragon_radar.production.gates"
     assert importlib.util.find_spec("dragon_radar.production") is not None, (

@@ -19,6 +19,8 @@ test('public Reset denies review deep links without opening IndexedDB', async ({
   await expect(page.getByRole('heading', { name: '我的复盘' })).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'AI 每日复盘' })).toHaveCount(0);
   await expect(page.getByText('AI 每日复盘')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '展开完整 AI 分析', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'AI 每日速览', exact: true })).toContainText('快照事实模板');
   expect(await page.evaluate(async () => (await indexedDB.databases()).map(item => item.name))).toEqual([]);
   expect(privateRequests).toEqual([]);
 });

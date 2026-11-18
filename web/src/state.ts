@@ -1,15 +1,17 @@
 import { ROLE_NAMES, type RoleName } from './features/roles/types';
 
 export type View = 'overview' | 'analysis' | 'stock' | 'review' | 'news' | 'leaders' | 'regulation';
-export type Sort = 'security_id' | 'name' | 'close' | 'change' | 'amount' | 'interval_return' | 'excess_return' | 'maximum_drawdown' | 'amount_change';
+export type Sort = 'security_id' | 'code' | 'name' | 'close' | 'change' | 'amount' | 'interval_return' | 'excess_return' | 'maximum_drawdown' | 'amount_change';
 export type Adjustment = 'raw' | 'qfq' | 'hfq';
 export type NewsType = '' | 'news' | 'announcement' | 'research';
 export interface ResearchState {
+  section?: string;
   view: View; snapshot: string; date: string; q: string; sort: Sort;
   order: 'asc' | 'desc'; page: number; page_size: number; n: number;
   start: string; end: string; compare: string[]; security: string;
   benchmark: string; adj: Adjustment;
-  return_view: 'overview' | 'analysis' | 'leaders' | 'news'; note: string;
+  return_view: 'overview' | 'analysis' | 'leaders' | 'news' | 'review' | 'regulation'; note: string;
+  return_snapshot?: string; return_date?: string; return_sector?: string; roles?: RoleName[];
   market_filter: '' | 'up' | 'down' | 'flat' | 'limit_up' | 'limit_down';
   sector: string; role: RoleName;
   article: string; news_type: NewsType; news_source: string;
@@ -69,7 +71,7 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   const legacySorts: readonly Sort[] = [
     'security_id', 'name', 'close', 'change', 'amount', 'interval_return', 'maximum_drawdown',
   ];
-  const resetSorts: readonly Sort[] = [...legacySorts, 'excess_return', 'amount_change'];
+  const resetSorts: readonly Sort[] = [...legacySorts, 'code', 'excess_return', 'amount_change'];
   let sort = choice<Sort>('sort', reset ? resetSorts : legacySorts, 'security_id');
   if (view === 'overview' && ['interval_return', 'excess_return', 'maximum_drawdown', 'amount_change'].includes(sort)) { invalid(); sort = 'security_id'; }
   const q = p.get('q') || '';
@@ -90,16 +92,39 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   if (newsInvalid) {
     invalid(); article = ''; news_type = ''; news_source = '';
   }
+  const selectedRole = choice('role', ROLE_NAMES, 'trend_leader');
+  let roles = [selectedRole];
+  if (reset && p.has('roles')) {
+    const values = p.get('roles')!.split(',').map(value => value.trim());
+    if (p.getAll('roles').length !== 1 || values.some(value => !ROLE_NAMES.includes(value as RoleName))) invalid();
+    else roles = ROLE_NAMES.filter(value => values.includes(value));
+  }
+  let returnSnapshot = reset ? p.get('return_snapshot') || '' : '';
+  let returnDate = reset ? date('return_date') : '';
+  if (returnSnapshot && !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(returnSnapshot)) {
+    invalid(); returnSnapshot = ''; returnDate = '';
+  }
+  if (reset && p.has('return_date') && !returnDate) returnSnapshot = '';
+  let returnSector = reset && p.has('return_sector') ? p.get('return_sector')! : undefined;
+  if (returnSector !== undefined && (returnSector.length > 200 || returnSector === '.' || returnSector === '..')) {
+    invalid(); returnSector = undefined;
+  }
   return { state: {
     view, snapshot, note: note.toLowerCase(), date: date('date'), q: q.slice(0, 100), sort,
     order: choice('order', ['asc', 'desc'], 'asc'), page: integer('page', 1, 100000),
     page_size: [20, 50, 100].includes(page_size) ? page_size : 50,
     n: integer('n', 20, 250), start: date('start'), end: date('end'), compare, security,
     benchmark, adj: choice<Adjustment>('adj', ['raw', 'qfq', 'hfq'], 'raw'),
-    return_view: choice('return_view', reset ? ['overview', 'analysis', 'leaders', 'news'] : ['overview', 'analysis'], 'overview'),
+    return_view: choice<ResearchState['return_view']>('return_view', reset
+      ? ['overview', 'analysis', 'leaders', 'news', 'regulation', ...(allowResetReview ? ['review' as const] : [])]
+      : ['overview', 'analysis'], 'overview'),
     market_filter: choice('market_filter', ['', 'up', 'down', 'flat', 'limit_up', 'limit_down'], ''),
-    sector, role: choice('role', ROLE_NAMES, 'trend_leader'),
+    sector, role: selectedRole,
+    ...(reset ? { roles, ...(returnSnapshot ? { return_snapshot: returnSnapshot.toLowerCase() } : {}),
+      ...(returnDate ? { return_date: returnDate } : {}),
+      ...(returnSector !== undefined ? { return_sector: returnSector } : {}) } : {}),
     article: article.toLowerCase(), news_type, news_source,
+    ...(reset && /^[a-z][a-z-]{0,49}$/.test(p.get('section') || '') ? { section: p.get('section')! } : {}),
   }, notices };
 }
 
@@ -107,19 +132,23 @@ export function stateSearch(state: ResearchState, allowPrivate = false, reset = 
   const allowed = (reset && (allowResetReview || state.view !== 'review'))
     || ['overview', 'analysis', 'stock'].includes(state.view)
     || (allowPrivate && state.view === 'review');
-  const normalized = { ...state, view: allowed ? state.view : 'overview', note: allowPrivate ? state.note : '' };
+  const returnViews = reset ? ['overview', 'analysis', 'leaders', 'news', 'regulation', ...(allowResetReview ? ['review'] : [])] : ['overview', 'analysis'];
+  const normalized = { ...state, view: allowed ? state.view : 'overview', note: allowPrivate ? state.note : '',
+    return_view: returnViews.includes(state.return_view) ? state.return_view : 'overview' };
   const p = new URLSearchParams();
   const keys: (keyof ResearchState)[] = [
     'view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end',
-    ...(reset ? ['benchmark', 'adj'] as const : []),
+    ...(reset ? ['benchmark', 'adj', 'section', 'return_snapshot', 'return_date'] as const : []),
     'compare', 'security', 'return_view', 'note', 'market_filter', 'sector', 'role',
     'article', 'news_type', 'news_source',
   ];
   for (const key of keys) {
     const value = normalized[key];
     if (key === 'compare') { if (normalized.compare.length) p.set(key, normalized.compare.join(',')); }
-    else if (value !== '' && !(key === 'n' && (normalized.start || normalized.end))) p.set(key, String(value));
+    else if (value !== undefined && value !== '' && !(key === 'n' && (normalized.start || normalized.end))) p.set(key, String(value));
   }
+  if (reset) p.set('roles', ROLE_NAMES.filter(role => (state.roles ?? [state.role]).includes(role)).join(','));
+  if (reset && state.return_sector !== undefined) p.set('return_sector', state.return_sector);
   return `?${p}`;
 }
 

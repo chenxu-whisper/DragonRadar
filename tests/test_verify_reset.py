@@ -1362,20 +1362,91 @@ def test_private_stack_isolation_runs_compose_stop_and_wait_up_bypassing_runner(
         str(state_file),
         "-f",
         str(root / "compose.yaml"),
-        "-f",
-        str(root / "compose.private.yaml"),
     )
     assert invoked[0]["argv"] == expected_prefix + ("stop",)
     assert invoked[1]["argv"] == expected_prefix + (
         "up",
         "--detach",
         "--wait",
-        "web",
-        "api",
     )
     assert invoked[0]["timeout"] < invoked[1]["timeout"]
     assert all(call["cwd"] == root for call in invoked)
     assert all(isinstance(call["env"], dict) for call in invoked)
+
+
+def test_acceptance_stack_uses_only_unified_compose_and_renamed_state():
+    root = VERIFIER["ROOT"]
+    assert VERIFIER["TASK20_STACK_ENV_FILE"] == (
+        root / ".temp" / "acceptance-stack" / "compose.env"
+    )
+    assert VERIFIER["TASK20_COMPOSE_FILES"] == ("compose.yaml",)
+    harness = root / "scripts" / "acceptance-stack.sh"
+    assert harness.is_file()
+    source = harness.read_text(encoding="utf-8")
+    assert "compose.private.yaml" not in source
+    assert '.temp/acceptance-stack"' in source
+    assert "compose build\n" in source
+    commands = (
+        "compose up --detach --wait db",
+        "compose run --rm public-api migrate",
+        "compose up --detach owner-caddy",
+        "compose run --rm owner-api owner-init",
+        "compose up --detach --wait\n",
+        "compose exec -T owner-caddy",
+    )
+    positions = [source.index(command) for command in commands]
+    assert positions == sorted(positions)
+    assert "compose up --detach --wait owner-caddy" not in source
+    assert "DRAGON_OWNER_PORT=%s" in source
+    assert "DRAGON_PUBLIC_PORT=0" in source
+    assert "::add-mask::" in source
+    assert "--skip-build" in source
+    assert "down --volumes --remove-orphans" in source
+    assert not (root / "scripts" / "task20-private-tls.sh").exists()
+
+
+def test_ci_preserves_acceptance_gates_with_three_renamed_harness_calls():
+    workflow = (VERIFIER["ROOT"] / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert workflow.count("bash ./scripts/acceptance-stack.sh") == 3
+    assert "task20-private-tls.sh" not in workflow
+    assert "runs-on: ubuntu-24.04" in workflow
+    assert "timeout-minutes: 90" in workflow
+    assert "DRAGON_TASK20_PERF_ISOLATION" in workflow
+    assert "npx playwright install --with-deps chromium" in workflow
+    assert "scripts/verify_reset.py --mode full" in workflow
+
+
+def test_stack_isolation_clears_compose_owned_environment(tmp_path, monkeypatch):
+    invoked = []
+    owned = {
+        "DRAGON_DB_PASSWORD": "inherited",
+        "DRAGON_OWNER_PORT": "8031",
+        "DRAGON_PUBLIC_PORT": "8080",
+        "DRAGON_PUBLIC_BIND": "0.0.0.0",
+        "DRAGON_OWNER_SECRETS_DIR": "/shared",
+        "DRAGON_AI_TOKEN": "live-token",
+        "DRAGON_AI_PROVIDER": "live-provider",
+        "COMPOSE_FILE": "compose.private.yaml",
+        "COMPOSE_PROFILES": "inherited",
+        "COMPOSE_ENV_FILES": "/shared/env",
+    }
+    for key, value in owned.items():
+        monkeypatch.setenv(key, value)
+
+    def invoke(argv, *, cwd, env, timeout):
+        invoked.append(env)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    isolation = VERIFIER["PrivateStackIsolation"](
+        project="dragon-radar-task20-7-2",
+        env_file=tmp_path / "compose.env",
+        invoke=invoke,
+    )
+    isolation.resume()
+
+    assert not (owned.keys() & invoked[0].keys())
 
 
 def test_private_stack_isolation_raises_when_compose_reports_failure(tmp_path):

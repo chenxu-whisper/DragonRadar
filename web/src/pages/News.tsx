@@ -2,6 +2,7 @@ import { ExternalLink, FileText, Link2, Search } from 'lucide-react';
 import { lazy, Suspense, useEffect, useState } from 'react';
 
 import { Pager, ResourceStatus, type Patch } from '../components/Common';
+import { UnavailableModules } from '../features/workbench/PageStructure';
 import {
   newsDetailPath,
   newsListPath,
@@ -22,6 +23,10 @@ const NewsAITools = import.meta.env.VITE_PRIVATE_AI === '1'
   : null;
 const WordCloud = import.meta.env.VITE_RESET_WORKBENCH === '1'
   ? lazy(() => import('../features/news/WordCloud'))
+  : null;
+const AssociationReview = import.meta.env.VITE_PRIVATE_REVIEW === '1'
+  && import.meta.env.VITE_RESET_WORKBENCH === '1'
+  ? lazy(() => import('../features/news/AssociationReview'))
   : null;
 const TYPE_LABELS: Record<Exclude<NewsType, ''>, string> = {
   news: '新闻',
@@ -63,7 +68,7 @@ function ArticleDetail({
   publicationAsOf?: string;
   publicationVersion?: string;
 }) {
-  return <section className="news-detail" aria-label="消息详情">
+  return <section id="workbench-news-detail" tabIndex={-1} className="news-detail" aria-label="消息详情">
     <p className="eyebrow">{TYPE_LABELS[article.article_type]} · {article.source} / {article.source_version}</p>
     <h2>{article.title}</h2>
     <dl className="metadata-grid news-metadata">
@@ -80,7 +85,8 @@ function ArticleDetail({
     {article.content
       ? <div className="news-content"><FileText size={18} /><p>{article.content}</p></div>
       : <p className="notice news-license"><strong>未获正文展示许可</strong>{article.summary ? '，仅展示授权摘要' : ''}</p>}
-    {NewsAITools && publicationAsOf && publicationVersion &&
+    <section id="workbench-topic-suggest" tabIndex={-1} aria-label="AI 题材建议">
+    {NewsAITools && publicationAsOf && publicationVersion ?
       <Suspense fallback={<p role="status">正在加载 AI 工具…</p>}>
         <NewsAITools
           article={article}
@@ -88,8 +94,8 @@ function ArticleDetail({
           publicationAsOf={publicationAsOf}
           publicationVersion={publicationVersion}
         />
-      </Suspense>
-    }
+      </Suspense> : <p className="muted">当前入口未启用 AI 题材建议；已有消息关联与支持证据仍可查看。</p>}
+    </section>
 
     <section aria-label="事件新颖性证据">
       <h3>事件新颖性：{article.is_novel_event ? '新颖事件' : '非新颖事件'}</h3>
@@ -125,6 +131,10 @@ function ArticleDetail({
           </div>)}
         </>}
     </section>
+    {AssociationReview && <Suspense fallback={<p>正在加载关联复核</p>}>
+      <AssociationReview key={`${state.snapshot}:${state.date}:${article.revision_id}`}
+        article={article} date={state.date} snapshot={state.snapshot} />
+    </Suspense>}
   </section>;
 }
 
@@ -174,7 +184,7 @@ export function News({
 
   return <>
     <div className="page-heading">
-      <div><p className="eyebrow">消息来源 / 时点证据</p><h1>消息</h1></div>
+      <div><p className="eyebrow">消息来源 / 时点证据</p><h1>市场消息</h1></div>
       {data && <div>
         <p className="muted">{data.total} 篇文章 · {data.event_count} 个事件</p>
         <CsvExportButton
@@ -246,7 +256,7 @@ export function News({
         <button type="submit">搜索消息</button>
       </form>
     </div>
-    {WordCloud && <Suspense fallback={<p role="status">正在加载新闻词云…</p>}>
+    {WordCloud && <section id="workbench-wordcloud" tabIndex={-1}><Suspense fallback={<p role="status">正在加载新闻词云…</p>}>
       <WordCloud
         date={state.date}
         snapshot={state.snapshot}
@@ -258,11 +268,12 @@ export function News({
           patch({ q: term, article: '', page: 1 });
         }}
       />
-    </Suspense>}
+    </Suspense></section>}
     <ResourceStatus resource={list} name="消息列表" />
     <ResourceStatus resource={detail} name="消息详情" />
+    {!data && <UnavailableModules view="news" ids={['news-list', 'news-detail']} loading={list.loading} />}
     {data && <div className="news-layout">
-      <section className="news-list" aria-label="消息列表">
+      <section id="workbench-news-list" tabIndex={-1} className="news-list" aria-label="消息列表">
         {data.articles.length === 0
           ? <p className="empty">当前筛选没有已发布消息。</p>
           : data.articles.map(article => <button
@@ -290,9 +301,12 @@ export function News({
           publicationAsOf={publicationAsOf}
           publicationVersion={publicationVersion}
         />
-        : <section className="news-detail empty" aria-label="消息详情">
+        : <section id="workbench-news-detail" tabIndex={-1} className="news-detail empty" aria-label="消息详情">
           <h2>选择一篇消息</h2><p>详情严格绑定当前快照，不读取最新文章表。</p>
         </section>}
     </div>}
+    {!selected && <section id="workbench-topic-suggest" tabIndex={-1} className="workbench-tool-section" aria-label="AI 题材建议">
+      <h2>AI 题材建议</h2><p className="muted">请先选择一篇消息，查看支持新闻、关联证券与建议审核工具。</p>
+    </section>}
   </>;
 }

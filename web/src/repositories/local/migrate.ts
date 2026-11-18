@@ -1,6 +1,9 @@
 import type {
   LocalImportPlan, LocalNote, LocalVerification, LocalWatch, StoredNoteContent,
+  VerificationContext, WatchContext,
 } from './repository';
+import type { ResetKlineData } from '../../types';
+import { localValueSignature, validateVerificationChain, validateVerificationFacts, validateWatchContext } from './verification-validation';
 
 export type ImportDecision = 'merge' | 'save-as-new';
 
@@ -21,15 +24,18 @@ export interface BackupNote {
 export interface BackupRevision {
   revision_id: string; note_id: string; revision: number; state: 'draft' | 'confirmed';
   content: BackupContent; saved_at: string;
+  snapshot_id?: string; trade_date?: string | null; security_id?: string | null;
 }
 export interface BackupVerification {
   verification_id: string; note_id: string; revision_id: string;
   snapshot_id: string | null; outcome: 'supported' | 'weakened' | 'refuted' | 'not_due';
   evidence: string; supersedes: string | null; created_at: string;
+  context?: VerificationContext | null; fact_interval?: ResetKlineData | null;
 }
 export interface BackupWatch {
   watch_id: string; security_id: string; snapshot_id: string; active: boolean;
   revision: number; added_at: string; updated_at: string;
+  context?: WatchContext;
 }
 export interface ReviewBackup {
   format_version: 1;
@@ -111,6 +117,9 @@ const date = (value: unknown): string | null => {
 const exact = (value: Record<string, unknown>, expected: string[]) => {
   if (keys(value) !== [...expected].sort().join(',')) fail();
 };
+const optional = (value: Record<string, unknown>, required: string[], allowed: string[]) => {
+  exact(value, [...required, ...allowed.filter(key => Object.hasOwn(value, key))]);
+};
 function immutable<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) immutable(child);
@@ -177,32 +186,40 @@ export function parseReviewBackup(input: string | unknown): ReviewBackup {
   });
   const revisions = (root.revisions as unknown[]).map(value => {
     const row = object(value);
-    exact(row, ['revision_id', 'note_id', 'revision', 'state', 'content', 'saved_at']);
+    optional(row, ['revision_id', 'note_id', 'revision', 'state', 'content', 'saved_at'], ['snapshot_id', 'trade_date', 'security_id']);
     if (row.state !== 'draft' && row.state !== 'confirmed') fail();
     return {
       revision_id: identifier(row.revision_id), note_id: identifier(row.note_id), revision: integer(row.revision, 1),
       state: row.state, content: normalizeContent(row.content), saved_at: timestamp(row.saved_at),
+      ...(Object.hasOwn(row, 'snapshot_id') ? { snapshot_id: identifier(row.snapshot_id) } : {}),
+      ...(Object.hasOwn(row, 'trade_date') ? { trade_date: date(row.trade_date) } : {}),
+      ...(Object.hasOwn(row, 'security_id') ? { security_id: nullableIdentifier(row.security_id) } : {}),
     } as BackupRevision;
   });
   const verifications = (root.verifications as unknown[]).map(value => {
     const row = object(value);
-    exact(row, ['verification_id', 'note_id', 'revision_id', 'snapshot_id', 'outcome', 'evidence', 'supersedes', 'created_at']);
+    optional(row, ['verification_id', 'note_id', 'revision_id', 'snapshot_id', 'outcome', 'evidence', 'supersedes', 'created_at'], ['context', 'fact_interval']);
     if (!['supported', 'weakened', 'refuted', 'not_due'].includes(text(row.outcome))) fail();
     return {
       verification_id: identifier(row.verification_id), note_id: identifier(row.note_id), revision_id: identifier(row.revision_id),
       snapshot_id: nullableIdentifier(row.snapshot_id), outcome: row.outcome,
       evidence: text(row.evidence, BACKUP_LIMITS.text),
       supersedes: nullableIdentifier(row.supersedes), created_at: timestamp(row.created_at),
+      ...(Object.hasOwn(row, 'context') ? { context: structuredClone(row.context) } : {}),
+      ...(Object.hasOwn(row, 'fact_interval') ? { fact_interval: structuredClone(row.fact_interval) } : {}),
     } as BackupVerification;
   });
   const watchlist = (root.watchlist as unknown[]).map(value => {
     const row = object(value);
-    exact(row, ['watch_id', 'security_id', 'snapshot_id', 'active', 'revision', 'added_at', 'updated_at']);
+    optional(row, ['watch_id', 'security_id', 'snapshot_id', 'active', 'revision', 'added_at', 'updated_at'], ['context']);
     if (typeof row.active !== 'boolean') fail();
     return {
       watch_id: identifier(row.watch_id), security_id: identifier(row.security_id), snapshot_id: identifier(row.snapshot_id),
       active: row.active as boolean, revision: integer(row.revision, 1),
       added_at: timestamp(row.added_at), updated_at: timestamp(row.updated_at),
+      ...(Object.hasOwn(row, 'context') ? { context: (() => {
+        try { return validateWatchContext(row.context); } catch { return fail(); }
+      })() } : {}),
     };
   });
   const normalized: ReviewBackup = {
@@ -227,15 +244,16 @@ export function parseReviewBackup(input: string | unknown): ReviewBackup {
   const versions = new Set<string>();
   for (const revision of revisions) {
     const note = noteById.get(revision.note_id) ?? fail();
+    const trade_date = Object.hasOwn(revision, 'trade_date') ? revision.trade_date! : note.trade_date;
     if (revisionById.has(revision.revision_id)
       || versions.has(`${revision.note_id}:${revision.revision}`)) fail();
     if (revision.state === 'confirmed'
-      && (!note.trade_date
+      && (!trade_date
         || !(revision.content.judgment ?? '').trim()
         || !(revision.content.evidence ?? '').trim()
         || !(revision.content.invalid_condition ?? '').trim()
         || !revision.content.verify_date
-        || revision.content.verify_date < note.trade_date)) fail();
+        || revision.content.verify_date < trade_date)) fail();
     revisionById.set(revision.revision_id, revision);
     revisionCountByNote.set(revision.note_id, (revisionCountByNote.get(revision.note_id) ?? 0) + 1);
     maxRevisionByNote.set(
@@ -250,19 +268,45 @@ export function parseReviewBackup(input: string | unknown): ReviewBackup {
   }
   for (const verification of verifications) {
     const revision = revisionById.get(verification.revision_id);
+    if (!revision) fail();
     if (!noteById.has(verification.note_id) || revision?.note_id !== verification.note_id
-      || revision.state !== 'confirmed') fail();
+      || revision!.state !== 'confirmed') fail();
     if (verification.outcome === 'not_due') {
       if (verification.snapshot_id !== null) fail();
     } else if (!verification.evidence.trim() || verification.snapshot_id === null) fail();
+    if (verification.context !== undefined || verification.fact_interval !== undefined) {
+      const note = noteById.get(verification.note_id)!;
+      try {
+        validateVerificationFacts(verification, {
+          trade_date: Object.hasOwn(revision!, 'trade_date') ? revision!.trade_date! : note.trade_date,
+          security_id: Object.hasOwn(revision!, 'security_id') ? revision!.security_id! : note.security_id,
+          content: stored(revision!.content),
+        }, false, true);
+      } catch { fail(); }
+    }
   }
   const verificationById = new Map(verifications.map(row => [row.verification_id, row]));
   if (verificationById.size !== verifications.length) fail();
+  const children = new Set<string>();
+  const roots = new Set<string>();
   for (const verification of verifications) {
+    if (verification.supersedes === null) {
+      const key = verification.revision_id;
+      if (roots.has(key)) fail();
+      roots.add(key);
+    }
     if (verification.supersedes === null) continue;
     const prior = verificationById.get(verification.supersedes);
     if (!prior || prior.note_id !== verification.note_id
-      || prior.revision_id !== verification.revision_id) fail();
+      || prior.revision_id !== verification.revision_id || children.has(prior.verification_id)) fail();
+    children.add(prior!.verification_id);
+    const seen = new Set<string>([verification.verification_id]);
+    let cursor: BackupVerification | undefined = prior;
+    while (cursor) {
+      if (seen.has(cursor.verification_id)) fail();
+      seen.add(cursor.verification_id);
+      cursor = cursor.supersedes === null ? undefined : verificationById.get(cursor.supersedes);
+    }
   }
   return normalized;
 }
@@ -381,7 +425,10 @@ export async function planReviewImport(
     let latest: LocalNote | undefined;
     for (const row of incoming) {
       const content = stored(row.content);
-      const content_hash = await noteHash(note.snapshot_id, content);
+      const snapshot_id = Object.hasOwn(row, 'snapshot_id') ? row.snapshot_id! : note.snapshot_id;
+      const trade_date = Object.hasOwn(row, 'trade_date') ? row.trade_date! : note.trade_date;
+      const security_id = Object.hasOwn(row, 'security_id') ? row.security_id! : note.security_id;
+      const content_hash = await noteHash(snapshot_id, content);
       const identity = provenanceIdentity({
         backup_id: `source:${source_backup_id}`,
         note_id: note.note_id, revision: row.revision, revision_id: row.revision_id,
@@ -392,7 +439,8 @@ export async function planReviewImport(
       });
       const duplicate = identities.get(identity) ?? identities.get(legacyIdentity);
       if (duplicate !== undefined) {
-        if (duplicate.content_hash !== content_hash || (duplicate.state ?? 'draft') !== row.state) {
+        if (duplicate.content_hash !== content_hash || (duplicate.state ?? 'draft') !== row.state
+          || duplicate.trade_date !== trade_date || duplicate.security_id !== security_id) {
           result.unresolved_conflicts.push(`revision:${row.revision_id}`);
           continue;
         }
@@ -403,8 +451,8 @@ export async function planReviewImport(
       }
       nextRevision += 1;
       const imported: LocalNote = {
-        note_id: target, local_profile_id: state.profile, snapshot_id: note.snapshot_id,
-        trade_date: note.trade_date, security_id: note.security_id,
+        note_id: target, local_profile_id: state.profile, snapshot_id,
+        trade_date, security_id,
         source_backup_id, source_backup_hash: backup_hash,
         source_note_id: note.note_id, source_revision: row.revision,
         source_revision_id: row.revision_id, state: row.state,
@@ -437,11 +485,13 @@ export async function planReviewImport(
       verification_id: row.verification_id, snapshot_id: row.snapshot_id,
       outcome: row.outcome, evidence: row.evidence, supersedes: row.supersedes,
       created_at: row.created_at,
+      ...(row.context === undefined ? {} : { context: row.context }),
+      ...(row.fact_interval === undefined ? {} : { fact_interval: row.fact_interval }),
     };
     const current = existingVerifications.get(key);
     if (current) {
       const comparable = ({ local_profile_id: _profile, ...value }: LocalVerification) => value;
-      if (JSON.stringify(comparable(current)) === JSON.stringify(comparable(imported))) result.duplicates += 1;
+      if (localValueSignature(comparable(current)) === localValueSignature(comparable(imported))) result.duplicates += 1;
       else result.unresolved_conflicts.push(`verification:${row.verification_id}`);
       continue;
     }
@@ -456,6 +506,7 @@ export async function planReviewImport(
         && current.snapshot_id === row.snapshot_id
         && current.active === row.active && current.revision === row.revision
         && current.added_at === row.added_at
+        && JSON.stringify(current.context) === JSON.stringify(row.context)
         && (current.updated_at ?? current.added_at) === row.updated_at) result.duplicates += 1;
       else result.unresolved_conflicts.push(`watch:${row.security_id}`);
       continue;
@@ -464,8 +515,11 @@ export async function planReviewImport(
       local_profile_id: state.profile, security_id: row.security_id, snapshot_id: row.snapshot_id,
       active: row.active, added_at: row.added_at, revision: row.revision,
       watch_id: row.watch_id, updated_at: row.updated_at,
+      ...(row.context === undefined ? {} : { context: row.context }),
     });
   }
   result.added.watchlist = result.watchlist.length;
+  try { validateVerificationChain([...state.verifications, ...result.verifications]); }
+  catch { result.unresolved_conflicts.push('verification-chain'); }
   return immutable(result);
 }

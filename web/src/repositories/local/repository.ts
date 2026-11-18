@@ -1,4 +1,16 @@
 import { createSimulationStores } from './simulation';
+import type { ResetKlineData } from '../../types';
+import { localValueSignature, validateVerificationChain, validateVerificationFacts, validateWatchContext } from './verification-validation';
+
+export interface WatchContext {
+  trade_date: string | null; security_name: string | null;
+  sector_id: string | null; sector_name: string | null;
+}
+export interface VerificationContext {
+  requested_start: string; requested_end: string; adjusted_start: string; adjusted_end: string;
+  trade_date: string; as_of: string; source: string; source_version: string; rule_version: string;
+  published_at?: string; publication_revision?: number; calendar_sessions?: string[];
+}
 
 export interface NoteContent {
   title: string; content: string; judgment: string; evidence: string;
@@ -25,11 +37,20 @@ export interface LocalWatch {
   security_id: string; local_profile_id: string; snapshot_id: string;
   active: boolean; added_at: string; revision: number;
   watch_id?: string; updated_at?: string;
+  context?: WatchContext;
 }
 export interface LocalVerification {
   verification_id: string; local_profile_id: string; note_id: string; revision: number;
   snapshot_id: string | null; outcome: 'supported' | 'weakened' | 'refuted' | 'not_due';
   evidence: string; supersedes: string | null; created_at: string;
+  context?: VerificationContext | null;
+  fact_interval?: ResetKlineData | null;
+}
+export interface SaveVerification {
+  verification_id: string; note_id: string; revision: number; key: string;
+  snapshot_id: string | null; outcome: LocalVerification['outcome'];
+  evidence: string; supersedes: string | null;
+  context: VerificationContext | null; fact_interval: ResetKlineData | null;
 }
 export interface LocalBackupState {
   profile: string;
@@ -50,8 +71,9 @@ export interface LocalImportPlan extends LocalImportWrites {
 export interface SaveNote {
   note_id: string; expected_revision: number; key: string; snapshot_id: string;
   trade_date?: string | null; security_id?: string | null; content: NoteContent;
+  state?: 'draft' | 'confirmed';
 }
-interface Command { key: string; payload: string; result: LocalNote | LocalWatch }
+interface Command { key: string; payload: string; result: LocalNote | LocalWatch | LocalVerification }
 
 function request<T>(value: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -288,7 +310,9 @@ export class LocalRepository {
     return values.filter(n => n.local_profile_id === profile && n.note_id === note_id).sort((a, b) => b.revision - a.revision);
   }
   async putNote(input: SaveNote): Promise<LocalNote> {
+    input = structuredClone(input);
     validContent(input.content);
+    if (input.state !== undefined && !['draft', 'confirmed'].includes(input.state)) throw new Error('笔记状态无效');
     if (!input.snapshot_id.trim()) throw new Error('笔记必须绑定已选择的快照');
     if (input.trade_date && (!/^\d{4}-\d{2}-\d{2}$/.test(input.trade_date)
       || new Date(`${input.trade_date}T00:00:00Z`).toISOString().slice(0, 10) !== input.trade_date)) {
@@ -302,7 +326,7 @@ export class LocalRepository {
     const content_hash = await digest(canonical);
     const payload = await digest(JSON.stringify([
       'putNote', input.note_id, input.expected_revision, input.key, input.trade_date ?? null,
-      input.security_id ?? null, canonical,
+      input.security_id ?? null, canonical, ...(input.state === 'confirmed' ? ['confirmed'] : []),
     ]));
     const profile = await this.profile(), db = await this.db();
     const tx = db.transaction(['notes', 'note_revisions', 'commands'], 'readwrite');
@@ -320,12 +344,19 @@ export class LocalRepository {
       } else {
         const current = await request(tx.objectStore('notes').get([profile, input.note_id])) as LocalNote | undefined;
         if ((current?.revision ?? 0) !== input.expected_revision) throw new Error('版本冲突：另一标签已修改，当前输入已保留，请对照或另存');
+        const tradeDate = input.trade_date ?? current?.trade_date ?? null;
+        if (input.state === 'confirmed' && (!tradeDate || !normalized.judgment?.trim()
+          || !normalized.evidence?.trim() || !normalized.invalid_condition?.trim()
+          || !normalized.verify_date || normalized.verify_date < tradeDate)) {
+          throw new Error('确认需要交易日期、判断、依据、失效条件及有效验证日期');
+        }
         result = {
           note_id: input.note_id, local_profile_id: profile, snapshot_id: input.snapshot_id,
           trade_date: input.trade_date ?? current?.trade_date ?? null,
           security_id: input.security_id ?? current?.security_id ?? null, content: normalized,
           revision: input.expected_revision + 1, content_hash,
           idempotency_key: input.key, updated_at: new Date().toISOString(),
+          state: input.state ?? 'draft',
         };
         tx.objectStore('notes').put(result);
         tx.objectStore('note_revisions').put(result);
@@ -360,6 +391,70 @@ export class LocalRepository {
     return values
       .filter(row => row.local_profile_id === profile && (!note_id || row.note_id === note_id))
       .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.verification_id.localeCompare(b.verification_id));
+  }
+  async putVerification(input: SaveVerification): Promise<LocalVerification & { current_verification_id?: string }> {
+    input = structuredClone(input);
+    if (![input.verification_id, input.note_id, input.key].every(id => typeof id === 'string' && id.trim() && id.length <= 200)
+      || !Number.isSafeInteger(input.revision) || input.revision < 1
+      || !['supported', 'weakened', 'refuted', 'not_due'].includes(input.outcome)
+      || typeof input.evidence !== 'string' || input.evidence.length > 20000
+      || (input.supersedes !== null && (typeof input.supersedes !== 'string' || !input.supersedes.trim()))) {
+      throw new Error('验证参数无效');
+    }
+    const payload = await digest(localValueSignature([
+      'putVerification', input.verification_id, input.note_id, input.revision, input.snapshot_id,
+      input.outcome, input.evidence, input.supersedes, input.context, input.fact_interval,
+    ]));
+    const profile = await this.profile(), db = await this.db();
+    const tx = db.transaction(['note_revisions', 'verification_records', 'commands'], 'readwrite');
+    const done = completion(tx);
+    let result: LocalVerification;
+    let replayed = false;
+    try {
+      const commands = tx.objectStore('commands'), store = tx.objectStore('verification_records');
+      const commandKey = `verification:${input.key}`;
+      const previous = await request(commands.get([profile, commandKey])) as Command | undefined;
+      if (previous) {
+        if (previous.payload !== payload) throw new Error('幂等键已用于不同验证内容');
+        result = previous.result as LocalVerification;
+        replayed = true;
+      } else {
+        const original = await request(tx.objectStore('note_revisions').get([profile, input.note_id, input.revision])) as LocalNote | undefined;
+        if (!original || original.state !== 'confirmed') throw new Error('验证必须引用原始已确认修订');
+        validateVerificationFacts(input, original, true);
+        const rows = (await request(store.getAll()) as LocalVerification[]).filter(row => row.local_profile_id === profile);
+        if (rows.some(row => row.verification_id === input.verification_id)) throw new Error('验证标识冲突');
+        const same = rows.filter(row => row.note_id === input.note_id && row.revision === input.revision);
+        const superseded = new Set(same.map(row => row.supersedes));
+        const heads = same.filter(row => !superseded.has(row.verification_id));
+        if (input.supersedes === null ? same.length > 0
+          : heads.length !== 1 || heads[0].verification_id !== input.supersedes) {
+          throw new Error('验证修正版本冲突，请重新读取并确认当前记录');
+        }
+        result = {
+          local_profile_id: profile, verification_id: input.verification_id, note_id: input.note_id,
+          revision: input.revision, snapshot_id: input.snapshot_id, outcome: input.outcome,
+          evidence: input.evidence, supersedes: input.supersedes, context: input.context,
+          fact_interval: input.fact_interval, created_at: new Date().toISOString(),
+        };
+        store.put(result);
+        commands.put({ local_profile_id: profile, key: commandKey, payload, result });
+      }
+      await done;
+    } catch (error) {
+      try { tx.abort(); } catch { /* already finished */ }
+      await done.catch(() => {});
+      throw error;
+    }
+    const rows = await this.listVerifications(input.note_id);
+    const readback = rows.find(row => row.verification_id === result.verification_id);
+    if (JSON.stringify(readback) !== JSON.stringify(result)) throw new Error('验证回读不匹配，当前输入已保留');
+    if (!replayed) this.changed('verification_records', input.note_id, input.revision);
+    const same = rows.filter(row => row.revision === input.revision);
+    const superseded = new Set(same.map(row => row.supersedes));
+    const head = same.find(row => !superseded.has(row.verification_id));
+    return replayed && head && head.verification_id !== result.verification_id
+      ? { ...result, current_verification_id: head.verification_id } : result;
   }
   async backupState(): Promise<LocalBackupState> {
     const profile = await this.profile();
@@ -404,6 +499,7 @@ export class LocalRepository {
       if (stateSignature(actual) !== stateSignature(writes.expected_state)) {
         throw new Error('导入预览已过期，请重新预览');
       }
+      validateVerificationChain([...actual.verifications, ...writes.verifications]);
       for (const note of writes.notes) tx.objectStore('notes').put(note);
       for (const revision of writes.revisions) tx.objectStore('note_revisions').add(revision);
       for (const verification of writes.verifications) tx.objectStore('verification_records').add(verification);
@@ -419,9 +515,10 @@ export class LocalRepository {
       this.changed('backup', 'import', writes.revisions.length);
     }
   }
-  async putWatchlist(security_id: string, action: 'add' | 'remove', key: string, snapshot_id: string): Promise<LocalWatch> {
+  async putWatchlist(security_id: string, action: 'add' | 'remove', key: string, snapshot_id: string, context?: WatchContext): Promise<LocalWatch> {
     if (!security_id.trim() || security_id.length > 200 || !key || !['add', 'remove'].includes(action)) throw new Error('自选参数无效');
-    const payload = await digest(JSON.stringify(['putWatchlist', security_id, action, snapshot_id]));
+    context = context === undefined ? undefined : validateWatchContext(context);
+    const payload = await digest(JSON.stringify(['putWatchlist', security_id, action, snapshot_id, ...(context === undefined ? [] : [context])]));
     const profile = await this.profile(), db = await this.db();
     const tx = db.transaction(['watchlist', 'commands'], 'readwrite'), done = completion(tx);
     let result: LocalWatch;
@@ -434,12 +531,15 @@ export class LocalRepository {
       } else {
         const store = tx.objectStore('watchlist');
         const current = await request(store.get([profile, security_id])) as LocalWatch | undefined;
+        if (!current && !snapshot_id.trim()) throw new Error('自选必须绑定原始发布');
         const active = action === 'add';
         const now = new Date().toISOString();
         result = current?.active === active ? normalizeWatch(current) : normalizeWatch({
-          security_id, local_profile_id: profile, snapshot_id: current?.snapshot_id || snapshot_id,
+          security_id, local_profile_id: profile, snapshot_id: current ? current.snapshot_id : snapshot_id,
           active, added_at: current?.added_at ?? now, revision: (current?.revision ?? 0) + 1,
           watch_id: current?.watch_id ?? `local:${security_id}`, updated_at: now,
+          ...(current ? current.context === undefined ? {} : { context: current.context }
+            : context === undefined ? {} : { context }),
         });
         if (result !== current) store.put(result);
         tx.objectStore('commands').put({ local_profile_id: profile, key: commandKey, payload, result });

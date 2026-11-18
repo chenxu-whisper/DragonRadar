@@ -111,6 +111,18 @@ export interface ResetSector {
   net_inflow: number | null; net_inflow_reason: string | null; quality_flags: string[];
   coverage: WorkbenchCoverage;
 }
+export interface ResetTopicDetail {
+  sector: ResetSector;
+  topic_basis: {
+    source: string | null; source_version: string | null; as_of: string | null;
+    source_time: string | null; cutoff: string; market_snapshot_id: string;
+    topic_snapshot_id: string; taxonomy_version: string; membership_version: string;
+  };
+  definition: { effective_from: string; effective_to: string | null; available_at: string; source_reference: string | null };
+  membership_coverage: { expected: number | null; received: number | null; known: number; status: 'complete' | 'unavailable'; reason: string | null; complete_as_of: string | null };
+  members: { security_id: string; code: string | null; name: string | null; effective_from: string; effective_to: string | null; available_at: string; evidence_refs: string[] }[];
+  total: number; page: number; size: number;
+}
 export interface ResetFactors {
   'FAC-M01': {
     advancing: ResetRatio & { coverage: WorkbenchCoverage };

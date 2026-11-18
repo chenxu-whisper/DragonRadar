@@ -1,5 +1,0 @@
-
-> dragon-radar-workbench@0.1.0 check:bundle
-> node scripts/check-default-bundle.mjs
-
-{"entry":"assets/index-CUZ2Izy9.js","entryBytes":319955,"staticAssets":["assets/chart-components-CP1apSyz.js","assets/chart-core-Ba1ELoJU.js","assets/chart-renderer-Ck-JmM3B.js","assets/index-2VxYUqzU.css","assets/index-CUZ2Izy9.js","assets/jsx-runtime-jO97T933.js","assets/preload-helper-Czpn1I53.js","assets/types-scdfKitW.js"]}

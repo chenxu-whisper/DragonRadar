@@ -124,4 +124,13 @@ test('stock drawer adds a local watch and opens a bound review', async ({ page }
   await expect(page).toHaveURL(/security=TEST001/);
   await expect(page.getByTestId('local-watchlist')).toContainText('TEST001');
   await expect(page.getByLabel('证券代码', { exact: true })).toHaveValue('TEST001');
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('市场下钻判断');
+  await page.getByRole('textbox', { name: '正文', exact: true }).fill('保留原快照和筛选');
+  await page.getByRole('button', { name: '保存笔记', exact: true }).click();
+  await expect(page.locator('.local-note-editor').getByRole('status')).toContainText('回读验证通过');
+  await page.getByRole('link', { name: '返回市场总览', exact: true }).click();
+  await expect(page).toHaveURL(/view=overview/);
+  await expect(page).toHaveURL(/q=TEST001/);
+  await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
+  await expect(page.getByRole('region', { name: '证券筛选结果' })).toContainText('合成测试证券1');
 });

@@ -22,6 +22,7 @@ from dragon_radar.http.routes.realtime import router as realtime_router
 from dragon_radar.http.routes.regulation import router as regulation_router
 from dragon_radar.http.routes.roles import router as roles_router
 from dragon_radar.http.routes.stock import router as stock_router
+from dragon_radar.http.routes.topics import router as topics_router
 from dragon_radar.http.selection import (
     query_date,
     query_integer,
@@ -153,6 +154,7 @@ def create_workbench_app(
     app.include_router(news_router)
     app.include_router(regulation_router)
     app.include_router(roles_router)
+    app.include_router(topics_router)
     app.include_router(stock_router)
     app.include_router(analysis_router)
     app.include_router(realtime_router)

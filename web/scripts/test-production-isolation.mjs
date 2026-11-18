@@ -11,19 +11,24 @@ import {
   RESEARCH_OWNER_WRITE_PROBES,
   RESEARCH_PUBLIC_DENY_PROBES,
   composeChildEnvironment,
+  productionOwnerOverride,
   queryPublishedPort,
+  selectPublicEdgeSubnet,
 } from './production-isolation-support.mjs';
+import { composeOverride } from './reset-contract-runtime-support.mjs';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(webRoot, '..');
 const runId = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
-const state = resolve(root, '.temp', 'production-isolation', runId);
+const state = resolve(root, '..', '.temp', 'production-isolation', runId);
 const password = randomBytes(24).toString('hex');
-const privateProject = `dragon-radar-private-e2e-${runId}`;
-const publicProject = `dragon-radar-public-e2e-${runId}`;
+const project = `dragon-radar-isolation-e2e-${runId}`;
 const envFile = resolve(state, 'compose.env');
 const authorityFile = resolve(state, 'authority');
 const pairFile = resolve(state, 'pair.txt');
+const networkOverrideFile = resolve(state, 'compose.network.yaml');
+const ownerOverrideFile = resolve(state, 'compose.owner.yaml');
+const files = ['compose.yaml', networkOverrideFile, ownerOverrideFile];
 let browser;
 
 function run(command, args, options = {}) {
@@ -31,6 +36,7 @@ function run(command, args, options = {}) {
     cwd: root,
     encoding: 'utf8',
     timeout: options.timeout ?? 600_000,
+    maxBuffer: 32 * 1024 * 1024,
     env: composeChildEnvironment({ ...process.env, ...options.env }),
   });
   if (result.error) throw result.error;
@@ -44,7 +50,7 @@ function run(command, args, options = {}) {
   return result.stdout;
 }
 
-function compose(project, files, ...args) {
+function compose(...args) {
   return run('docker', [
     'compose',
     '--project-name', project,
@@ -55,29 +61,34 @@ function compose(project, files, ...args) {
   ]);
 }
 
-function writeEnvironment(privatePort, publishedPort = 0) {
+function writeEnvironment(ownerPort) {
   writeFileSync(
     envFile,
     [
       `DRAGON_DB_PASSWORD=${password}`,
-      `DRAGON_PRIVATE_PORT=${privatePort}`,
-      `DRAGON_PRIVATE_PUBLISHED_PORT=${publishedPort}`,
-      'DRAGON_WEB_PORT=0',
-      `DRAGON_E2E_STATE_DIR=${state.replaceAll('\\', '/')}`,
+      `DRAGON_OWNER_PORT=${ownerPort}`,
+      'DRAGON_PUBLIC_PORT=0',
+      'DRAGON_PUBLIC_BIND=127.0.0.1',
+      `DRAGON_OWNER_SECRETS_DIR=${resolve(state, 'owner-secrets').replaceAll('\\', '/')}`,
       '',
     ].join('\n'),
     { encoding: 'utf8', mode: 0o600 },
   );
 }
 
-async function withStack(project, files, action) {
+async function withStack(action) {
+  let primaryError;
   try {
     return await action();
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     try {
-      compose(project, files, 'down', '--volumes', '--remove-orphans', '--timeout', '10');
+      compose('down', '--volumes', '--remove-orphans', '--timeout', '10');
     } catch (error) {
-      console.error(`Cleanup failed for ${project}: ${error.message}`);
+      if (primaryError) throw new AggregateError([primaryError, error], `Drill and cleanup failed for ${project}`);
+      throw error;
     }
   }
 }
@@ -103,39 +114,16 @@ async function launchPage(baseURL) {
   return { context, page };
 }
 
-async function testPrivate() {
-  const files = [
-    'compose.yaml',
-    'compose.private.yaml',
-    'web/scripts/compose.production-isolation.yaml',
-  ];
-  return withStack(privateProject, files, async () => {
-    compose(privateProject, files, 'build', 'api', 'web');
-    compose(privateProject, files, 'up', '-d', '--no-deps', 'web');
-    const port = queryPublishedPort(
-      (...args) => compose(privateProject, files, ...args),
-      'web',
-      8443,
-    );
-    writeEnvironment(port, port);
-    writeFileSync(authorityFile, `localhost:${port}\n`, 'utf8');
-
-    compose(privateProject, files, 'up', '-d', '--wait', 'db');
-    compose(privateProject, files, 'run', '--rm', 'api', 'migrate');
-    compose(privateProject, files, 'run', '--rm', 'api', 'owner-init');
-    compose(privateProject, files, 'up', '-d', '--wait', '--no-recreate', 'api');
-
+async function testPrivate(port) {
     const { context, page } = await launchPage(`https://localhost:${port}`);
     try {
       await page.goto('/');
       await page.getByRole('heading', { name: '私人会话已锁定' }).waitFor();
 
       compose(
-        privateProject,
-        files,
         'exec',
         '-T',
-        'api',
+        'owner-api',
         'dragon-radar',
         'owner-pair',
         '--origin',
@@ -143,8 +131,8 @@ async function testPrivate() {
         '--output',
         '/tmp/task18-pair.txt',
       );
-      compose(privateProject, files, 'cp', 'api:/tmp/task18-pair.txt', pairFile);
-      compose(privateProject, files, 'exec', '-T', 'api', 'rm', '-f', '/tmp/task18-pair.txt');
+      compose('cp', 'owner-api:/tmp/task18-pair.txt', pairFile);
+      compose('exec', '-T', 'owner-api', 'rm', '-f', '/tmp/task18-pair.txt');
       const code = readFileSync(pairFile, 'utf8').trim();
       rmSync(pairFile, { force: true });
       assert(code.length > 0, 'Pairing code was empty');
@@ -209,23 +197,9 @@ async function testPrivate() {
     } finally {
       await context.close();
     }
-    return port;
-  });
 }
 
-async function testPublic() {
-  const files = ['compose.yaml', 'compose.workbench.yaml'];
-  return withStack(publicProject, files, async () => {
-    compose(publicProject, files, 'build', 'api', 'web');
-    compose(publicProject, files, 'up', '-d', '--wait', 'db');
-    compose(publicProject, files, 'run', '--rm', 'api', 'migrate');
-    compose(publicProject, files, 'up', '-d', '--wait', 'web');
-    const port = queryPublishedPort(
-      (...args) => compose(publicProject, files, ...args),
-      'web',
-      8080,
-    );
-
+async function testPublic(port) {
     const { context, page } = await launchPage(`http://127.0.0.1:${port}`);
     try {
       await page.goto('/');
@@ -235,8 +209,8 @@ async function testPublic() {
       for (const [path, options, expected] of [
         ['/api/ai/task/00000000-0000-4000-8000-000000000099', undefined, 404],
         ['/api/owner/v1/session', undefined, 404],
-        ['/api/ai/daily-review', { method: 'POST' }, 405],
-        ['/api/owner/v1/pair', { method: 'POST' }, 405],
+        ['/api/ai/daily-review', { method: 'POST' }, 403],
+        ['/api/owner/v1/pair', { method: 'POST' }, 403],
       ]) {
         const denied = await request(page, path, options);
         assert(
@@ -245,7 +219,7 @@ async function testPublic() {
         );
       }
       // Task 17: the read-only edge denies the whole research namespace. GETs
-      // hit the empty private-namespace 404; POSTs stop at the method 405 guard.
+      // hit the empty private-namespace 404; POSTs stop at the method 403 guard.
       for (const path of RESEARCH_PUBLIC_DENY_PROBES) {
         const denied = await request(page, path);
         assert(
@@ -256,16 +230,14 @@ async function testPublic() {
       for (const { method, path } of RESEARCH_OWNER_WRITE_PROBES) {
         const denied = await request(page, path, { method });
         assert(
-          denied.status === 405 && denied.body === '',
+          denied.status === 403 && denied.body === '',
           `Public Caddy allowed research write ${path} past the method guard: ${denied.status} ${denied.body}`,
         );
       }
       compose(
-        publicProject,
-        files,
         'exec',
         '-T',
-        'web',
+        'public-caddy',
         'sh',
         '-ec',
         "if grep -R -E '仅限本机所有者会话|私人会话已锁定|/api/ai/|/api/research|仅研究模拟' /srv; then exit 1; fi; "
@@ -274,22 +246,35 @@ async function testPublic() {
     } finally {
       await context.close();
     }
-    return port;
-  });
 }
 
-mkdirSync(state, { recursive: true });
-writeEnvironment(1);
-
 try {
+  mkdirSync(resolve(state, 'owner-secrets'), { recursive: true });
   run('docker', ['version'], { timeout: 30_000 });
-  const privatePort = await testPrivate();
-  const publicPort = await testPublic();
-  console.log(JSON.stringify({
-    private: `https://localhost:${privatePort}`,
-    public: `http://127.0.0.1:${publicPort}`,
-    status: 'passed',
-  }));
+  writeEnvironment(1);
+  writeFileSync(networkOverrideFile, composeOverride({ publicEdgeSubnet: selectPublicEdgeSubnet(run) }), 'utf8');
+  writeFileSync(ownerOverrideFile, productionOwnerOverride({ state }), 'utf8');
+  await withStack(async () => {
+    compose('config', '--quiet');
+    compose('build');
+    compose('up', '--detach', '--wait', 'db');
+    compose('run', '--rm', 'public-api', 'migrate');
+    // Start the gateway before its authority exists so Docker allocates the port.
+    compose('up', '--detach', '--no-deps', 'owner-caddy');
+    const privatePort = queryPublishedPort(compose, 'owner-caddy', 8443);
+    writeEnvironment(privatePort);
+    writeFileSync(authorityFile, `localhost:${privatePort}\n`, 'utf8');
+    compose('run', '--rm', 'owner-api', 'owner-init');
+    compose('up', '--detach', '--wait', '--no-recreate');
+    const publicPort = queryPublishedPort(compose, 'public-caddy', 8080);
+    await testPrivate(privatePort);
+    await testPublic(publicPort);
+    console.log(JSON.stringify({
+      private: `https://localhost:${privatePort}`,
+      public: `http://127.0.0.1:${publicPort}`,
+      status: 'passed',
+    }));
+  });
 } finally {
   if (browser) await browser.close();
   rmSync(state, { recursive: true, force: true });

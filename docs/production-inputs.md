@@ -1,7 +1,6 @@
 # P1 Production Input Contract
 
-Approved basis: root `docs/production-readiness-unblocking-design.md` and
-`docs/production-readiness-implementation-plan.md`, P1. This contract implements
+This document retains the approved P1 production input boundary. It implements
 the local input/compute seam, not production approval or release permission.
 Real `data/suppliers.json` and `docs/proofs/` are still external prerequisites.
 Nothing in this implementation creates a supplier, grant, signature or proof.

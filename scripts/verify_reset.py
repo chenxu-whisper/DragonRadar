@@ -72,8 +72,8 @@ PERFORMANCE_ARTIFACT = ROOT / ".temp" / "acceptance" / "reset-performance.json"
 # subprocess environments.
 PERF_ISOLATION_ENV = "DRAGON_TASK20_PERF_ISOLATION"
 TASK20_COMPOSE_PROJECT_ENV = "DRAGON_TASK20_COMPOSE_PROJECT"
-TASK20_STACK_ENV_FILE = ROOT / ".temp" / "task20-private-tls" / "compose.env"
-TASK20_COMPOSE_FILES = ("compose.yaml", "compose.private.yaml")
+TASK20_STACK_ENV_FILE = ROOT / ".temp" / "acceptance-stack" / "compose.env"
+TASK20_COMPOSE_FILES = ("compose.yaml",)
 PERF_ISOLATION_ACTIVE = frozenset({"1", "true", "yes", "on"})
 # Allowlisted commands marked suspend_private_stack run with the private
 # compose stack fully stopped on the Task20 runner: the P95 measurement
@@ -508,6 +508,21 @@ class PrivateStackIsolation:
 
     def _run(self, label: str, action: tuple[str, ...], timeout_seconds: int) -> None:
         argv = self._compose_argv(*action)
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(
+                (
+                    "COMPOSE_",
+                    "DRAGON_AI_",
+                    "DRAGON_OWNER_",
+                    "DRAGON_PUBLIC_",
+                    "DRAGON_PRIVATE_",
+                )
+            )
+            and key
+            not in {"DRAGON_DB_PASSWORD", "DRAGON_WEB_PORT", "DRAGON_E2E_STATE_DIR"}
+        }
         print(
             f"[stack-isolation] {label} private stack '{self._project}'",
             file=sys.stderr,
@@ -517,7 +532,7 @@ class PrivateStackIsolation:
             result = self._invoke(
                 argv,
                 cwd=ROOT,
-                env=os.environ.copy(),
+                env=environment,
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as error:
@@ -542,7 +557,7 @@ class PrivateStackIsolation:
     def resume(self) -> None:
         self._run(
             "resuming",
-            ("up", "--detach", "--wait", "web", "api"),
+            ("up", "--detach", "--wait"),
             self._resume_timeout,
         )
 
@@ -565,7 +580,7 @@ def _performance_isolation(
     if not TASK20_STACK_ENV_FILE.is_file():
         raise RuntimeError(
             f"{PERF_ISOLATION_ENV} is enabled but compose state is missing "
-            f"({TASK20_STACK_ENV_FILE}); run task20-private-tls.sh "
+            f"({TASK20_STACK_ENV_FILE}); run acceptance-stack.sh "
             "build/setup before the verifier."
         )
     return PrivateStackIsolation(

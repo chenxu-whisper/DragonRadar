@@ -82,8 +82,8 @@ real_input、official_rules、real_model_evaluation、
 public_sharing_permit、shadow_run_20_trading_days。
 当前索引为空；不要添加指向不存在文件的占位条目。
 
-完整签名和材料 schema 见实现工作树的
-`docs/production-evidence.md`、`docs/production-inputs.md`。
+完整签名和材料 schema 见
+[独立证明契约](../production-evidence.md)、[生产输入契约](../production-inputs.md)。
 签名 JSON 必须 UTF-8、无 BOM、无尾换行，使用
 `json.dumps(sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)`。
 算法固定 RSA-PSS / SHA256 / MGF1-SHA256 / 32-byte salt。
@@ -92,7 +92,7 @@ public_sharing_permit、shadow_run_20_trading_days。
 ## 受保护文件与外部信任
 
 现有入口已按项目私有文件规范设置权限。后续导入/编辑配置、材料或签名后，
-使用实现工作树的 `scripts/private-common.ps1` 中
+使用项目根目录的 `scripts/private-common.ps1` 中
 `Set-PrivateFileAcl`，再运行 `Assert-PrivateFile`；
 新增资产目录使用 `Initialize-PrivateDirectory`。
 不要为既有工作区父目录批量改权限。
@@ -119,7 +119,7 @@ schema 为 `dragon-radar-production-trust/v1`，
 $codeRoot = 'E:\ByteDance\Projects\Code\DragonRadar'
 & "$codeRoot\.venv\Scripts\python.exe" "$codeRoot\scripts\verify_production.py" `
     --workspace 'E:\ByteDance\Projects\Code\DragonRadar' `
-    --output 'E:\ByteDance\Projects\Code\DragonRadar\docs\production-readiness-status.json'
+    --output 'E:\ByteDance\Projects\Code\DragonRadar\.temp\production-readiness-status.json'
 ```
 
 真实材料就绪后，在该命令中加入：

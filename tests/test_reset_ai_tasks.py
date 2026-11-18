@@ -2552,6 +2552,7 @@ async def test_ai_routes_are_owner_only_csrf_protected_and_sanitized(ai_setup):
         "/api/ai/explain-stock",
         "/api/ai/daily-review",
         "/api/ai/task/{task_id}",
+        "/api/ai/task/{task_id}/evidence/{evidence_id}",
         "/api/ai/task/{task_id}/cancel",
         "/api/ai/task/{task_id}/review",
     }
@@ -2873,7 +2874,7 @@ def test_ai_worker_cli_is_bounded_and_compose_is_internal():
     worker = json.loads(result.stdout)["services"]["ai-worker"]
     assert worker["command"][0] == "ai-worker"
     assert worker["depends_on"]["db"]["condition"] == "service_healthy"
-    assert set(worker["networks"]) == {"backend"}
+    assert set(worker["networks"]) == {"worker-data"}
     assert "ports" not in worker
     assert all("TOKEN" not in item for item in worker["command"])
     command = worker["command"]

@@ -36,17 +36,21 @@ SBOM（软件物料清单）进行。
 
 构建时的网络访问仅涉及配置的软件包与镜像仓库。
 运行时尚未接入数据供应商、AI、分析遥测或公网隧道。
-基础 Compose 后端网络为内部网络；测试不会读取供应商凭据或用户已有的 `.env`，
-这些文件也不会进入镜像。开发叠加配置为 Docker Desktop 端口转发增加了非内部 API 网络，
-这并不构成出站防火墙；数据库仍保留在内部网络。
+根目录唯一 `compose.yaml` 管理 Reset 七个服务，数据库与 worker 数据网络为内部网络；
+测试不会读取供应商凭据或用户已有的 `.env`，这些文件也不会进入镜像。
+公开与所有者网关分别使用 edge 网络，只发布回环入口；API 不直接发布宿主端口。
+该隔离不等于出站防火墙或公网部署许可，当前启动方式见
+[Reset 运行指南](reset-running.md)。
 
 ## 第二批前端依赖
 
 2026-09-10 对 npm 包元数据进行了查询。React／Vite／decimal.js 使用 MIT，
 lucide-react 使用 ISC，ECharts 使用 Apache-2.0。前端确切安装版本以
 `web/package-lock.json` 为准；图表库只负责绘图，金融计算仍由后端完成。
-构建所用 Node 22 与 Caddy 2.10 镜像通过 digest 固定在
-`deploy/workbench.Dockerfile`。Playwright 仅用于浏览器测试，不进入生产页面。
+当前公开与所有者前端构建分别使用 `containers/public.Dockerfile` 和
+`containers/owner.Dockerfile`；网关配置分别为 `containers/public.Caddyfile`
+和 `containers/owner.Caddyfile`。构建所用 Node 与 Caddy 镜像版本及 digest
+以这两个 Dockerfile 为准。Playwright 仅用于浏览器测试，不进入生产页面。
 
 前端运行时仅同源读取 `/api/`，不访问供应商、AI 或外部图片服务。
 依赖的许可证与 NOTICE 应随分发保留；本记录不替代漏洞扫描及发布前的传递依赖审查。

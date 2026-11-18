@@ -23,6 +23,7 @@ from dragon_radar.http.selection import (
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.publication.models import PublishedSnapshot
+from dragon_radar.readmodels.stock import _seal
 from dragon_radar.roles.adapters import adapt_role_evaluation
 from dragon_radar.roles.models import (
     RankedCandidate,
@@ -81,7 +82,9 @@ def _select_publication(request, trade_date, snapshot_id):
 
 
 def _role_payload(snapshot: PublishedSnapshot):
-    result = snapshot.result("role")
+    result = next((item for item in snapshot.results if item.domain == "role"), None)
+    if result is None:
+        return None, None
     if result.status != "ready":
         return None, result
     payload = dict(result.payload)
@@ -131,6 +134,8 @@ def _response(
 
 
 def _domain_unavailable(snapshot, role_result):
+    if role_result is None:
+        return _rotation_domain_unavailable(snapshot, None)
     payload = snapshot_envelope(snapshot, None, unit=None)
     payload["source"] = "role_materialization"
     payload["coverage"] = None
@@ -302,21 +307,16 @@ def _combined_coverage(*coverages):
     )
 
 
-@router.get("/api/limit-up/ladder")
-def ladder(request: Request):
-    query, trade_date, snapshot_id = _selection(request, set(), {"sector"})
-    snapshot = _select_publication(request, trade_date, snapshot_id)
-    if snapshot is None:
-        return DecimalJSONResponse(empty_envelope(trade_date))
-    role_payload, role_result = _role_payload(snapshot)
-    if role_payload is None:
-        return _domain_unavailable(snapshot, role_result)
-    market_payload, _market_coverage, materialized = _published_payload(snapshot)
-    if not materialized:
-        raise DataUnavailable
-
-    sector = query.get("sector")
+def _ladder_projection(snapshot, role_payload, market_payload, sector):
     names = _names(market_payload)
+    returns = {
+        row["security_id"]: row["value"]
+        for row in market_payload["overview"]["returns"]
+    }
+    topic_names = {
+        row["sector_id"]: row.get("name")
+        for row in market_payload["overview"]["hot_sectors"]
+    }
     by_security = {}
     zero_streak_members = set()
     selected_topics = _selected_topics(role_payload, sector)
@@ -329,10 +329,16 @@ def ladder(request: Request):
         topic_id = topic["topic_id"]
         topic_members = set(topic.get("member_ids", ()))
         formal_roles = defaultdict(list)
+        evidence_by_security = defaultdict(list)
+        status_evidence = []
         for internal_role in ROLE_NAMES:
             for evidence in _adapted(
                 topic, internal_role, role_payload["rule_version"]
             ):
+                if evidence.security_id is None:
+                    status_evidence.append(evidence)
+                else:
+                    evidence_by_security[evidence.security_id].append(evidence)
                 if evidence.security_id is not None and evidence.status == "candidate":
                     formal_roles[evidence.security_id].append(evidence.role)
         for row in topic.get("ladder", ()):
@@ -361,9 +367,74 @@ def ladder(request: Request):
                 ),
                 "sector_id": topic_id,
                 "boards": boards,
+                "change_ratio": returns.get(security_id),
+                "change_reasons": (
+                    [] if security_id in returns else ["daily_return_unavailable"]
+                ),
+                "topics": [{"sector_id": topic_id, "name": topic_names.get(topic_id)}],
+                "role_evidence": [
+                    {
+                        "role_type": evidence.role,
+                        "sector_id": topic_id,
+                        "evidence_status": evidence.status,
+                    }
+                    for evidence in [
+                        *evidence_by_security[security_id],
+                        *status_evidence,
+                    ]
+                ],
+                "role_reasons": list(
+                    dict.fromkeys(
+                        reason
+                        for evidence in [
+                            *evidence_by_security[security_id],
+                            *status_evidence,
+                        ]
+                        for reason in evidence.reasons
+                    )
+                ),
+                "seal": _seal(snapshot.batch, security_id),
             }
+            seal = candidate["seal"]
+            if seal["reason"] is None and any(
+                seal[key] is None
+                for key in (
+                    "first_seal_time",
+                    "last_seal_time",
+                    "break_count",
+                    "seal_amount",
+                )
+            ):
+                seal["reason"] = "intraday_seal_fields_unavailable"
+            if seal["seal_amount"] is None:
+                seal["seal_amount_unit"] = None
+            if existing is not None:
+                candidate["topics"] = sorted(
+                    [*existing["topics"], *candidate["topics"]],
+                    key=lambda item: item["sector_id"],
+                )
+                candidate["role_evidence"] = [
+                    *existing["role_evidence"],
+                    *candidate["role_evidence"],
+                ]
+                candidate["roles"] = sorted(
+                    set(existing["roles"]) | set(candidate["roles"]),
+                    key=_ROLE_ORDER.__getitem__,
+                )
+                candidate["role_reasons"] = list(
+                    dict.fromkeys(
+                        [*existing["role_reasons"], *candidate["role_reasons"]]
+                    )
+                )
             if existing is None or topic_id < existing["sector_id"]:
                 by_security[security_id] = candidate
+            else:
+                existing.update(
+                    {
+                        key: candidate[key]
+                        for key in ("topics", "role_evidence", "roles", "role_reasons")
+                    }
+                )
 
     grouped = defaultdict(list)
     for stock in by_security.values():
@@ -405,6 +476,80 @@ def ladder(request: Request):
         len(zero_streak_members - by_security.keys()),
         len(member_ids) - total - len(zero_streak_members - by_security.keys()),
     )
+    return data, coverage
+
+
+@router.get("/api/limit-up/ladder")
+def ladder(request: Request):
+    query, trade_date, snapshot_id = _selection(request, set(), {"sector", "days"})
+    days = query_integer(query.get("days", "10"), 1, 250)
+    snapshot = _select_publication(request, trade_date, snapshot_id)
+    if snapshot is None:
+        return DecimalJSONResponse(empty_envelope(trade_date))
+    role_payload, role_result = _role_payload(snapshot)
+    if role_payload is None:
+        return _domain_unavailable(snapshot, role_result)
+    market_payload, _, materialized = _published_payload(snapshot)
+    if not materialized:
+        raise DataUnavailable
+    sector = query.get("sector")
+    data, coverage = _ladder_projection(snapshot, role_payload, market_payload, sector)
+    sessions = snapshot.batch.calendar.sessions
+    position = sessions.index(snapshot.trade_date)
+    window = sessions[max(0, position - days + 1) : position + 1]
+    history = _repository(request).list_published_window(
+        snapshot.id, window[0], window[-1]
+    )
+    by_day = {}
+    for published in history:
+        if (
+            published.trade_date not in window
+            or published.trade_date >= snapshot.trade_date
+        ):
+            raise DataUnavailable
+        if published.trade_date in by_day:
+            raise DataUnavailable
+        by_day[published.trade_date] = published
+    by_day[snapshot.trade_date] = snapshot
+    rows = []
+    for day in window:
+        published = by_day.get(day)
+        row = {
+            "trade_date": day.isoformat(),
+            "snapshot_id": None,
+            "rule_version": None,
+            "status": "unavailable",
+            "reasons": ["publication_unavailable"],
+            "coverage": None,
+            "columns": None,
+            "total": None,
+            "cells": None,
+        }
+        if published is not None:
+            payload, result = _role_payload(published)
+            market, _, ready = _published_payload(published)
+            if payload is not None and ready:
+                projected, daily_coverage = _ladder_projection(
+                    published, payload, market, sector
+                )
+                row.update(
+                    snapshot_id=str(published.id),
+                    rule_version=payload["rule_version"],
+                    status="available",
+                    reasons=[],
+                    coverage=daily_coverage,
+                    **{key: projected[key] for key in ("columns", "total", "cells")},
+                )
+            else:
+                row["snapshot_id"] = str(published.id)
+                row["reasons"] = ["role_or_market_unavailable"]
+        rows.append(row)
+    data["history"] = {
+        "days": days,
+        "sector": sector,
+        "window": {"start": window[0].isoformat(), "end": window[-1].isoformat()},
+        "rows": rows,
+    }
     return _response(
         snapshot,
         role_result,
@@ -413,6 +558,170 @@ def ladder(request: Request):
         coverage,
         price_type="raw",
     )
+
+
+def _continuity_details(snapshot, sentiment):
+    version = sentiment.get("continuity_detail_version")
+    if version is None or (type(version) is int and version != 1):
+        return {
+            "status": "unavailable",
+            "version": version,
+            "data": None,
+            "reasons": ["continuity_detail_unavailable"],
+        }
+    if type(version) is not int:
+        raise DataUnavailable
+    try:
+        block = sentiment["continuity_detail"]
+        sessions = snapshot.batch.calendar.sessions
+        position = sessions.index(snapshot.trade_date)
+        previous = sessions[position - 1].isoformat() if position else None
+        if (
+            block["trade_date"] != snapshot.trade_date.isoformat()
+            or block["previous_trade_date"] != previous
+        ):
+            raise DataUnavailable
+        valid_returns = []
+        pools = {}
+        for key in ("promotion", "feedback"):
+            pool = block[key]
+            members = pool["members"]
+            ids = [row["security_id"] for row in members]
+            if len(ids) != len(set(ids)) or any(
+                not isinstance(value, str) or not value for value in ids
+            ):
+                raise DataUnavailable
+            pools[key] = {}
+            expected = {
+                "expected": len(members),
+                **{
+                    status: sum(row["status"] == status for row in members)
+                    for status in ("valid", "excluded", "missing")
+                },
+            }
+            if any(
+                type(value) is not int or value < 0
+                for value in pool["coverage"].values()
+            ):
+                raise DataUnavailable
+            if dict(pool["coverage"]) != expected or sum(
+                expected[status] for status in ("valid", "excluded", "missing")
+            ) != len(members):
+                raise DataUnavailable
+            for row in members:
+                if row["status"] not in ("valid", "excluded", "missing"):
+                    raise DataUnavailable
+                if not isinstance(row["reasons"], (list, tuple)) or any(
+                    not isinstance(reason, str) or not reason
+                    for reason in row["reasons"]
+                ):
+                    raise DataUnavailable
+                value = row["return"]
+                if value is not None:
+                    if isinstance(value, bool):
+                        raise DataUnavailable
+                    value = Decimal(str(value))
+                    if not value.is_finite():
+                        raise DataUnavailable
+                direction = (
+                    ("up" if value > 0 else "down" if value < 0 else "flat")
+                    if value is not None
+                    else None
+                )
+                if row["direction"] != direction:
+                    raise DataUnavailable
+                if row["status"] != "valid":
+                    if (
+                        value is not None
+                        or row["sealed"] is not None
+                        or not row["reasons"]
+                    ):
+                        raise DataUnavailable
+                elif key == "feedback":
+                    if value is None:
+                        raise DataUnavailable
+                    valid_returns.append(value)
+                if row["sealed"] is not None and type(row["sealed"]) is not bool:
+                    raise DataUnavailable
+                pools[key][row["security_id"]] = (
+                    row["status"],
+                    value,
+                    row["direction"],
+                    row["sealed"],
+                    frozenset(row["reasons"]),
+                )
+            if key == "feedback":
+                counts = {
+                    direction: sum(row["direction"] == direction for row in members)
+                    for direction in ("up", "down", "flat")
+                }
+                if any(
+                    type(value) is not int or value < 0
+                    for value in pool["direction_counts"].values()
+                ):
+                    raise DataUnavailable
+                if dict(pool["direction_counts"]) != counts:
+                    raise DataUnavailable
+                if dict(pool["coverage"]) != dict(
+                    sentiment["yesterday_limit_up_return_coverage"]
+                ):
+                    raise DataUnavailable
+            else:
+                stored = sentiment["promote_rate"]
+                if (
+                    len(members) != stored["yesterday_ge2"]
+                    or expected["valid"] != stored["denominator"]
+                    or expected["excluded"] != stored["excluded"]
+                    or expected["missing"] != stored["missing"]
+                    or sum(row["sealed"] is True for row in members)
+                    != stored["numerator"]
+                ):
+                    raise DataUnavailable
+        if not pools["promotion"].keys() <= pools["feedback"].keys():
+            raise DataUnavailable
+        for security_id, promotion in pools["promotion"].items():
+            feedback = pools["feedback"][security_id]
+            # A valid current observation can lack the prior close needed for
+            # feedback. This is the only pool-specific fact availability gap.
+            return_unavailable = (
+                promotion[0] == "valid"
+                and promotion[1:3] == (None, None)
+                and type(promotion[3]) is bool
+                and not promotion[4]
+                and feedback
+                == (
+                    "missing",
+                    None,
+                    None,
+                    None,
+                    frozenset({"daily_return_unavailable"}),
+                )
+            )
+            if promotion != feedback and not return_unavailable:
+                raise DataUnavailable
+        from dragon_radar.readmodels.market import _median
+
+        median = sentiment["yesterday_limit_up_median_return"]
+        if _median(valid_returns) != (
+            Decimal(str(median)) if median is not None else None
+        ):
+            raise DataUnavailable
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        raise DataUnavailable from None
+    projected = {
+        **block,
+        **{
+            key: {
+                **block[key],
+                "members": [
+                    {**row, "return": _decimal(row["return"])}
+                    for row in block[key]["members"]
+                ],
+            }
+            for key in ("promotion", "feedback")
+        },
+    }
+    return {"status": "available", "version": 1, "data": projected, "reasons": []}
 
 
 @router.get("/api/limit-up/continuity")
@@ -445,6 +754,7 @@ def continuity(request: Request):
         "yesterday_limit_up_median_return": median,
         "yesterday_limit_up_feedback": feedback_quality,
         "tradable_count": promote["tradable"],
+        "details": _continuity_details(snapshot, sentiment),
     }
     return _response(
         snapshot,
@@ -494,7 +804,11 @@ def candidates(request: Request):
             if item.get("role") == internal_role
         )
         role_changes.extend(
-            {"sector_id": topic["topic_id"], **item}
+            {
+                "sector_id": topic["topic_id"],
+                **item,
+                "name": names.get(item["security_id"]),
+            }
             for item in topic.get("role_changes", ())
             if item.get("role") == internal_role
         )
@@ -537,7 +851,7 @@ def candidates(request: Request):
             output.append(
                 {
                     "security_id": evidence.security_id,
-                    "name": names.get(evidence.security_id, evidence.security_id),
+                    "name": names.get(evidence.security_id),
                     "rank": evidence.rank,
                     "evidence_status": evidence.status,
                     "sector_id": topic["topic_id"],

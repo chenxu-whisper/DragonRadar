@@ -39,7 +39,7 @@ async function waitForOverview(page: Page) {
   await expect(page.getByRole('button', { name: '下跌 31' })).toBeVisible();
 }
 async function waitForLeaders(page: Page) {
-  await expect(page.getByRole('heading', { name: '梯队', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '龙头梯队', exact: true })).toBeVisible();
   await expect(page.getByRole('table', { name: '日期与板数矩阵' })).toBeVisible();
   await expect(page.getByRole('table', { name: '日期与板数矩阵' })
     .getByRole('button', { name: '合成测试证券1', exact: true })).toBeVisible();
@@ -134,7 +134,7 @@ test.describe('密度偏好', () => {
     await expect(page.getByRole('button', { name: '上涨 32' })).toBeVisible();
     await expect(page.getByRole('button', { name: '下跌 31' })).toBeVisible();
 
-    await page.getByRole('link', { name: '梯队', exact: true }).click();
+    await page.getByRole('link', { name: '龙头梯队', exact: true }).click();
     await expect(page).toHaveURL(/view=leaders/);
     await waitForLeaders(page);
     const compactHeight = await page.getByRole('table', { name: '日期与板数矩阵' })
@@ -375,7 +375,7 @@ test.describe('命令面板', () => {
     await expect(paletteListbox(page).locator('.command-palette-group-label'))
       .toHaveText(['页面', '股票', '题材', '主题', '密度', '日期']);
     await expect(paletteGroup(page, '页面').getByRole('option'))
-      .toHaveText(['总览', '我的复盘', '梯队', '消息', '涨幅', '监管']);
+      .toHaveText(['市场总览', '市场消息', '我的复盘', '涨幅分析', '监管观察', '龙头梯队']);
     for (const label of ['切换为浅色主题', '切换为深色主题', '切换为紧凑密度', '切换为舒适密度', '聚焦日期选择']) {
       await expect(paletteOption(page, label)).toBeVisible();
     }
@@ -517,7 +517,7 @@ test.describe('命令面板', () => {
     await waitForLeaders(page);
 
     await openPaletteViaTrigger(page);
-    await paletteOption(page, '总览', true).click();
+    await paletteOption(page, '市场总览', true).click();
     await expect(paletteDialog(page)).toHaveCount(0);
     await expect(page.getByRole('button', { name: TRIGGER_NAME })).toBeFocused();
     await expect(page).toHaveURL(url => url.searchParams.get('view') === 'overview'
@@ -564,7 +564,7 @@ test.describe('命令面板', () => {
     await expect(paletteGroup(page, '股票')).toHaveCount(0);
     await expect(paletteGroup(page, '题材')).toHaveCount(0);
     await expect(paletteGroup(page, '页面').getByRole('option'))
-      .toHaveText(['总览', '梯队', '消息', '涨幅', '监管']);
+      .toHaveText(['市场总览', '市场消息', '涨幅分析', '监管观察', '龙头梯队']);
     await expect(paletteOption(page, '切换为深色主题')).toBeVisible();
     await expect(paletteOption(page, '切换为紧凑密度')).toBeVisible();
     await expect(paletteOption(page, '聚焦日期选择')).toBeVisible();
@@ -631,7 +631,7 @@ test.describe('脏草稿守卫', () => {
 
     await openPaletteViaTrigger(page);
     const urlBefore = page.url();
-    await paletteOption(page, '总览', true).click();
+    await paletteOption(page, '市场总览', true).click();
     await expect(paletteDialog(page).locator('p.command-palette-alert'))
       .toHaveText('有未保存的修改，请先完成或放弃当前修改');
     expect(page.url()).toBe(urlBefore);

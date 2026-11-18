@@ -1,4 +1,5 @@
-.session-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 28px; border-bottom: 1px solid var(--line); background: #f5f7f9; }
+.session-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 24px; border-bottom: 1px solid var(--line); background: var(--bg-surface-2); font-size: 12px; }
+.session-toolbar button { min-height: 32px; padding: 4px 8px; font-size: 12px; }
 .session-toolbar > span { margin-right: auto; color: var(--muted); }
 .pairing { max-width: 640px; margin: 8vh auto; padding: 24px; }
 .pairing form { display: flex; flex-wrap: wrap; gap: 12px; margin-block: 24px; }

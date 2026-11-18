@@ -366,7 +366,7 @@ test('isolates a lazy rotation chunk failure inside the section boundary', async
   await expect(page.locator('body')).not.toContainText('私人复盘');
   await expect(page.locator('body')).not.toContainText('私人功能');
   await expect(page.locator('main')).toHaveCount(1);
-  await expect(page.getByRole('heading', { name: '梯队', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '龙头梯队', level: 1 })).toBeVisible();
 });
 
 test('is axe-clean without horizontal overflow at 375px with evidence open', async ({ page }) => {

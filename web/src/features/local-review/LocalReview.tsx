@@ -13,6 +13,7 @@ import {
   type AdoptionStrategy,
 } from './adoption-command';
 import { localNoteCommandSignature } from './note-command';
+import VerificationPanel, { type VerificationDraftState } from './VerificationPanel';
 import './local-review.css';
 
 const AITaskPanel = import.meta.env.VITE_PRIVATE_AI === '1'
@@ -29,16 +30,21 @@ const editable = (content: StoredNoteContent): NoteContent => ({
 const message = (error: unknown) => error instanceof Error ? error.message : '本地保存失败，当前输入已保留';
 
 export default function LocalReview({
-  snapshot = '', tradeDate = '', security = '', asOf = '', version = '',
+  snapshot = '', tradeDate = '', security = '', asOf = '', version = '', section = '', onSectionChange, onOpenWatch,
 }: {
   snapshot?: string; tradeDate?: string; security?: string;
   asOf?: string; version?: string;
+  section?: string; onSectionChange?: (section: string) => void;
+  onOpenWatch?: (watch: LocalWatch) => boolean | Promise<boolean>;
 }) {
   const [notes, setNotes] = useState<LocalNote[]>([]);
   const [watchlist, setWatchlist] = useState<LocalWatch[]>([]);
   const [selected, setSelected] = useState<LocalNote>();
   const [content, setContent] = useState<NoteContent>(empty);
   const [dirty, setDirty] = useState(false);
+  const [simulationState, setSimulationState] = useState({ dirty: false, busy: false });
+  const [verificationState, setVerificationState] = useState<VerificationDraftState>({ dirty: false, busy: false });
+  const [verificationOpen, setVerificationOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -50,7 +56,8 @@ export default function LocalReview({
   const [backupName, setBackupName] = useState('');
   const [decision, setDecision] = useState<ImportDecision | ''>('');
   const [preview, setPreview] = useState<ImportPlan>();
-  const [tab, setTab] = useState<'notes' | 'simulation'>('notes');
+  const [tab, setTab] = useState<'notes' | 'simulation'>(section === 'simulation' ? 'simulation' : 'notes');
+  useEffect(() => { setTab(section === 'simulation' ? 'simulation' : 'notes'); }, [section]);
   const simulationRepository = useMemo(() => new SimulationRepository(repo), []);
   const mounted = useRef(true), saving = useRef(false);
   const adoptionCommands = useRef(new AdoptionCommandCache());
@@ -73,11 +80,16 @@ export default function LocalReview({
     };
   }, [refresh]);
   useEffect(() => {
-    const stop = registerLeaveGuard(() => !dirty || window.confirm('笔记尚未保存，确定离开？'));
-    const before = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ''; } };
+    const simulationPending = tab === 'simulation' && (simulationState.dirty || simulationState.busy);
+    const stop = registerLeaveGuard(() => {
+      if (busy || verificationState.busy || (tab === 'simulation' && simulationState.busy)) return false;
+      return !(dirty || verificationState.dirty || simulationPending) || window.confirm(simulationPending
+        ? '模拟账本输入尚未保存，确定离开？' : verificationState.dirty ? '验证输入尚未保存，确定离开？' : '笔记尚未保存，确定离开？');
+    });
+    const before = (event: BeforeUnloadEvent) => { if (dirty || busy || verificationState.dirty || verificationState.busy || simulationPending) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', before);
     return () => { stop(); window.removeEventListener('beforeunload', before); };
-  }, [dirty]);
+  }, [dirty, busy, tab, simulationState, verificationState]);
   useEffect(() => {
     if (!selected) return;
     const current = notes.find(note => note.note_id === selected.note_id);
@@ -88,21 +100,24 @@ export default function LocalReview({
     setContent(previous => ({ ...previous, [field]: value })); setDirty(true); setStatus('');
   };
   const choose = (note?: LocalNote) => {
-    if (busy || (dirty && !window.confirm('当前输入尚未保存，确定切换笔记？'))) return;
+    if (busy || verificationState.busy || ((dirty || verificationState.dirty) && !window.confirm('当前输入尚未保存，确定切换笔记？'))) return;
     setSelected(note); setContent(note ? editable(note.content) : empty()); setDirty(false);
     setError(''); setStatus(''); setLatest(undefined); setHistory([]); command.current = undefined;
+    setVerificationOpen(false); setVerificationState({ dirty: false, busy: false });
   };
-  const save = async (copy = false) => {
+  const save = async (copy = false, state: 'draft' | 'confirmed' = 'draft') => {
     if (saving.current) return;
+    if (copy && (verificationState.busy
+      || (verificationState.dirty && !window.confirm('验证输入尚未保存，确定另存为新笔记？')))) return;
     saving.current = true; setBusy(true); setStatus(''); setError('');
     const snapshotId = copy ? snapshot || selected?.snapshot_id || '' : selected?.snapshot_id ?? snapshot;
     const effectiveTradeDate = copy ? tradeDate || selected?.trade_date : selected?.trade_date ?? tradeDate;
-    const signature = localNoteCommandSignature({
+    const signature = JSON.stringify([state, localNoteCommandSignature({
       copy, noteId: selected?.note_id, revision: selected?.revision,
       snapshotId, tradeDate: effectiveTradeDate,
       securityId: copy ? security || selected?.security_id : selected?.security_id ?? security,
       content,
-    });
+    })]);
     if (command.current?.signature !== signature) {
       command.current = { signature, id: !copy && selected ? selected.note_id : crypto.randomUUID(), key: crypto.randomUUID() };
     }
@@ -114,6 +129,7 @@ export default function LocalReview({
         trade_date: effectiveTradeDate,
         security_id: copy ? security || selected?.security_id : selected?.security_id ?? security,
         content,
+        state,
       });
       if (!mounted.current) return;
       if (result.current_revision && result.current_revision > result.revision) {
@@ -133,6 +149,20 @@ export default function LocalReview({
     setError('');
     try { await repo.putWatchlist(id.trim(), action, crypto.randomUUID(), binding); await refresh(); setSymbol(''); }
     catch (failure) { setError(message(failure)); }
+  };
+  const openWatch = async (watch: LocalWatch) => {
+    setError('');
+    try {
+      if (!onOpenWatch || !await onOpenWatch(watch)) {
+        if (mounted.current) setError('无法打开原始发布：来源无法解析或导航已取消，不使用当前发布替代。');
+      }
+    } catch (failure) { if (mounted.current) setError(message(failure)); }
+  };
+  const changeTab = (next: 'notes' | 'simulation') => {
+    if (onSectionChange) { onSectionChange(next); return; }
+    if (busy || verificationState.busy || simulationState.busy
+      || ((dirty || verificationState.dirty || simulationState.dirty) && !window.confirm('当前输入尚未保存，确定切换分区？'))) return;
+    setTab(next);
   };
   const chooseBackup = async (file?: File) => {
     const generation = ++previewGeneration.current;
@@ -285,47 +315,12 @@ export default function LocalReview({
     <p className="muted">此浏览器保存你的判断。清除网站数据会删除本地记录；服务断开不影响保存。
       {AITaskPanel ? ' 未选择的笔记字段与自选列表不会发送。' : ''}</p>
     <div className="local-review-tabs" role="group" aria-label="本地资料分区">
-      <button type="button" className="local-review-tab" aria-pressed={tab === 'notes'} onClick={() => setTab('notes')}>我的笔记</button>
-      <button type="button" className="local-review-tab" aria-pressed={tab === 'simulation'} onClick={() => setTab('simulation')}>模拟账本</button>
+      <button type="button" className="local-review-tab" aria-pressed={tab === 'notes'} onClick={() => changeTab('notes')}>我的笔记</button>
+      <button type="button" className="local-review-tab" aria-pressed={tab === 'simulation'} onClick={() => changeTab('simulation')}>模拟账本</button>
     </div>
     {tab === 'notes' && <>
-    {AITaskPanel && snapshot && tradeDate && asOf && version && <Suspense fallback={<p role="status">正在加载 AI 复盘工具…</p>}>
-      <AITaskPanel
-        taskType="daily_review"
-        snapshotId={snapshot}
-        asOf={asOf}
-        version={version}
-        date={tradeDate}
-        securityId={security || undefined}
-        note={content}
-        noteSnapshotId={selected?.snapshot_id}
-        onAdopt={adoptAIDraft}
-      />
-    </Suspense>}
-    <section className="local-backup" aria-label="备份与恢复">
-      <div className="toolbar">
-        <button type="button" onClick={() => void downloadBackup()} disabled={busy}>导出本机备份</button>
-        <label>选择复盘备份文件
-          <input type="file" accept=".json,application/json" disabled={busy} onChange={event => void chooseBackup(event.target.files?.[0])} />
-        </label>
-        <label>导入方式
-          <select value={decision} disabled={!backupText || busy} onChange={event => void chooseDecision(event.target.value as ImportDecision | '')}>
-            <option value="">请选择</option>
-            <option value="merge">合并到同名笔记</option>
-            <option value="save-as-new">全部另存为新笔记</option>
-          </select>
-        </label>
-        <button type="button" onClick={() => void restore()} disabled={!decision || preview?.decision !== decision || busy}>执行恢复</button>
-      </div>
-      {preview && <p className="muted">
-        {backupName}：重复 {preview.duplicates}，追加修订 {preview.appended_revisions}，
-        重映射笔记 {Object.keys(preview.remapped_note_ids).length}，
-        重映射修订 {Object.keys(preview.remapped_revisions).length}，
-        未解决冲突 {preview.unresolved_conflicts.length}。不会替换或删除现有修订。
-      </p>}
-    </section>
     {error && <p role="alert" className="notice error">{error}</p>}
-    <div className="local-review-grid">
+    <div className="local-review-grid" id="workbench-notes" tabIndex={-1}>
       <aside className="local-review-list">
         <h2>自选股</h2>
         <form onSubmit={event => { event.preventDefault(); void changeWatch(symbol, 'add'); }}>
@@ -333,7 +328,9 @@ export default function LocalReview({
           <button type="submit" disabled={!symbol.trim()}>添加自选</button>
         </form>
         <ul data-testid="local-watchlist">{watchlist.map(item => <li key={item.security_id}>
-          <span>{item.security_id}<small>{new Date(item.added_at).toLocaleDateString('zh-CN')}</small></span>
+          <span>{item.context?.security_name ?? item.security_id}<small>{item.security_id} · {item.context?.trade_date ?? '原始日期未知'} · {item.context?.sector_name ?? item.context?.sector_id ?? '题材未知'}</small>
+            <small>{new Date(item.added_at).toLocaleDateString('zh-CN')}</small></span>
+          <button onClick={() => void openWatch(item)}>打开原始证据<span className="sr-only">{item.security_id}</span></button>
           <button onClick={() => { setRemoved(item); void changeWatch(item.security_id, 'remove', item.snapshot_id); }}>移除<span className="sr-only">{item.security_id}</span></button>
         </li>)}</ul>
         {!watchlist.length && <p className="muted">尚未添加自选。</p>}
@@ -364,6 +361,11 @@ export default function LocalReview({
             <label>验证日期<input type="date" value={content.verify_date} onChange={event => edit('verify_date', event.target.value)} /></label>
             <div className="toolbar"><button type="submit" className="primary" disabled={!canSave}>{busy ? '正在保存…' : '保存笔记'}</button>
               <button type="button" onClick={() => void save(true)} disabled={!canSave}>另存为新笔记</button>
+              <button type="button" onClick={() => void save(false, 'confirmed')} disabled={!canSave}>确认笔记</button>
+              {selected && <button type="button" onClick={() => {
+                if (verificationState.busy || (verificationState.dirty && !window.confirm('验证输入尚未保存，确定关闭？'))) return;
+                setVerificationOpen(value => !value);
+              }}>验证判断</button>}
               {selected && <button type="button" onClick={() => void repo.revisions(selected.note_id).then(setHistory).catch(failure => setError(message(failure)))}>查看修订历史</button>}
               <span className="muted">{dirty ? '有未保存修改' : ''}</span></div>
             {!canSave && <p className="muted">选择快照后才能新建笔记</p>}
@@ -376,9 +378,41 @@ export default function LocalReview({
         </details>)}</section>}
       </section>
     </div>
+    {verificationOpen && selected && <VerificationPanel key={selected.note_id} note={selected} onDraftStateChange={setVerificationState} />}
+    <section id="workbench-review-ai" tabIndex={-1} aria-label="AI 复盘草稿" className="local-review-ai">
+      <h2>AI 复盘草稿</h2>
+      {AITaskPanel && snapshot && tradeDate && asOf && version ? <Suspense fallback={<p role="status">正在加载 AI 复盘工具…</p>}>
+        <AITaskPanel taskType="daily_review" snapshotId={snapshot} asOf={asOf} version={version}
+          date={tradeDate} securityId={security || undefined} note={content}
+          noteSnapshotId={selected?.snapshot_id} onAdopt={adoptAIDraft} />
+      </Suspense> : <p className="muted">{AITaskPanel
+        ? '未选择可读快照，AI 草稿不可用；本地笔记仍可保存。'
+        : '当前入口未启用 AI。可继续记录判断、依据与待验证事项。'}</p>}
+    </section>
+    <section className="local-backup" id="workbench-backup" tabIndex={-1} aria-label="备份与恢复">
+      <h2>备份与恢复</h2>
+      <div className="toolbar">
+        <button type="button" onClick={() => void downloadBackup()} disabled={busy}>导出本机备份</button>
+        <label>选择复盘备份文件
+          <input type="file" accept=".json,application/json" disabled={busy} onChange={event => void chooseBackup(event.target.files?.[0])} />
+        </label>
+        <label>导入方式
+          <select value={decision} disabled={!backupText || busy} onChange={event => void chooseDecision(event.target.value as ImportDecision | '')}>
+            <option value="">请选择</option><option value="merge">合并到同名笔记</option><option value="save-as-new">全部另存为新笔记</option>
+          </select>
+        </label>
+        <button type="button" onClick={() => void restore()} disabled={!decision || preview?.decision !== decision || busy}>执行恢复</button>
+      </div>
+      {preview && <p className="muted">
+        {backupName}：重复 {preview.duplicates}，追加修订 {preview.appended_revisions}，
+        重映射笔记 {Object.keys(preview.remapped_note_ids).length}，
+        重映射修订 {Object.keys(preview.remapped_revisions).length}，
+        未解决冲突 {preview.unresolved_conflicts.length}。不会替换或删除现有修订。
+      </p>}
+    </section>
     </>}
-    {tab === 'simulation' && <Suspense fallback={<p className="status" role="status">正在加载本地模拟账本…</p>}>
-      <SimulationPanel repository={simulationRepository} />
-    </Suspense>}
+    {tab === 'simulation' && <section id="workbench-simulation" tabIndex={-1}><Suspense fallback={<p className="status" role="status">正在加载本地模拟账本…</p>}>
+      <SimulationPanel repository={simulationRepository} onDraftStateChange={setSimulationState} />
+    </Suspense></section>}
   </div>;
 }

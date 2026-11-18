@@ -2060,8 +2060,6 @@ def test_private_compose_defines_isolated_analysis_worker():
             "compose",
             "-f",
             str(root / "compose.yaml"),
-            "-f",
-            str(root / "compose.private.yaml"),
             "config",
             "--format",
             "json",
@@ -2082,7 +2080,7 @@ def test_private_compose_defines_isolated_analysis_worker():
     ]
     assert worker["restart"] == "unless-stopped"
     assert worker["depends_on"]["db"]["condition"] == "service_healthy"
-    assert set(worker["networks"]) == {"backend"}
+    assert set(worker["networks"]) == {"worker-data"}
     assert "ports" not in worker
 
 

@@ -1,0 +1,52 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Cache-Control no-store
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"
+	}
+	route {
+		@write not method GET HEAD
+		respond @write 403
+
+		@health {
+			method GET HEAD
+			path /health/live /health/ready
+		}
+		reverse_proxy @health public-api:8000 {
+			header_up -Forwarded
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Dragon-*
+			header_up X-Dragon-Client-IP {http.request.remote.host}
+		}
+
+		@publishedRead {
+			method GET HEAD
+			path_regexp publishedRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment/research|sentiment|heatmap)|topics/[^/]+|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
+		}
+		reverse_proxy @publishedRead public-api:8000 {
+			header_up -Forwarded
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Dragon-*
+			header_up X-Dragon-Client-IP {http.request.remote.host}
+		}
+
+		@api path /api/* /health/*
+		respond @api 404
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

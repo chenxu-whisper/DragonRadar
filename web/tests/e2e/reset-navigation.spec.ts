@@ -112,32 +112,32 @@ test('implemented reset destinations retain a fixed historical snapshot and hone
   await mockNewsMissing(page);
   await page.goto(`/?snapshot=${OLD}&date=2026-09-09`);
   const nav = page.getByRole('navigation', { name: '主导航' });
-  await expect(nav.getByRole('link')).toHaveText(['总览', '消息', '梯队', '涨幅', '监管', '我的复盘']);
+  await expect(nav.getByRole('link')).toHaveText(['市场总览', '市场消息', '龙头梯队', '涨幅分析', '监管观察', '我的复盘']);
 
-  await nav.getByRole('link', { name: '消息', exact: true }).click();
+  await nav.getByRole('link', { name: '市场消息', exact: true }).click();
   await expect(page).toHaveURL(/view=news/);
   await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
-  await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '市场消息', exact: true })).toBeVisible();
   // 词云与消息列表各自渲染一个 404 告警，断言必须收敛到列表面板自己的 alert。
   const listAlert = page.getByRole('alert')
     .filter({ has: page.getByRole('button', { name: '重试消息列表' }) });
   await expect(listAlert).toContainText('未找到该快照或证券，当前日期与输入已保留。');
   await expect(page.getByRole('button', { name: '重试消息列表' })).toBeVisible();
 
-  await nav.getByRole('link', { name: '监管', exact: true }).click();
+  await nav.getByRole('link', { name: '监管观察', exact: true }).click();
   await expect(page).toHaveURL(/view=regulation/);
   await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
-  await expect(page.getByRole('heading', { name: '监管', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '监管观察', exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: '数据完整性' })).toContainText('来源校验未知');
   await expect(page.getByRole('region', { name: '数值计算状态' })).toContainText('当前快照没有已发布的数值计算记录');
   const events = page.getByRole('region', { name: '已披露正式事件与限制' });
   await expect(events).toContainText('事件来源完整性未知，不能将缺失解释为零');
   await expect(events).not.toContainText('0 条正式记录');
 
-  await nav.getByRole('link', { name: '梯队', exact: true }).click();
+  await nav.getByRole('link', { name: '龙头梯队', exact: true }).click();
   await expect(page).toHaveURL(/view=leaders/);
   await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
-  await expect(page.getByRole('heading', { name: '梯队', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '龙头梯队', exact: true })).toBeVisible();
 });
 
 test('per-page filter and sort survive navigation, drawer and browser back', async ({ page }) => {
@@ -146,12 +146,12 @@ test('per-page filter and sort survive navigation, drawer and browser back', asy
   await page.goto(`/?view=overview&snapshot=${ID}&date=2026-09-10&q=TEST002&sort=amount&order=desc`);
   await expect(page.getByRole('button', { name: '合成测试证券2', exact: true })).toBeVisible();
   const original = new URL(page.url()).search;
-  await page.getByRole('link', { name: '涨幅', exact: true }).click();
+  await page.getByRole('link', { name: '涨幅分析', exact: true }).click();
   await page.getByLabel('搜索证券', { exact: true }).fill('TEST003');
   await page.getByRole('button', { name: '搜索', exact: true }).click();
   await page.getByRole('button', { name: '最大回撤', exact: true }).click();
   const analysis = new URL(page.url()).search;
-  await page.getByRole('link', { name: '总览', exact: true }).click();
+  await page.getByRole('link', { name: '市场总览', exact: true }).click();
   await expect(page).toHaveURL(url => url.search === original);
   await page.getByRole('button', { name: '合成测试证券2', exact: true }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
@@ -159,7 +159,7 @@ test('per-page filter and sort survive navigation, drawer and browser back', asy
   await expect(page).toHaveURL(/view=stock/);
   await page.getByRole('link', { name: '返回研究列表' }).click();
   await expect(page).toHaveURL(url => url.search === original);
-  await page.getByRole('link', { name: '涨幅', exact: true }).click();
+  await page.getByRole('link', { name: '涨幅分析', exact: true }).click();
   await expect(page).toHaveURL(url => url.search === analysis);
   await page.goBack();
   await expect(page).toHaveURL(url => url.search === original);
@@ -212,11 +212,11 @@ test('late historical responses cannot replace a newly selected snapshot', async
   await expect(page).toHaveURL(new RegExp(`snapshot=${OLD}`));
   await page.getByLabel('交易日期', { exact: true }).fill('2026-09-10');
   await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
-  await page.getByRole('link', { name: '消息', exact: true }).click();
+  await page.getByRole('link', { name: '市场消息', exact: true }).click();
   await page.waitForTimeout(750);
   await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
   await expect(page.getByLabel('交易日期', { exact: true })).toHaveValue('2026-09-10');
-  await expect(page.getByRole('heading', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '市场消息', exact: true })).toBeVisible();
 });
 
 test('mobile navigation and local editor fit a 375px viewport', async ({ page }) => {

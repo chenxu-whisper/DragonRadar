@@ -76,8 +76,10 @@ export function Comparison({ state, patch, refreshToken, snapshot, reset = false
       lineStyle: { type: lineStyles[index % 5], width: 2 },
     })) || [],
   }), [dates, mode, resetData]);
-  if (!state.compare.length) return <p className="muted comparison-hint">勾选证券可比较同一区间，最多 5 个标的。</p>;
-  if (reset) return <section className="comparison" aria-labelledby="comparison-title">
+  if (!state.compare.length) return <section id={reset ? 'workbench-comparison' : undefined} tabIndex={-1} className="comparison-hint">
+    {reset && <h2>多标的比较</h2>}<p className="muted">勾选证券可比较同一区间，最多 5 个标的。</p>
+  </section>;
+  if (reset) return <section id="workbench-comparison" tabIndex={-1} className="comparison" aria-labelledby="comparison-title">
     <div className="section-heading">
       <h2 id="comparison-title" tabIndex={-1}>同区间比较</h2>
       <button onClick={() => patch({ compare: [] })}>清空比较</button>

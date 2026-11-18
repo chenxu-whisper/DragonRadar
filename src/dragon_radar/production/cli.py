@@ -24,15 +24,11 @@ from dragon_radar.production.trust import (
 )
 
 CODE_ROOT = Path(__file__).resolve().parents[3]
-SOURCE_DIRECTORIES = ("src", "scripts", "web", "tests", ".github", "deploy")
+SOURCE_DIRECTORIES = ("src", "scripts", "web", "tests", ".github", "containers")
 ROOT_INPUTS = (
     "pyproject.toml",
     "uv.lock",
     "compose.yaml",
-    "compose.private.yaml",
-    "compose.reset.yaml",
-    "compose.dev.yaml",
-    "compose.workbench.yaml",
     "Dockerfile",
     "alembic.ini",
     ".dockerignore",
@@ -87,7 +83,7 @@ def source_identity(root: Path) -> str:
                     raise ValueError("source links forbidden")
             for name in files:
                 path = Path(current) / name
-                if directory == "deploy" or path.suffix in SOURCE_SUFFIXES:
+                if directory == "containers" or path.suffix in SOURCE_SUFFIXES:
                     paths.append(path)
             if len(paths) > 20000:
                 raise ValueError("source inventory exceeds bound")

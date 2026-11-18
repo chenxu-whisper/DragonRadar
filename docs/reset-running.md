@@ -1,5 +1,8 @@
 # Reset Runtime
 
+Run every command below from the project root. This is the single current
+guide for public reads and local owner/private review access.
+
 The Reset stack has two independent entries:
 
 - Public read entry: `http://127.0.0.1:8080`
@@ -37,6 +40,13 @@ AI provider, or enable a model token.
 ## Start
 
 Requirements are Docker with Compose v2, PowerShell, and available local ports.
+The sole daily startup entry is `scripts/start-reset.ps1`. The root
+`compose.yaml` replaces the former layered stacks and contains seven services:
+`db`, `public-api`, `public-caddy`, `owner-api`, `owner-caddy`,
+`analysis-worker`, and `ai-worker`. Frontend builds and gateway configuration
+use only `containers/public.Dockerfile`, `containers/public.Caddyfile`,
+`containers/owner.Dockerfile`, and `containers/owner.Caddyfile`; the backend
+build still uses the root `Dockerfile`.
 
 ```powershell
 .\scripts\start-reset.ps1
@@ -48,6 +58,11 @@ user and SYSTEM. The credential is not printed and must not be committed. The
 script validates Compose, builds images, starts PostgreSQL, runs migrations
 explicitly, initializes the owner idempotently, and waits for readiness.
 Repeated runs reuse the protected state and do not silently change ports.
+Keep `compose.env` whenever the database volume is retained. Do not copy it
+into the frontend, print it, send it to chat, or share it with test instances.
+File ACLs are not disk encryption; local system and Docker administrators
+still have access. Changing the saved password is not PostgreSQL password
+rotation. Startup does not migrate records from an old independent instance.
 
 To use different local ports on first startup:
 
@@ -59,27 +74,79 @@ To use different local ports on first startup:
 
 Owner Caddy uses its internal TLS authority. Startup exports the public CA
 certificate to `.temp/reset-secrets/owner-localhost-root.crt` but does not
-install trust. Verify the displayed path and certificate fingerprint using
-your local security process before installing it. Never bypass certificate
-validation for owner pairing or normal use.
+install trust. Display its path and SHA256 without exporting a private key:
+
+```powershell
+.\scripts\reset-owner.ps1 -Action Certificate
+```
+
+Verify the certificate, fingerprint, and purpose using your local security
+process before explicitly approving a current-user trust-store change.
+Never bypass browser warnings or TLS validation, or enter private information
+over HTTP. After approval, the local user can install this exact certificate:
+
+```powershell
+$certificate = Resolve-Path .temp/reset-secrets/owner-localhost-root.crt
+certutil -user -addstore Root $certificate
+```
+
+To revoke trust, inspect the SHA1 fingerprint and remove only that certificate:
+
+```powershell
+certutil -dump .temp/reset-secrets/owner-localhost-root.crt
+certutil -user -delstore Root "<verified SHA1 fingerprint for this certificate>"
+```
+
+Do not delete certificates by name or assume an older independent instance's
+CA is the Reset CA. Internal TLS health checks do not prove browser trust.
+
+## Owner Pairing And Revocation
+
+The owner controls read the same `.temp/reset-secrets/compose.env` as startup.
+After verifying TLS trust, issue a one-time pairing code:
+
+```powershell
+.\scripts\reset-owner.ps1 -Action Pair
+```
+
+The code is written only to a protected local file under `.temp/reset-secrets/`;
+use it within five minutes at the configured `https://localhost:8031` entry
+(or the saved custom owner port). Do not print the code, put it in a URL or
+clipboard, or send it to chat. A new issuance invalidates older unused codes.
+Owner sessions last eight hours, then require pairing again.
+
+```powershell
+.\scripts\reset-owner.ps1 -Action Revoke
+```
+
+Revocation invalidates owner sessions and unused pairing codes, not saved
+notes, watchlists, or snapshots. The page hides private content after session
+invalidation; unsaved drafts may remain locked in page memory for same-owner
+re-pairing. Explicit logout, closing, or reloading can discard unsaved input.
+Reset notes, watchlists, and simulation records use local IndexedDB partitioned
+by profile and origin; server volumes are not a backup of browser-local data.
+Old standalone private database or browser records are not automatically
+imported into this instance.
 
 ## Shutdown And Restart
 
 ```powershell
-$envFile = ".temp/reset-secrets/compose.env"
-docker compose --project-name dragon-radar-reset --env-file $envFile -f compose.reset.yaml stop
-docker compose --project-name dragon-radar-reset --env-file $envFile -f compose.reset.yaml up -d --wait
+docker compose --project-name dragon-radar-reset --env-file .temp/reset-secrets/compose.env -f compose.yaml stop
+docker compose --project-name dragon-radar-reset --env-file .temp/reset-secrets/compose.env -f compose.yaml down
+.\scripts\start-reset.ps1
 ```
 
-Use `down` instead of `stop` to remove containers and networks. Do not add
-`--volumes` unless permanent database and Caddy state should be deleted.
+Choose `stop` to retain containers, or `down` to remove containers and networks.
+Neither deletes persistent volumes. Never add `-v` or `--volumes` for an
+update, rollback, or restart. Preserve the database, CA private-key volumes,
+and protected state; volumes are not backups. See
+[database backup and restore](operations/database-backup-restore.md).
 
 ## Verification
 
 ```powershell
-$envFile = ".temp/reset-secrets/compose.env"
-docker compose --project-name dragon-radar-reset --env-file $envFile -f compose.reset.yaml config
-docker compose --project-name dragon-radar-reset --env-file $envFile -f compose.reset.yaml ps
+docker compose --project-name dragon-radar-reset --env-file .temp/reset-secrets/compose.env -f compose.yaml config --quiet
+docker compose --project-name dragon-radar-reset --env-file .temp/reset-secrets/compose.env -f compose.yaml ps
 curl.exe -i http://127.0.0.1:8080/health/ready
 curl.exe -i http://127.0.0.1:8080/api/snapshots/list
 curl.exe -i -X POST http://127.0.0.1:8080/api/snapshots/list
@@ -90,14 +157,17 @@ uv run pytest tests/test_reset_public_gateway.py -q
 Expected public behavior is `200` for health and authorized published reads,
 `403` for every write method, and `404` for owner, AI, administration,
 ingestion, publication mutation, and private analysis-job paths.
+Use the saved public port when customized. `config --quiet` validates without
+printing interpolated credentials; do not use plain `config` in shared output.
 
 ## Task20 Base Acceptance
 
 Use only a disposable PostgreSQL database named `dragon_test`. The performance
 test creates and removes an isolated schema and writes evidence under `.temp/`.
+Load `DRAGON_TEST_DATABASE_URL` from your protected local test configuration;
+never use the Reset database or print its password or connection string.
 
 ```powershell
-$env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-local-only@127.0.0.1:55432/dragon_test"
 uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
 ```
 
@@ -139,8 +209,14 @@ report's overall status still remains blocked until real input, official
 rules, real model evaluation, public-sharing permission, and at least 20 real
 trading-day shadow evidence are supplied. Exit `1` means executed evidence
 failed; exit `2` means required executed evidence is missing. Integrity-only
-mode uses nonzero exit `3` when its checks pass. CI runs `--mode full` and
-uploads `.temp/acceptance/` even on failure.
+mode uses nonzero exit `3` when its checks pass. CI uses
+`scripts/acceptance-stack.sh` for its isolated container/TLS harness, runs
+`--mode full`, and uploads `.temp/acceptance/` even on failure. The harness is
+not an alternative daily startup entry and must not use local Reset secrets
+or retained user volumes. Historical Task20/21 evidence retains its original
+paths and bytes; it is not a current startup recipe.
 
 Recovery behavior and observed synthetic metrics are recorded in
 [`docs/acceptance/reset-base.md`](acceptance/reset-base.md).
+Real-input and production work remains separately blocked as described in
+[TODO](TODO.md) and the [production evidence contract](production-evidence.md).

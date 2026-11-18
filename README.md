@@ -11,7 +11,6 @@
 Task 17 历史实现基线为 `1adda8d`。
 Task 18 已完成本机开发验收：全量回归、研究并发性能门及需求追溯均通过，
 实际证据见 [Task 27 验收记录](docs/acceptance/task27-research.md)。
-本次工程整合记录见 [主分支整合记录](docs/integration/2026-11-17-main.md)。
 其他工程资料见 [文档入口](docs/README.md)。
 
 | 模块 | 进度 |
@@ -26,10 +25,8 @@ Task 18 已完成本机开发验收：全量回归、研究并发性能门及需
 | Task 18 最终验收 | 开发验收完成；详见新的验收记录 |
 | 真实数据、正式规则、真实模型评测、公开许可、20 交易日影子运行 | 五项独立外部门禁 blocked |
 
-上述是实现状态，不代表生产就绪。历史阶段结果见
-[数据底座](docs/verification-data-foundation.md)、
-[早期工作台](docs/verification-research-workbench.md)、
-[早期私人复盘](docs/verification-private-review.md)。
+上述是实现状态，不代表生产就绪。当前能力与剩余条件见
+[需求进度对照](docs/prd-development-progress-2026-11-17.md)。
 Reset 当前运行方式见 [运行说明](docs/reset-running.md)，
 2026-10-27 历史终验见 [Reset 全范围终验](docs/acceptance/reset-final.md)；
 其 Task 27 未实现结论由后续验收记录补充，不覆盖原始历史记录。
@@ -57,24 +54,28 @@ uv run python -m compileall -q src tests
 不要重复创建。
 
 ```powershell
+if (-not $env:DRAGON_TEST_DB_PASSWORD) { throw "Load a dedicated test password from your local credential manager." }
 docker run --detach --name dragon-radar-foundation-test-db `
   --publish 127.0.0.1:55432:5432 `
   --env POSTGRES_DB=dragon_test --env POSTGRES_USER=dragon_test `
-  --env POSTGRES_PASSWORD=dragon-test-local-only `
+  --env POSTGRES_PASSWORD=$env:DRAGON_TEST_DB_PASSWORD `
   postgres:17-alpine
-$env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-local-only@127.0.0.1:55432/dragon_test"
+$env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:$($env:DRAGON_TEST_DB_PASSWORD)@127.0.0.1:55432/dragon_test"
 uv run pytest -q --cov=dragon_radar --cov-report=term-missing
 docker stop dragon-radar-foundation-test-db
 ```
 
-上述明文密码仅用于隔离的测试数据库。正常运行的 Compose 实例必须另设强密码。
+测试密码应为凭据管理器提供的独立强十六进制密码，不打印密码或连接串。
+复用测试容器时使用其原有密码，不与 Reset 运行实例共享凭据。
 
 Task20 默认由有界编排器执行完整后端、前端、性能、恢复与证据校验：
 
 ```powershell
-$env:DRAGON_TEST_DATABASE_URL = "postgresql+psycopg://dragon_test:dragon-test-local-only@127.0.0.1:55432/dragon_test"
 uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
 ```
+
+运行前须配置上述专用测试数据库连接。CI 容器验收使用
+`scripts/acceptance-stack.sh`，不作为本机日常启动入口。
 
 `--mode focused` 只运行 PRD 契约、CSV、Reset 验收、恢复、性能与 Python 静态门禁，
 缺少完整门禁时必然返回阻塞。已有证据只能使用
@@ -102,78 +103,41 @@ Task29 全范围终验在编排器首位新增 `prd_contracts` 门禁
 真实模型评测、公开部署许可、≥20 交易日影子运行五项外部门禁保持 `blocked`。
 平台相关检查按实际执行环境登记，合成回归不得替代真实材料。
 
-## 第二批工作台
+## 本机运行
 
-第二批工作树位于 `.worktrees/research-workbench`，分支为 `feature/research-workbench`。
-范围为市场总览、涨幅分析、个股抽屉和详情，全部只读。证券查询接口见
-[接口说明](docs/workbench-api.md)，运行与测试要求见[工作台测试说明](docs/workbench-testing.md)。
-
-工作台使用独立容器项目，不复用或覆盖首批数据库：
+所有命令从项目根目录执行，唯一启动入口为：
 
 ```powershell
-.\scripts\start-local.ps1 -Workbench -Port 8020
+.\scripts\start-reset.ps1
 ```
 
-入口为 `http://127.0.0.1:8020`，Caddy 同源托管页面并代理 API；
-数据库和 API 本身不发布宿主端口。新实例默认空库，不自动加载虚构行情。
-开发凭据位于 `.temp/workbench-compose.env`，不要与首批凭据混用。
+默认公开只读入口为 `http://127.0.0.1:8080`，所有者入口为
+`https://localhost:8031`；两者只绑定本机回环地址，不自动开放公网。
+首次启动可使用 `-PublicPort 8088 -OwnerPort 8038`，后续复用已保存端口。
 
-## 首批 API 容器
+根目录唯一 `compose.yaml` 使用项目名 `dragon-radar-reset`，包含
+`db`、`public-api`、`public-caddy`、`owner-api`、`owner-caddy`、
+`analysis-worker`、`ai-worker` 七个服务。前端镜像与网关配置集中在
+`containers/public.Dockerfile`、`containers/public.Caddyfile`、
+`containers/owner.Dockerfile`、`containers/owner.Caddyfile`。
+数据库与 API 不直接发布宿主端口；公开入口不装配所有者、AI 或私人写入接口。
 
-在 Windows 上，启动脚本会在 `.temp/local-compose.env` 生成凭据文件，
-将访问权限限制为当前所有者与 SYSTEM，然后构建镜像、执行迁移并等待服务就绪：
+凭据保存在 `.temp/reset-secrets/compose.env`，保留数据库卷时必须保留该文件。
+不要打印配置、密码或配对码，不提交凭据；启动不导入行情、登记授权或启用模型。
+所有者证书信任、配对与撤销统一使用 `.\scripts\reset-owner.ps1`
+的 `-Action Certificate`、`-Action Pair`、`-Action Revoke`，
+完整步骤见 [Reset 运行指南](docs/reset-running.md)。
 
 ```powershell
-.\scripts\start-local.ps1 -Port 8000
+docker compose --project-name dragon-radar-reset --env-file .temp/reset-secrets/compose.env -f compose.yaml config --quiet
+docker compose --project-name dragon-radar-reset --env-file .temp/reset-secrets/compose.env -f compose.yaml ps
+docker compose --project-name dragon-radar-reset --env-file .temp/reset-secrets/compose.env -f compose.yaml down
 ```
 
-保留数据库卷时，也应保留该凭据文件。脚本不会读取项目已有的 `.env`。
-停止由该脚本管理的服务：
-
-```powershell
-docker compose --env-file .temp/local-compose.env -f compose.yaml -f compose.dev.yaml stop
-```
-
-若不用脚本而是手动配置，请使用另一个全新的 Compose 项目。
-通过密码管理器生成十六进制密码，或在 PowerShell 中执行：
-
-```powershell
-$env:COMPOSE_PROJECT_NAME = "dragon-radar-manual"
-$bytes = New-Object byte[] 32
-$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-$rng.GetBytes($bytes)
-$rng.Dispose()
-$env:DRAGON_DB_PASSWORD = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
-docker compose build
-docker compose up -d db
-docker compose run --rm api migrate
-docker compose -f compose.yaml -f compose.dev.yaml up -d
-```
-
-关闭终端前，应将密码保存到本机凭据管理器。后续启动必须使用相同的数据库密码；
-修改环境变量不会自动轮换已初始化的 PostgreSQL 账户密码。
-
-开发模式只读 API 默认地址为 `http://127.0.0.1:8000`。
-手动启动时，如端口被占用，可提前设置 `DRAGON_API_PORT`；使用启动脚本时，
-通过 `-Port` 指定端口。本次本机联调使用 `8010`，再次启动可执行
-`.\scripts\start-local.ps1 -Port 8010`，相应查询地址也需改为 `8010`。
-
-基础 Compose 配置不映射数据库或 API 的宿主端口；开发叠加配置仅将 API
-绑定到回环地址，不是已经实现身份认证的分享服务器。基础后端网络是内部网络，
-开发配置为 Docker Desktop 回环端口转发增加了一个网络，因此 API 容器具备出站能力，
-但尚未实现数据供应商或模型客户端。数据库始终只连接内部后端网络。
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health/live
-Invoke-RestMethod http://127.0.0.1:8000/health/ready
-Invoke-RestMethod http://127.0.0.1:8000/api/v1/snapshots
-docker compose -f compose.yaml -f compose.dev.yaml stop
-```
-
-启动不会插入演示数据或发布快照。来源登记、数据导入与发布都需要通过本机命令显式执行，
-具体见 `dragon-radar --help` 和[数据导入契约](docs/data-import.md)。
-原只读浏览器 API 不提供来源登记、导入、发布、AI 调用或笔记写入能力。
-第三批独立所有者应用才装配私人写入接口；原只读入口不因本批开发而开放写入。
+`down` 保留持久化卷；重启仍使用启动脚本，不删除卷、凭据或 CA 状态。
+不再使用早期分层 Compose 或独立工作台/私人启动方式。
+接口见 [工作台契约](docs/contracts/workbench-api.md)，
+显式数据导入见 [数据导入契约](docs/data-import.md)。
 
 ## 数据规则
 
@@ -205,7 +169,6 @@ FastAPI 分别装配只读与所有者应用。
 数据库卷不是备份。禁止使用 `docker compose down -v` 更新或回退应用。
 应用镜像回退无法撤销不兼容的数据库迁移；今后升级前应备份并验证恢复流程。
 
-相关文档：[已批准的技术设计](docs/superpowers/specs/2026-09-09-data-foundation-design.md)、
-[实施计划](docs/superpowers/plans/2026-09-09-data-foundation.md)、
-[验收记录](docs/verification-data-foundation.md)、
+相关文档：[文档入口](docs/README.md)、[数据导入](docs/data-import.md)、
+[备份恢复](docs/operations/database-backup-restore.md)、
 [依赖清单](docs/dependencies.md)、[产品需求](docs/DragonRadar_开发需求PRD.md)。

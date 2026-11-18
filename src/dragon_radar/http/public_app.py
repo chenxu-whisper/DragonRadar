@@ -21,6 +21,7 @@ from dragon_radar.http.routes.news import router as news_router
 from dragon_radar.http.routes.regulation import router as regulation_router
 from dragon_radar.http.routes.roles import router as roles_router
 from dragon_radar.http.routes.stock import router as stock_router
+from dragon_radar.http.routes.topics import router as topics_router
 from dragon_radar.http.selection import query_date, query_integer, query_values
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.storage.database import Database
@@ -32,6 +33,7 @@ PUBLIC_READ_PATHS = frozenset(
         "/api/snapshots/{snapshot_id}",
         "/api/market/overview",
         "/api/market/sector-flow",
+        "/api/topics/{sector_id}",
         "/api/market/sentiment",
         "/api/market/heatmap",
         "/api/search",
@@ -335,6 +337,7 @@ def create_public_app(
         news_router,
         regulation_router,
         roles_router,
+        topics_router,
         stock_router,
         analysis_router,
     ):

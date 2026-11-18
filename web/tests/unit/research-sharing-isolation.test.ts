@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const harness = vi.hoisted(() => ({
   effects: [] as Array<() => void | (() => void)>,
+  snapshotAvailable: true,
 }));
 
 // Exercise the actual Workbench effect bodies without a DOM renderer/server.
@@ -11,6 +12,7 @@ vi.mock('react', async importOriginal => ({
     typeof initial === 'function' ? initial() : initial,
     vi.fn(),
   ],
+  useRef: (initial: unknown) => ({ current: initial }),
   useEffect: (effect: () => void | (() => void)) => { harness.effects.push(effect); },
 }));
 vi.mock('../../src/hooks/useLocation', async () => {
@@ -22,11 +24,19 @@ vi.mock('../../src/hooks/useLocation', async () => {
     }),
   };
 });
-vi.mock('../../src/hooks/useResource', () => ({
+vi.mock('../../src/hooks/useResource', async () => {
+  const { resetSummary, snapshot } = await import('../fixtures/market');
+  return {
   AccessProvider: () => null,
   useAccess: () => ({ denied: false, retry: vi.fn() }),
-  useResource: () => ({ data: undefined, loading: false }),
-}));
+  useResource: (path?: string) => ({
+    data: harness.snapshotAvailable && path === '/api/snapshots/11111111-1111-4111-8111-111111111111'
+      ? resetSummary({ ...snapshot, snapshot_id: '11111111-1111-4111-8111-111111111111' })
+      : undefined,
+    loading: false,
+  }),
+  };
+});
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -37,7 +47,8 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function runWorkbench(reset: string, sharing: string) {
+async function runWorkbench(reset: string, sharing: string, snapshotAvailable = true) {
+  harness.snapshotAvailable = snapshotAvailable;
   vi.stubEnv('VITE_RESET_WORKBENCH', reset);
   vi.stubEnv('VITE_PUBLIC_SHARING', sharing);
   vi.stubEnv('VITE_PRIVATE_REVIEW', '0');
@@ -61,7 +72,7 @@ async function runWorkbench(reset: string, sharing: string) {
   };
   const panelProps = findPanel(tree);
   if (reset === '1' && sharing !== '1') {
-    expect(panelProps).toMatchObject({ snapshotId: '11111111-1111-4111-8111-111111111111' });
+    expect(panelProps).toMatchObject({ snapshotId: snapshotAvailable ? '11111111-1111-4111-8111-111111111111' : '' });
     const { default: OwnerBacktestWorkbench } = await import('../../src/features/research/OwnerBacktestWorkbench');
     OwnerBacktestWorkbench(panelProps!);
   } else {
@@ -92,6 +103,11 @@ describe('owner research compile-time sharing isolation', () => {
     const fetcher = await runWorkbench('1', '0');
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls[0][0]).toBe('/api/research/manifests/11111111-1111-4111-8111-111111111111');
+  });
+
+  it('owner reset analysis does not subscribe using an unverified URL snapshot', async () => {
+    const fetcher = await runWorkbench('1', '0', false);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('reset sharing does not expose a lazy owner backtest component', async () => {

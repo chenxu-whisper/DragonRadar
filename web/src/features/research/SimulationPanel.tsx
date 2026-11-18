@@ -533,7 +533,10 @@ function failureMessage(failure: unknown): string {
   return failure instanceof Error ? failure.message : '本地模拟账本操作失败，当前输入已保留';
 }
 
-export default function SimulationPanel({ repository }: { repository: SimulationRepository }) {
+export default function SimulationPanel({ repository, onDraftStateChange }: {
+  repository: SimulationRepository;
+  onDraftStateChange?: (state: { dirty: boolean; busy: boolean }) => void;
+}) {
   const [account, setAccount] = useState<SimulationAccountRecord | null>(null);
   const [orders, setOrders] = useState<SimulationOrderRecord[]>([]);
   const [fills, setFills] = useState<SimulationFillRecord[]>([]);
@@ -541,10 +544,16 @@ export default function SimulationPanel({ repository }: { repository: Simulation
   const [error, setError] = useState('');
   const [openDraft, setOpenDraft] = useState<OpenAccountDraft>(emptyOpenAccountDraft);
   const [draft, setDraft] = useState<SimulationDraft>(emptySimulationDraft);
+  const [savedOpenDraft, setSavedOpenDraft] = useState(() => JSON.stringify(emptyOpenAccountDraft()));
+  const [savedDraft, setSavedDraft] = useState(() => JSON.stringify(emptySimulationDraft()));
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [rejection, setRejection] = useState<RejectionReason | null>(null);
   const mounted = useRef(true);
+  const dirty = account
+    ? JSON.stringify(draft) !== savedDraft
+    : JSON.stringify(openDraft) !== savedOpenDraft;
+  useEffect(() => { onDraftStateChange?.({ dirty, busy }); }, [onDraftStateChange, dirty, busy]);
 
   const refresh = useCallback(async () => {
     const [nextAccount, nextOrders, nextFills] = await Promise.all([
@@ -580,6 +589,7 @@ export default function SimulationPanel({ repository }: { repository: Simulation
     try {
       const opened = await openSimulationLedger(repository, openDraft, crypto.randomUUID());
       if (!mounted.current) return;
+      setSavedOpenDraft(JSON.stringify(openDraft));
       setNotice(`模拟账本已开立 · revision ${opened.revision} · 回读验证通过`);
       await refresh();
     } catch (failure) {
@@ -597,6 +607,7 @@ export default function SimulationPanel({ repository }: { repository: Simulation
     try {
       const result = await placeSimulationOrder(repository, draft, account.revision, crypto.randomUUID());
       if (!mounted.current) return;
+      setSavedDraft(JSON.stringify(draft));
       setRejection(result.rejection?.reason ?? null);
       setNotice(result.status === 'filled'
         ? `模拟成交已入账 · revision ${result.account.revision} · 回读验证通过`

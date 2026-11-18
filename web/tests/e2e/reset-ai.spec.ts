@@ -287,3 +287,260 @@ test('cross-snapshot adoption preserves the selected note and saves task provena
     { title: 'AI 每日复盘 2026-09-10', snapshot: ID, date: '2026-09-10' },
   ]));
 });
+
+test('overview daily AI expands snapshot facts without sending private notes and saves a separate review', async ({ page }) => {
+  await mockMarket(page);
+  await mockReview(page, reviewServer());
+  let submitted: Record<string, unknown> | undefined;
+  let accepted = false;
+  const result = () => task({
+    status: 'succeeded',
+    verification_status: 'passed',
+    human_review_status: accepted ? 'accepted' : 'unreviewed',
+    content_draft: draft,
+    revision: 1,
+    content_draft_source: 'provider',
+    content_draft_created_at: '2026-09-10T08:01:02Z',
+    ai_generated: true,
+    model_version: 'model-v1',
+    prompt_version: 'prompt-v1',
+    provider: 'fake',
+    token_usage: 20,
+    cost: '0.10',
+    latency_ms: 100,
+  });
+  await page.route('**/api/ai/daily-review', route => {
+    submitted = route.request().postDataJSON();
+    return route.fulfill({ json: result() });
+  });
+  await page.route(`**/api/ai/task/${taskId}`, route => route.fulfill({ json: result() }));
+  await page.route(`**/api/ai/task/${taskId}/review`, route => {
+    accepted = true;
+    return route.fulfill({ json: {
+      task_id: taskId, human_review_status: 'accepted', revision: 1,
+      idempotency_key: route.request().postDataJSON().idempotency_key,
+      verification_status: 'passed', note: 'Accepted synthetic review',
+    } });
+  });
+  await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-10`);
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('私人原始笔记');
+  await page.getByRole('textbox', { name: '正文', exact: true }).fill('私人内容不能发送到总览任务');
+  await page.getByRole('button', { name: '保存笔记', exact: true }).click();
+  await expect(page.locator('.local-note-editor').getByRole('status')).toContainText('回读验证通过');
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '市场总览', exact: true }).click();
+  const daily = page.getByRole('region', { name: 'AI 每日速览', exact: true });
+  await expect(daily).toContainText('快照事实模板');
+  expect(submitted).toBeUndefined();
+  await daily.getByRole('button', { name: '展开完整 AI 分析', exact: true }).click();
+  const panel = daily.getByRole('region', { name: 'AI 每日复盘', exact: true });
+  await expect(panel.getByLabel('发送内容预览')).toContainText('上涨 32');
+  await expect(panel.getByLabel('发送内容预览')).not.toContainText('私人内容不能发送');
+  expect(submitted).toBeUndefined();
+  await panel.getByRole('button', { name: '生成每日复盘', exact: true }).click();
+  await expect(panel).toContainText('AI 草稿');
+  expect(submitted).toMatchObject({ snapshot_id: ID, date: '2026-09-10', version: 'v1' });
+  expect(String(submitted?.notes_context)).toContain('上涨 32');
+  expect(String(submitted?.notes_context)).not.toContain('私人内容不能发送');
+  await panel.getByRole('button', { name: '接受校验草稿', exact: true }).click();
+  await expect(panel).toContainText('人工审核：accepted');
+  await expect(panel.getByRole('heading', { name: '事实', exact: true })).toBeVisible();
+  await expect(panel.getByRole('heading', { name: '推断', exact: true })).toBeVisible();
+  await expect(panel.getByRole('heading', { name: '缺失证据', exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: '采用草稿', exact: true }).click();
+  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '我的复盘', exact: true }).click();
+  await expect(page.getByRole('button', { name: '私人原始笔记', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'AI 每日速览 2026-09-10', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '正文', exact: true })).toHaveValue(/事实/);
+});
+
+function completedTask(overrides: Record<string, unknown> = {}) {
+  return task({
+    status: 'succeeded',
+    verification_status: 'passed',
+    content_draft: draft,
+    revision: 1,
+    content_draft_source: 'provider',
+    content_draft_created_at: '2026-09-10T08:01:02Z',
+    ai_generated: true,
+    model_version: 'model-v1',
+    prompt_version: 'prompt-v1',
+    provider: 'fake',
+    token_usage: 20,
+    cost: '0.10',
+    latency_ms: 100,
+    ...overrides,
+  });
+}
+
+const mismatches = [
+  { field: 'snapshot_id', value: OLD },
+  { field: 'as_of', value: '2026-09-10T08:02:00Z' },
+  { field: 'version', value: 'v2' },
+  { field: 'task_type', value: 'topic_suggest' },
+  { field: 'task_id', value: '00000000-0000-4000-8000-000000000098' },
+] as const;
+
+for (const source of ['submit', 'poll', 'cancel409', 'review', 'review409'] as const) {
+  for (const mismatch of mismatches) {
+    if (source === 'submit' && mismatch.field === 'task_id') continue;
+    test(`AI rejects ${mismatch.field} mismatch from ${source} before displaying or adopting it`, async ({ page }) => {
+      await mockMarket(page);
+      const owner = reviewServer();
+      await mockReview(page, owner);
+      const foreignText = 'Foreign task content must never be displayed or saved';
+      const foreignTask = completedTask({
+        [mismatch.field]: mismatch.value,
+        human_review_status: 'accepted',
+        content_draft: {
+          ...draft,
+          inferences: [{ ...draft.inferences[0], text: foreignText }],
+        },
+      });
+      let refreshing = source === 'poll';
+      let reads = 0;
+      const reviewing = source === 'review' || source === 'review409';
+      await page.route('**/api/ai/daily-review', route => route.fulfill({
+        json: source === 'submit' ? foreignTask : reviewing ? completedTask() : task(),
+      }));
+      await page.route(`**/api/ai/task/${taskId}`, route => {
+        reads++;
+        return route.fulfill({ json: refreshing ? foreignTask : task() });
+      });
+      await page.route(`**/api/ai/task/${taskId}/cancel`, route => {
+        refreshing = true;
+        return route.fulfill({ status: 409, json: { code: 'VERSION_CONFLICT' } });
+      });
+      await page.route(`**/api/ai/task/${taskId}/review`, route => {
+        refreshing = true;
+        return source === 'review409'
+          ? route.fulfill({ status: 409, json: { code: 'VERSION_CONFLICT' } })
+          : route.fulfill({ json: {
+            task_id: taskId, human_review_status: 'accepted', revision: 1,
+            idempotency_key: route.request().postDataJSON().idempotency_key,
+            verification_status: 'passed', note: 'Accepted synthetic review',
+          } });
+      });
+
+      await page.goto(`/?view=overview&snapshot=${ID}&date=2026-09-10`);
+      const daily = page.getByRole('region', { name: 'AI 每日速览', exact: true });
+      await daily.getByRole('button', { name: '展开完整 AI 分析', exact: true }).click();
+      const panel = daily.getByRole('region', { name: 'AI 每日复盘', exact: true });
+      await panel.getByRole('button', { name: '生成每日复盘', exact: true }).click();
+      if (source === 'cancel409') {
+        await panel.getByRole('button', { name: '取消任务', exact: true }).click();
+      } else if (reviewing) {
+        await expect(panel).toContainText('人工审核：unreviewed');
+        await panel.getByRole('button', { name: '接受校验草稿', exact: true }).click();
+      }
+      await expect(panel.getByRole('alert')).toContainText('不一致');
+      await expect(panel).not.toContainText(foreignText);
+      await expect(panel).not.toContainText('人工审核：accepted');
+      await expect(panel.getByRole('status')).not.toContainText('人工审核已记录');
+      if (!reviewing) {
+        await expect(panel.getByRole('button', { name: '采用草稿', exact: true })).toHaveCount(0);
+      }
+      if (source !== 'submit') expect(reads).toBeGreaterThan(0);
+      expect(owner.calls).toEqual([]);
+      const noteCount = await page.evaluate(async () => {
+        if (!(await indexedDB.databases()).some(item => item.name === 'dragon-radar-local-v3')) {
+          return 0;
+        }
+        const database = await new Promise<IDBDatabase>((resolve, reject) => {
+          const opening = indexedDB.open('dragon-radar-local-v3');
+          opening.onsuccess = () => resolve(opening.result);
+          opening.onerror = () => reject(opening.error);
+        });
+        const count = await new Promise<number>((resolve, reject) => {
+          const request = database.transaction('notes').objectStore('notes').count();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        database.close();
+        return count;
+      });
+      expect(noteCount).toBe(0);
+    });
+  }
+}
+
+test('overview retains the accepted AI result across collapse without another POST', async ({ page }) => {
+  await mockMarket(page);
+  await mockReview(page, reviewServer());
+  let submissions = 0;
+  let reviews = 0;
+  let accepted = false;
+  const result = () => completedTask({
+    human_review_status: accepted ? 'accepted' : 'unreviewed',
+  });
+  await page.route('**/api/ai/daily-review', route => {
+    submissions++;
+    return route.fulfill({ json: result() });
+  });
+  await page.route(`**/api/ai/task/${taskId}`, route => route.fulfill({ json: result() }));
+  await page.route(`**/api/ai/task/${taskId}/review`, route => {
+    reviews++;
+    accepted = true;
+    return route.fulfill({ json: {
+      task_id: taskId, human_review_status: 'accepted', revision: 1,
+      idempotency_key: route.request().postDataJSON().idempotency_key,
+      verification_status: 'passed', note: 'Accepted synthetic review',
+    } });
+  });
+  await page.goto(`/?view=overview&snapshot=${ID}&date=2026-09-10`);
+  const daily = page.getByRole('region', { name: 'AI 每日速览', exact: true });
+  const panel = daily.getByRole('region', { name: 'AI 每日复盘', exact: true });
+  await expect(panel).toHaveCount(0);
+  await daily.getByRole('button', { name: '展开完整 AI 分析', exact: true }).click();
+  expect(submissions).toBe(0);
+  await panel.getByRole('button', { name: '生成每日复盘', exact: true }).click();
+  await panel.getByRole('button', { name: '接受校验草稿', exact: true }).click();
+  await expect(panel).toContainText('人工审核：accepted');
+  await expect(daily).toContainText('当前发布未归档已审核的 AI 每日速览');
+  await daily.getByRole('button', { name: '收起完整 AI 分析', exact: true }).click();
+  await expect(panel).toBeHidden();
+  await expect(daily.locator('.ai-task-panel')).toHaveCount(1);
+  await daily.getByRole('button', { name: '展开完整 AI 分析', exact: true }).click();
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('人工审核：accepted');
+  await expect(panel).toContainText(draft.inferences[0].text);
+  expect(submissions).toBe(1);
+  expect(reviews).toBe(1);
+  await panel.getByRole('button', { name: '采用草稿', exact: true }).click();
+  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+});
+
+test('AI accepts normalized UTC publication instants on submit, poll and review reads', async ({ page }) => {
+  await mockMarket(page);
+  await mockReview(page, reviewServer());
+  const asOf = '2026-09-10T08:01:00+00:00';
+  let accepted = false;
+  await page.route('**/api/ai/daily-review', route => route.fulfill({
+    json: task({ as_of: asOf }),
+  }));
+  await page.route(`**/api/ai/task/${taskId}`, route => route.fulfill({
+    json: completedTask({
+      as_of: asOf,
+      human_review_status: accepted ? 'accepted' : 'unreviewed',
+    }),
+  }));
+  await page.route(`**/api/ai/task/${taskId}/review`, route => {
+    accepted = true;
+    return route.fulfill({ json: {
+      task_id: taskId, human_review_status: 'accepted', revision: 1,
+      idempotency_key: route.request().postDataJSON().idempotency_key,
+      verification_status: 'passed', note: 'Accepted synthetic review',
+    } });
+  });
+  await page.goto(`/?view=overview&snapshot=${ID}&date=2026-09-10`);
+  const daily = page.getByRole('region', { name: 'AI 每日速览', exact: true });
+  await daily.getByRole('button', { name: '展开完整 AI 分析', exact: true }).click();
+  const panel = daily.getByRole('region', { name: 'AI 每日复盘', exact: true });
+  await panel.getByRole('button', { name: '生成每日复盘', exact: true }).click();
+  await expect(panel).toContainText('人工审核：unreviewed');
+  await panel.getByRole('button', { name: '接受校验草稿', exact: true }).click();
+  await expect(panel).toContainText('人工审核：accepted');
+  await panel.getByRole('button', { name: '采用草稿', exact: true }).click();
+  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+});

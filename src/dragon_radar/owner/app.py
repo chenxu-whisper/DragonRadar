@@ -59,6 +59,7 @@ _RESET_READ_PATHS = {
     "/api/snapshots/{snapshot_id}",
     "/api/market/overview",
     "/api/market/sector-flow",
+    "/api/topics/{sector_id}",
     "/api/market/sentiment",
     "/api/market/sentiment/research",
     "/api/market/heatmap",

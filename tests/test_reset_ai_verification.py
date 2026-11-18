@@ -846,7 +846,7 @@ def test_checked_in_evaluation_manifest_truthfully_blocks_release():
 
 def test_private_deployment_build_enables_reset_and_ai():
     root = Path(__file__).resolve().parents[1]
-    dockerfile = (root / "deploy/private.Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (root / "containers/owner.Dockerfile").read_text(encoding="utf-8")
 
     assert "ENV VITE_PRIVATE_REVIEW=1" in dockerfile
     assert "ENV VITE_RESET_WORKBENCH=1" in dockerfile
@@ -879,8 +879,8 @@ def test_private_caddy_allows_only_required_reset_reads_and_exact_ai_writes():
     import re
 
     root = Path(__file__).resolve().parents[1]
-    config = (root / "deploy/private.Caddyfile").read_text(encoding="utf-8")
-    reset_read = re.compile(_caddy_matcher(config, "resetRead"))
+    config = (root / "containers/owner.Caddyfile").read_text(encoding="utf-8")
+    reset_read = re.compile(_caddy_matcher(config, "publishedRead"))
     ai_read = re.compile(_caddy_matcher(config, "aiRead"))
     ai_write = re.compile(_caddy_matcher(config, "aiWrite"))
     snapshot = "00000000-0000-4000-8000-000000000001"

@@ -17,6 +17,7 @@ import type {
   ReviewSwitch,
 } from './types';
 import { CsvExportButton } from '../../export/CsvExportButton';
+import { UnavailableModules } from '../workbench/PageStructure';
 
 const completenessLabels: Record<CompletenessState, string> = {
   complete: '完整',
@@ -83,7 +84,7 @@ export function RegulationContent({
     <div className="page-heading">
       <div>
         <p className="eyebrow">数据完整性 / 数值计算 / 正式披露</p>
-        <h1>监管</h1>
+        <h1>监管观察</h1>
       </div>
       <div><p className="muted">仅使用当前发布快照，不在读取时重算</p>
         {data && status.data && <CsvExportButton
@@ -134,10 +135,12 @@ export function RegulationContent({
     </p>
     <ResourceStatus resource={status} name="监管状态" />
     <ResourceStatus resource={eventResource} name="正式监管事件" />
+    {!data && <UnavailableModules view="regulation" ids={['completeness', 'calculation']} loading={status.loading} />}
+    {!data && !eventData && <UnavailableModules view="regulation" ids={['events']} loading={eventResource.loading} />}
 
     {(data || eventData) && <div className="regulation-regions">
       {data && <>
-        <section className="regulation-region completeness-region" aria-label="数据完整性">
+        <section id="workbench-completeness" tabIndex={-1} className="regulation-region completeness-region" aria-label="数据完整性">
         <div className="regulation-region-heading">
           <div><span>区域 1</span><h2>数据完整性</h2></div>
           <strong className={`regulation-state state-${data.region1_completeness.status}`}>
@@ -160,7 +163,7 @@ export function RegulationContent({
         </p>
         </section>
 
-        <section className="regulation-region calculation-region" aria-label="数值计算状态">
+        <section id="workbench-calculation" tabIndex={-1} className="regulation-region calculation-region" aria-label="数值计算状态">
         <div className="regulation-region-heading">
           <div><span>区域 2</span><h2>数值计算状态</h2></div>
           <p>提醒阈值与规则阈值分列；待评审规则保持待核验。</p>
@@ -205,7 +208,7 @@ export function RegulationContent({
         </section>
       </>}
 
-      <section className="regulation-region events-region" aria-label="已披露正式事件与限制">
+      <section id="workbench-events" tabIndex={-1} className="regulation-region events-region" aria-label="已披露正式事件与限制">
         <div className="regulation-region-heading">
           <div><span>区域 3</span><h2>已披露正式事件与限制</h2></div>
           <p>{eventData?.source_check === 'pass' && eventData.total !== null

@@ -9,10 +9,10 @@
 
   /* 语义 token：浅色值逐值映射线上现状，保证浅色零回归。--blue/--muted/--line 为既有别名。 */
   --row-h: 44px;
-  --bg-page: #fff;
+  --bg-page: #f6f8fa;
   --bg-surface: #fff;
   --bg-surface-2: #f5f7f9;
-  --bg-overlay: #fff;
+  --bg-overlay: #f2f5f8;
   --bg-sidebar: #f5f6f8;
   --bg-muted-panel: #f7f8fa;
   --bg-hover: #f1f6fc;
@@ -25,7 +25,7 @@
   --bg-skeleton: #edf0f4;
   --bg-backdrop: rgb(20 30 44 / 32%);
 
-  --border: #dce1e7;
+  --border: #e5eaf0;
   --border-row: #e7ebf0;
   --border-soft: #edf0f4;
   --border-header: #cbd4df;
@@ -36,8 +36,8 @@
   --border-soft-blue: #cbdced;
   --border-matrix: #7990aa;
 
-  --text-primary: #202b3b;
-  --text-secondary: #536172;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
   --text-faint: #667385;
   --text-thead: #415169;
   --text-meta-strong: #28364a;
@@ -50,8 +50,8 @@
   --text-brand: #173d71;
   --text-compare: #243e60;
 
-  --accent: #1759ad;
-  --accent-solid: #1759ad;
+  --accent: #2563eb;
+  --accent-solid: #2563eb;
   --accent-strong: #104888;
   --accent-contrast: #fff;
   --focus-ring: #1759ad;
@@ -194,7 +194,7 @@ svg { flex-shrink: 0; }
 .skip-link { position: fixed; top: -70px; left: 12px; padding: 12px; background: var(--bg-overlay); z-index: 100; border: 2px solid var(--blue); }
 .skip-link:focus { top: 12px; }
 .app-shell { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 100dvh; }
-.sidebar { position: sticky; top: 0; height: 100dvh; border-right: 1px solid var(--line); background: var(--bg-sidebar); padding: 28px 16px; display: flex; flex-direction: column; gap: 36px; }
+.sidebar { position: sticky; top: 0; height: 100dvh; overflow-y: auto; border-right: 1px solid var(--line); background: var(--bg-sidebar); padding: 24px 16px; display: flex; flex-direction: column; gap: 20px; }
 .brand { display: flex; gap: 10px; align-items: center; font-size: 19px; font-weight: 650; padding-inline: 10px; color: var(--text-brand); }
 .brand small { font-size: 12px; font-weight: 400; margin-top: 4px; }
 .sidebar nav { display: grid; gap: 6px; }
@@ -203,8 +203,8 @@ svg { flex-shrink: 0; }
 .sidebar-note { margin-top: auto; padding: 16px 10px 0; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
 .sidebar-note strong { font-size: 14px; }
 .mobile-menu { display: none; }
-.workspace { min-width: 0; }
-.snapshot-header { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--border-header); background: var(--bg-surface); padding: 14px 28px 12px; }
+.workspace { min-width: 0; min-height: 100dvh; display: flex; flex-direction: column; }
+.snapshot-header { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--border-header); background: var(--bg-surface); padding: 8px 24px; }
 .snapshot-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; }
 /* 主题/密度偏好控件：命中区恒为 44px，密度不缩放这些可点控件。 */
 .snapshot-controls .pref-toggle { flex: 0 0 auto; }
@@ -217,8 +217,20 @@ svg { flex-shrink: 0; }
 .snapshot-meta { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 12px; color: var(--muted); margin-top: 10px; overflow-wrap: anywhere; }
 .snapshot-meta strong { color: var(--text-meta-strong); }
 .version-pages { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; margin-top: 8px; }
-main { padding: 24px 28px 40px; min-width: 0; }
-footer { padding: 12px 28px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+main { padding: 24px 24px 40px; min-width: 0; flex: 1; }
+footer { padding: 12px 24px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+.workbench-status { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; min-height: 44px; font-size: 12px; color: var(--text-secondary); }
+.workbench-status strong { color: var(--text-primary); }
+.workbench-status .version-control { min-width: 160px; max-width: 230px; }
+.workbench-status > span { white-space: nowrap; }
+.workbench-status input, .workbench-status select { min-height: 36px; padding: 4px 8px; }
+@media (max-width: 767px) {
+  .workbench-status input, .workbench-status select { min-height: 44px; }
+}
+.snapshot-details { font-size: 12px; color: var(--text-secondary); }
+.snapshot-details > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; text-decoration: underline; text-underline-offset: 3px; }
+.snapshot-details-panel { position: absolute; top: 100%; right: 24px; width: min(680px, calc(100% - 32px)); border: 1px solid var(--border); padding: 20px; background: var(--bg-surface); box-shadow: 0 8px 20px rgb(0 0 0 / 10%); }
+.snapshot-details:not([open]) > .snapshot-details-panel { display: none; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
 .eyebrow { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
 .module-state { max-width: 880px; padding: 20px 0; border-block: 1px solid var(--line); }

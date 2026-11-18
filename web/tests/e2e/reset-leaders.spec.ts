@@ -16,8 +16,8 @@ test('sector matrix never mixes full-market historical counts with filtered ladd
   await page.goto(leadersUrl);
 
   const matrix = page.getByRole('table', { name: '日期与板数矩阵' });
-  await expect(matrix.getByText('2026-09-10', { exact: true })).toBeVisible();
-  await expect(matrix.getByText('2026-09-09', { exact: true })).toHaveCount(0);
+  await expect(matrix.getByRole('row', { name: /2026-09-10/ })).toBeVisible();
+  await expect(matrix.getByRole('row', { name: /2026-09-09/ })).toHaveCount(0);
   await expect(matrix.getByText('99 家', { exact: true })).toHaveCount(0);
   await expect(page.getByText('题材筛选下仅展示所选日期的可验证梯队；历史题材矩阵不可用。', { exact: true })).toBeVisible();
 });
@@ -26,14 +26,15 @@ test('renders the date-by-board matrix, tied candidates and honest comparison ev
   await mockLeaders(page);
   await page.goto(leadersUrl);
 
-  await expect(page.getByRole('heading', { name: '梯队', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '龙头梯队', exact: true })).toBeVisible();
   const matrix = page.getByRole('table', { name: '日期与板数矩阵' });
   await expect(matrix).toBeVisible();
   await expect(matrix.getByRole('button', { name: '合成测试证券1', exact: true })).toBeVisible();
   const candidates = page.getByRole('table', { name: '角色候选' });
   await expect(candidates.getByText('并列 1')).toHaveCount(2);
-  await expect(candidates.getByRole('button').nth(0)).toHaveAccessibleName('合成测试证券1');
-  await expect(candidates.getByRole('button').nth(1)).toHaveAccessibleName('合成测试证券2');
+  const candidateButtons = candidates.locator('tbody [data-label="证券"]').getByRole('button');
+  await expect(candidateButtons.nth(0)).toHaveAccessibleName('合成测试证券1');
+  await expect(candidateButtons.nth(1)).toHaveAccessibleName('合成测试证券2');
   await expect(page.getByText('不可比较', { exact: true })).toBeVisible();
   await expect(page.getByText('规则版本已变化')).toBeVisible();
   await expect(page.getByText('题材成员已变化')).toBeVisible();
@@ -151,8 +152,8 @@ test('keeps candidate and role-change fields readable without horizontal scrolli
     expect(await field.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(160);
   }
 
-  for (const label of ['角色候选横向滚动', '角色变化明细横向滚动']) {
-    const region = page.getByRole('region', { name: label });
+  for (const label of ['趋势龙头候选横向滚动', '趋势龙头角色变化横向滚动']) {
+    const region = page.getByRole('region', { name: label, exact: true });
     expect(await region.evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(
       await region.evaluate(element => element.clientWidth),
     );
@@ -163,15 +164,19 @@ test('all topics use the weakest status while a selected sector uses only its ow
   await mockLeaders(page, { mixedStatuses: true });
   await page.goto(allSectorsUrl);
 
-  await expect(page.locator('.leaders-controls .status-token')).toHaveText('证据不足');
-  const topicDetails = page.getByText('逐题材状态与原始依据');
+  const roleSection = page.getByRole('region', { name: '趋势龙头候选', exact: true });
+  const roleStatus = roleSection.locator('.leader-state strong');
+  await expect(roleStatus).toHaveText('角色输入不足');
+  await expect(roleSection.locator('.leader-state')).toContainText('必要输入缺失');
+  const topicDetails = roleSection.getByText('逐题材状态与原始依据', { exact: true });
   await topicDetails.click();
-  await expect(page.getByRole('row', { name: /SEC001.*可正式候选/ })).toBeVisible();
-  await expect(page.getByRole('row', { name: /SEC002.*证据不足.*必要输入缺失/ })).toBeVisible();
+  const topicStatuses = roleSection.getByRole('table', { name: '逐题材状态与原始依据', exact: true });
+  await expect(topicStatuses.getByRole('row', { name: /SEC001.*可正式候选/ })).toBeVisible();
+  await expect(topicStatuses.getByRole('row', { name: /SEC002.*证据不足.*必要输入缺失/ })).toBeVisible();
   await expect(page.getByText('有效 2 / 应有 4 · 排除 1 · 缺失 1', { exact: true })).toBeVisible();
 
   await page.getByLabel('题材筛选').selectOption('SEC001');
-  await expect(page.locator('.leaders-controls .status-token')).toHaveText('可正式候选');
+  await expect(roleStatus).toHaveText('可正式候选');
   await expect(page.getByText('角色输入不足', { exact: true })).toHaveCount(0);
 });
 
@@ -280,13 +285,16 @@ test('distinguishes no candidate, insufficient, unavailable, forbidden and offli
   state.insufficient = false;
   state.unapproved = true;
   await page.getByRole('button', { name: /刷新/ }).first().click();
-  await expect(page.getByText('规则尚未批准', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '趋势龙头候选', exact: true })
+    .getByText('规则尚未批准，不展示正式候选。', { exact: true })).toBeVisible();
+  await expect(page.locator('.leader-state')).toHaveCount(0);
   await expect(page.getByRole('table', { name: '角色候选' })).toHaveCount(0);
 
   state.unapproved = false;
   state.domainUnavailable = true;
   await page.getByRole('button', { name: /刷新/ }).first().click();
-  await expect(page.getByText('角色域未发布', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '趋势龙头候选', exact: true })
+    .getByText('角色域未发布', { exact: true })).toBeVisible();
 
   state.domainUnavailable = false;
   state.denied = true;

@@ -1,3 +1,0 @@
-# Preserve historical evidence bytes and their recorded SHA256 values.
-* -text
-.gitattributes text eol=lf

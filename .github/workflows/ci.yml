@@ -204,18 +204,18 @@ jobs:
         working-directory: web
       - run: npx playwright install --with-deps chromium
         working-directory: web
-      - name: Build Task20 private images ahead of the acceptance verifier
-        run: ./scripts/task20-private-tls.sh build
+      - name: Build acceptance stack images ahead of the acceptance verifier
+        run: bash ./scripts/acceptance-stack.sh build
       - run: python -m pip install uv==0.8.2
       - run: uv sync --locked
-      - name: Prepare Task20 private TLS gateway
-        run: ./scripts/task20-private-tls.sh setup --skip-build
+      - name: Prepare acceptance stack and owner TLS gateway
+        run: bash ./scripts/acceptance-stack.sh setup --skip-build
       - run: uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
         env:
           DRAGON_TASK20_PERF_ISOLATION: "1"
-      - name: Tear down Task20 private TLS gateway
+      - name: Tear down disposable acceptance stack
         if: always()
-        run: ./scripts/task20-private-tls.sh teardown
+        run: bash ./scripts/acceptance-stack.sh teardown
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -360,7 +360,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify Reset startup validation
         shell: powershell
-        run: .\tests\test_reset_start_script.ps1
+        run: .\scripts\test_reset_start_script.ps1
       - name: Verify Windows private-file protections
         shell: powershell
-        run: .\tests\test_private_scripts.ps1
+        run: .\scripts\test_private_scripts.ps1
