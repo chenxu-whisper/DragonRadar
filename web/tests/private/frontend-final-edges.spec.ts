@@ -4,6 +4,18 @@ import { mockReview, NOTE, reviewServer } from '../fixtures/review';
 
 const privateChunk = '**/src/features/review/PrivateApp.tsx*';
 
+test('A3 legacy private build never exposes Reset owner guidance', async ({ page }) => {
+  const db = reviewServer();
+  db.authorized = false;
+  await mockMarket(page);
+  await mockReview(page, db);
+  await page.goto('/?view=review');
+  await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '本机配对步骤' })).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('reset-owner.ps1');
+  await expect(page.locator('body')).not.toContainText('reset-secrets');
+});
+
 test('私人入口加载期间显示可访问状态', async ({ page }) => {
   const db = reviewServer();
   db.authorized = false;

@@ -91,6 +91,50 @@ async function submit(page: Page, query = '合成') {
   await globalDialog(page).getByRole('button', { name: '搜索归档', exact: true }).click();
 }
 
+for (const unavailable of ['empty', 'unreadable'] as const) {
+  test(`A1 ${unavailable} snapshot disables search with visible guidance and no requests or dialog`, async ({ page }) => {
+    const state: SearchState = { requests: [] };
+    await mockIG11(page, state);
+    if (unavailable === 'empty') {
+      await mockMarket(page, { empty: true });
+    } else {
+      await page.route(`**/api/snapshots/${ID}`, route => route.fulfill({
+        status: 404, json: { code: 'NOT_FOUND' },
+      }));
+    }
+    await page.goto(unavailable === 'empty' ? '/?view=overview' : overviewUrl);
+    const opener = trigger(page);
+    await expect(opener).toBeDisabled();
+    await expect(page.getByText('选择可读快照后可搜索发布归档', { exact: true })).toBeVisible();
+    await opener.click({ force: true });
+    await page.keyboard.press('Enter');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    expect(state.requests).toEqual([]);
+  });
+}
+
+test('A1 readable snapshot transition restores search open Escape and trigger focus', async ({ page }) => {
+  const state: SearchState = { requests: [] };
+  await mockIG11(page, state);
+  const market = { empty: true };
+  await mockMarket(page, market);
+  await page.goto('/?view=overview');
+  await expect(trigger(page)).toBeDisabled();
+  await expect(page.getByText('选择可读快照后可搜索发布归档', { exact: true })).toBeVisible();
+  market.empty = false;
+  await page.getByRole('button', { name: '刷新快照' }).click();
+  await expect(trigger(page)).toBeEnabled();
+  await expect(page.getByText('选择可读快照后可搜索发布归档', { exact: true })).toHaveCount(0);
+  await trigger(page).focus();
+  await page.keyboard.press('Enter');
+  await expect(globalDialog(page)).toBeVisible();
+  await expect(globalDialog(page).getByRole('textbox', { name: '搜索发布归档' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(globalDialog(page)).not.toBeVisible();
+  await expect(trigger(page)).toBeFocused();
+  expect(state.requests).toEqual([]);
+});
+
 test('native search dialog submits explicitly, traps focus, restores trigger and leaves command palette intact', async ({ page }) => {
   const state: SearchState = { requests: [] };
   await mockIG11(page, state);

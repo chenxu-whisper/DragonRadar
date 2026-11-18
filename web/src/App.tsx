@@ -307,7 +307,13 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
   // SnapshotHeader 只负责摆放（denied 时在其内隐藏），不静态持有按钮文案/class。
   const paletteTrigger = resetEnabled ? (<>
     <button type="button" className="command-palette-trigger" aria-haspopup="dialog"
-      onClick={event => { watchGeneration.current += 1; setPaletteOpen(false); setDrawer(null); setSearchTrigger(event.currentTarget); }}>全局搜索</button>
+      disabled={!snapshot || denied}
+      aria-describedby={!snapshot && !denied ? 'global-search-unavailable' : undefined}
+      onClick={event => {
+        if (!snapshot || denied) return;
+        watchGeneration.current += 1; setPaletteOpen(false); setDrawer(null); setSearchTrigger(event.currentTarget);
+      }}>全局搜索</button>
+    {!snapshot && !denied && <span id="global-search-unavailable" className="muted">选择可读快照后可搜索发布归档</span>}
     <button
       type="button"
       className="command-palette-trigger"

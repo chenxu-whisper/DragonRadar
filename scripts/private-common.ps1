@@ -1,3 +1,31 @@
+function Invoke-ResetHostDispatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$BoundParameters,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("PublicPort", "OwnerPort", "Action")][string[]]$ParameterNames
+    )
+    if ($PSVersionTable.PSVersion.Major -le 5) { return }
+    $ErrorActionPreference = "Stop"
+
+    # Resolve the OS host directly, never a PATH executable or a PS7 alias.
+    $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell/v1.0/powershell.exe"
+    if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
+        throw "Reset private state requires Windows PowerShell 5.1. Enable or install Windows PowerShell 5.1, then rerun this script."
+    }
+    $forwarded = @()
+    foreach ($name in $ParameterNames) {
+        if ($BoundParameters.Keys -contains $name) {
+            $forwarded += "-$name"
+            $forwarded += [string]$BoundParameters[$name]
+        }
+    }
+    # A nonzero native exit must remain an exit status, not a PS7 exception.
+    $PSNativeCommandUseErrorActionPreference = $false
+    & $windowsPowerShell -NoProfile -File $ScriptPath @forwarded
+    exit $LASTEXITCODE
+}
+
 function Initialize-PrivateDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
     $full = [System.IO.Path]::GetFullPath($Path)

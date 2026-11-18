@@ -40,8 +40,11 @@ AI provider, or enable a model token.
 ## Start
 
 Requirements are Docker with Compose v2, Windows PowerShell 5.1, and available local ports.
-The private-state ACL helpers use .NET Framework APIs; invoke `powershell.exe`
-when your current terminal uses PowerShell 7.
+Both entry scripts also accept execution from PowerShell 7: before touching
+private state they hand off to `powershell.exe -NoProfile -File`, forwarding
+only their declared parameters and returning its exit code. The ACL helpers
+continue to run under Windows PowerShell 5.1. If that host is unavailable,
+the entry stops with an installation instruction and a nonzero exit code.
 The sole daily startup entry is `scripts/start-reset.ps1`. The root
 `compose.yaml` replaces the former layered stacks and contains seven services:
 `db`, `public-api`, `public-caddy`, `owner-api`, `owner-caddy`,
@@ -120,7 +123,7 @@ The owner controls read the same `.temp/reset-secrets/compose.env` as startup.
 After verifying TLS trust, issue a one-time pairing code:
 
 ```powershell
-.\scripts\reset-owner.ps1 -Action Pair
+powershell.exe -NoProfile -File .\scripts\reset-owner.ps1 -Action Pair
 ```
 
 The code is written only to a protected local file under `.temp/reset-secrets/`;
@@ -128,6 +131,22 @@ use it within five minutes at the configured `https://localhost:8031` entry
 (or the saved custom owner port). Do not print the code, put it in a URL or
 clipboard, or send it to chat. A new issuance invalidates older unused codes.
 Owner sessions last eight hours, then require pairing again.
+
+At the owner entry, the locked page shows the command above, the protected
+`.temp/reset-secrets/pair-*.txt` location, and the current entry URL, including
+custom ports. Run the command locally from the project root, open the exact
+file path it reports, and enter its code in the pairing field. The page does
+not read local files or issue codes. An empty field cannot be submitted, and
+an in-flight submission cannot be repeated.
+
+If pairing is rejected, the page clears the field and offers the same local
+issuance steps. The service returns a general refusal; the page does not
+claim to know whether a code expired, was consumed, or was replaced. Issue a
+fresh code and enter it once within five minutes at the trusted owner URL.
+Session expiration locks private content; pairing again as the same owner
+can restore drafts held in page memory. Explicit logout clears that memory.
+Use `Revoke` only when you intend to invalidate all owner sessions and
+unused codes; it is not the normal session-recovery step.
 
 ```powershell
 .\scripts\reset-owner.ps1 -Action Revoke

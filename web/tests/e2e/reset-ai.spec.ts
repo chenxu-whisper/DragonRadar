@@ -60,6 +60,159 @@ const draft = {
   }],
 };
 
+test('A3 Reset owner pairing guidance uses the current origin and protected script output', async ({ page, baseURL }) => {
+  await mockMarket(page);
+  const owner = reviewServer();
+  owner.authorized = false;
+  await mockReview(page, owner);
+  let pairs = 0;
+  page.on('request', request => { if (request.url().endsWith('/pair')) pairs++; });
+  await page.goto('/?view=review');
+  const guidance = page.getByRole('region', { name: '本机配对步骤' });
+  await expect(guidance).toBeVisible();
+  await expect(guidance.locator('code').filter({ hasText: 'powershell.exe' })).toHaveText(
+    'powershell.exe -NoProfile -File .\\scripts\\reset-owner.ps1 -Action Pair',
+  );
+  await expect(guidance).toContainText('.temp/reset-secrets/pair-<随机标识>.txt');
+  await expect(guidance).toContainText('5 分钟');
+  await expect(guidance).toContainText('仅可使用一次');
+  await expect(guidance).toContainText('不会读取配对文件');
+  await expect.soft(guidance).toContainText('手动输入配对码');
+  await expect.soft(guidance).toContainText('不要将配对码复制到剪贴板、发送到聊天、放入 URL 或写入共享输出');
+  await expect.soft(guidance).not.toContainText('复制配对码');
+  await expect.soft(guidance).not.toContainText('手动粘贴');
+  await expect(guidance.getByRole('link', { name: '当前 Owner 入口' }))
+    .toHaveAttribute('href', new URL(baseURL!).origin);
+  await expect(guidance.locator('code').last()).toHaveText(new URL(baseURL!).origin);
+  const input = page.getByLabel('一次性配对码');
+  await expect(input).toHaveValue('');
+  await expect(page.getByRole('button', { name: '配对', exact: true })).toBeDisabled();
+  await input.fill('   ');
+  await expect(page.getByRole('button', { name: '配对', exact: true })).toBeDisabled();
+  await input.press('Enter');
+  expect(pairs).toBe(0);
+});
+
+test('A3 generic invalid_pairing clears input and lets the owner retry without duplicate requests', async ({ page }) => {
+  await mockMarket(page);
+  const owner = reviewServer();
+  owner.authorized = false;
+  await mockReview(page, owner);
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const submitted: string[] = [];
+  await page.route('**/api/owner/v1/pair', async route => {
+    submitted.push(route.request().postDataJSON().code);
+    if (submitted.length === 1) {
+      await pending;
+      return route.fulfill({ status: 401, json: { code: 'invalid_pairing' } });
+    }
+    return route.fallback();
+  });
+  await page.goto('/?view=review');
+  const input = page.getByLabel('一次性配对码');
+  await input.fill('synthetic-rejected-code');
+  await page.getByRole('button', { name: '配对', exact: true }).click();
+  await expect.poll(() => submitted.length).toBe(1);
+  await expect(input).toHaveValue('');
+  await expect(input).toBeDisabled();
+  await expect(page.getByRole('button', { name: '配对中', exact: true })).toBeDisabled();
+  await input.press('Enter');
+  expect(submitted).toHaveLength(1);
+  release();
+  await expect(page.getByRole('alert')).toContainText('配对未完成');
+  await expect(page.getByRole('alert')).toContainText('重新生成配对码后重试');
+  await expect(page.getByRole('alert')).not.toContainText('已过期');
+  await expect(page.getByRole('alert')).not.toContainText('已使用');
+  await expect(input).toBeEnabled();
+  await expect(input).toHaveValue('');
+  await input.fill('synthetic-new-code');
+  await page.getByRole('button', { name: '配对', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toHaveCount(0);
+  expect(submitted).toEqual(['synthetic-rejected-code', 'synthetic-new-code']);
+});
+
+test('A3 confirmed revoke on the locked page clears pairing input and prior error', async ({ page }) => {
+  await mockMarket(page);
+  const owner = reviewServer();
+  owner.authorized = false;
+  await mockReview(page, owner);
+  await page.route('**/api/owner/v1/pair', route =>
+    route.fulfill({ status: 401, json: { code: 'invalid_pairing' } }));
+  let deletes = 0;
+  await page.route('**/api/owner/v1/session', route => {
+    if (route.request().method() !== 'DELETE') return route.fallback();
+    deletes++;
+    return route.fulfill({ json: { status: 'logged_out' } });
+  });
+  await page.goto('/?view=review');
+  const input = page.getByLabel('一次性配对码');
+  const alert = page.getByRole('alert');
+  await input.fill('synthetic-rejected-code');
+  await page.getByRole('button', { name: '配对', exact: true }).click();
+  await expect(alert).toContainText('配对未完成');
+  await expect(input).toHaveValue('');
+  await input.fill('synthetic-fresh-code');
+  await expect(page.getByRole('button', { name: '配对', exact: true })).toBeEnabled();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: '撤销当前会话并清空内存', exact: true }).click();
+  await expect.poll(() => deletes).toBe(1);
+  await expect(input).toBeEnabled();
+  await expect.soft(alert).toContainText('当前会话已撤销，内存已清空。');
+  await expect.soft(input).toHaveValue('');
+  await expect.soft(alert).not.toContainText('配对未完成');
+  await expect.soft(page.getByRole('button', { name: '配对', exact: true })).toBeDisabled();
+});
+
+test('A3 session expiry locks content same-owner pairing restores input and logout clears memory', async ({ page }) => {
+  await mockMarket(page);
+  const owner = reviewServer();
+  await mockReview(page, owner);
+  let shortSession = false;
+  await page.route('**/api/owner/v1/session', route => {
+    if (route.request().method() !== 'GET' || !shortSession) return route.fallback();
+    return route.fulfill({ json: {
+      owner_id: owner.owner, session_id: '40000000-0000-4000-8000-000000000001',
+      expires_at: new Date(Date.now() + 900).toISOString(),
+    } });
+  });
+  await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-10`);
+  const judgment = page.getByRole('textbox', { name: '判断', exact: true });
+  await judgment.fill('unsaved same-owner memory');
+  shortSession = true;
+  await page.getByRole('button', { name: '检查会话' }).click();
+  await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toBeVisible();
+  await expect(judgment).toHaveCount(0);
+  shortSession = false;
+  await page.getByLabel('一次性配对码').fill('synthetic-repair');
+  await page.getByRole('button', { name: '配对', exact: true }).click();
+  await expect(judgment).toHaveValue('unsaved same-owner memory');
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: '退出私人会话' }).click();
+  await expect(page.getByLabel('一次性配对码')).toHaveValue('');
+  await expect(page.getByRole('alert')).toContainText('当前会话已撤销');
+  await page.getByLabel('一次性配对码').fill('synthetic-after-logout');
+  await page.getByRole('button', { name: '配对', exact: true }).click();
+  await expect(judgment).toHaveValue('');
+});
+
+test('A3 pairing guidance remains contained on mobile with enlarged text', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await mockMarket(page);
+  const owner = reviewServer();
+  owner.authorized = false;
+  await mockReview(page, owner);
+  await page.goto('/?view=review');
+  await page.addStyleTag({ content: 'html { font-size: 200%; }' });
+  const guidance = page.getByRole('region', { name: '本机配对步骤' });
+  await expect(guidance).toBeVisible();
+  expect(await guidance.evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(
+    await guidance.evaluate(element => element.clientWidth),
+  );
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+  await page.screenshot({ path: testInfo.outputPath('onboarding-guidance-mobile.png'), fullPage: true });
+});
+
 test('private Reset keeps the workbench and AI panel behind the session lock', async ({ page }) => {
   await mockMarket(page);
   const owner = reviewServer();

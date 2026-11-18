@@ -3,8 +3,11 @@ param(
     [string]$Action = "Certificate"
 )
 
-$ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "private-common.ps1")
+Invoke-ResetHostDispatch -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters `
+    -ParameterNames @("Action")
+
+$ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $state = Initialize-PrivateDirectory (Join-Path $root ".temp/reset-secrets")
 $compose = @(Get-ResetCompose $root)

@@ -15,6 +15,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const checking = useRef(false);
   const suppressAuth = useRef(false);
   const [revoking, setRevoking] = useState(false);
+  const [workspaceGeneration, setWorkspaceGeneration] = useState(0);
   const authGeneration = useRef(0);
   const lock = useCallback(() => { authGeneration.current++; checking.current = false; store.lock(); }, [store]);
   const check = useCallback(async () => {
@@ -88,6 +89,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     authGeneration.current++;
     checking.current = false;
     store.clear();
+    // Pairing keeps transient state in all builds; only Reset editors need a workspace remount.
+    setWorkspaceGeneration(value => value + 1);
     setRevoking(true);
     setMessage('内存已清空，正在撤销当前会话。');
     try {
@@ -99,7 +102,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } finally { setRevoking(false); }
   }, [store]);
   return <SessionContext value={{ enabled: true, store, version, read, send, check, logout }}>
-    {store.locked && <Pairing message={message} blocked={revoking} onPair={async code => {
+    {store.locked && <Pairing key={`pairing-${workspaceGeneration}`} message={message} blocked={revoking} onPair={async code => {
       if (revoking) throw new Error('请等待会话撤销完成。');
       suppressAuth.current = true;
       const generation = ++authGeneration.current;
@@ -113,6 +116,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // Only GET /session establishes the authoritative owner and expiry.
       await check();
     }} onRevoke={logout} />}
-    <div hidden={store.locked} inert={store.locked}>{children}</div>
+    <div key={import.meta.env.VITE_RESET_WORKBENCH === '1' ? workspaceGeneration : 0} hidden={store.locked} inert={store.locked}>{children}</div>
   </SessionContext>;
 }
