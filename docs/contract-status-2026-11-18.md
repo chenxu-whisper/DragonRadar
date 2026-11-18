@@ -750,3 +750,40 @@ the controller's later authorized reviewed hash-safe eight-file main sync
 (including analysis) remains separate and
 is NOT performed or claimed here. C and all five D gates remain open/blocked,
 as do the three separate future feature specifications named above.
+
+## 后续授权：提交与本机运行更新
+
+2026-11-18，用户另行授权“提交代码并更新运行中的 API 和前端”。
+此前 B5 规格、质量和整批质量复审均通过；控制器回传八个文件，
+逐项哈希确认其余 582 个冻结文件保留，主工作区 57 REQ／16 EX
+及测试定位、文档链接校验通过。
+
+代码及本批计划提交：
+`245b7355659ac74265f66e5d1e3adf040d9ae457`。
+原有无关修改保留；构建前 `git diff HEAD --name-only` 的实际内容差异
+仅为 `docs/README.md` 与 `docs/next-development-plan-2026-11-17.md`。
+通过 PowerShell 7 执行正式 `scripts/start-reset.ps1`，退出 0。
+后端与两个前端均完成构建；公开／所有者 API 和两个 worker 重建，
+前端源码未变，两个 Caddy 复用相同构建的现有容器。
+七个服务正常；数据库容器、持久卷、保护配置、CA、所有者身份及
+其他运行栈保持原样。
+
+实际在线检查通过：
+
+- 总览和个股各验证有／无显式日期的未知发布 ID，共四次返回
+  404，正文精确为 `NOT_FOUND`／`Resource not found`。
+- 仅按日期且无发布仍返回 200／no_data；公开写入返回 403，
+  公开 owner 路径返回 404，未配对的 owner 会话返回 401。
+- 两个首页及其实际入口 JS 资源返回 200；owner HTTPS 使用现有 CA
+  校验。Chrome 保持正常 TLS 校验，公开空状态搜索反馈、零搜索／
+  私人 API 请求、owner 配对指引及空码提交禁用均通过。
+- 两个 API 容器的选择源码原始字节与构建目录完全一致。
+  初次与 Git blob 的原始哈希比较不相等，排查确认仅有 CRLF 换行差异；
+  规范化 CRLF 后与提交完全一致。没有将规范化结果宣称为原始字节相等。
+
+运行证据均在项目外 `E:/ByteDance/Projects/Code/.temp/`：
+`onboarding-runtime-93242ca7c4/report.json` 及其脱敏 `startup.log`，
+`contract-b-runtime-verification.json`、
+`contract-b-runtime-browser.json`。前者目录沿用既有运行检查工具的命名，
+报告实际绑定上述批次 B 代码提交。该次本机更新不关闭 C/D 门禁，
+不构成远程 CI、公开发布或真实生产验收。
