@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import Request
 
 from dragon_radar.storage.models import Snapshot
-from dragon_radar.storage.repository import Repository
+from dragon_radar.storage.repository import NotFound, Repository
 
 
 def query_values(request: Request, allowed: set[str]) -> dict[str, str]:
@@ -53,7 +53,7 @@ def select_snapshot(
     if snapshot_id is not None:
         snapshot = repository.get_snapshot(snapshot_id)
         if snapshot is None:
-            return None
+            raise NotFound("Snapshot not found")
         if trade_date is not None and snapshot.trade_date != trade_date:
             raise ValueError("Snapshot date mismatch")
         return snapshot

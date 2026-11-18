@@ -48,6 +48,12 @@ class EmptyRepository:
         raise NotFound
 
 
+class MissingSelectionRepository(EmptyRepository):
+    def get_snapshot(self, snapshot_id):
+        self.calls.append(snapshot_id)
+        return None
+
+
 @asynccontextmanager
 async def workbench(repository=None, **kwargs):
     from dragon_radar.http.app import create_workbench_app
@@ -297,6 +303,36 @@ async def test_list_rejects_invalid_query(empty_client, query):
 @pytest.mark.parametrize("path", ["/api/market/overview", "/api/stock/A"])
 async def test_explicit_nonexistent_snapshot_is_not_no_data(empty_client, path):
     response = await empty_client.get(path, params={"snapshot_id": str(uuid4())})
+    assert_error(response, 404, "NOT_FOUND", "Resource not found")
+
+
+@pytest.mark.parametrize("path", ["/api/market/overview", "/api/stock/A"])
+@pytest.mark.parametrize("trade_date", [None, "2026-09-10"])
+async def test_explicit_unknown_snapshot_none_is_not_no_data(path, trade_date):
+    repo = MissingSelectionRepository()
+    snapshot_id = uuid4()
+    params = {"snapshot_id": str(snapshot_id)}
+    if trade_date is not None:
+        params["date"] = trade_date
+    async with workbench(repo) as client:
+        response = await client.get(path, params=params)
+    assert_error(response, 404, "NOT_FOUND", "Resource not found")
+    assert repo.calls == [snapshot_id]
+
+
+@pytest.mark.parametrize("path", ["/api/market/overview", "/api/stock/A"])
+async def test_explicit_unknown_snapshot_publication_never_falls_back(
+    published_market_client, path
+):
+    client, snapshot = published_market_client
+    trade_date = snapshot.trade_date.isoformat()
+    available = await client.get(path, params={"date": trade_date})
+    assert available.status_code == 200
+    assert available.json()["snapshot_id"] == str(snapshot.id)
+
+    response = await client.get(
+        path, params={"date": trade_date, "snapshot_id": str(uuid4())}
+    )
     assert_error(response, 404, "NOT_FOUND", "Resource not found")
 
 

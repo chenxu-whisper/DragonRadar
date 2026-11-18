@@ -1,8 +1,69 @@
-# DragonRadar PRD 与开发进度对照
+# DragonRadar PRD 与开发进度对照：B1-B5 完成，八文件后端门禁通过
 
-日期：2026-11-17。需求基线：[开发需求 PRD](DragonRadar_开发需求PRD.md)。
-主要功能已整合到本地 `main`，从项目根目录继续开发。
-真实数据接入和生产验收环境暂缓，见 [TODO](TODO.md)。
+当前更新：2026-11-18，ActiveSDD B1-B5 在隔离
+`E:/ByteDance/Projects/Code/.temp/DragonRadar-ContractB` 完成授权的有限契约范围。
+需求基线：[开发需求 PRD](DragonRadar_开发需求PRD.md)。
+逐项当前决定、实际命令／日志／源码身份及 C/D 剩余条件见
+[B1-B5 当前状态](contract-status-2026-11-18.md)；完整 PRD、C 工程验收、
+D 生产条件均未关闭，`automated_acceptance` 仍为 `unverified`。
+本实现代理的隔离 worktree 阶段不提交／推送，不修改 main、运行实例、版本或部署。
+控制器原计划授权的 reviewed/hash-safe 回传 main 为单独记录的动作，
+回传清单为八文件，包含 `tests/test_reset_analysis.py`；本代理不执行或声称完成该动作。
+2026-11-17 的本地 main 整合及下方旧验证数量仅保留为历史，不代表本批回传或当前全量。
+真实数据接入和生产验收环境仍暂缓，见 [TODO](TODO.md)。
+
+## B5 当前契约与证据
+
+57 REQ／16 EX 共 73 行当前追溯保留。REQ 状态为 37 项有限实现、
+3 项交互缺口、14 项待验证、3 项缺真实生产输入；EX 为 8 项有限实现、
+8 项待验证。数量是状态分布，不是验收通过比例。
+B2 显式未知 ID 的 None／真实发布路径 RED→GREEN 已保留；
+B5 全范围回归统一为 404、精确安全 `NOT_FOUND`／`Resource not found`，
+保留历史发布固定、不重算、不回退。G01/G02 原证据 tuple 仅追加实际文件路径，
+其他 55 个 REQ 条目不变。
+
+本批执行完整八文件后端切片与修改文件 focused Ruff；
+历史后端实际为 779 passed／1 failed／零跳过，422.21s，exit 1，
+保留 `contract-b-backend.log`，不改写为通过。
+唯一旧失败 `tests/test_reset_analysis.py:1774` 把显式未知快照断言为 200，
+而 B2 契约正确返回 404。控制器已批准合法的 B5 兼容测试范围扩展，
+仅将最后缺失发布断言改为 404 与精确安全 JSON；此前 400／存储前校验／日期、
+成员／角色及未知个股断言全部保留，无新增生产变更。
+focused GREEN 为 1 passed／1.25s／exit 0；完整八文件最终门禁实际
+780 passed／0 failed／0 skipped／443.96s／exit 0，
+保留 `contract-b-backend-green.log`。旧断言阻塞已解决，B5 有限后端门禁关闭，
+不代表全后端／全 PRD／C／D 验收通过；不把历史失败或跳过记为通过。
+focused Ruff 与 73 行／引用／注册表校验通过；
+外部 `contract-b-backend.log`／`contract-b-b5-ruff.log` 及失败定位见状态记录。
+历史测试修改及失败后端完成后执行 proof generator，记录 500 源码／测试文件、
+16 日志及聚合 SHA256，详见状态记录与外部 `contract-b-evidence.json`。
+最终 GREEN 与文档校验后 proof 已刷新为 500 源码／测试文件、20 保留日志，
+包含历史失败及最终通过日志；最终源码／测试聚合 SHA256 为
+`25e226fca710afe29e2cd909f62084f4a769f4ea2bce8bbc5d64e412e66d13ff`。
+文档校验 exit 0：57 唯一 REQ／16 唯一 EX／73 有效行与可解析引用；
+八文件范围外 582 个基线文件哈希不变，无重复证据路径。
+控制器已完成的稳定前端和源码门禁不重复：
+TypeScript exit 0；47 个 Vitest 文件／1412 用例及 32 Node 用例通过且无跳过；
+Chrome 搜索／排行两文件 29 passed（46.9s）；PRD checker
+57 REQ／29 endpoints／29 examples／30 JSON；全 src/tests Ruff、
+src compileall 均 exit 0。这些是各自有限范围的证据，不是完整后端或全 PRD。
+Chrome 日志有 LHB 与 wordcloud 两个未 mock 代理 `ECONNREFUSED`，
+不能称 console-clean、真实全网关或 C 验收通过。
+
+AM01 已由 B2/B5 解决；AM02/04 由 B3 搜索／列表范围冻结；
+AM03/05 由 B4 专用身份与公开模板／owner AI 边界冻结；
+AM06 仅用当前保留日志及源码／测试聚合哈希，不重建已删除日志。
+AM07 的 C 待办详见状态表：375/768/1024/1440 宽度和实际高度、
+真实浏览器 200% zoom（不以放大文字代替）、对比度／焦点／Esc／返回滚动，
+受控 60s／120s AI 模板与迟到草稿不覆盖已保存文本（真实延迟另列），
+RT01-RT12 与 provider egress、隔离合成有效发布的真实 Caddy→API
+题材／搜索／关联复核／引用和公开写入／私人路径／owner／撤权，
+五构建变体身份／预算／懒加载／物理隔离，以及先于浏览器负载的
+ubuntu-24.04 P95≤2s 性能门禁；隔离 Linux 完整 verifier 保留 90 分钟，
+远程 CI 等待后续授权。PRD 四档仅明确 375/1440，
+768/1024 是本次授权清单明确的中间宽度。
+双向排名、指数历史归档与公开 reviewed-daily-AI 归档／发现仍为独立功能规格，
+不是 C-only 验证；D 五项真实门禁继续 blocked。
 
 ## 工程覆盖
 
@@ -27,7 +88,7 @@ PRD 附录 A 保留 57 项 REQ：47 项 P0、8 项 P1、2 项 P2。
 [全范围契约测试](../tests/test_reset_full_scope.py)。
 2026-10-27 终验的 Task 27 未实现结论已由后续追加说明解除。
 
-## 验证边界
+## 历史验证边界：2026-11-16／17
 
 2026-11-16 研究阶段记录：后端 4256 passed、0 skipped、覆盖率 92%；
 前端 Vitest 1237 与 Node 28 通过，五套 E2E 共 325 通过。
@@ -42,7 +103,7 @@ Task20/Task21 校验器直接依赖的证据仍保留。
 受信执行报告，`automated_acceptance` 保持 `unverified`。
 
 2026-11-17 页面结构恢复：主导航、研究工具入口、总览布局、无快照／单域失败骨架、
-复盘分区和模拟草稿保护已按 PRD 重构。当前前端 Vitest 1238、Node 32、
+复盘分区和模拟草稿保护已按 PRD 重构。该阶段前端 Vitest 1238、Node 32、
 新增结构 E2E 15 通过；五种构建及其隔离检查通过。全量前端回归发现的详情折叠、
 移动命中区和无障碍问题已修复并完成相关复测。
 详细范围与本机证据见 [页面骨架恢复记录](ui-prd-rebuild-plan.md)。

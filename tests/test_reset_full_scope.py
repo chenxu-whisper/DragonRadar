@@ -38,14 +38,18 @@ REQ_REGISTRY: dict[str, dict[str, object]] = {
             f"{T}test_reset_market.py",
             f"{W}e2e/reset-market.spec.ts",
             "web/src/pages/Overview.tsx",
+            f"{T}test_reset_contracts.py",
         ),
     },
     "G02": {
-        "tasks": "09、14",
+        "tasks": "09、14、IG11",
         "evidence": (
             f"{T}test_reset_market.py",
             f"{T}test_reset_news.py",
             f"{W}e2e/reset-navigation.spec.ts",
+            f"{T}test_reset_ig11_search.py",
+            f"{W}unit/reset-ig11-search.test.ts",
+            f"{W}e2e/reset-ig11.spec.ts",
         ),
     },
     "G03": {
@@ -897,15 +901,16 @@ async def test_pinned_publication_serves_every_market_view_without_recomputation
         assert summary.status_code == 200
         assert summary.json()["snapshot_id"] == str(record.id)
 
-        # Unknown publications return an empty envelope and must never be
+        # Unknown publications return a safe 404 and must never be
         # substituted by the current/pinned data.
         missing = await client.get(
             "/api/market/overview", params={"snapshot_id": uuid4()}
         )
-        assert missing.status_code == 200
-        missing_body = missing.json()
-        assert missing_body["snapshot_id"] is None
-        assert "no_data" in missing_body["quality_flags"]
+        assert missing.status_code == 404
+        assert missing.json() == {
+            "code": "NOT_FOUND",
+            "message": "Resource not found",
+        }
 
         # The workbench enforces read-only even when a body is supplied.
         blocked = await client.post("/api/market/overview")

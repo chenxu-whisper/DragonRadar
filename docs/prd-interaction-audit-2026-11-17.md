@@ -1,5 +1,179 @@
 # PRD Interaction Audit: 2026-11-17
 
+## B1-B5 Complete And Required Backend Gate Green: 2026-11-18
+
+ActiveSDD batch B1-B5 authorized bounded contract edits are complete in the
+isolated ContractB worktree; required eight-file final B backend gate is GREEN.
+The historical complete eight-file run is 779 passed, 1 failed, zero skips in 422.21s,
+exit 1: `tests/test_reset_analysis.py:1774` expected 200 for an explicit
+unknown snapshot where the frozen contract correctly returns 404. This
+compatibility-test scope extension is now controller-approved within the
+authorized unknown-ID fix. Only its final missing-publication assertions
+were replaced by 404 and exact safe JSON; all preceding validation/date/
+membership/role/unknown-stock assertions remain. Focused GREEN: 1 passed in
+1.25s, exit 0. The required complete eight-file final gate is 780 passed,
+zero failures/skips/errors in 443.96s, exit 0, `contract-b-backend-green.log`;
+`contract-b-backend.log` remains failed-run history. No failed or skipped test
+is credited as a pass. The stale-assertion blocker is resolved and B5's bounded
+backend gate is closed, not full backend/PRD/C/D acceptance. Analysis is the
+eighth whole-B controller return file.
+Final document validation exits 0: 57 unique REQ + 16 unique EX, 73 valid rows
+and resolving references; registry paths are duplicate-free, other 55 REQs
+unchanged, and 582 baseline files outside the eight-file whole-B scope unchanged.
+Refreshed proof records 500 source/test files and 20 retained logs; final
+source/test aggregate SHA256:
+`25e226fca710afe29e2cd909f62084f4a769f4ea2bce8bbc5d64e412e66d13ff`.
+The authoritative current 57-REQ/16-EX register,
+exact B5 commands/logs/results, source/test aggregate identity and AM01-AM07
+dispositions are in [the current status register](contract-status-2026-11-18.md).
+The B1-only observations, B3/B4 evidence targets and original audit below
+remain dated history. B1's 36/3/15/3 REQ counts are NOT current totals.
+Current REQs: 37 bounded implemented, three interaction gaps, 14 needs
+verification, three production-input missing; EXs: eight bounded implemented,
+eight needs verification. These are dispositions, never acceptance counts.
+
+B2's repository-None and real-publication RED/GREEN prove explicit unknown
+404; B5 updates the stale full-scope regression to exact safe `NOT_FOUND` /
+`Resource not found`, preserving pinning, no recomputation and no fallback.
+Date-only no-publication 200, denied 403 and authorized date mismatch 400
+remain distinct. G01 retains tasks 02/03/08 and all four original paths plus
+`tests/test_reset_contracts.py`; G02 retains its three paths and adds backend,
+unit and E2E IG11 paths, with tasks 09/14/IG11. The original tuples contain
+actual paths, no duplicate/node-ID entries; the other 55 REQs are unchanged.
+
+AM01 is resolved by B2/B5. AM02/AM04 are bounded by B3 archived search and
+eight-list/rank/export scope. AM03/AM05 are bounded by B4 specialized domain
+identities and public deterministic facts versus explicit owner AI. AM06 uses
+retained current logs and source hashes; old counts and deleted evidence are
+not reconstructed or promoted. AM07 remains C's explicit pending checklist:
+375/768/1024/1440 widths (record heights; PRD explicitly names only 375/1440;
+768/1024 are this batch's chosen intermediate execution widths, not exact PRD wording),
+ACTUAL 200% browser zoom rather than enlarged text, contrast/focus/Esc/return
+scroll; controlled AI 60s processing/120s template/late-draft saved-text safety
+with real latency separate; RT01-RT12 source/batch/revision/permission/PIT and
+provider egress; actual isolated synthetic Caddy -> API valid-publication
+topics/search/association-review/citation, public-write/private-path denial,
+owner and revocation; five identity-bound build budgets/lazy/physical isolation;
+`ubuntu-24.04` P95 <=2.0s performance BEFORE browser load; full isolated Linux
+verifier with 90-minute budget and remote CI pending later authorization.
+
+Controller frontend/source gates were reused, not rerun. The Chrome log's
+two unmocked LHB/wordcloud proxy `ECONNREFUSED` lines prevent a console-clean,
+full-gateway or C-acceptance claim despite 29 passing scoped cases.
+Future bidirectional ranking, index-history archival and public reviewed-daily-AI
+archive/discovery are separate feature specifications, not C-only testing.
+All five D production gates remain blocked; full PRD/C/D pass and runtime
+updates are NOT claimed. This implementer worktree phase performs no
+commit/push/main/runtime/version/deploy action. Controller-reviewed hash-safe
+eight-file return to main is a separate originally authorized recorded action,
+not performed or claimed here; no commit or runtime change is implied.
+
+## B1 Current Status Freeze: 2026-11-18
+
+The historical scope, findings, matrices and 2026-11-17 counts below are
+unchanged. The current, individually bounded dispositions for all 57 REQs and
+16 EXs are in [the B1 status register](contract-status-2026-11-18.md).
+That register compares the actual PRD appendix, `EXPECTED_REQS`, `REQ_REGISTRY`
+and `EX_REGISTRY`, and supplies source paths, precise test locators, execution
+evidence limits, remaining subclauses and B/C/D or future-specification owners.
+Its rows supersede historical dispositions only for their stated scope.
+
+Stage1, IG04-IG11 and onboarding now wire index/topic drawers, owner daily AI,
+multi-role/history/feedback, contextual watch reopening, manual verification,
+association review, citation location, stock evidence and grouped search.
+These deliveries do not establish complete REQ acceptance. In particular,
+index price-history archival and public reviewed-daily-AI discovery remain
+future specifications; ranking bidirectionality remains an `interaction gap`
+owned by a dedicated future ranking specification, not pure C verification.
+
+B1 records rather than resolves AM01-AM07; B2-B5 will refine their dispositions:
+AM01 still has the repository-`None` 200 no-data versus throwing-stub 404
+conflict, with approved 404 pending B2. AM02 now has archived three-group search
+and actual security/topic/article navigation. AM03 retains specialized RT,
+disclosure and owner-result identities despite the generic EX introduction.
+AM04 has newly paged lists but fixed ranking directions. AM05 has explicit
+owner tasks, not public reviewed-task discovery; success, verification and
+human review remain independent. AM06 retains historical results without
+promoting them to current full acceptance. AM07 retains C's unmeasured full
+viewport, timing, egress, realtime, gateway and performance obligations.
+
+The controller reports a baseline selection slice of 28 passed, 59 deselected,
+2.59s, exit 0, using isolated-src `PYTHONPATH` and `uv --no-sync`; this is not
+evidence that the `None` defect is fixed. B1 ran the structural PRD checker
+only, yielding `REQ=57 endpoints=29 examples=29 JSON=30`, exit 0. No product
+tests, database reads/writes, builds, browser tests, commits or deployments
+were performed by B1. See the register for document-check evidence and the
+raw-hash versus normalized-content baseline distinction.
+
+The controller subsequently executed the isolated contract baseline:
+87 passed, zero skips, 11.43s, exit 0; B1 read the external log tail.
+The unknown-None regression is still not added or fixed. B1's read-only
+document checks passed: 57 unique REQs and 16 unique EXs, matching appendix,
+checker and registries; all 73 rows have ten nonempty cells, valid statuses
+and existing exact source/test locators; the historical audit is preserved.
+Current REQs: 36 bounded implemented, three interaction gaps, 15 needs
+verification, three production-input missing. EXs: eight bounded implemented,
+eight needs verification. These are dispositions, not acceptance-pass counts.
+
+## B3 Search And List Contract Update: 2026-11-18
+
+This documentation-only update supersedes AM02/AM04 observations below for
+the bounded current scope. The B1 73-row baseline and historical audit remain
+unchanged. B2's explicit unknown-ID 404 contract and actual RED/GREEN logs
+remain in [the status register](contract-status-2026-11-18.md); B3 does not
+rerun or relabel those results.
+
+| Ambiguity | B3 disposition | Remaining owner |
+| --- | --- | --- |
+| AM02 | Freeze archived securities/topics/messages search on one PUB/date, combined 20/50/100 paging (default 50), actual available-match total, and independent unavailable/null-total versus ready/real-zero groups. Denial clears results/actions; stale or mismatched responses cannot enable navigation. Security opens actual stock detail, topic opens actual `sector_id` detail, news opens the archived article retaining PUB/date. q-only lookup remains compatible; historical selectors are paired. No `topic_id`/name/current-label/historical-membership mapping is guessed | B5 registry evidence; C full historical/denied/keyboard/return acceptance; D actual licensed archives |
+| AM04 | [Workbench contract](contracts/workbench-api.md#am04-list-applicability-and-rank-compatibility) enumerates overview members, role candidates, role changes, topic members, news, rank, global search and expanded stock history: 20/50/100/default 50 UI paging, actual totals, specific sort fields/directions/null behavior and actual export scope. Fixed topic/search ID order and news publication-availability-time order are not invented bidirectional controls. Finite date/board matrices, fixed six evidence groups, metric summaries and small related previews are bounded exceptions | B3 contract scope recorded; C remaining units/sticky identity/export/full-list acceptance; future rank feature specification owns missing bidirectionality, NOT pure C verification |
+
+Backend `_SORT_FIELDS` and frontend `analysisSortDescriptor` agree:
+return/excess_return/amount_change DESC, drawdown ASC, stable security-ID ties
+and null last. `/api/rank/range` has NO `order` parameter; rank headers and
+CSV use descriptor direction rather than a URL toggle. REQ-V03 stays an
+`interaction gap` for required bidirectional ranking; this compatibility freeze
+does not waive that requirement or turn a missing feature into a test task.
+
+Source inspection also preserves existing compatibility boundaries: news UI
+passes size 50, while bare news API defaults to 20; its fixed time key is
+`available_at` DESC with article-ID ties, with `published_at` separately
+displayed. Stock CSV exports quote plus the entire returned raw window, not
+the history table's visible page. Topic members/global search/role changes
+have no dedicated CSV controls. Overview page export lacks encoded page/sort
+metadata; candidate export records page/size but not sort. B3 documents these
+limits without adding runtime behavior or universal controls.
+
+Inspected evidence targets: `tests/test_reset_ig11_search.py`,
+`tests/test_reset_analysis.py`, `web/tests/unit/reset-ig11-search.test.ts`,
+`web/tests/unit/reset-analysis.test.ts`, `web/tests/e2e/reset-ig11.spec.ts`,
+`web/tests/e2e/reset-analysis.spec.ts`. Precise declarations and assertion
+limits are listed in the status register's B3 evidence table. None was run by
+B3; document structure/reference and diff checks are not application passes.
+Controller review, B4/B5, C/D and future feature specifications remain separate.
+
+## B4 Specialized GET And AI Boundary Update: 2026-11-18
+
+This authorized documentation-only B4 update supersedes the historical AM03/
+AM05 ambiguity for the bounded contract wording. B1's 57-REQ/16-EX register,
+B2 selection behavior/evidence and B3 search/list/ranking freeze are preserved.
+The normative [workbench contract](contracts/workbench-api.md#am03-domain-identity-and-envelope-freeze)
+retains all 29 original interfaces and EX01-EX16.
+
+| Ambiguity | B4 disposition | Remaining owner |
+| --- | --- | --- |
+| AM03 | GETs follow frozen domain identity/envelope: PUB EX10/11/16 use selected immutable daily publication; intraday EX04-07 use source/batch/revision/PIT; LHB EX08/09 use disclosed source/version/`revision` and source-scoped seat/mapping; owner EX02/15 use initiating principal and immutable task/input. The common daily envelope does not override specialization. Explicit RT batches require source and never fall back; parent AND bar availability bound minutes. LHB keeps dedicated coverage/basis with no invented snapshot/rule IDs | C exact serializer/client and whole source/batch/cursor/history/result workflows; D independent rights and real inputs. Existing E01/E02, B01 and EX row gaps remain |
+| AM05 | Public daily content remains a labeled deterministic facts template. Owner AI is explicit create/read/review, with separate task status, verification status and human-review status; succeeded is neither numeric-verified nor human-accepted. Edited revisions re-enter verification and late provider results cannot replace the selected human revision. Adoption is not publication | C whole revisions/revocation/timing workflow; D real provider/processing/display/sharing rights; dedicated future public reviewed-daily-AI archive/discovery specification |
+
+Index price-history archival is a separate future product specification.
+Neither missing index history nor public reviewed-daily-AI discovery is
+supplied by market/stock substitution, deterministic facts or private jobs.
+No existing REQ/EX primary status or remaining subclause is promoted by B4.
+Source/assertion snippets and current exact U locators are recorded in the
+status register's B4 section; no product test or runtime gate was run in B4.
+B5 owns the controller's reported 1412 Vitest, 32 Node, 29 Chrome and PRD/
+Ruff/compile gate records, not this document update.
+
 ## IG04–IG11 Implementation Update
 
 IG04–IG11 的后续实现、独立复审和实际验证记录见

@@ -1771,8 +1771,11 @@ async def test_analysis_routes_validate_before_storage_and_bind_snapshot_date():
                 "adj": "raw",
             },
         )
-    assert missing.status_code == 200
-    assert missing.json()["data"] is None
+    assert missing.status_code == 404
+    assert missing.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
 
 
 def _replace_market_payload(snapshot, payload):
