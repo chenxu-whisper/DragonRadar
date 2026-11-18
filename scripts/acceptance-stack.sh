@@ -90,7 +90,7 @@ build_images() {
 
 start_services() {
     compose up --detach --wait db
-    compose run --rm public-api migrate
+    compose run --rm --no-deps analysis-worker migrate
     compose up --detach owner-caddy
     compose run --rm owner-api owner-init >/dev/null
     compose up --detach --wait

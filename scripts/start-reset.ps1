@@ -102,7 +102,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Reset container build failed." }
     & docker @compose up -d --wait db
     if ($LASTEXITCODE -ne 0) { throw "Reset database startup failed." }
-    & docker @compose run --rm public-api migrate
+    # The public API has a fixed edge IP that is occupied during updates.
+    # Run the same backend migration command on the worker data network.
+    & docker @compose run --rm --no-deps analysis-worker migrate
     if ($LASTEXITCODE -ne 0) { throw "Reset database migrate step failed." }
     & docker @compose up -d owner-caddy
     if ($LASTEXITCODE -ne 0) { throw "Owner gateway namespace startup failed." }

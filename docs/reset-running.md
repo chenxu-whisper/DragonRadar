@@ -39,7 +39,9 @@ AI provider, or enable a model token.
 
 ## Start
 
-Requirements are Docker with Compose v2, PowerShell, and available local ports.
+Requirements are Docker with Compose v2, Windows PowerShell 5.1, and available local ports.
+The private-state ACL helpers use .NET Framework APIs; invoke `powershell.exe`
+when your current terminal uses PowerShell 7.
 The sole daily startup entry is `scripts/start-reset.ps1`. The root
 `compose.yaml` replaces the former layered stacks and contains seven services:
 `db`, `public-api`, `public-caddy`, `owner-api`, `owner-caddy`,
@@ -51,6 +53,18 @@ build still uses the root `Dockerfile`.
 ```powershell
 .\scripts\start-reset.ps1
 ```
+
+To update an already running instance from the current source:
+
+```powershell
+powershell.exe -NoProfile -File .\scripts\start-reset.ps1
+```
+
+The update rebuilds both frontends and the backend, runs migrations using a
+temporary `analysis-worker` container on the worker data network, then waits
+for the seven services. This avoids allocating the running public API's fixed
+edge address to the migration container. Existing credentials, database and
+owner CA volumes are reused.
 
 On first use, the script creates a random database password in
 `.temp/reset-secrets/compose.env`. Windows ACLs are restricted to the current
