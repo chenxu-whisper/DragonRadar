@@ -43,6 +43,20 @@
 			header_up X-Dragon-Client-IP {http.request.remote.host}
 		}
 
+		@realtimeRead {
+			method GET
+			path /api/realtime/quotes /api/realtime/minutes /api/realtime/anomalies /api/market/sector-flow/intraday
+		}
+		reverse_proxy @realtimeRead public-api:8000 {
+			header_up -Forwarded
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Dragon-*
+			header_up X-Dragon-Client-IP {http.request.remote.host}
+		}
+
 		@api path /api/* /health/*
 		respond @api 404
 		root * /srv

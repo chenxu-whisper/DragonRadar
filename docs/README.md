@@ -7,6 +7,9 @@
 | --- | --- |
 | 当前产品需求 | [开发需求 PRD](DragonRadar_开发需求PRD.md) |
 | 已实现能力与剩余条件 | [需求进度对照](prd-development-progress-2026-11-17.md) |
+| 当前下一阶段计划 | [本机体验、契约收口与工程验收](next-development-plan-2026-11-18.md) |
+| C3 有限工程验收 | [AI 时间与实时契约验收报告](acceptance/contract-c3-2026-11-20.md) |
+| C4 有限工程验收 | [五构建、性能与回归验收报告](acceptance/contract-c4-2026-11-20.md) |
 | 后续待办 | [TODO](TODO.md) |
 | 本机启动、所有者 TLS 与配对 | [统一 Reset 运行指南](reset-running.md) |
 | API 与快照契约 | [工作台契约](contracts/workbench-api.md)、[来源契约](source-contracts.md) |

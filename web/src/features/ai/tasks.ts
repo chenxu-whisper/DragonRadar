@@ -108,7 +108,7 @@ export function factPresentation(fact: AIFact): {
 
 export function pollDecision(task: AITask): { poll: boolean; delayMs: number } {
   if (task.content_draft) return { poll: false, delayMs: 0 };
-  if (task.status === 'pending' || task.status === 'running') {
+  if (task.status === 'pending' || task.status === 'running' || task.status === 'failed') {
     return { poll: true, delayMs: 1000 };
   }
   return { poll: false, delayMs: 0 };

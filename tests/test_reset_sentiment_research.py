@@ -871,7 +871,7 @@ async def test_corrupt_research_block_returns_503(corrupt):
 
 
 @pytest.mark.anyio
-async def test_unpublished_snapshot_is_empty_envelope_and_post_rejected():
+async def test_unknown_explicit_snapshot_is_not_found_and_post_rejected():
     from dragon_radar.http.app import create_workbench_app
 
     app = create_workbench_app(repository=_StaticRepository())
@@ -887,10 +887,11 @@ async def test_unpublished_snapshot_is_empty_envelope_and_post_rejected():
             params={"snapshot_id": str(uuid4())},
         )
 
-    assert missing.status_code == 200
-    body = missing.json()
-    assert body["data"] is None
-    assert body["quality_flags"] == ["no_data"]
+    assert missing.status_code == 404
+    assert missing.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
     # The workbench read-only middleware rejects every write method before
     # routing, so POST is not accepted (TR-C.5: 405/not mounted on writes).
     assert posted.status_code == 403

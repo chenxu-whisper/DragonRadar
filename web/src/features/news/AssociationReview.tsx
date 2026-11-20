@@ -105,8 +105,12 @@ export default function AssociationReview({ article, date, snapshot }: {
   const [error, setError] = useState('');
   const [reading, setReading] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
   const operation = useRef<AbortController | undefined>(undefined);
   const identity = useRef<ReadSession | undefined>(undefined);
+  useEffect(() => {
+    if (opened && !document.querySelector('dialog[open]')) closeButton.current?.focus();
+  }, [opened]);
   const close = () => {
     operation.current?.abort();
     setOpened(false); setItems([]); setSession(undefined); setError('');
@@ -163,12 +167,13 @@ export default function AssociationReview({ article, date, snapshot }: {
   return <>
     <button ref={trigger} disabled={!associations.length} onClick={() => {
       setOpened(true); void read();
+      if (opened && !document.querySelector('dialog[open]')) closeButton.current?.focus();
     }}>复核消息关联</button>
     {opened && <section aria-label="所有者关联复核" onKeyDown={event => {
       if (event.key === 'Escape') { event.stopPropagation(); close(); }
     }}>
       <h3>所有者关联复核</h3>
-      <button onClick={close}>关闭关联复核</button>
+      <button ref={closeButton} onClick={close}>关闭关联复核</button>
       <label>实际关联<select value={selected} onChange={event => setSelected(event.target.value)}>
         {associations.map(item => <option key={item.association_id} value={item.association_id}>
           {'topic_id' in item ? item.topic_id : item.security_id}

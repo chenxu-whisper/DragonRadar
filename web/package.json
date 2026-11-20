@@ -18,6 +18,8 @@
     "test:e2e:ai:private": "playwright test --config playwright.ai.config.ts",
     "test:e2e:production-isolation": "node scripts/test-production-isolation.mjs",
     "test:contract-runtime": "node scripts/test-reset-contract-runtime.mjs",
+    "test:contract-c2": "node scripts/test-contract-c2.mjs",
+    "test:contract-c3": "node scripts/test-reset-contract-runtime.mjs --c3",
     "test:containers": "npm run test:e2e:production-isolation"
   },
   "dependencies": {

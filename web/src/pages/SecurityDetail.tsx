@@ -172,7 +172,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         : '暂无角色证据'}</p>
       {modernData.role_reason && <p className="detail-reasons">角色状态：{reasonLabel(modernData.role_reason)}</p>}
       {evidenceSector && !entrySectorValid && <p className="notice" role="status">当前入口题材不属于该证券的角色证据上下文。</p>}
-      {roleSectors.length ? <label>角色证据题材
+      {roleSectors.length ? <label className="role-sector-control">角色证据题材
         <select value={actualSector || ''} onChange={event => setSelectedSector(event.target.value)}>
           <option value="">选择已归档角色题材</option>
           {roleSectors.map(sector => <option key={sector} value={sector}>

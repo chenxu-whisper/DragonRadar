@@ -1,6 +1,5 @@
 import { chromium } from '@playwright/test';
-import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -10,42 +9,64 @@ import {
   RESEARCH_OWNER_READ_PROBES,
   RESEARCH_OWNER_WRITE_PROBES,
   RESEARCH_PUBLIC_DENY_PROBES,
-  composeChildEnvironment,
   productionOwnerOverride,
   queryPublishedPort,
   selectPublicEdgeSubnet,
 } from './production-isolation-support.mjs';
-import { composeOverride } from './reset-contract-runtime-support.mjs';
+import {
+  composeOverride, finishProductionIsolationEvidence, fixtureBrowserLaunchOptions,
+} from './reset-contract-runtime-support.mjs';
+import {
+  captureFixtureSource, cleanupFixtureProject, createFixtureIdentity,
+  createPrivateDirectory, fixtureChildEnvironment, fixtureEvidenceSecrets, initializeFixtureEvidence,
+  protectOwnerSecretFiles, protectPrivateFile, recordFixtureCommand,
+  sanitizeFixtureEvidence, writePrivateFile,
+  recordFixtureBrowserIdentity, recordFixtureToolIdentities,
+} from './contract-synthetic-fixture.mjs';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(webRoot, '..');
-const runId = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
-const state = resolve(root, '..', '.temp', 'production-isolation', runId);
-const password = randomBytes(24).toString('hex');
-const project = `dragon-radar-isolation-e2e-${runId}`;
-const envFile = resolve(state, 'compose.env');
+const identity = createFixtureIdentity({
+  root, kind: 'isolation',
+  evidenceRoot: resolve(root, '..', 'production-isolation'),
+});
+const { runId, project, state, password, envFile } = identity;
+const secrets = fixtureEvidenceSecrets(identity);
 const authorityFile = resolve(state, 'authority');
 const pairFile = resolve(state, 'pair.txt');
 const networkOverrideFile = resolve(state, 'compose.network.yaml');
 const ownerOverrideFile = resolve(state, 'compose.owner.yaml');
 const files = ['compose.yaml', networkOverrideFile, ownerOverrideFile];
 let browser;
+let evidencePrepared = false;
+let primaryError;
+let cleanup = { status: 'not-started' };
+let probeResult;
+let manifest;
+const permissions = {};
 
 function run(command, args, options = {}) {
+  const started = Date.now();
   const result = spawnSync(command, args, {
     cwd: root,
     encoding: 'utf8',
     timeout: options.timeout ?? 600_000,
     maxBuffer: 32 * 1024 * 1024,
-    env: composeChildEnvironment({ ...process.env, ...options.env }),
+    env: fixtureChildEnvironment(process.env),
   });
-  if (result.error) throw result.error;
+  if (evidencePrepared) {
+    recordFixtureCommand(identity, {
+      command, args, status: result.status, durationMs: Date.now() - started,
+      stdout: result.stdout, stderr: result.stderr, error: result.error?.message,
+    });
+  }
+  if (result.error) throw new Error(sanitizeFixtureEvidence(result.error.message, secrets));
   if (!(options.allowed ?? [0]).includes(result.status)) {
-    throw new Error([
+    throw new Error(sanitizeFixtureEvidence([
       `${command} ${args.join(' ')} exited ${result.status}`,
       result.stdout,
       result.stderr,
-    ].filter(Boolean).join('\n'));
+    ].filter(Boolean).join('\n'), secrets));
   }
   return result.stdout;
 }
@@ -62,7 +83,7 @@ function compose(...args) {
 }
 
 function writeEnvironment(ownerPort) {
-  writeFileSync(
+  permissions.envFile = writePrivateFile(
     envFile,
     [
       `DRAGON_DB_PASSWORD=${password}`,
@@ -70,9 +91,11 @@ function writeEnvironment(ownerPort) {
       'DRAGON_PUBLIC_PORT=0',
       'DRAGON_PUBLIC_BIND=127.0.0.1',
       `DRAGON_OWNER_SECRETS_DIR=${resolve(state, 'owner-secrets').replaceAll('\\', '/')}`,
+      'DRAGON_AI_PROVIDER=',
+      'DRAGON_AI_TOKEN=',
+      'DRAGON_AI_MODEL_VERSION=',
       '',
     ].join('\n'),
-    { encoding: 'utf8', mode: 0o600 },
   );
 }
 
@@ -81,14 +104,18 @@ async function withStack(action) {
   try {
     return await action();
   } catch (error) {
-    primaryError = error;
-    throw error;
+    primaryError = new Error(sanitizeFixtureEvidence(error.message, secrets));
+    throw primaryError;
   } finally {
     try {
-      compose('down', '--volumes', '--remove-orphans', '--timeout', '10');
+      cleanup = cleanupFixtureProject({ project, runId, kind: 'isolation', run, compose });
     } catch (error) {
-      if (primaryError) throw new AggregateError([primaryError, error], `Drill and cleanup failed for ${project}`);
-      throw error;
+      cleanup = { status: 'failed', error: sanitizeFixtureEvidence(error.message, secrets) };
+    }
+    if (cleanup.status !== 'removed') {
+      throw new Error(sanitizeFixtureEvidence(
+        [primaryError?.message, cleanup.error].filter(Boolean).join('\n'), secrets,
+      ));
     }
   }
 }
@@ -107,7 +134,9 @@ function assert(condition, message) {
 async function launchPage(baseURL) {
   if (!browser) {
     const channel = process.env.PLAYWRIGHT_CHANNEL || 'msedge';
-    browser = await chromium.launch(channel === 'chromium' ? {} : { channel });
+    recordFixtureBrowserIdentity(identity, { channel });
+    browser = await chromium.launch(fixtureBrowserLaunchOptions(channel));
+    recordFixtureBrowserIdentity(identity, { channel, version: browser.version() });
   }
   const context = await browser.newContext({ baseURL, ignoreHTTPSErrors: true });
   const page = await context.newPage();
@@ -132,8 +161,10 @@ async function testPrivate(port) {
         '/tmp/task18-pair.txt',
       );
       compose('cp', 'owner-api:/tmp/task18-pair.txt', pairFile);
+      protectPrivateFile(pairFile);
       compose('exec', '-T', 'owner-api', 'rm', '-f', '/tmp/task18-pair.txt');
       const code = readFileSync(pairFile, 'utf8').trim();
+      secrets.push(code);
       rmSync(pairFile, { force: true });
       assert(code.length > 0, 'Pairing code was empty');
 
@@ -156,11 +187,26 @@ async function testPrivate(port) {
       for (const [path, options] of [
         ['/api/owner/v1/notes', undefined],
         ['/api/snapshots/publish', { method: 'POST' }],
-        ['/api/news/00000000-0000-4000-8000-000000000001/associations/review', { method: 'POST' }],
       ]) {
         const denied = await request(page, path, options);
         assert(denied.status === 404, `Private disallowed route ${path} returned ${denied.status}`);
       }
+
+      // News-review POST is edge-allowed; JSON reaches the app's CSRF refusal.
+      const newsReview = await request(
+        page, '/api/news/00000000-0000-4000-8000-000000000001/associations/review',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      );
+      assert(
+        newsReview.status === 403,
+        `Private news-review write was not CSRF-rejected: ${newsReview.status} ${newsReview.body}`,
+      );
+      const refusal = JSON.parse(newsReview.body);
+      assert(
+        refusal.code === 'FORBIDDEN' && refusal.message === 'Access denied'
+          && Object.keys(refusal).length === 2,
+        `Private news-review refusal was not exact: ${newsReview.body}`,
+      );
 
       // Task 17: whitelisted research reads proxy through to the app. The
       // paired session clears the OwnerGate; the unknown id reaches the route,
@@ -249,11 +295,13 @@ async function testPublic(port) {
 }
 
 try {
-  mkdirSync(resolve(state, 'owner-secrets'), { recursive: true });
-  run('docker', ['version'], { timeout: 30_000 });
+  initializeFixtureEvidence(identity, captureFixtureSource(root, run), { privateState: true });
+  evidencePrepared = true;
+  permissions.ownerSecrets = createPrivateDirectory(identity.secretsDir);
+  recordFixtureToolIdentities(identity, run);
   writeEnvironment(1);
-  writeFileSync(networkOverrideFile, composeOverride({ publicEdgeSubnet: selectPublicEdgeSubnet(run) }), 'utf8');
-  writeFileSync(ownerOverrideFile, productionOwnerOverride({ state }), 'utf8');
+  permissions.networkOverrideFile = writePrivateFile(networkOverrideFile, composeOverride({ publicEdgeSubnet: selectPublicEdgeSubnet(run), password }));
+  permissions.ownerOverrideFile = writePrivateFile(ownerOverrideFile, productionOwnerOverride({ state }));
   await withStack(async () => {
     compose('config', '--quiet');
     compose('build');
@@ -263,19 +311,38 @@ try {
     compose('up', '--detach', '--no-deps', 'owner-caddy');
     const privatePort = queryPublishedPort(compose, 'owner-caddy', 8443);
     writeEnvironment(privatePort);
-    writeFileSync(authorityFile, `localhost:${privatePort}\n`, 'utf8');
+    writePrivateFile(authorityFile, `localhost:${privatePort}\n`);
     compose('run', '--rm', 'owner-api', 'owner-init');
+    permissions.ownerSecretFiles = protectOwnerSecretFiles(identity.secretsDir);
     compose('up', '--detach', '--wait', '--no-recreate');
     const publicPort = queryPublishedPort(compose, 'public-caddy', 8080);
     await testPrivate(privatePort);
     await testPublic(publicPort);
-    console.log(JSON.stringify({
+    probeResult = {
       private: `https://localhost:${privatePort}`,
       public: `http://127.0.0.1:${publicPort}`,
-      status: 'passed',
-    }));
+    };
   });
+} catch (error) {
+  primaryError = new Error(sanitizeFixtureEvidence(error.message, secrets));
 } finally {
-  if (browser) await browser.close();
-  rmSync(state, { recursive: true, force: true });
+  if (evidencePrepared) {
+    try {
+      manifest = await finishProductionIsolationEvidence(identity, {
+        browser, error: primaryError, cleanup, result: probeResult, permissions,
+        secretFiles: [networkOverrideFile, ownerOverrideFile, authorityFile, pairFile],
+        environment: { inheritedKeys: Object.keys(fixtureChildEnvironment()).sort() },
+      });
+    } catch (error) {
+      primaryError = new Error(sanitizeFixtureEvidence(
+        [primaryError?.message, error.message].filter(Boolean).join('\n'), secrets,
+      ));
+    }
+  }
 }
+
+if (primaryError) throw new Error(sanitizeFixtureEvidence(primaryError.message, secrets));
+if (manifest?.status !== 'passed') {
+  throw new Error(sanitizeFixtureEvidence(manifest?.error ?? 'Fixture evidence was not initialized', secrets));
+}
+console.log(sanitizeFixtureEvidence({ ...manifest.result, status: manifest.status, evidence: state }, secrets));

@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from dragon_radar.domain.models import SourceGrant
 from dragon_radar.domain.quality import grant_allows_display, grant_allows_storage
+from dragon_radar.publication.access import grant_allows_public_sharing
 from dragon_radar.realtime.anomalies import detect_anomalies
 from dragon_radar.realtime.models import (
     AnomalyEvent,
@@ -353,9 +354,14 @@ class RealtimeRepository(Repository):
     """Immutable realtime writes and permission-checked point-in-time reads."""
 
     def __init__(
-        self, database: Database, *, clock: Callable[[], datetime] | None = None
+        self,
+        database: Database,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        require_public_sharing: bool = False,
     ):
         super().__init__(database, clock=clock)
+        self.require_public_sharing = require_public_sharing
         secret = os.environ.get("DRAGON_REALTIME_CURSOR_SECRET")
         if secret is None:
             secret = database.engine.url.password
@@ -381,6 +387,12 @@ class RealtimeRepository(Repository):
         if not isinstance(value, expected_type):
             raise TypeError(f"{label} must be a {expected_type.__name__}")
         return expected_type.model_validate(value.model_dump())
+
+    def _allows_display(self, current, *, source_id, now):
+        return grant_allows_display(current, source_id=source_id, now=now) and (
+            not self.require_public_sharing
+            or grant_allows_public_sharing(current, source_id=source_id, now=now)
+        )
 
     def _authorize_import(
         self,
@@ -434,7 +446,7 @@ class RealtimeRepository(Repository):
                 current is None
                 or permission.state != "authorized"
                 or permission.captured_at > now
-                or not grant_allows_display(
+                or not self._allows_display(
                     current,
                     source_id=source_id,
                     now=now,
@@ -569,7 +581,7 @@ class RealtimeRepository(Repository):
             row["source_id"]
             for row in rows
             if row["permission_authorized"]
-            and grant_allows_display(
+            and self._allows_display(
                 SourceGrant.model_validate(row["grant"]),
                 source_id=row["source_id"],
                 now=operation_now,
@@ -1255,6 +1267,8 @@ class RealtimeRepository(Repository):
                 grant["local_display"].as_boolean().is_(True),
                 *self._permission_allows_display(permission, operation_now),
             )
+            if self.require_public_sharing:
+                query = query.where(grant["sharing"].as_boolean().is_(True))
         if child_table is not None:
             query = query.where(
                 select(1)

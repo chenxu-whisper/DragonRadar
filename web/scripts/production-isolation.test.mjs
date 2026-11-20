@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,253 @@ import * as support from './production-isolation-support.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const containersDir = resolve(root, 'containers');
 const readContainer = (name) => readFileSync(resolve(containersDir, name), 'utf8');
+
+async function pairingDiagnosticHarness() {
+  const { readFileSync, writeFileSync, mkdirSync, existsSync } = await import('node:fs');
+  const { resolve, dirname } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { createContext, SourceTextModule, SyntheticModule } = await import('node:vm');
+  const [root, evidenceRoot, scenario] = process.argv.slice(1);
+  const newsReviewScenario = scenario.startsWith('news-review-');
+  const newsReviewPath = '/api/news/00000000-0000-4000-8000-000000000001/associations/review';
+  const pairingCode = 'synthetic-pair-8f31a2';
+  const diagnostic = [
+    "locator.fill: Timeout 30000ms exceeded.",
+    "Call log:",
+    "  - waiting for getByLabel('one-time pairing code')",
+    `  - locator resolved to <input ${scenario === 'readonly' ? 'readonly' : 'disabled'} type="password"/>`,
+    `  - fill("${pairingCode}")`,
+    "  - attempting fill action",
+    "    - waiting for element to be visible, enabled and editable",
+    `    - element is not ${scenario === 'readonly' ? 'editable' : 'enabled'}`,
+  ].join('\n');
+  const fixture = await import(pathToFileURL(resolve(root, 'web/scripts/contract-synthetic-fixture.mjs')));
+  const runtime = await import(pathToFileURL(resolve(root, 'web/scripts/reset-contract-runtime-support.mjs')));
+  const edge = await import(pathToFileURL(resolve(root, 'web/scripts/production-isolation-support.mjs')));
+  let identity;
+  let fillCalled = false;
+  const consoleOutput = [];
+  const fetchCalls = [];
+  const permissions = { platform: 'win32', exec: () => ({
+    status: 0, stdout: '{"ownerSid":"S-1-5-21-123","protected":true}',
+  }) };
+  const page = {
+    async goto() {},
+    async content() { return ''; },
+    getByRole() { return { async waitFor() {}, async click() {} }; },
+    getByLabel() {
+      return { async fill(value) {
+        fillCalled = true;
+        if (value !== pairingCode) throw new Error('Incorrect synthetic pairing input');
+        if (existsSync(resolve(identity.state, 'pair.txt'))) throw new Error('Pair file was not removed');
+        if (scenario !== 'console' && !newsReviewScenario) throw new Error(diagnostic);
+      } };
+    },
+    async evaluate(callback, args) {
+      const publicPage = this.publicPage;
+      context.fetch = async (path, options) => {
+        fetchCalls.push({ publicPage, path, options });
+        let status = 404;
+        let body = '';
+        if (publicPage) {
+          status = options?.method === 'POST' ? 403 : 404;
+        } else if (path === '/api/owner/v1/session' || path === '/api/snapshots/list') {
+          status = 200;
+        } else if (path === newsReviewPath) {
+          status = 403;
+          body = '{"code":"FORBIDDEN","message":"Access denied"}';
+          if (options?.headers?.['Content-Type'] !== 'application/json' || options?.body !== '{}') {
+            status = 400;
+            body = '{"code":"INVALID_PARAM","message":"Invalid request"}';
+          } else if (scenario === 'news-review-400') {
+            status = 400;
+          } else if (scenario === 'news-review-404') {
+            status = 404;
+            body = '';
+          } else if (scenario === 'news-review-200') {
+            status = 200;
+          } else if (scenario === 'news-review-wrong-code') {
+            body = '{"code":"csrf_forbidden","message":"Access denied"}';
+          } else if (scenario === 'news-review-wrong-message') {
+            body = '{"code":"FORBIDDEN","message":"Owner request forbidden"}';
+          } else if (scenario === 'news-review-missing-message') {
+            body = '{"code":"FORBIDDEN"}';
+          } else if (scenario === 'news-review-extra-field') {
+            body = '{"code":"FORBIDDEN","message":"Access denied","extra":true}';
+          } else if (scenario === 'news-review-malformed-json') {
+            body = 'not JSON';
+          }
+        } else if (path.startsWith('/api/ai/') || edge.RESEARCH_OWNER_READ_PROBES.includes(path)) {
+          body = '{"code":"NOT_FOUND"}';
+        } else if (options?.method === 'POST' && edge.RESEARCH_OWNER_WRITE_PROBES.some(probe => probe.path === path)) {
+          status = 403;
+          body = '{"code":"csrf_forbidden"}';
+        }
+        return { status, async text() { return body; } };
+      };
+      return callback(args);
+    },
+  };
+  const browser = {
+    version() { return '142.0.1'; },
+    async newContext({ baseURL }) {
+      const currentPage = { ...page, publicPage: baseURL.startsWith('http:') };
+      return { async newPage() { return currentPage; }, async close() {} };
+    },
+    async close() { if (scenario === 'browser-close') throw new Error(`browser close: ${diagnostic}`); },
+  };
+  function spawn(_command, args) {
+    let stdout = '';
+    if (args[0] === 'version') stdout = '{"Client":{"Version":"29.9.2"},"Server":{"Version":"29.9.2"}}';
+    else if (args.includes('--short')) stdout = '5.6.1';
+    else if (args.includes('port')) stdout = '127.0.0.1:51234';
+    else if (args.includes('cp')) writeFileSync(args.at(-1), `${pairingCode}\n`);
+    else if (scenario === 'cleanup' && args.includes('down')) {
+      return { status: 1, stdout: '', stderr: `cleanup: ${diagnostic}` };
+    }
+    return { status: 0, stdout, stderr: '' };
+  }
+  const overrides = {
+    '@playwright/test': { chromium: { async launch() { return browser; } } },
+    'node:child_process': { spawnSync: spawn },
+    './production-isolation-support.mjs': {
+      ...edge, selectPublicEdgeSubnet: () => '10.240.0.0/28',
+      ...(newsReviewScenario ? {} : {
+        RESEARCH_OWNER_READ_PROBES: [], RESEARCH_OWNER_WRITE_PROBES: [],
+        RESEARCH_EDGE_DENY_PROBES: [], RESEARCH_PUBLIC_DENY_PROBES: [],
+      }),
+    },
+    './contract-synthetic-fixture.mjs': {
+      ...fixture,
+      createFixtureIdentity(options) {
+        identity = fixture.createFixtureIdentity({ ...options, evidenceRoot });
+        return identity;
+      },
+      captureFixtureSource: () => ({
+        head: 'synthetic-head',
+        lockfiles: ['uv.lock', 'web/package-lock.json'].map(path => ({
+          path, bytes: 1, sha256: 'a'.repeat(64),
+        })),
+      }),
+      createPrivateDirectory(path) { mkdirSync(path); return { protected: true }; },
+      writePrivateFile: (path, content) => fixture.writePrivateFile(path, content, permissions),
+      protectPrivateFile: path => fixture.protectPrivateFile(path, permissions),
+      protectOwnerSecretFiles: path => fixture.protectOwnerSecretFiles(path, permissions),
+    },
+    './reset-contract-runtime-support.mjs': {
+      ...runtime,
+      async finishProductionIsolationEvidence(...args) {
+        const manifest = await runtime.finishProductionIsolationEvidence(...args);
+        if (scenario === 'finalization') throw new Error(`finalization: ${diagnostic}`);
+        if (scenario === 'console') manifest.result.diagnostic = diagnostic;
+        return manifest;
+      },
+    },
+  };
+  const context = createContext({
+    process, console: { log: value => consoleOutput.push(String(value)) },
+  });
+  const runnerPath = resolve(root, 'web/scripts/test-production-isolation.mjs');
+  const runner = new SourceTextModule(readFileSync(runnerPath, 'utf8'), {
+    context, identifier: pathToFileURL(runnerPath).href,
+    initializeImportMeta(meta, module) { meta.url = module.identifier; },
+  });
+  await runner.link(async specifier => {
+    const exports = overrides[specifier] ?? await import(specifier);
+    return new SyntheticModule(Object.keys(exports), function () {
+      for (const [name, value] of Object.entries(exports)) this.setExport(name, value);
+    }, { context });
+  });
+  let rethrow;
+  try { await runner.evaluate(); } catch (error) { rethrow = { message: error.message, stack: error.stack }; }
+  const manifest = readFileSync(resolve(identity.state, 'manifest.json'), 'utf8');
+  const commands = readFileSync(resolve(identity.state, 'commands.jsonl'), 'utf8');
+  process.stdout.write(JSON.stringify({
+    pairingCode, diagnostic, fillCalled, consoleOutput, fetchCalls, rethrow, manifest, commands,
+    pairFileRetained: existsSync(resolve(identity.state, 'pair.txt')),
+  }));
+}
+
+for (const scenario of [
+  'valid', '400', '404', '200', 'wrong-code', 'wrong-message',
+  'missing-message', 'extra-field', 'malformed-json',
+]) {
+  test(`production news-review probe requires JSON without CSRF and exact refusal: ${scenario}`, () => {
+    const evidenceRoot = resolve(root, '..', 'contract-c-production-probe-repair', 'regression');
+    const child = spawnSync(process.execPath, [
+      '--experimental-vm-modules', '--input-type=module', '--eval',
+      `await (${pairingDiagnosticHarness.toString()})();`, root, evidenceRoot, `news-review-${scenario}`,
+    ], { encoding: 'utf8', timeout: 120_000 });
+    assert.equal(child.status, 0, child.stderr);
+    const observed = JSON.parse(child.stdout);
+    const privateCalls = observed.fetchCalls.filter(call => !call.publicPage);
+    assert.equal(privateCalls.find(call => call.path === '/api/owner/v1/session')?.options, undefined);
+    const reviews = privateCalls.filter(call => call.path.endsWith('/associations/review'));
+    assert.equal(reviews.length, 1);
+    assert.deepEqual(reviews[0].options, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    for (const [path, options] of [
+      ['/api/owner/v1/notes', undefined],
+      ['/api/snapshots/publish', { method: 'POST' }],
+    ]) {
+      const calls = privateCalls.filter(call => call.path === path);
+      assert.equal(calls.length, 1, path);
+      assert.deepEqual(calls[0].options, options);
+    }
+    const manifest = JSON.parse(observed.manifest);
+    if (scenario === 'valid') {
+      assert.equal(observed.rethrow, undefined);
+      assert.equal(manifest.status, 'passed');
+      for (const path of [
+        ...RESEARCH_OWNER_READ_PROBES,
+        ...RESEARCH_OWNER_WRITE_PROBES.map(probe => probe.path),
+        ...RESEARCH_EDGE_DENY_PROBES,
+      ]) {
+        assert.ok(privateCalls.some(call => call.path === path), path);
+      }
+    } else {
+      assert.equal(manifest.status, 'failed');
+      assert.equal(manifest.result, undefined);
+      assert.ok(observed.rethrow, 'Unexpected refusal was accepted');
+    }
+  });
+}
+
+for (const scenario of ['disabled', 'readonly', 'cleanup', 'browser-close', 'finalization', 'console']) {
+  test(`pairing diagnostics redact Playwright fill values at every sink: ${scenario}`, () => {
+    const evidenceRoot = resolve(root, '..', 'contract-c-c0-pairing-fix', 'regression');
+    const child = spawnSync(process.execPath, [
+      '--experimental-vm-modules', '--input-type=module', '--eval',
+      `await (${pairingDiagnosticHarness.toString()})();`, root, evidenceRoot, scenario,
+    ], { encoding: 'utf8', timeout: 120_000 });
+    assert.equal(child.status, 0, child.stderr);
+    const observed = JSON.parse(child.stdout);
+    assert.equal(observed.fillCalled, true);
+    assert.equal(observed.pairFileRetained, false);
+    const retainedSinks = Object.entries({
+      manifest: observed.manifest, commands: observed.commands,
+      console: JSON.stringify(observed.consoleOutput), rethrow: JSON.stringify(observed.rethrow),
+    }).filter(([, value]) => value?.includes(observed.pairingCode)).map(([sink]) => sink);
+    assert.deepEqual(retainedSinks, [], 'Diagnostic sinks retained the pairing code');
+    const manifest = JSON.parse(observed.manifest);
+    if (scenario === 'console') {
+      assert.equal(manifest.status, 'passed');
+      assert.equal(observed.rethrow, undefined);
+      assert.match(observed.consoleOutput[0], /fill\(\\"?\[REDACTED\]/);
+    } else {
+      assert.equal(manifest.status, 'failed');
+      assert.equal(manifest.result, undefined);
+      assert.equal(observed.consoleOutput.length, 0);
+      assert.match(observed.rethrow.message, /fill\("\[REDACTED\]"\)/);
+      assert.match(manifest.error, /fill\("\[REDACTED\]"\)/);
+      assert.match(manifest.error, /Timeout 30000ms exceeded/);
+      if (scenario === 'cleanup') assert.match(manifest.cleanup.error, /cleanup/);
+      if (scenario === 'browser-close') assert.match(manifest.error, /browser close/);
+      if (scenario === 'finalization') assert.match(observed.rethrow.message, /finalization/);
+    }
+  });
+}
 
 test('parsePublishedPort accepts Docker Compose IPv4 and IPv6 output', () => {
   assert.equal(parsePublishedPort('127.0.0.1:49152\n'), 49152);

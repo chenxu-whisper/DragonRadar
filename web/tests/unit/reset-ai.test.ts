@@ -423,7 +423,7 @@ describe('AI task and notes state', () => {
     expect(sent[6].key).not.toBe(sent[5].key);
   });
 
-  test('schedules another task GET only while the task is active', () => {
+  test('keeps a failed task polling until its deadline template is delivered', () => {
     expect(pollDecision({ ...task, status: 'pending' })).toEqual({
       poll: true,
       delayMs: 1000,
@@ -436,7 +436,7 @@ describe('AI task and notes state', () => {
         verification_status: 'failed',
         failure: { code: 'PROVIDER_FAILED', message: 'provider failed' },
       }),
-    ).toEqual({ poll: false, delayMs: 0 });
+    ).toEqual({ poll: true, delayMs: 1000 });
     expect(pollDecision({ ...task, status: 'succeeded' })).toEqual({
       poll: false,
       delayMs: 0,

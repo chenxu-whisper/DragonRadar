@@ -166,8 +166,7 @@ jobs:
     # Pinned: ubuntu-latest migrated to Ubuntu 26 on 2026-10-19; the
     # Task 20 private-TLS drill was validated on the 24.04 generation.
     runs-on: ubuntu-24.04
-    # Full verify_reset runs 21 gates (a ~30 min backend suite plus browser
-    # E2E); 60 minutes killed otherwise-passing runs before the report write.
+    # Full-only five-build/C2/C3 gates run after isolated performance.
     timeout-minutes: 90
     services:
       postgres:
@@ -177,7 +176,7 @@ jobs:
           POSTGRES_PASSWORD: dragon-test-local-only
           POSTGRES_DB: dragon_test
         ports:
-          - 5432:5432
+          - "127.0.0.1:5432:5432"
         options: >-
           --health-cmd "pg_isready -U dragon_test -d dragon_test"
           --health-interval 5s
@@ -185,6 +184,8 @@ jobs:
           --health-retries 20
     env:
       DRAGON_TEST_DATABASE_URL: postgresql+psycopg://dragon_test:dragon-test-local-only@localhost:5432/dragon_test
+      DRAGON_TOPIC_CURSOR_SECRET: synthetic-c5-topic-cursor-ci-only
+      DRAGON_REALTIME_CURSOR_SECRET: synthetic-c5-realtime-cursor-ci-only
       PLAYWRIGHT_CHANNEL: chromium
       PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.temp/pycache
       UV_CACHE_DIR: ${{ github.workspace }}/.temp/uv-cache
@@ -195,7 +196,9 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.23.5"
+      - run: python -m pip install uv==0.8.2
+      - run: uv sync --locked
       # Front-load browser/apt and private image build wake so their residual
       # CPU/IO load cannot perturb the in-harness P95 performance gate; the
       # verifier additionally stops the private stack around the performance
@@ -206,8 +209,6 @@ jobs:
         working-directory: web
       - name: Build acceptance stack images ahead of the acceptance verifier
         run: bash ./scripts/acceptance-stack.sh build
-      - run: python -m pip install uv==0.8.2
-      - run: uv sync --locked
       - name: Prepare acceptance stack and owner TLS gateway
         run: bash ./scripts/acceptance-stack.sh setup --skip-build
       - run: uv run python scripts/verify_reset.py --mode full --output .temp/acceptance/reset-base.json
@@ -220,7 +221,16 @@ jobs:
         if: always()
         with:
           name: reset-task20-evidence
-          path: .temp/acceptance/
+          # Never upload compose.env, owner-secrets, CA, or raw Compose config.
+          path: |
+            .temp/acceptance/
+            .temp/acceptance-stack/config-facts.json
+            .temp/acceptance-stack/cleanup.json
+            .temp/acceptance/acceptance-stack-cleanup.json
+            .temp/five-builds/
+            .temp/acceptance/frontend_five_builds/
+            .temp/acceptance/frontend_contract_c2/
+            .temp/acceptance/frontend_contract_c3/
 
   web_quality:
     runs-on: ubuntu-latest

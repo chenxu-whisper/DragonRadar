@@ -1,5 +1,7 @@
+import ast
 import hashlib
 import json
+import os
 import runpy
 import subprocess
 import sys
@@ -15,6 +17,968 @@ VERIFIER = runpy.run_path(str(SCRIPT))
 REQUIRED_GATES = tuple(VERIFIER["REQUIRED_GATES"])
 GATE_SPECS = VERIFIER["GATE_SPECS"]
 RECOVERY_DRILLS = tuple(VERIFIER["RECOVERY_DRILLS"])
+C5_GATES = {
+    "frontend_five_builds": (".", ["node", "web/scripts/test-five-builds.mjs"]),
+    "frontend_contract_c2": ("web", ["npm", "run", "test:contract-c2"]),
+    "frontend_contract_c3": ("web", ["npm", "run", "test:contract-c3"]),
+}
+
+
+@pytest.mark.parametrize("parent_name", ["checkout", ".temp"])
+def test_c5_c3_collector_matches_actual_producer_parent(
+    tmp_path, monkeypatch, parent_name
+):
+    root = tmp_path / parent_name / "DragonRadar"
+    collector = VERIFIER["_contract_parent"]
+    monkeypatch.setitem(collector.__globals__, "ROOT", root)
+    result = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {createFixtureIdentity} from "
+            "'./web/scripts/contract-synthetic-fixture.mjs';"
+            "import {dirname} from 'node:path';"
+            "console.log(JSON.stringify(dirname(createFixtureIdentity({root:process.argv[1]}).state)));",
+            str(root),
+        ],
+        cwd=SCRIPT.parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert collector("frontend_contract_c3") == Path(json.loads(result.stdout))
+
+
+@pytest.fixture(autouse=True)
+def c5_read_only_node_dependency_loader(monkeypatch):
+    loader = os.environ.get("C5_TEST_NODE_LOADER")
+    if not loader:
+        return
+    original = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        if isinstance(argv, list) and argv[:2] == ["node", "--input-type=module"]:
+            argv = ["node", "--import", loader, *argv[1:]]
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+@pytest.mark.parametrize("gate", C5_GATES)
+def test_c5_required_exact_immutable_graph(gate):
+    assert gate in REQUIRED_GATES
+    assert gate not in VERIFIER["FOCUSED_GATES"]
+    cwd, argv = C5_GATES[gate]
+    (spec,) = GATE_SPECS[gate]
+    assert spec.cwd == cwd
+    assert list(spec.command) == argv
+    assert not spec.requires_test_counts
+    for earlier in ("performance", "public_no_write", "async_over_five_seconds"):
+        assert REQUIRED_GATES.index(earlier) < REQUIRED_GATES.index(gate)
+    assert "frontend_contract_runtime" in REQUIRED_GATES
+
+
+def test_c5_legacy_build_produces_required_manifest_without_dropping_gate():
+    assert list(GATE_SPECS["frontend_builds"][0].command) == [
+        "npm",
+        "run",
+        "build",
+        "--",
+        "--manifest",
+    ]
+    assert GATE_SPECS["frontend_builds"][0].timeout_seconds == 900
+
+
+def test_c5_build_exit_zero_does_not_manufacture_test_passes(tmp_path):
+    runner = RecordingRunner(
+        [
+            FakeRunResult(
+                started_at=datetime(2026, 11, 20, tzinfo=UTC),
+                ended_at=datetime(2026, 11, 20, 0, 0, 1, tzinfo=UTC),
+                exit_status=0,
+                stdout=b"built\n",
+            )
+        ]
+    )
+    command = VERIFIER["_run_command"](
+        "frontend_builds",
+        1,
+        GATE_SPECS["frontend_builds"][0],
+        tmp_path,
+        runner,
+    )
+    assert command["observed_counts"]["passed"] == 0
+
+
+@pytest.mark.parametrize("gate", C5_GATES)
+@pytest.mark.parametrize("kind", ["missing", "duplicate", "argv", "cwd"])
+def test_c5_manifest_rejects_missing_duplicate_or_polluted_gate(tmp_path, gate, kind):
+    assert gate in REQUIRED_GATES
+    manifest = evidence_manifest(tmp_path)
+    if kind == "missing":
+        manifest["records"] = [r for r in manifest["records"] if r["gate_id"] != gate]
+    elif kind == "duplicate":
+        manifest["records"].append(deepcopy(record(manifest, gate)))
+    else:
+        record(manifest, gate)["commands"][0][kind] = (
+            ["npm", "run", "test:contract-c2", "--", "--grep", "smoke"]
+            if kind == "argv"
+            else "../DragonRadar"
+        )
+    report, status = VERIFIER["_validate_manifest"](manifest)
+    assert status != 0
+    assert report["gates"][gate]["status"] != "pass"
+
+
+def test_c5_unknown_gate_fails_closed(tmp_path):
+    manifest = evidence_manifest(tmp_path)
+    manifest["records"].append({"gate_id": "frontend_contract_unknown"})
+    report, status = VERIFIER["_validate_manifest"](manifest)
+    assert status == 1
+    assert any("Unknown gate" in e for e in report["automated_acceptance"]["errors"])
+
+
+@pytest.mark.parametrize("new_count", [0, 2])
+def test_c5_discovery_rejects_reused_or_multiple_runs(tmp_path, monkeypatch, new_count):
+    discover = VERIFIER.get("_new_contract_run")
+    assert callable(discover), "C5 unique native run discovery is missing"
+    old = tmp_path / "old"
+    old.mkdir()
+    for i in range(new_count):
+        (tmp_path / f"new-{i}").mkdir()
+    with pytest.raises(ValueError, match="unique|new"):
+        discover(tmp_path, {str(old)})
+
+
+def test_c5_discovery_accepts_only_new_unique_run(tmp_path):
+    discover = VERIFIER.get("_new_contract_run")
+    assert callable(discover), "C5 unique native run discovery is missing"
+    old = tmp_path / "old"
+    old.mkdir()
+    new = tmp_path / "new"
+    new.mkdir()
+    assert discover(tmp_path, {str(old)}) == new
+
+
+@pytest.mark.parametrize("gate", C5_GATES)
+def test_c5_exit_zero_without_new_native_run_is_not_evidence(
+    tmp_path, monkeypatch, gate
+):
+    collect = VERIFIER.get("_collect_contract_observations")
+    assert callable(collect), "C5 archive collector is missing"
+    monkeypatch.setitem(collect.__globals__, "_contract_parent", lambda _: tmp_path)
+    old = tmp_path / "old"
+    old.mkdir()
+    observation = collect(gate, {str(old)}, [], tmp_path / "evidence")
+    assert observation["errors"]
+    assert VERIFIER["_validate_observations"](gate, observation, None)
+
+
+def test_c5_collects_only_new_five_archive_and_preserves_snapshots(
+    tmp_path, monkeypatch
+):
+    collect = VERIFIER["_collect_contract_observations"]
+    parent = tmp_path / "runs"
+    parent.mkdir()
+    old = parent / "old"
+    old.mkdir()
+    new = parent / "new"
+    new.mkdir()
+    raw, files = five_fixture(new)
+    files["run.json"] = json.dumps(raw).encode()
+    for path, data in files.items():
+        output = new / path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(data)
+    monkeypatch.setitem(collect.__globals__, "_contract_parent", lambda _: parent)
+    monkeypatch.setitem(collect.__globals__, "_source_inventory", lambda: [])
+    command = {"started_at": "2026-11-20T00:00:00Z", "ended_at": "2026-11-20T00:00:01Z"}
+    observation = collect(
+        "frontend_five_builds",
+        {str(old)},
+        [],
+        tmp_path / "snapshots",
+        commands=[command],
+    )
+    assert observation["errors"] == []
+    assert not VERIFIER["_validate_observations"](
+        "frontend_five_builds", observation, None
+    )
+    (new / "default/build.stdout.log").write_bytes(b"later source archive changed")
+    assert not VERIFIER["_validate_observations"](
+        "frontend_five_builds", observation, None
+    )
+    archived = Path(observation["files"]["default/build.stderr.log"]["path"])
+    archived.write_bytes(b"tampered snapshot")
+    assert VERIFIER["_validate_observations"]("frontend_five_builds", observation, None)
+
+
+@pytest.mark.parametrize("gate", ["frontend_contract_c2", "frontend_contract_c3"])
+def test_c5_native_dual_stream_snapshot_tampering_fails(tmp_path, gate):
+    observation = native_observation_fixture(tmp_path, gate)
+    assert not VERIFIER["_validate_observations"](gate, observation, None)
+    archived = Path(observation["native_logs"][0]["stderr"]["path"])
+    archived.write_bytes(b"1 failed\n")
+    assert VERIFIER["_validate_observations"](gate, observation, None)
+
+
+@pytest.mark.parametrize("gate", C5_GATES)
+def test_c5_new_directory_cannot_claim_an_old_run_window(tmp_path, gate):
+    observation = native_observation_fixture(tmp_path, gate)
+    observation["execution_window"] = {
+        "started_at": "2026-11-20T01:00:00Z",
+        "ended_at": "2026-11-20T01:10:00Z",
+    }
+    assert VERIFIER["_validate_observations"](gate, observation, None)
+
+
+def test_c5_native_counts_are_not_wrapper_status_or_exit_zero():
+    counts = VERIFIER.get("_native_contract_counts")
+    assert callable(counts), "C5 native archived count parser is missing"
+    assert (
+        counts([{"status": 0, "stdout": '{"status":"passed"}', "stderr": ""}])["passed"]
+        == 0
+    )
+    assert (
+        counts([{"status": 0, "stdout": "Running 7 tests\n7 passed\n", "stderr": ""}])[
+            "passed"
+        ]
+        == 7
+    )
+    assert (
+        counts([{"status": 0, "stdout": "7 passed\n", "stderr": "1 failed\n"}])[
+            "failed"
+        ]
+        == 1
+    )
+
+
+def five_fixture(tmp_path):
+    source = {
+        "algorithm": "sha256",
+        "sha256": hashlib.sha256(b"[]").hexdigest(),
+        "files": [],
+    }
+    files = {}
+    builds = []
+    for name, bits in [
+        ("default", "0000"),
+        ("sharing", "0100"),
+        ("reset", "1000"),
+        ("private", "0010"),
+        ("owner", "1011"),
+    ]:
+        flags = dict(
+            zip(
+                [
+                    "VITE_RESET_WORKBENCH",
+                    "VITE_PUBLIC_SHARING",
+                    "VITE_PRIVATE_REVIEW",
+                    "VITE_PRIVATE_AI",
+                ],
+                bits,
+                strict=True,
+            )
+        )
+        assets = {
+            "index.html": b'<script type="module" src="/assets/app.js"></script>',
+            "assets/app.js": b"console.log('finite fixture');",
+            ".vite/manifest.json": (
+                b'{"index.html":{"file":"assets/app.js","isEntry":true}}'
+            ),
+        }
+        inventory = []
+        for path, content in assets.items():
+            files[f"{name}/dist/{path}"] = content
+            inventory.append(
+                {
+                    "path": path,
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            )
+        commands = []
+        for stage, args in [
+            ("build", ["npm-cli.js", "run", "build", "--", "--manifest"]),
+            ("check", ["npm-cli.js", "run", "check:bundle"]),
+        ]:
+            logs = {}
+            for stream in ("stdout", "stderr"):
+                path = f"{name}/{stage}.{stream}.log"
+                files[path] = b"built\n" if stream == "stdout" else b""
+                logs[stream] = {
+                    "path": path,
+                    "size": len(files[path]),
+                    "sha256": hashlib.sha256(files[path]).hexdigest(),
+                }
+            commands.append(
+                {
+                    "stage": stage,
+                    "command": "node",
+                    "args": args,
+                    "exitCode": 0,
+                    "signal": None,
+                    "durationMs": 1,
+                    **logs,
+                }
+            )
+        # The checker independently recomputes this report from the archived assets.
+        bundle = {
+            "flags": flags,
+            "entry": "assets/app.js",
+            "entries": ["assets/app.js"],
+            "entryBytes": len(assets["assets/app.js"]),
+            "entryBudget": 320000 if name == "sharing" else 315500,
+            "staticAssets": ["assets/app.js"],
+            "manifest": ".vite/manifest.json",
+            "isolation": {
+                rule: {"allowed": allowed, "lazyOnly": lazy, "passed": True, "hits": []}
+                for rule, allowed, lazy in [
+                    ("local", bits[0] == "1" and bits[1] == "0", False),
+                    (
+                        "review",
+                        (bits[0] == "1" and bits[1] == "0") or bits[2] == "1",
+                        False,
+                    ),
+                    ("owner", bits[2] == "1", False),
+                    ("ai", bits[3] == "1" and bits[1] == "0", False),
+                    ("query", bits[0] == "1", True),
+                    ("sentimentResearch", bits[0] == "1", True),
+                    ("ownerResearch", bits[0] == "1" and bits[1] == "0", True),
+                ]
+            },
+        }
+        builds.append(
+            {
+                "name": name,
+                "flags": flags,
+                "status": "passed",
+                "commands": commands,
+                "source": source,
+                "files": inventory,
+                "bundle": bundle,
+                "manifestSha256": hashlib.sha256(
+                    assets[".vite/manifest.json"]
+                ).hexdigest(),
+            }
+        )
+    raw = {
+        "schema": "contract-c4-five-builds-v1",
+        "status": "passed",
+        "runRoot": str(tmp_path),
+        "root": str(SCRIPT.parents[1]),
+        "startedAt": "2026-11-20T00:00:00Z",
+        "finishedAt": "2026-11-20T00:00:01Z",
+        "source": source,
+        "builds": builds,
+    }
+    return raw, files
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "valid",
+        "missing",
+        "duplicate",
+        "flags",
+        "budget",
+        "duration",
+        "source",
+        "manifest",
+        "asset",
+        "stdout",
+        "stderr",
+        "unknown",
+        "args",
+    ],
+)
+def test_c5_five_native_archive_and_pollution(tmp_path, mutation):
+    validate = VERIFIER.get("_native_contract_errors")
+    assert callable(validate), "C5 strict native archive checker is missing"
+    raw, files = five_fixture(tmp_path)
+    if mutation == "missing":
+        raw["builds"].pop()
+    elif mutation == "duplicate":
+        raw["builds"][-1] = deepcopy(raw["builds"][0])
+    elif mutation == "flags":
+        raw["builds"][0]["flags"]["VITE_PRIVATE_AI"] = "1"
+    elif mutation == "budget":
+        raw["builds"][0]["bundle"]["entryBudget"] = 999999
+    elif mutation == "duration":
+        raw["builds"][0]["commands"][0]["durationMs"] = 600001
+    elif mutation == "source":
+        raw["source"]["sha256"] = "f" * 64
+    elif mutation in {"manifest", "asset", "stdout", "stderr"}:
+        path = {
+            "manifest": "default/dist/.vite/manifest.json",
+            "asset": "default/dist/assets/app.js",
+            "stdout": "default/build.stdout.log",
+            "stderr": "default/build.stderr.log",
+        }[mutation]
+        files[path] += b"polluted"
+    elif mutation == "unknown":
+        raw["unapproved"] = True
+    elif mutation == "args":
+        raw["builds"][0]["commands"][0]["args"].append("--mode=daily")
+    errors = validate("frontend_five_builds", raw, files, [])
+    assert bool(errors) is (mutation != "valid"), errors
+
+
+def c3_fixture(tmp_path):
+    source = {
+        "head": git_head(),
+        "files": [],
+        "dirtyRawDigest": hashlib.sha256(b"[]").hexdigest(),
+        "lockfiles": [],
+    }
+    exact = {
+        "task_id": "task",
+        "snapshot_id": "snapshot",
+        "version": 1,
+        "status": "succeeded",
+        "verification_status": "passed",
+        "human_review_status": "unreviewed",
+        "token_usage": 10,
+        "decimal_cost": "0.1",
+        "provider": "fixture",
+        "model_version": "1",
+        "prompt_version": "1",
+    }
+    ai = {
+        "actual_http": {
+            "requests": 6,
+            "peak": 2,
+            "active": 0,
+            "forbidden": 0,
+            "rendezvous_timeouts": 0,
+            "receipts": [{"method": "POST", "path": "/approved"}] * 6,
+            "approved_target": "http://127.0.0.1:12345/approved",
+            "exact_results": [deepcopy(exact), deepcopy(exact)],
+        },
+        "results": [
+            {
+                "case": case,
+                "status": "failed",
+                "failure": (
+                    "result_limit_exceeded"
+                    if case.endswith("over")
+                    else "provider_failed"
+                ),
+                "requests": [{"method": "POST", "path": "/approved"}],
+            }
+            for case in ["token-over", "cost-over", "error", "redirect"]
+        ]
+        + [{"case": "forbidden-target", "status": "failed"}] * 3,
+    }
+    realtime = {
+        "source": "feed",
+        "date": "2026-09-08",
+        "security": "SYNTH-C1-1",
+        "sector": "sector",
+        "pit": "2026-09-08T12:00:00Z",
+        "quote": "quote",
+        "minute": "minute",
+        "flow": "flow",
+        "old_pit": "2026-09-08T11:00:00Z",
+        "gates": {"fixture": True},
+        "event_ids": [f"event-{i}" for i in range(111)],
+        "duplicate_anomaly_replay": {
+            "status": "duplicate",
+            "same_payload_hash": True,
+            "unique_events_after_replay": 111,
+        },
+    }
+    requests = [
+        {
+            "method": "POST",
+            "path": "/api/owner/v1/pair",
+            "host": "localhost:8443",
+            "paired": False,
+            "status": 200,
+            "body": "{}",
+        },
+        {
+            "method": "GET",
+            "path": "/api/owner/v1/session",
+            "host": "localhost:8443",
+            "paired": True,
+            "status": 200,
+            "body": "{}",
+        },
+    ]
+    for path in [
+        "/api/realtime/quotes",
+        "/api/realtime/minutes",
+        "/api/realtime/anomalies",
+        "/api/market/sector-flow/intraday",
+    ]:
+        for method, suffix, status, body in [
+            ("GET", "?source_id=feed", 200, '{"data":{}}'),
+            ("POST", "?source_id=feed", 404, ""),
+            ("HEAD", "?source_id=feed", 404, ""),
+            ("GET", "/extra?source_id=feed", 404, ""),
+        ]:
+            requests.append(
+                {
+                    "method": method,
+                    "path": path + suffix,
+                    "host": "localhost:8443",
+                    "paired": True,
+                    "status": status,
+                    "body": body,
+                }
+            )
+    requests.extend(
+        [
+            {
+                "method": "DELETE",
+                "path": "/api/owner/v1/session",
+                "host": "localhost:8443",
+                "paired": True,
+                "status": 200,
+                "body": "{}",
+            },
+            {
+                "method": "GET",
+                "path": "/api/owner/v1/session",
+                "host": "localhost:8443",
+                "paired": True,
+                "status": 401,
+                "body": "{}",
+            },
+        ]
+    )
+    owner = {
+        "authority": "https://localhost:8443",
+        "connectPort": 12345,
+        "caSha256": "a" * 64,
+        "requests": requests,
+        "session": {},
+        "caddySha256": "b" * 64,
+        "status": "passed",
+        "resources": [
+            {"container": c * 64, "image": "sha256:" + c * 64, "service": s}
+            for c, s in [("a", "owner-api"), ("b", "owner-caddy")]
+        ],
+    }
+    browser = {
+        "synthetic": True,
+        "actualContainerGateway": True,
+        "noRouteMocks": True,
+        "uniqueAnomalies": 111,
+        "chromium": "153.0.8010.12",
+        "responses": [200],
+    }
+    database = {"database": "dragon_test"}
+    proof = {
+        "scope": "C3 only; no C4/C5 promotion",
+        "ai": ai,
+        "realtime": realtime,
+        "ownerRealtime": owner,
+        "database": database,
+        "browser": browser,
+    }
+    raw = {
+        "schema": "contract-c5-native-c3-v1",
+        "argv": ["--c3"],
+        "startedAt": "2026-11-20T00:00:00Z",
+        "finishedAt": "2026-11-20T00:00:01Z",
+        "runId": tmp_path.name,
+        "project": "dragon-test",
+        "status": "passed",
+        "scope": "C0 fixture + original runtime probes; C1 pending",
+        "database": {"name": "dragon_test", "host": "db"},
+        "source": source,
+        "browserMode": "browser",
+        "tools": {
+            "node": "v24.14.0",
+            "platform": "linux",
+            "docker": {"client": "29", "server": "29"},
+            "compose": "2",
+            "chromium": {
+                "status": "recorded",
+                "channel": "chrome",
+                "version": "153.0.8010.12",
+            },
+        },
+        "inputs": {"version": "C1 pending", "publications": []},
+        "cleanup": {
+            "status": "removed",
+            "before": {"containers": [], "volumes": [], "networks": []},
+            "after": {"containers": [], "volumes": [], "networks": []},
+        },
+        "secretsRemoved": True,
+        "permissions": {},
+        "environment": {"inheritedKeys": []},
+        "result": {
+            "c1": proof,
+            "ownerTransport": {
+                "authority": "https://localhost:8443",
+                "code": "CERT_HAS_EXPIRED",
+                "hostHeader": "localhost:8443",
+                "publishedMapping": "127.0.0.1:12345->owner-caddy:8443",
+                "status": 401,
+                "testedFrom": "host",
+                "tlsServername": "localhost",
+            },
+            "project": "dragon-test",
+            "public": "http://127.0.0.1:12346",
+        },
+    }
+    objects = {
+        "c3-ai.json": ai,
+        "c3-realtime-inputs.json": realtime,
+        "c3-owner-realtime.json": owner,
+        "c3-browser/evidence.json": browser,
+        "c3-database.json": database,
+    }
+    files = {path: json.dumps(value).encode() for path, value in objects.items()}
+    files["commands.jsonl"] = (
+        json.dumps(
+            {
+                "command": "node",
+                "args": [
+                    "playwright",
+                    "test",
+                    "--config",
+                    "playwright.contract-c3.config.ts",
+                ],
+                "status": 0,
+                "durationMs": 1,
+                "stdout": "1 passed\n",
+                "stderr": "",
+            }
+        )
+        + "\n"
+    ).encode()
+    return raw, files
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "valid",
+        "mock",
+        "provider",
+        "realtime",
+        "owner",
+        "cleanup",
+        "source",
+        "unknown",
+        "logs",
+        "partial",
+        "residual",
+        "tokens",
+        "resources",
+    ],
+)
+def test_c5_c3_actual_objects_fail_closed(tmp_path, mutation):
+    validate = VERIFIER.get("_native_contract_errors")
+    assert callable(validate), "C5 strict C3 archive checker is missing"
+    raw, files = c3_fixture(tmp_path)
+    if mutation == "mock":
+        raw["result"]["c1"]["browser"]["noRouteMocks"] = False
+    elif mutation == "provider":
+        files.pop("c3-ai.json")
+    elif mutation == "realtime":
+        raw["result"]["c1"]["realtime"]["event_ids"].pop()
+    elif mutation == "owner":
+        raw["result"]["c1"].pop("ownerRealtime")
+    elif mutation == "cleanup":
+        raw["cleanup"]["status"] = "failed"
+    elif mutation == "source":
+        raw["source"]["dirtyRawDigest"] = "f" * 64
+    elif mutation == "unknown":
+        raw["extra"] = True
+    elif mutation == "logs":
+        files["commands.jsonl"] = (
+            b'{"status":0,"stdout":"{\\"status\\":\\"passed\\"}","stderr":""}\n'
+        )
+    elif mutation == "partial":
+        raw["argv"] = []
+    elif mutation == "residual":
+        raw["cleanup"]["after"] = {
+            "containers": ["remaining"],
+            "volumes": [],
+            "networks": [],
+        }
+    elif mutation == "tokens":
+        raw["result"]["c1"]["ai"]["actual_http"]["exact_results"][0]["token_usage"] = (
+            999
+        )
+        files["c3-ai.json"] = json.dumps(raw["result"]["c1"]["ai"]).encode()
+    elif mutation == "resources":
+        raw["result"]["c1"]["ownerRealtime"]["resources"][0]["container"] = "guessed"
+        files["c3-owner-realtime.json"] = json.dumps(
+            raw["result"]["c1"]["ownerRealtime"]
+        ).encode()
+    errors = validate("frontend_contract_c3", raw, files, [])
+    assert bool(errors) is (mutation != "valid"), errors
+
+
+@pytest.mark.parametrize(
+    "mutation", ["partial", "grep", "smoke", "host-native", "cells", "zoom", "cleanup"]
+)
+def test_c5_c2_partial_or_missing_native_objects_never_pass(tmp_path, mutation):
+    validate = VERIFIER.get("_native_contract_errors")
+    assert callable(validate), "C5 strict C2 archive checker is missing"
+    raw = {
+        "schema": "contract-c5-native-c2-v1",
+        "runId": tmp_path.name,
+        "argv": [],
+        "startedAt": "2026-11-20T00:00:00Z",
+        "finishedAt": "2026-11-20T00:00:01Z",
+        "scope": "C2 matrix and lifecycle (mocked HTTP, not C1 TLS or C4)",
+        "cells": 320,
+        "fullMatrix": True,
+        "outcome": "passed",
+        "cleanup": {"runId": tmp_path.name, "containerRemoved": True},
+    }
+    if mutation in {"grep", "smoke", "host-native"}:
+        raw["argv"] = ["--" + mutation]
+    elif mutation == "partial":
+        raw["fullMatrix"] = False
+    elif mutation == "cells":
+        raw["cells"] = 319
+    elif mutation == "cleanup":
+        raw["cleanup"]["containerRemoved"] = False
+    assert validate("frontend_contract_c2", raw, {}, [])
+
+
+def c2_fixture(tmp_path):
+    # Parser fixture only: no browser, builds, Docker or execution provenance.
+    module = (SCRIPT.parents[1] / "web/scripts/contract-c2-support.mjs").as_uri()
+    program = f"""
+      import * as s from {json.dumps(module)};
+      import {{createHash}} from 'node:crypto';
+      const hash=b=>createHash('sha256').update(b).digest('hex');
+      const files={{}};
+      const tools={{node:'v24.14.0',playwright:'1.63.0',
+        typescript:'5.9.3',vite:'8.2.0'}};
+      const packages=Object.fromEntries(['playwright','typescript','vite']
+        .map(n=>['node_modules/'+n,{{version:tools[n]}}]));
+      files['web/package-lock.json']=JSON.stringify({{packages}});
+      files['web/package.json']='{{}}'; files['web/src/App.tsx']='fixture';
+      const item=(path)=>({{path,size:Buffer.byteLength(files[path]),
+        sha256:hash(files[path])}});
+      const source=Object.keys(files).map(item)
+        .sort((a,b)=>a.path.localeCompare(b.path));
+      const builds=Object.entries(s.variants).map(([variant,bits])=>{{
+        files['builds/'+variant+'/index.html']='fixture';
+        files['builds/'+variant+'/app.js']='fixture';
+        const assets=['builds/'+variant+'/index.html',
+          'builds/'+variant+'/app.js'].map(item);
+        return {{variant,flags:{{...Object.fromEntries([
+          'RESET_WORKBENCH','PUBLIC_SHARING','PRIVATE_REVIEW','PRIVATE_AI']
+          .map((n,i)=>['VITE_'+n,String(bits[i])])),DRAGON_API_PROXY:'http://127.0.0.1:1'}},
+          assets,assetsSha256:s.digest(assets),sourceSha256:s.digest(source),lockSha256:source.find(f=>f.path==='web/package-lock.json').sha256,tools}};
+      }});
+      const cells=s.expectedCells().map(c=>{{
+        const identity=c.surface==='review'?{{
+          kind:'LOCAL',recordId:'note',revision:1,...s.publication}}:
+          {{kind:'PUB',...s.publication,targets:s.targetSets[c.surface]}};
+        let download;
+        if(c.surface==='review') download={{
+          filename:'dragon-radar-review-2026-11-19.json',rowCount:1,verified:true,
+          decoded:JSON.stringify({{format_version:1,notes:[{{note_id:'note',current_revision:1,snapshot_id:identity.snapshotId,trade_date:identity.date}}],
+            revisions:[{{note_id:'note',revision:1,content:{{title:'title',content:'body'}}}}]}})}};
+        else {{
+          const headers=[...s.metadataColumns,...s.dataColumns[c.surface]];
+          const targets=c.surface==='stock'?Array(22).fill('TEST001'):identity.targets;
+          const rows=targets.map(t=>{{
+            const r=Object.fromEntries(headers.map(h=>[h,'']));
+            Object.assign(r,{{snapshot_id:identity.snapshotId,trade_date:identity.date}});
+            if(c.surface==='news') r.article_id=t;
+            else if(c.surface==='regulation')
+              [r.record_type,r.rule_id,r.security_id]=t.split('/');
+            else r.security_id=t; return r;}});
+          const scope={{overview:'overview-current-filter',
+            news:'news-current-page',leaders:'leaders-current-filter',
+            analysis:'analysis-current-page',stock:'stock-current-filter',regulation:'regulation-current-filter'}}[c.surface];
+          download={{filename:'dragon-radar-'+scope+'-'+identity.date+'-00000000.csv',rowCount:rows.length,verified:true,
+            expectedRows:rows,decoded:[headers.join(','),...rows.map(r=>headers.map(h=>r[h]).join(','))].join('\\r\\n')}};
+        }}
+      const nativeGeometry={{innerWidth:c.viewport.width,
+        innerHeight:c.viewport.height,outerWidth:1600,outerHeight:1200}};
+        return {{...c,identity,download,measured:c.viewport,nativeGeometry,
+          changedGeometry:{{...nativeGeometry,innerWidth:Math.round(c.viewport.width/c.zoom),innerHeight:Math.round(c.viewport.height/c.zoom)}},
+          receipt:{{requested:c.zoom,actual:c.zoom,tabId:7,scope:'chrome.tabs',browser:'153.0.8010.12',
+            appUrl:'http://127.0.0.1:'+{{public:4171,local:4172,owner:4173}}[c.variant]+'/'}},
+          operation:'parser fixture',outcome:'passed',
+          readback:c.surface==='review'?{{
+            recordId:'note',revision:1,title:'title',body:'body',reloaded:true
+          }}:undefined,
+          reading:{{text:'body',color:'black',background:'white',contrast:5,rootWidth:375,rootScroll:375,tables:[],scrollProof:[]}},
+          cleanup:{{restored:1,closed:true,profileRemoved:true}},
+          build:{{variant:c.variant,assetsSha256:builds.find(b=>b.variant===c.variant).assetsSha256}}}};
+      }});
+      for(const [path,value] of Object.entries({{
+        'source.json':source,'builds.json':builds,
+        'matrix.json':cells,'tools.json':tools,
+        'zoom-smoke.json':{{outcome:'passed',browser:'153.0.8010.12',
+          zoom:{{requested:2,actual:2,tabId:7}},native:{{innerWidth:768,outerWidth:1000}},
+          changed:{{innerWidth:384,innerHeight:512,outerWidth:1000}},
+          cleanup:{{restored:1,closed:true,profileRemoved:true}}}},
+        'public-review-boundary.json':{{outcome:'passed'}}}}))
+        files[path]=JSON.stringify(value);
+      console.log(JSON.stringify(files));
+    """
+    output = subprocess.run(
+        ["node", "--input-type=module", "-e", program],
+        cwd=SCRIPT.parents[1],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    files = {path: value.encode() for path, value in json.loads(output.stdout).items()}
+    raw = {
+        "schema": "contract-c5-native-c2-v1",
+        "runId": tmp_path.name,
+        "argv": [],
+        "startedAt": "2026-11-20T00:00:00Z",
+        "finishedAt": "2026-11-20T00:00:01Z",
+        "scope": "C2 matrix and lifecycle (mocked HTTP, not C1 TLS or C4)",
+        "cells": 320,
+        "fullMatrix": True,
+        "outcome": "passed",
+        "cleanup": {"runId": tmp_path.name, "id": "a" * 64, "containerRemoved": True},
+    }
+    files["cleanup.json"] = json.dumps(raw["cleanup"]).encode()
+    files["matrix-manifest.json"] = json.dumps(
+        {
+            "runId": tmp_path.name,
+            **{k: k + ".json" for k in ("source", "builds", "matrix")},
+            **{
+                k + "Sha256": hashlib.sha256(files[k + ".json"]).hexdigest()
+                for k in ("source", "builds", "matrix")
+            },
+        }
+    ).encode()
+    files["commands.json"] = json.dumps(
+        [
+            {
+                "command": "docker",
+                "args": [
+                    "exec",
+                    "playwright",
+                    "test",
+                    "--config",
+                    "playwright.contract-c2.config.ts",
+                ],
+                "status": 0,
+                "durationMs": 1,
+                "stdout": "166 passed\n",
+                "stderr": "",
+            }
+        ]
+    ).encode()
+    return raw, files
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "valid",
+        "zoom",
+        "matrix",
+        "size",
+        "source",
+        "counts",
+        "stderr",
+        "reuse",
+        "smoke-receipt",
+    ],
+)
+def test_c5_c2_complete_native_archive(tmp_path, mutation):
+    raw, files = c2_fixture(tmp_path)
+    if mutation in {"zoom", "matrix"}:
+        cells = json.loads(files["matrix.json"])
+        if mutation == "zoom":
+            cells[1]["receipt"]["actual"] = 1
+        else:
+            cells.pop()
+        files["matrix.json"] = json.dumps(cells).encode()
+        manifest = json.loads(files["matrix-manifest.json"])
+        manifest["matrixSha256"] = hashlib.sha256(files["matrix.json"]).hexdigest()
+        files["matrix-manifest.json"] = json.dumps(manifest).encode()
+    elif mutation == "size":
+        files["builds/public/app.js"] += b"tampered"
+    elif mutation == "source":
+        files["web/src/App.tsx"] += b"tampered"
+    elif mutation == "counts":
+        commands = json.loads(files["commands.json"])
+        commands[0]["stdout"] = '{"status":"passed"}'
+        files["commands.json"] = json.dumps(commands).encode()
+    elif mutation == "stderr":
+        commands = json.loads(files["commands.json"])
+        commands[0]["stderr"] = "1 failed\n"
+        files["commands.json"] = json.dumps(commands).encode()
+    elif mutation == "reuse":
+        files["build-reuse.json"] = b"{}"
+    elif mutation == "smoke-receipt":
+        files["zoom-smoke.json"] = b'{"outcome":"passed","browser":"153.0.8010.12"}'
+    errors = VERIFIER["_native_contract_errors"](
+        "frontend_contract_c2", raw, files, json.loads(files["source.json"])
+    )
+    assert bool(errors) is (mutation != "valid"), errors
+
+
+def native_observation_fixture(tmp_path, gate, commands=None):
+    base = tmp_path / gate
+    base.mkdir(exist_ok=True)
+    native = VERIFIER["_contract_parent"](gate) / f"fixture-{gate}"
+    if gate == "frontend_five_builds":
+        raw, files = five_fixture(native)
+        source = []
+        raw_name = "run.json"
+    elif gate == "frontend_contract_c2":
+        raw, files = c2_fixture(native)
+        source = json.loads(files["source.json"])
+        raw_name = "result.json"
+    else:
+        raw, files = c3_fixture(native)
+        source = []
+        raw_name = "manifest.json"
+    window = {"started_at": "2026-11-20T00:00:00Z", "ended_at": "2026-11-20T00:00:01Z"}
+    if commands:
+        window = {
+            "started_at": commands[0]["started_at"],
+            "ended_at": commands[-1]["ended_at"],
+        }
+        raw["startedAt"], raw["finishedAt"] = window["started_at"], window["ended_at"]
+    files[raw_name] = json.dumps(raw).encode()
+    snapshots = {}
+    for path, data in files.items():
+        target = base / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        snapshots[path] = artifact(target)
+    source_paths = {item["path"] for item in source}
+    native_commands = VERIFIER["_native_commands"](gate, files)
+    logs = []
+    for index, command in enumerate(native_commands):
+        streams = {}
+        for stream in ("stdout", "stderr"):
+            path = base / f"native-{index}-{stream}.log"
+            path.write_bytes(command[stream].encode())
+            streams[stream] = artifact(path)
+        logs.append(streams)
+    return {
+        "run_path": str(native),
+        "raw_artifact": snapshots[raw_name],
+        "files": {p: a for p, a in snapshots.items() if p not in source_paths},
+        "source_before": source,
+        "source_after": source,
+        "source_artifacts": {p: snapshots[p] for p in source_paths},
+        "observed_counts": VERIFIER["_native_contract_counts"](
+            VERIFIER["_native_commands"](gate, files)
+        ),
+        "execution_window": window,
+        "native_logs": logs,
+        "errors": [],
+    }
 
 
 @dataclass(frozen=True)
@@ -78,6 +1042,27 @@ def artifact(path):
 def command_record(tmp_path, gate, index, spec, *, skipped=0, exit_status=0):
     log = tmp_path / f"{gate}-{index}.log"
     log.write_text(f"{gate}: independently generated output\n", encoding="utf-8")
+    if gate in C5_GATES:
+        stderr = tmp_path / f"{gate}-{index}.stderr.log"
+        stderr.write_bytes(b"")
+        return {
+            "argv": list(spec["command"]),
+            "cwd": spec["cwd"],
+            "environment_class": spec["environment_class"],
+            "started_at": "2026-11-20T00:00:00Z",
+            "ended_at": "2026-11-20T00:00:01Z",
+            "exit_status": exit_status,
+            "timed_out": False,
+            "observed_counts": {
+                "passed": 0,
+                "failed": 0,
+                "skipped": 0,
+                "output_lines": 1,
+            },
+            "stdout_artifact": artifact(log),
+            "stderr_artifact": artifact(stderr),
+            "errors": [],
+        }
     return {
         "argv": list(spec["command"]),
         "cwd": spec["cwd"],
@@ -85,8 +1070,8 @@ def command_record(tmp_path, gate, index, spec, *, skipped=0, exit_status=0):
         "exit_status": exit_status,
         "timed_out": False,
         "observed_counts": {
-            "passed": int(exit_status == 0),
-            "failed": int(exit_status != 0),
+            "passed": 0 if gate in VERIFIER["BUILD_GATES"] else int(exit_status == 0),
+            "failed": 0 if gate in VERIFIER["BUILD_GATES"] else int(exit_status != 0),
             "skipped": skipped,
             "output_lines": 1,
         },
@@ -632,6 +1617,8 @@ def evidence_manifest(tmp_path):
             observations = raw["async_work"]
         elif gate == "recovery_drills":
             observations = {"drills": list(RECOVERY_DRILLS)}
+        elif gate in C5_GATES:
+            observations = native_observation_fixture(tmp_path, gate)
         records.append(
             {"gate_id": gate, "commands": commands, "observations": observations}
         )
@@ -1173,16 +2160,17 @@ def test_parent_commit_is_allowed_only_for_strict_evidence_only_head():
 def test_fabricated_all_pass_json_is_integrity_only_and_cannot_pass_acceptance(
     tmp_path,
 ):
-    evidence = write_manifest(tmp_path, evidence_manifest(tmp_path))
-
-    result, output = invoke(
-        tmp_path,
-        "--validate-existing",
-        str(evidence),
+    # Valid native parser fixtures still have no in-process execution provenance.
+    report, validation_status = VERIFIER["_validate_manifest"](
+        evidence_manifest(tmp_path)
+    )
+    report, status = VERIFIER["_integrity_only_report"](
+        report,
+        validation_status,
+        None,
     )
 
-    assert result.returncode != 0
-    report = json.loads(output.read_text(encoding="utf-8"))
+    assert status == 3
     assert report["automated_acceptance"]["status"] == "unverified"
     assert report["integrity_validation"]["status"] == "pass"
     assert report["source"]["trust"] == "INTEGRITY_ONLY"
@@ -1198,11 +2186,15 @@ def test_fabricated_all_pass_json_is_integrity_only_and_cannot_pass_acceptance(
         assert command["argv"]
         assert command["exit_status"] == 0
         assert command["observed_counts"]["skipped"] == 0
-        assert command["artifact"]["sha256"]
+        if gate in C5_GATES:
+            assert command["stdout_artifact"]["sha256"]
+            assert command["stderr_artifact"]["sha256"]
+        else:
+            assert command["artifact"]["sha256"]
         assert command["environment_class"]
     assert report["source"]["tested_commit"] == git_head()
     assert report["source"]["commit_relation"] == "HEAD"
-    assert "postgresql+psycopg://" not in result.stdout
+    assert "postgresql+psycopg://" not in json.dumps(report)
 
 
 def test_self_hashed_logs_and_fake_exit_zero_remain_unverified(tmp_path):
@@ -1362,6 +2354,8 @@ def test_private_stack_isolation_runs_compose_stop_and_wait_up_bypassing_runner(
         str(state_file),
         "-f",
         str(root / "compose.yaml"),
+        "-f",
+        str(root / ".temp/acceptance-stack/compose.override.yaml"),
     )
     assert invoked[0]["argv"] == expected_prefix + ("stop",)
     assert invoked[1]["argv"] == expected_prefix + (
@@ -1379,29 +2373,57 @@ def test_acceptance_stack_uses_only_unified_compose_and_renamed_state():
     assert VERIFIER["TASK20_STACK_ENV_FILE"] == (
         root / ".temp" / "acceptance-stack" / "compose.env"
     )
-    assert VERIFIER["TASK20_COMPOSE_FILES"] == ("compose.yaml",)
+    assert VERIFIER["TASK20_COMPOSE_FILES"] == (
+        "compose.yaml",
+        ".temp/acceptance-stack/compose.override.yaml",
+    )
     harness = root / "scripts" / "acceptance-stack.sh"
     assert harness.is_file()
-    source = harness.read_text(encoding="utf-8")
+    helper = (root / "scripts/acceptance_stack.py").read_text(encoding="utf-8")
+    source = harness.read_text(encoding="utf-8") + helper
     assert "compose.private.yaml" not in source
     assert '.temp/acceptance-stack"' in source
-    assert "compose build\n" in source
+    assert 'compose("build")' in source
+    assert "public-api migrate" not in source
     commands = (
-        "compose up --detach --wait db",
-        "compose run --rm public-api migrate",
-        "compose up --detach owner-caddy",
-        "compose run --rm owner-api owner-init",
-        "compose up --detach --wait\n",
-        "compose exec -T owner-caddy",
+        ("up", "--detach", "--wait", "db"),
+        ("run", "--rm", "--no-deps", "analysis-worker", "migrate"),
+        ("up", "--detach", "owner-caddy"),
+        ("run", "--rm", "owner-api", "owner-init"),
+        ("up", "--detach", "--wait"),
+        (
+            "exec",
+            "-T",
+            "owner-caddy",
+            "cat",
+            "/data/caddy/pki/authorities/local/root.crt",
+        ),
     )
-    positions = [source.index(command) for command in commands]
-    assert positions == sorted(positions)
+    start = next(
+        node
+        for node in ast.walk(ast.parse(helper))
+        if isinstance(node, ast.FunctionDef) and node.name == "start"
+    )
+    calls = sorted(
+        (
+            node
+            for node in ast.walk(start)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "compose"
+        ),
+        key=lambda node: node.lineno,
+    )
+    assert (
+        tuple(tuple(ast.literal_eval(arg) for arg in call.args) for call in calls)
+        == commands
+    )
     assert "compose up --detach --wait owner-caddy" not in source
-    assert "DRAGON_OWNER_PORT=%s" in source
-    assert "DRAGON_PUBLIC_PORT=0" in source
+    assert '"DRAGON_OWNER_PORT"' in source
+    assert '"DRAGON_PUBLIC_PORT": "0"' in source
     assert "::add-mask::" in source
     assert "--skip-build" in source
-    assert "down --volumes --remove-orphans" in source
+    assert 'compose("down", "--volumes", "--remove-orphans")' in source
     assert not (root / "scripts" / "task20-private-tls.sh").exists()
 
 
@@ -1416,6 +2438,27 @@ def test_ci_preserves_acceptance_gates_with_three_renamed_harness_calls():
     assert "DRAGON_TASK20_PERF_ISOLATION" in workflow
     assert "npx playwright install --with-deps chromium" in workflow
     assert "scripts/verify_reset.py --mode full" in workflow
+    job = workflow.split("\n  task20_acceptance:", 1)[1].split("\n  web_quality:", 1)[0]
+    commands = [
+        "uv sync --locked",
+        "npx playwright install --with-deps chromium",
+        "acceptance-stack.sh build",
+        "acceptance-stack.sh setup --skip-build",
+        "scripts/verify_reset.py --mode full",
+        "acceptance-stack.sh teardown",
+        "actions/upload-artifact@v4",
+    ]
+    positions = [job.index(command) for command in commands]
+    assert positions == sorted(positions)
+    assert job.count("if: always()") == 2
+    assert 'node-version: "22.23.5"' in job
+    assert "DRAGON_TOPIC_CURSOR_SECRET" in job
+    assert "DRAGON_REALTIME_CURSOR_SECRET" in job
+    assert ".temp/acceptance-stack/cleanup.json" in job
+    assert ".temp/five-builds/" in job
+    assert ".temp/acceptance/frontend_contract_c2/" in job
+    assert ".temp/acceptance/frontend_contract_c3/" in job
+    assert '"127.0.0.1:5432:5432"' in job
 
 
 def test_stack_isolation_clears_compose_owned_environment(tmp_path, monkeypatch):
@@ -1801,6 +2844,14 @@ def test_full_execution_manifest_passes_only_in_execution_context(
         run_gates.__globals__,
         "_repository_state",
         lambda: deepcopy(clean_repository),
+    )
+    # Mock integration of the command graph only, not real C5 acceptance.
+    monkeypatch.setitem(
+        run_gates.__globals__,
+        "_collect_contract_observations",
+        lambda gate, *args, **kwargs: native_observation_fixture(
+            tmp_path, gate, kwargs.get("commands")
+        ),
     )
     command_count = sum(
         len(GATE_SPECS[gate])

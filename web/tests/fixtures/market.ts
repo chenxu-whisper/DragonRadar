@@ -237,7 +237,8 @@ const roleEnvelope = (
   data,
 });
 
-export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
+export async function mockLeaders(page: Page, state: LeaderMockState = {},
+  recordJson?: (request: ReturnType<Route['request']>, body: unknown) => void) {
   await mockMarket(page);
   await page.route('**/api/market/heatmap?**', async route => {
     if (state.denied) return route.fulfill({ status: 403, json: { code: 'FORBIDDEN' } });
@@ -328,7 +329,7 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
       const security = url.searchParams.get('security_id') || '';
       const sector = url.searchParams.get('sector') || '';
       const roleNames = ['emotion_leader', 'trend_leader', 'zhongjun', 'genfeng', 'buZhang', 'jieli'];
-      return route.fulfill({ json: roleEnvelope({
+      const body = roleEnvelope({
         security_id: security,
         sector_id: sector,
         roles: roleNames.map((role, index) => ({
@@ -350,7 +351,9 @@ export async function mockLeaders(page: Page, state: LeaderMockState = {}) {
           opposing_evidence: index === 3 ? ['lags_unique_core'] : [],
           missing_evidence: index === 1 ? ['intraday_seal_detail_unavailable'] : ['required_input_unavailable'],
         })),
-      }) });
+      });
+      recordJson?.(route.request(), body);
+      return route.fulfill({ json: body });
     }
     return route.fulfill({ status: 404, json: {} });
   });

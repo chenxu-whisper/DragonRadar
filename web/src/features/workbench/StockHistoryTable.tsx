@@ -32,7 +32,7 @@ export default function StockHistoryTable({ points }: { points: ResetKlinePoint[
       <button aria-label="行情下一页" disabled={current === pages} onClick={() => setPage(current + 1)}>下一页</button>
     </div>
     <TableScroll label="完整行情数据">
-      <table aria-label="完整行情数据" className="responsive-record-table">
+      <table aria-label="完整行情数据" className="responsive-record-table stock-history-table">
         <thead><tr>{fields.map(([field, label]) =>
           <th key={field} aria-sort={sort === field ? order === 'asc' ? 'ascending' : 'descending' : 'none'}>
             <button aria-label={`${label}排序`} onClick={() => changeSort(field)}>{label}{sort === field ? order === 'asc' ? ' ↑' : ' ↓' : ''}</button>

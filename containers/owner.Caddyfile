@@ -32,6 +32,12 @@ https://localhost:8443 {
 		}
 		reverse_proxy @publishedRead 127.0.0.1:8001
 
+		@realtimeRead {
+			method GET
+			path /api/realtime/quotes /api/realtime/minutes /api/realtime/anomalies /api/market/sector-flow/intraday
+		}
+		reverse_proxy @realtimeRead 127.0.0.1:8001
+
 		@aiRead {
 			method GET HEAD
 			path_regexp aiRead ^/api/ai/task/[0-9a-fA-F-]{36}(/evidence/[A-Za-z0-9_-]{1,100})?$

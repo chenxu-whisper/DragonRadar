@@ -24,6 +24,7 @@ export default function CitationSource({ task, blocked = false, articleId }: {
   const trigger = useRef<HTMLButtonElement | null>(null);
   const close = () => {
     operation.current?.abort();
+    operation.current = undefined;
     setSelected(undefined); setSource(undefined); setError(''); setBusy(false);
     trigger.current?.focus();
   };

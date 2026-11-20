@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { EChartsCoreOption } from 'echarts/core';
 import { ApiError } from '../../api';
 import { Chart } from '../../components/Chart';
@@ -10,15 +10,14 @@ import type { Resource } from '../../hooks/useResource';
 import {
   decimalForChart,
   realtimeRequestPaths,
-  validateAnomalyResponse,
   validateMinuteResponse,
   validateQuoteResponse,
   validateSectorFlowResponse,
 } from './client';
 import { formatRealtimeDecimal } from './format';
 import { useRealtimeResource } from './useRealtimeResource';
+import { useAnomalyPages } from './useAnomalyPages';
 import type {
-  AnomalyResponse,
   AnomalySelection,
   MinuteResponse,
   MinuteSelection,
@@ -291,27 +290,35 @@ export default function RealtimePanel({
   sectorId,
   refreshToken = 0,
 }: Props) {
+  const [inputs, setInputs] = useState({
+    sourceId: '', quoteBatchId: '', minuteBatchId: '', flowBatchId: '', asOf: '',
+  });
+  const [pins, setPins] = useState<Record<keyof typeof inputs, string | undefined>>({
+    sourceId: undefined, quoteBatchId: undefined, minuteBatchId: undefined,
+    flowBatchId: undefined, asOf: undefined,
+  });
+  const shared = { sourceId: pins.sourceId, asOf: pins.asOf };
   const selected = [...new Set(securityIds)].filter(Boolean);
   const primarySecurity = selected[0];
   const quoteSelection = useMemo<QuoteSelection>(
-    () => ({ securityIds: selected }),
-    [selected.join('\0')],
+    () => ({ securityIds: selected, ...shared, batchId: pins.quoteBatchId }),
+    [selected.join('\0'), pins],
   );
   const minuteSelection = useMemo<MinuteSelection | null>(
-    () => primarySecurity ? { securityId: primarySecurity, date } : null,
-    [primarySecurity, date],
+    () => primarySecurity ? { securityId: primarySecurity, date, ...shared, batchId: pins.minuteBatchId } : null,
+    [primarySecurity, date, pins],
   );
   const anomalySelection = useMemo<AnomalySelection | null>(
-    () => primarySecurity ? { securityId: primarySecurity, date, limit: 50 } : null,
-    [primarySecurity, date],
+    () => primarySecurity ? { securityId: primarySecurity, date, limit: 50, ...shared } : null,
+    [primarySecurity, date, pins],
   );
   const flowSelection = useMemo<SectorFlowSelection | null>(
-    () => sectorId ? { sectorId, date } : null,
-    [sectorId, date],
+    () => sectorId ? { sectorId, date, ...shared, batchId: pins.flowBatchId } : null,
+    [sectorId, date, pins],
   );
   const paths = useMemo(
-    () => realtimeRequestPaths(date, selected, sectorId),
-    [date, selected.join('\0'), sectorId],
+    () => realtimeRequestPaths(date, selected, sectorId, pins),
+    [date, selected.join('\0'), sectorId, pins],
   );
 
   const quoteRaw = useRealtimeResource<unknown>(
@@ -322,13 +329,17 @@ export default function RealtimePanel({
     paths.minute,
     refreshToken,
   );
-  const anomalyRaw = useRealtimeResource<unknown>(
-    paths.anomaly,
-    refreshToken,
-  );
   const flowRaw = useRealtimeResource<unknown>(
     paths.flow,
     refreshToken,
+  );
+  const otherRevoked = [quoteRaw, minuteRaw, flowRaw].some(
+    resource => resource.error?.status === 403 && resource.error.code === 'FORBIDDEN',
+  );
+  const anomalyRaw = useAnomalyPages(
+    paths.anomaly ? anomalySelection : null,
+    JSON.stringify([pins.quoteBatchId, pins.minuteBatchId, pins.flowBatchId]),
+    refreshToken, otherRevoked,
   );
   const rawResources = [quoteRaw, minuteRaw, anomalyRaw, flowRaw];
   const revoked = rawResources.some(
@@ -345,11 +356,7 @@ export default function RealtimePanel({
     value => validateMinuteResponse(value, minuteSelection!),
     '分钟记录',
   );
-  const anomalies = useValidated(
-    anomalyRaw,
-    value => validateAnomalyResponse(value, anomalySelection!),
-    '异动证据',
-  );
+  const anomalies = anomalyRaw;
   const flow = useValidated(
     flowRaw,
     value => validateSectorFlowResponse(value, flowSelection!),
@@ -389,6 +396,10 @@ export default function RealtimePanel({
   const settled = !waiting && [quoteRaw, minuteRaw, anomalyRaw, flowRaw]
     .filter(resource => resource.data !== undefined || resource.error)
     .length > 0;
+  const invalidPins = Boolean(
+    !paths.quote && primarySecurity
+    || !paths.flow && sectorId,
+  );
 
   return <section className="securities" aria-label="实时证据账本">
     <div className="section-heading">
@@ -398,6 +409,23 @@ export default function RealtimePanel({
       </div>
       <span className="muted">缺失分钟不插值 · 公共接口只读</span>
     </div>
+    <form className="analysis-context" aria-label="实时来源与批次选择" onSubmit={event => {
+      event.preventDefault();
+      setPins(Object.fromEntries(Object.entries(inputs).map(([key, value]) =>
+        [key, value.trim() || undefined])) as typeof pins);
+    }}>
+      {([
+        ['sourceId', '实时来源 ID'], ['quoteBatchId', '报价批次 ID'],
+        ['minuteBatchId', '分钟批次 ID'], ['flowBatchId', '资金流批次 ID'],
+        ['asOf', '实时 PIT'],
+      ] as const).map(([key, label]) => <label key={key}>
+        {label}<input value={inputs[key]} placeholder={key === 'asOf' ? 'UTC ISO 8601' : '不固定'}
+          onChange={event => setInputs(previous => ({ ...previous, [key]: event.target.value }))} />
+      </label>)}
+      <button type="submit">应用实时选择</button>
+      <button type="button" onClick={() => rawResources.forEach(resource => resource.refresh())}>刷新实时证据</button>
+    </form>
+    {invalidPins && <p role="alert">实时选择无效；固定批次必须指定来源，PIT 必须为带时区的时间。不会回退到最新批次。</p>}
 
     <ResourceStatus resource={quotes} name="实时报价" />
     <ResourceStatus resource={minutes} name="分钟记录" />
@@ -406,7 +434,10 @@ export default function RealtimePanel({
 
     {quotes.data && <RealtimeResourceState name="实时报价" response={quotes.data} />}
     {minutes.data && <RealtimeResourceState name="分钟记录" response={minutes.data} />}
-    {anomalies.data && <RealtimeResourceState name="异动证据" response={anomalies.data} />}
+    {anomalies.data && <RealtimeResourceState name="异动最近一页" response={anomalies.data} />}
+    {anomalyData && <p className="muted" aria-label="异动分页统计">
+      已累计加载 {anomalyData.events.length} 条唯一事件；覆盖与状态为最近一页服务端原值，不代表累计账本覆盖。
+    </p>}
     {flow.data && <RealtimeResourceState name="分时资金流" response={flow.data} />}
 
     {quoteData && <>
@@ -456,7 +487,7 @@ export default function RealtimePanel({
     {anomalySelection && <section className="leaders-section" aria-labelledby="anomaly-ledger-title">
       <div className="section-heading">
         <h3 id="anomaly-ledger-title">异动证据</h3>
-        {anomalyData && <StatusToken status={anomalyData.status} />}
+        {anomalyData && <span>最近一页：<StatusToken status={anomalyData.status} /></span>}
       </div>
       {anomalyData && anomalyData.events.length > 0
         ? <TableScroll label="异动证据横向滚动">
@@ -476,6 +507,8 @@ export default function RealtimePanel({
           </table>
         </TableScroll>
         : anomalies.data && <p className="empty">当前选择没有异动事件。</p>}
+      {anomalyRaw.hasMore && <button type="button" onClick={anomalyRaw.loadMore}
+        disabled={anomalyRaw.loading}>加载更多异动</button>}
     </section>}
 
     {flowSelection && <section className="leaders-section" aria-labelledby="flow-ledger-title">

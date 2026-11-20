@@ -1,5 +1,5 @@
 import { ExternalLink, FileText, Link2, Search } from 'lucide-react';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 
 import { Pager, ResourceStatus, type Patch } from '../components/Common';
 import { UnavailableModules } from '../features/workbench/PageStructure';
@@ -61,14 +61,29 @@ function ArticleDetail({
   state,
   publicationAsOf,
   publicationVersion,
+  onClose,
 }: {
   article: NewsArticle;
   open: NewsProps['open'];
   state: ResearchState;
   publicationAsOf?: string;
   publicationVersion?: string;
+  onClose: () => void;
 }) {
-  return <section id="workbench-news-detail" tabIndex={-1} className="news-detail" aria-label="消息详情">
+  const section = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!document.querySelector('dialog[open]')) section.current?.focus();
+  }, [article.article_id]);
+  return <section ref={section} id="workbench-news-detail" tabIndex={-1} className="news-detail" aria-label="消息详情"
+    onKeyDown={event => {
+      if (event.key === 'Escape' && !document.querySelector('dialog[open]')) {
+        if (event.target instanceof Element
+          && event.target.closest('.ai-task-panel')?.querySelector('[aria-label="引用来源"]')) return;
+        event.stopPropagation();
+        onClose();
+      }
+    }}>
+    <button type="button" onClick={onClose}>关闭消息详情</button>
     <p className="eyebrow">{TYPE_LABELS[article.article_type]} · {article.source} / {article.source_version}</p>
     <h2>{article.title}</h2>
     <dl className="metadata-grid news-metadata">
@@ -147,6 +162,7 @@ export function News({
   publicationVersion,
 }: NewsProps) {
   const [query, setQuery] = useState(state.q);
+  const articleTrigger = useRef<HTMLButtonElement | null>(null);
   useEffect(() => setQuery(state.q), [state.q]);
   const wordcloudGroup: WordCloudGroup = state.news_type === '' ? 'all' : state.news_type;
   const request = {
@@ -280,7 +296,13 @@ export function News({
             className="news-list-row"
             aria-pressed={state.article === article.article_id}
             key={article.article_id}
-            onClick={() => patch({ article: article.article_id })}
+            onClick={event => {
+              articleTrigger.current = event.currentTarget;
+              patch({ article: article.article_id });
+              if (state.article === article.article_id && !document.querySelector('dialog[open]')) {
+                document.getElementById('workbench-news-detail')?.focus();
+              }
+            }}
           >
             <span>{TYPE_LABELS[article.article_type]} · {article.source}</span>
             <strong>{article.title}</strong>
@@ -300,6 +322,14 @@ export function News({
           state={state}
           publicationAsOf={publicationAsOf}
           publicationVersion={publicationVersion}
+          onClose={() => {
+            if (patch({ article: '' })) {
+              const trigger = articleTrigger.current;
+              requestAnimationFrame(() => {
+                if (trigger?.isConnected && !document.querySelector('dialog[open]')) trigger.focus();
+              });
+            }
+          }}
         />
         : <section id="workbench-news-detail" tabIndex={-1} className="news-detail empty" aria-label="消息详情">
           <h2>选择一篇消息</h2><p>详情严格绑定当前快照，不读取最新文章表。</p>

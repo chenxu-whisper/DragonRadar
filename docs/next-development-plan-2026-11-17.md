@@ -1,5 +1,8 @@
 # DragonRadar 下一阶段开发计划
 
+> 2026-11-18：IG01–IG11 交互切片和本机运行更新已完成，以下为历史计划。
+> 当前执行顺序以 [下一阶段计划](next-development-plan-2026-11-18.md) 为准。
+
 > **For agentic workers:** 进入实施时使用 subagent-driven-development 或 executing-plans，按独立切片执行；复用现有实现，先验证缺口再修改。未获得用户明确要求时不提交、推送或发布。
 
 **Goal:** 在真实数据接入与生产验收暂缓的前提下，把已恢复的页面骨架推进到符合 PRD 的完整复盘体验，并形成当前版本的可复验工程证据。

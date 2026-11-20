@@ -73,9 +73,14 @@ _RESET_READ_PATHS = {
     "/api/stock/{security_id}",
     "/api/stock/{security_id}/kline",
     "/api/news",
+    "/api/news/wordcloud",
     "/api/news/{article_id}",
     "/api/regulation/status",
     "/api/regulation/events",
+    "/api/realtime/quotes",
+    "/api/realtime/minutes",
+    "/api/realtime/anomalies",
+    "/api/market/sector-flow/intraday",
 }
 
 
@@ -214,6 +219,7 @@ def create_owner_app(
         repository=publication_repository,
         analysis_repository=analysis_repository,
     )
+    app.state.realtime_repository = workbench.state.realtime_repository
     read_routes = (
         nested
         for route in workbench.routes

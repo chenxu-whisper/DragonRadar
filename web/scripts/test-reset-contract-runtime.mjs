@@ -1,25 +1,29 @@
-import { randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { runC1Contract } from './contract-c1-runtime.mjs';
+import { runC3Contract } from './contract-c3-runtime.mjs';
 
 import {
   composeOverride,
   ownerTransportRequestOptions,
   parseLoopbackBinding,
 } from './reset-contract-runtime-support.mjs';
-import { composeChildEnvironment } from './production-isolation-support.mjs';
+import {
+  captureFixtureSource, cleanupFixtureProject, createFixtureIdentity,
+  createPrivateDirectory, finishFixtureEvidence, fixtureChildEnvironment,
+  fixtureEnvironmentFile, initializeFixtureEvidence, recordFixtureCommand,
+  protectOwnerSecretFiles, sanitizeFixtureEvidence, writePrivateFile,
+  recordFixtureToolIdentities, fixtureEvidenceSecrets,
+} from './contract-synthetic-fixture.mjs';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(webRoot, '..');
-const runId = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
-const project = `dragon-radar-contract-${runId}`.toLowerCase();
-const state = resolve(root, '..', '.temp', 'reset-contract-runtime', runId);
-const envFile = resolve(state, 'compose.env');
-const overrideFile = resolve(state, 'compose.override.yaml');
+const identity = createFixtureIdentity({ root });
+const { runId, project, state, envFile, overrideFile } = identity;
 const composeFiles = [
   resolve(root, 'compose.yaml'),
   overrideFile,
@@ -30,23 +34,30 @@ function assert(condition, message) {
 }
 
 function run(command, args, options = {}) {
+  const started = Date.now();
   const result = spawnSync(command, args, {
-    cwd: root,
+    cwd: options.cwd ?? root,
     encoding: 'utf8',
     timeout: options.timeout ?? 1_200_000,
     maxBuffer: 32 * 1024 * 1024,
-    env: composeChildEnvironment({ ...process.env, ...options.env }),
+    env: { ...fixtureChildEnvironment(process.env), ...options.env },
   });
+  if (evidencePrepared) {
+    recordFixtureCommand(identity, {
+      command, args, status: result.status, durationMs: Date.now() - started,
+      stdout: result.stdout, stderr: result.stderr, error: result.error?.message,
+    });
+  }
   if (result.error) throw result.error;
   if (!(options.allowed ?? [0]).includes(result.status)) {
     throw new Error(
-      [
+      sanitizeFixtureEvidence([
         `${command} ${args.join(' ')} exited ${result.status}`,
         result.stdout,
         result.stderr,
       ]
         .filter(Boolean)
-        .join('\n'),
+        .join('\n'), fixtureEvidenceSecrets(identity)),
     );
   }
   return result.stdout;
@@ -344,33 +355,54 @@ async function assertHttpContracts(publicPort) {
 }
 
 let primaryError;
-let cleanupError;
+let evidencePrepared = false;
+let cleanup = { status: 'not-started' };
+let probeResult;
+let manifest;
+const permissions = {};
 let composePrepared = false;
 try {
-  mkdirSync(state, { recursive: true });
-  mkdirSync(resolve(state, 'owner-secrets'), { recursive: true });
-  run('docker', ['version'], { timeout: 30_000 });
+  const source = captureFixtureSource(root, run, [
+    'src/dragon_radar/http/public_app.py',
+    'src/dragon_radar/owner/app.py',
+    'containers/owner.Caddyfile',
+    'tests/test_contract_c1_public_sentiment.py',
+    'tests/test_reset_sentiment_research.py',
+    'web/scripts/reset-contract-runtime-support.d.mts',
+  ]);
+  initializeFixtureEvidence(identity, source, { browserMode: 'browser' });
+  if (process.argv.includes('--c3')) {
+    const manifestPath = resolve(state, 'manifest.json');
+    const nativeManifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    Object.assign(nativeManifest, { schema: 'contract-c5-native-c3-v1',
+      argv: process.argv.slice(2), startedAt: new Date().toISOString() });
+    writeFileSync(manifestPath, sanitizeFixtureEvidence(nativeManifest, fixtureEvidenceSecrets(identity)));
+  }
+  evidencePrepared = true;
+  permissions.ownerSecrets = createPrivateDirectory(identity.secretsDir);
+  recordFixtureToolIdentities(identity, run);
   const publicEdgeSubnet = selectPublicEdgeSubnet();
-  writeFileSync(
+  permissions.envFile = writePrivateFile(
     envFile,
-    [
-      `DRAGON_DB_PASSWORD=${randomBytes(24).toString('hex')}`,
-      `DRAGON_OWNER_SECRETS_DIR=${resolve(state, 'owner-secrets').replaceAll('\\', '/')}`,
-      '',
-    ].join('\n'),
-    { encoding: 'utf8', mode: 0o600 },
+    fixtureEnvironmentFile(identity),
   );
-  writeFileSync(
+  permissions.overrideFile = writePrivateFile(
     overrideFile,
-    composeOverride({ publicEdgeSubnet }),
-    'utf8',
+    composeOverride({ publicEdgeSubnet, password: identity.password }),
   );
   composePrepared = true;
   compose('config', '--quiet');
   compose('build', 'public-api', 'public-caddy', 'owner-caddy');
   compose('up', '-d', '--wait', 'db');
   compose('run', '--rm', '--no-deps', 'public-api', 'migrate');
-  compose('run', '--rm', '--no-deps', 'public-api', 'owner-init');
+  compose('up', '-d', '--no-deps', 'owner-caddy');
+  compose('run', '--rm', '--no-deps', 'owner-api', 'owner-init');
+  permissions.ownerSecretFiles = protectOwnerSecretFiles(identity.secretsDir);
+  permissions.ownerSecretInventory = {
+    generatedFileCount: Object.keys(permissions.ownerSecretFiles).length,
+    files: Object.keys(permissions.ownerSecretFiles).sort(),
+    perFileAclApplicable: Object.keys(permissions.ownerSecretFiles).length > 0,
+  };
   compose(
     'up',
     '-d',
@@ -400,8 +432,12 @@ try {
   assertPublicIsolation();
   assertOwnerNamespace();
   assertPublicAssets();
-  console.log(
-    JSON.stringify({
+  const c1 = process.argv.includes('--c3')
+    ? await runC3Contract({ identity, root, compose, run, publicPort: publicBinding.port,
+      ownerBinding, ownerCa })
+    : await runC1Contract({ identity, root, compose, run, ownerCa });
+  probeResult = {
+      c1,
       ownerTransport: {
         authority: 'https://localhost:8443',
         code: ownerTransport.code,
@@ -414,27 +450,25 @@ try {
       },
       project,
       public: `http://${publicBinding.host}:${publicBinding.port}`,
-      status: 'passed',
-    }),
-  );
+    };
 } catch (error) {
   primaryError = error;
 } finally {
   if (composePrepared) {
     try {
-      compose(
-        'down',
-        '--volumes',
-        '--remove-orphans',
-        '--timeout',
-        '10',
-      );
+      cleanup = cleanupFixtureProject({ project, runId, run, compose });
     } catch (error) {
-      cleanupError = error;
+      cleanup = { status: 'failed', error: error.message };
     }
   }
-  rmSync(state, { recursive: true, force: true });
+  if (evidencePrepared) {
+    manifest = finishFixtureEvidence(identity, {
+      error: primaryError, cleanup, result: probeResult, permissions,
+      environment: { inheritedKeys: Object.keys(fixtureChildEnvironment()).sort() },
+    });
+  }
 }
 
-if (primaryError) throw primaryError;
-if (cleanupError) throw cleanupError;
+if (primaryError) throw new Error(sanitizeFixtureEvidence(primaryError.message, fixtureEvidenceSecrets(identity)));
+if (manifest?.status !== 'passed') throw new Error(manifest?.error ?? 'Fixture evidence was not initialized');
+console.log(JSON.stringify({ ...manifest.result, status: manifest.status, evidence: state }));

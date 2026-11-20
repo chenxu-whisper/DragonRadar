@@ -17,6 +17,7 @@ type MockOptions = {
   flowMixedUnits?: boolean;
   minuteMultiSource?: boolean;
   nullResources?: RealtimeResourceName[];
+  anomalyPages?: boolean;
 };
 
 function envelope(
@@ -141,6 +142,24 @@ async function mockRealtime(page: Page, options: MockOptions = {}) {
       }) });
     }
     if (url.pathname === '/api/realtime/anomalies') {
+      if (options.anomalyPages) {
+        const cursor = url.searchParams.get('cursor');
+        const top = cursor === 'page-2' ? 11 : cursor === 'page-1' ? 61 : 111;
+        const count = cursor === 'page-2' ? 11 : 50;
+        return route.fulfill({ json: envelope({
+          status: 'complete',
+          events: Array.from({ length: count }, (_, index) => ({
+            event_id: `event-${String(top - index).padStart(3, '0')}`,
+            batch_id: `batch-${top - index}`, security_id: SECURITY,
+            rule_version: top - index === 111 ? 'relative-volume-v1' : 'return-v1',
+            event_at: '2026-09-10T01:32:00Z', available_at: '2026-09-10T01:32:02Z',
+            metric: top - index === 111 ? 'relative_volume' : 'window_return',
+            window: 3, value: top - index === 111 ? 2 : 0.03,
+            threshold: top - index === 111 ? 1.5 : 0.02, quality: 'complete',
+          })),
+          next_cursor: cursor === 'page-2' ? null : cursor === 'page-1' ? 'page-2' : 'page-1',
+        }, { source_version: null, coverage: { expected: count, valid: count, excluded: 0, missing: 0 } }) });
+      }
       if (isNull('anomalies')) {
         return route.fulfill({ json: envelope(null, {
           source: null,
@@ -271,6 +290,94 @@ async function openSelected(page: Page) {
   );
   await expect(page.getByRole('region', { name: '实时证据账本' })).toBeVisible();
 }
+
+test('C3 mounted independent source/batch/PIT controls emit exact GET pins', async ({ page }) => {
+  await mockRealtime(page);
+  await openSelected(page);
+  const ledger = page.getByRole('region', { name: '实时证据账本' });
+  await ledger.getByLabel('实时来源 ID', { exact: true }).fill(SOURCE);
+  await ledger.getByLabel('报价批次 ID', { exact: true }).fill(BATCH);
+  await ledger.getByLabel('分钟批次 ID', { exact: true }).fill(BATCH);
+  await ledger.getByLabel('资金流批次 ID', { exact: true }).fill(BATCH);
+  await ledger.getByLabel('实时 PIT', { exact: true }).fill('2026-09-10T02:00:00Z');
+  const observed: URL[] = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/realtime/') || url.pathname.endsWith('/sector-flow/intraday')) {
+      expect(request.method()).toBe('GET');
+      observed.push(url);
+    }
+  });
+  await ledger.getByRole('button', { name: '应用实时选择', exact: true }).click();
+  await expect.poll(() => observed.length).toBe(4);
+  for (const url of observed) {
+    expect(url.searchParams.get('source_id')).toBe(SOURCE);
+    expect(url.searchParams.get('as_of')).toBe('2026-09-10T02:00:00Z');
+    expect(url.searchParams.has('snapshot_id')).toBe(false);
+  }
+  expect(observed.find(url => url.pathname.endsWith('/quotes'))?.searchParams.get('quote_batch_id')).toBe(BATCH);
+  expect(observed.find(url => url.pathname.endsWith('/minutes'))?.searchParams.get('batch_id')).toBe(BATCH);
+  expect(observed.find(url => url.pathname.endsWith('/anomalies'))?.searchParams.has('batch_id')).toBe(false);
+});
+
+test('C3 traverses all 111 equal-time anomalies, freezes PIT, and removes terminal action', async ({ page }) => {
+  await mockRealtime(page, { anomalyPages: true });
+  const calls: URL[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/realtime/anomalies') calls.push(new URL(request.url()));
+  });
+  await openSelected(page);
+  const table = page.getByRole('table', { name: '异动证据', exact: true });
+  await expect(table.locator('tbody tr')).toHaveCount(50);
+  await expect(table).toContainText('relative_volume');
+  console.log('C3 pagination first-page evidence', JSON.stringify({
+    rows: await table.locator('tbody tr').count(),
+    loadMoreButtons: await page.getByRole('button', { name: '加载更多异动', exact: true }).count(),
+    requests: calls.map(url => url.pathname + url.search),
+    input: { total: 111, pageSizes: [50, 50, 11], firstNextCursor: 'page-1' },
+  }));
+  await expect(page.getByRole('button', { name: '加载更多异动', exact: true }),
+    'A nonterminal 50-row page must expose continuation to all 111 events').toHaveCount(1);
+  await page.getByRole('button', { name: '加载更多异动', exact: true }).click();
+  await expect(table.locator('tbody tr')).toHaveCount(100);
+  await page.getByRole('button', { name: '加载更多异动', exact: true }).click();
+  await expect(table.locator('tbody tr')).toHaveCount(111);
+  await expect(page.getByRole('button', { name: '加载更多异动', exact: true })).toHaveCount(0);
+  const batches = await table.locator('tbody td[data-label="批次"]').allTextContents();
+  expect(batches).toEqual(Array.from({ length: 111 }, (_, index) => `batch-${111 - index}`));
+  expect(new Set(batches).size).toBe(111);
+  expect(calls).toHaveLength(3);
+  expect(calls[0].searchParams.has('as_of')).toBe(false);
+  expect(calls[1].searchParams.get('as_of')).toBe('2026-09-10T02:00:00Z');
+  expect(calls[2].searchParams.get('as_of')).toBe('2026-09-10T02:00:00Z');
+  await page.getByRole('button', { name: '刷新实时证据', exact: true }).click();
+  await expect(table.locator('tbody tr')).toHaveCount(50);
+  expect(calls.at(-1)?.searchParams.has('cursor')).toBe(false);
+});
+
+test('C3 explicit missing batch and revoked source clear evidence without fallback', async ({ page }) => {
+  await mockRealtime(page);
+  await openSelected(page);
+  const requests: URL[] = [];
+  await page.route('**/api/realtime/**', route => {
+    const url = new URL(route.request().url());
+    requests.push(url);
+    return route.fulfill({ status: url.searchParams.get('source_id') === 'revoked' ? 403 : 404,
+      json: { code: url.searchParams.get('source_id') === 'revoked' ? 'FORBIDDEN' : 'NOT_FOUND' } });
+  });
+  const ledger = page.getByRole('region', { name: '实时证据账本' });
+  await ledger.getByLabel('实时来源 ID', { exact: true }).fill('missing');
+  await ledger.getByLabel('报价批次 ID', { exact: true }).fill('missing-batch');
+  await ledger.getByLabel('分钟批次 ID', { exact: true }).fill('missing-batch');
+  await ledger.getByRole('button', { name: '应用实时选择', exact: true }).click();
+  await expect(ledger.getByRole('table', { name: '实时报价', exact: true })).toHaveCount(0);
+  await expect(ledger.getByRole('table', { name: '分钟记录', exact: true })).toHaveCount(0);
+  expect(requests.every(url => url.searchParams.get('source_id') === 'missing')).toBe(true);
+  await ledger.getByLabel('实时来源 ID', { exact: true }).fill('revoked');
+  await ledger.getByRole('button', { name: '应用实时选择', exact: true }).click();
+  await expect(ledger.getByText('实时来源授权已撤销', { exact: true })).toBeVisible();
+  await expect(ledger.getByRole('table')).toHaveCount(0);
+});
 
 test.beforeEach(async ({ page }) => {
   await mockMarket(page);
@@ -463,7 +570,7 @@ test('shows all resource evidence and the global empty state when all data is nu
   await openSelected(page);
 
   const panel = page.getByRole('region', { name: '实时证据账本' });
-  for (const name of ['实时报价', '分钟记录', '异动证据', '分时资金流']) {
+  for (const name of ['实时报价', '分钟记录', '异动最近一页', '分时资金流']) {
     const state = panel.getByLabel(`${name}状态`);
     await expect(state.getByText('不可用', { exact: true })).toBeVisible();
     await expect(state.getByText('质量标记：no_data')).toBeVisible();

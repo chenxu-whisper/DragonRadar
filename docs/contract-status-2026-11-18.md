@@ -1,5 +1,45 @@
 # Contract Status: B1-B5 Complete, Required Backend Gate Green, 2026-11-18
 
+Batch C0/C1 bounded acceptance passed on 2026-11-19 in the isolated
+`E:/ByteDance/Projects/Code/.temp/DragonRadar-ContractC` worktree.
+All five C0 and eight C1 items are closed with actual evidence; independent
+specification, quality and final whole-integration consistency reviews passed.
+Final contract-runtime run `45252-1795068624675-c8683e1c` and legacy
+production-isolation run `26524-1795069437461-7b30f253` both exited 0,
+with verified removal, empty residual resources and secrets removed.
+The strict Linux Chromium C1 run proves pre-trust rejection and subsequent
+trusted owner TLS, actual P1/P2 targets and citation, independent review with
+immutable P1, and source/owner revocation clearing. Public 54 and owner 143
+JS/CSS assets passed status, MIME and hash checks. Legacy Edge certificate
+bypass is recorded separately and is not strict-TLS evidence.
+Final Node checks passed 146/146; stable frontend passed 47 files/1412 Vitest
+and 96 Node. Read-contract tests passed 171 with 24 database tests deselected;
+Ruff, compileall, TypeScript and PRD 57/29/29/30 passed.
+Failures and minimal repairs remain in the
+[C0/C1 report](acceptance/contract-c-2026-11-18.md).
+C2's six bounded acceptance items closed on 2026-11-20 in the separate
+`DragonRadar-ContractC2` worktree after SPEC/QUALITY and final185/full320,
+three fresh builds, ordinary66 and verified cleanup/runtime invariants. See the
+[C2 execution record](acceptance/contract-c2-2026-11-19.md).
+C3's five finite conditions closed on 2026-11-20 in `DragonRadar-ContractC3`
+after Freeze4 SPEC/QUALITY and current actual-container gates, with hash-proven
+reuse of unaffected Freeze3 backend365, Vitest1422/Node162,
+ordinary AI37/RT16 and actual-container RT1 gates. Actual AI six requests /
+peak two / zero forbidden, owner four strict-TLS GETs / 12 denials / revoked
+session 401 and verified cleanup are retained separately from clock mocks.
+See the [C3 report](acceptance/contract-c3-2026-11-20.md), including the required
+independent final whole-consistency report and source/evidence bindings.
+C4's six finite conditions closed on 2026-11-20 in `DragonRadar-ContractC4`.
+Five fresh builds passed unchanged entry budgets and seven isolation categories;
+Linux performance passed 20 concurrency, 60/60 requests, P95 1.252015s and
+5.491464s synthetic async worker, plus three research-concurrent rounds.
+Ruff/compileall/TypeScript, Vitest1422/Node208, verifier110 and PRD57/29/29/30
+passed. Two fixture-initialization failures remain retained; all three actual
+Linux runs verified cleanup. Source/build/log hashes and independent reviews
+are in the [C4 report](acceptance/contract-c4-2026-11-20.md).
+C5 and D remain pending/blocked; `automated_acceptance` stays `unverified`.
+The 57 REQ/16 EX primary dispositions are retained.
+
 ## Current Authoritative B Status
 
 ActiveSDD batch B1-B5 authorized bounded contract edits are complete in
@@ -53,17 +93,22 @@ gate is 780 passed, zero failures/skips/errors in 443.96s, exit 0, retained in
 
 Every C result must identify the actual test object, build variant, source
 aggregate, artifact hashes, command/log, outcome and any skips/failures. All
-items below are PENDING, not B pass claims; runtime/CI execution needs later
-authorization. Dedicated feature specifications are not converted to C tests.
+items below are not B pass claims. C0/C1 isolated runtime execution was authorized
+on 2026-11-19 and passed its bounded gates; C2 closed its bounded gates on
+2026-11-20; C3 subsequently closed its five finite conditions with the evidence
+above. C4 subsequently closed its six finite conditions with current five-build,
+Linux performance and host regression evidence. C5 and remote CI remain pending
+later authorization.
+Dedicated feature specifications are not converted to C tests.
 
 | C object | Required variants, identity and acceptance | Current result |
 | --- | --- | --- |
-| PRD 3.3 / AC-V06 whole seven-surface PUB/LOCAL tasks | Widths exactly 375/768/1024/1440px, record actual heights/device/browser; light/dark and applicable owner/public builds; ACTUAL browser zoom 200%, not enlarged text. Measure contrast, keyboard focus and task completion. PRD states four tiers and explicitly names only 375/1440; 768/1024 are this authorized execution checklist's intermediate widths | Pending; existing mobile/enlarged-text cases are bounded only |
-| Drawer/search/stock close and original return | Actual target visible; single drawer, repeat close, Esc hides, opener focus restored; preserve original PUB/date/filter/sort/page and actual return scroll, including dirty-note confirmation and denied/late branches | Pending beyond scoped Chrome search cases |
-| Owner AI 60s/120s | Controlled clock: processing message at 60s, deterministic template at 120s, late draft never overwrites saved text/selected human revision. Separate measured real provider latency from clock-policy proof; record owner build/task/input/revision identity | Pending; no actual latency claim |
-| RT01-RT12 and provider egress | Each realtime subitem, source/batch/revision, permission, parent/bar availability/PIT, selectors and complete anomaly cursor traversal; separately enforce actual approved provider egress/token/concurrency/cost boundaries, not daily PUB substitution | Pending whole UI/egress; backend slice is narrower |
-| Actual Caddy -> API isolated synthetic valid publication | Real proxy/API topic detail, grouped search, association review/audit/new-publication activation and citation fragment; public write/private paths denied, owner session/CSRF/isolation and revocation clear results. Record synthetic input/PUB, images, builds, authorities and artifacts without secrets | Pending; mocked Chrome routes/ASGI are not gateway acceptance |
-| Five build variants and dedicated performance | Default / sharing / reset / private / owner (the existing five-build nomenclature): exact source/artifact identity and actual flag combinations, budgets, lazy loading and physical owner/public isolation. Dedicated backend P95 <=2.0s with 20 concurrency and >5s async handoff, `ubuntu-24.04` performance BEFORE browser load | Pending; Node isolation checks do not prove five current builds or P95 |
+| PRD 3.3 / AC-V06 whole seven-surface PUB/LOCAL tasks | Widths exactly 375/768/1024/1440px, record actual heights/device/browser; light/dark and applicable owner/public builds; ACTUAL browser zoom 200%, not enlarged text. Measure contrast, keyboard focus and task completion. PRD states four tiers and explicitly names only 375/1440; 768/1024 are this authorized execution checklist's intermediate widths | C2 bounded PASS; `dragon-c2-ebc202f3-8e4` records320 distinct cells with real native/200% zoom, actual tasks, contrast/focus/scroll and three fresh builds; ordinary66 separate |
+| Drawer/search/stock close and original return | Actual target visible; single drawer, repeat close, Esc hides, opener focus restored; preserve original PUB/date/filter/sort/page and actual return scroll, including dirty-note confirmation and denied/late branches | C2 bounded PASS; final185 includes actual lifecycle/return, precise late replies, LOCAL dirty guards and applicable owner session/association/citation revocation |
+| Owner AI 60s/120s | Controlled clock: processing message at 60s, deterministic template at 120s, late draft never overwrites saved text/selected human revision. Separate measured real provider latency from clock-policy proof; record owner build/task/input/revision identity | C3 bounded PASS; controlled 59,999/60,000/119,999/120,000 ms browser and actual repository readback preserve saved/new human revisions; no real provider latency claim |
+| RT01-RT12 and provider egress | Each realtime subitem, source/batch/revision, permission, parent/bar availability/PIT, selectors and complete anomaly cursor traversal; separately enforce actual approved provider egress/token/concurrency/cost boundaries, not daily PUB substitution | C3 bounded PASS; RT01–12 map and actual 111-event paging/replay, exact values, batch/PIT and parent/bar boundaries; actual synthetic provider six requests/peak two/zero forbidden, exact token/Decimal limits and sanitized failures; owner four GETs/12 denials/logout 401 |
+| Actual Caddy -> API isolated synthetic valid publication | Real proxy/API topic detail, grouped search, association review/audit/new-publication activation and citation fragment; public write/private paths denied, owner session/CSRF/isolation and revocation clear results. Record synthetic input/PUB, images, builds, authorities and artifacts without secrets | C0/C1 bounded PASS; final run 45252-1795068624675-c8683e1c proves strict TLS, actual targets, review/P1 immutability/P2 activation, citation, both revocations and verified cleanup; final whole consistency review PASS. See C0/C1 report; C2-C5/D unchanged |
+| Five build variants and dedicated performance | Default / sharing / reset / private / owner (the existing five-build nomenclature): exact source/artifact identity and actual flag combinations, budgets, lazy loading and physical owner/public isolation. Dedicated backend P95 <=2.0s with 20 concurrency and >5s async handoff, `ubuntu-24.04` performance BEFORE browser load | C4 bounded PASS; Freeze5 binds five current builds/213 files and original budgets; 20 concurrency/60 successful requests/P95 1.252015s, async 5.491464s, research-concurrent P95 <=1.415956s, all cleanup PASS. Local Linux evidence; remote CI unverified |
 | Full isolated Linux verifier and remote CI | `verify_reset.py --mode full`, isolated synthetic instance with 90-minute budget; retain full source/build/log identity, failures/skips and exact result. Remote CI pending later authorization; no commit/runtime/deploy implied | Pending; automated_acceptance unverified |
 
 D's five real gates remain blocked: `real_input`, `official_rules`,

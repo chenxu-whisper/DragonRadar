@@ -431,20 +431,40 @@ export function realtimeRequestPaths(
   selectedDate: string,
   securityIds: string[],
   sectorId?: string,
+  pins: {
+    sourceId?: string;
+    quoteBatchId?: string;
+    minuteBatchId?: string;
+    flowBatchId?: string;
+    asOf?: string;
+  } = {},
 ): { quote: string | null; minute: string | null; anomaly: string | null; flow: string | null } {
   try {
     dateValue(selectedDate, 'selected date');
+    if (pins.asOf) timestamp(pins.asOf, 'selected as_of');
+    if (pins.sourceId) identifier(pins.sourceId, 'selected source');
+    for (const batch of [pins.quoteBatchId, pins.minuteBatchId, pins.flowBatchId]) {
+      if (batch) {
+        identifier(batch, 'selected batch');
+        selectionBatch({ sourceId: pins.sourceId, batchId: batch });
+      }
+    }
   } catch {
     return { quote: null, minute: null, anomaly: null, flow: null };
   }
   const primary = securityIds[0];
+  const shared = { sourceId: pins.sourceId, asOf: pins.asOf };
   return {
-    quote: primary ? quotePath({ securityIds }) : null,
-    minute: primary ? minutePath({ securityId: primary, date: selectedDate }) : null,
+    quote: primary ? quotePath({ securityIds, ...shared, batchId: pins.quoteBatchId }) : null,
+    minute: primary ? minutePath({
+      securityId: primary, date: selectedDate, ...shared, batchId: pins.minuteBatchId,
+    }) : null,
     anomaly: primary
-      ? anomalyPath({ securityId: primary, date: selectedDate, limit: 50 })
+      ? anomalyPath({ securityId: primary, date: selectedDate, limit: 50, ...shared })
       : null,
-    flow: sectorId ? sectorFlowPath({ sectorId, date: selectedDate }) : null,
+    flow: sectorId ? sectorFlowPath({
+      sectorId, date: selectedDate, ...shared, batchId: pins.flowBatchId,
+    }) : null,
   };
 }
 

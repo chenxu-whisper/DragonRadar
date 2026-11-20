@@ -60,6 +60,88 @@ const draft = {
   }],
 };
 
+test('C3 controlled 60/120 boundaries keep failed tasks polling and saved human notes intact', async ({ page }) => {
+  const origin = new Date('2026-09-10T08:01:00Z');
+  await mockMarket(page);
+  await mockReview(page, reviewServer());
+  let elapsed = 0;
+  let reads = 0;
+  let late = false;
+  const response = () => task({
+    status: 'failed',
+    failure: { code: 'provider_unavailable' },
+    processing_overdue: elapsed >= 60_000,
+    ...(elapsed >= 120_000 ? {
+      verification_status: 'passed', content_draft: draft, revision: 1,
+      content_draft_source: 'deterministic_template',
+      content_draft_created_at: '2026-09-10T08:03:00Z', ai_generated: false,
+    } : {}),
+    ...(late ? {
+      status: 'succeeded', content_draft_source: 'provider', ai_generated: true,
+      revision: 2, model_version: 'synthetic-c3', prompt_version: 'synthetic-c3',
+      provider: 'synthetic-c3', token_usage: 1, cost: '0', latency_ms: 180_000,
+      failure: null,
+    } : {}),
+  });
+  await page.route('**/api/ai/daily-review', route => route.fulfill({ json: response() }));
+  await page.route(`**/api/ai/task/${taskId}`, async route => {
+    elapsed = await page.evaluate(start => Date.now() - start, origin.getTime());
+    reads++;
+    await route.fulfill({ json: response() });
+  });
+  await page.goto(`/?view=review&snapshot=${ID}&date=2026-09-10`);
+  await page.getByRole('textbox', { name: '标题', exact: true }).fill('C3 saved original');
+  await page.getByRole('textbox', { name: '正文', exact: true }).fill('C3 immutable saved body');
+  await page.getByRole('textbox', { name: '判断', exact: true }).fill('C3 human judgment');
+  await page.getByRole('button', { name: '保存笔记', exact: true }).click();
+  await expect(page.locator('.local-note-editor').getByRole('status')).toContainText('回读验证通过');
+  await page.clock.install({ time: origin });
+  await page.clock.pauseAt(origin);
+  const panel = page.getByRole('region', { name: 'AI 每日复盘' });
+  await panel.getByRole('checkbox', { name: '判断', exact: true }).check();
+  await panel.getByRole('button', { name: '生成每日复盘' }).click();
+  await expect(panel).toContainText('任务状态：failed');
+  for (const milliseconds of [59_999, 60_000, 119_999, 120_000]) {
+    const before = reads;
+    await page.clock.setSystemTime(new Date(origin.getTime() + milliseconds - 1000));
+    await page.clock.runFor(1000);
+    await expect.poll(() => reads).toBeGreaterThan(before);
+    expect(elapsed).toBe(milliseconds);
+    if (milliseconds < 60_000) await expect(panel).not.toContainText('仍在处理');
+    if (milliseconds >= 60_000 && milliseconds < 120_000) await expect(panel).toContainText('仍在处理');
+    if (milliseconds < 120_000) await expect(panel).not.toContainText('确定性模板');
+  }
+  await expect(panel).toContainText('确定性模板');
+  await expect(panel).toContainText('人工审核：unreviewed');
+  await expect(panel).toContainText('校验状态：passed');
+  await page.getByRole('textbox', { name: '正文', exact: true }).fill('C3 newer human body');
+  await page.getByRole('button', { name: '保存笔记', exact: true }).click();
+  await expect(page.locator('.local-note-editor').getByRole('status')).toContainText('回读验证通过');
+  // A later successful provider result cannot be selected by the stopped template poll.
+  elapsed = 180_000;
+  late = true;
+  const beforeLate = reads;
+  await page.clock.runFor(60_000);
+  expect(reads).toBe(beforeLate);
+  await expect(page.getByRole('textbox', { name: '正文', exact: true })).toHaveValue('C3 newer human body');
+  const stored = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('dragon-radar-local-v3');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const notes = await new Promise<unknown[]>((resolve, reject) => {
+      const request = database.transaction('notes').objectStore('notes').getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return JSON.stringify(notes);
+  });
+  expect(stored).toContain('C3 newer human body');
+  expect(stored).not.toContain('已发布快照记录上涨家数为 32');
+});
+
 test('A3 Reset owner pairing guidance uses the current origin and protected script output', async ({ page, baseURL }) => {
   await mockMarket(page);
   const owner = reviewServer();

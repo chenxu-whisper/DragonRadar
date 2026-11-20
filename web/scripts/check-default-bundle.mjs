@@ -1,96 +1,156 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, readdirSync, lstatSync, existsSync, realpathSync } from 'node:fs';
+import { dirname, resolve, relative, isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
-const dist = resolve(process.cwd(), 'dist');
-const html = readFileSync(resolve(dist, 'index.html'), 'utf8');
-const entryMatch = html.match(/<script[^>]+src="([^"]+)"[^>]*><\/script>/);
-if (!entryMatch) throw new Error('Default build entry script was not found');
-
-const entry = resolve(dist, entryMatch[1].replace(/^\//, ''));
-const entryBytes = statSync(entry).size;
-const staticAssets = new Set([entry]);
-for (const match of html.matchAll(/<link[^>]+href="([^"]+)"/g)) {
-  if (match[1].startsWith('/assets/')) staticAssets.add(resolve(dist, match[1].slice(1)));
+export function bundleFlags(env) {
+  return Object.fromEntries(['RESET_WORKBENCH', 'PUBLIC_SHARING', 'PRIVATE_REVIEW', 'PRIVATE_AI']
+    .map(name => [`VITE_${name}`, env[`VITE_${name}`] === '1' ? '1' : '0']));
 }
-const pending = [entry];
-while (pending.length) {
-  const file = pending.pop();
-  const source = readFileSync(file, 'utf8');
-  for (const match of source.matchAll(/\bfrom\s*["']([^"']+)["']/g)) {
-    if (!match[1].startsWith('.')) continue;
-    const dependency = resolve(dirname(file), match[1]);
-    if (!staticAssets.has(dependency)) {
-      staticAssets.add(dependency);
-      pending.push(dependency);
+
+export function inspectBundle({ dist, env = process.env, requireManifest = false }) {
+  dist = realpathSync(dist);
+  const pathInDist = path => {
+    const file = resolve(dist, path);
+    const rel = relative(dist, file);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error('Asset path escapes dist');
+    if (realpathSync(file) !== file) throw new Error('Linked assets are not evidence');
+    if (!lstatSync(file).isFile()) throw new Error('Asset is not a regular file');
+    return file;
+  };
+  const nameOf = file => relative(dist, file).replaceAll('\\', '/');
+  const allFiles = [];
+  function walk(directory) {
+    for (const item of readdirSync(directory, { withFileTypes: true })) {
+      const file = resolve(directory, item.name);
+      if (item.isSymbolicLink()) throw new Error('Linked assets are not evidence');
+      if (item.isDirectory()) walk(file);
+      else if (item.isFile()) allFiles.push(file);
+      else throw new Error('Non-regular dist output');
     }
   }
-}
-
-const allAssets = readdirSync(resolve(dist, 'assets'), { recursive: true })
-  .filter(file => statSync(resolve(dist, 'assets', file)).isFile())
-  .map(file => resolve(dist, 'assets', file));
-const allScripts = allAssets.filter(file => file.endsWith('.js'));
-// 私有 marker：默认/reset/sharing 镜像的任何产物（含懒 chunk）都不得包含。
-const privateMarkers = [
-  '我的复盘',
-  '人工验证',
-  '.review-workspace',
-  'dragon-radar-local-v3',
-  '/api/owner/',
-  '/api/ai/',
-];
-for (const file of new Set([...staticAssets, ...allScripts])) {
-  const source = readFileSync(file, 'utf8');
-  for (const marker of privateMarkers) {
-    if (source.includes(marker)) throw new Error(`Asset contains private marker "${marker}": ${file}`);
-  }
-}
-// D5：/api/query/ 是 reset-only 白名单查询路径。任何构建下它都不得进入 entry
-// 静态闭包（只能以 env 折叠后的懒 chunk 存在）；默认构建（VITE_RESET_WORKBENCH
-// 不为 '1'）连该懒 chunk 都不得产出，因此对全部产物兜底扫描。
-const resetBuild = process.env.VITE_RESET_WORKBENCH === '1';
-const queryScope = resetBuild ? [...staticAssets] : allScripts;
-for (const file of queryScope) {
-  if (readFileSync(file, 'utf8').includes('/api/query/')) {
-    throw new Error(resetBuild
-      ? `Reset-only query path reached the entry static closure: ${file}`
-      : `Default build emitted a reset-only query asset: ${file}`);
-  }
-}
-// Task 28：/api/market/sentiment/research 与 query 同构：reset-only 研究分区懒
-// chunk 不得进入 entry 静态闭包；默认构建（VITE_RESET_WORKBENCH 不为 '1'）连该
-// 懒 chunk 都不得产出，因此对全部产物兜底扫描。
-const researchScope = resetBuild ? [...staticAssets] : allScripts;
-for (const file of researchScope) {
-  if (readFileSync(file, 'utf8').includes('/api/market/sentiment/research')) {
-    throw new Error(resetBuild
-      ? `Reset-only research path reached the entry static closure: ${file}`
-      : `Default build emitted a reset-only research asset: ${file}`);
-  }
-}
-// Task 17：owner-only 研究回测命名空间（/api/research/backtests|manifests）与本地
-// 模拟账本模块（仅研究模拟披露文案）。默认/分享构建的任何产物（含懒 chunk）都不得
-// 包含；reset 构建下二者只能存在于 env 折叠后的懒 chunk，不得进入 entry 静态闭包。
-const ownerResearchBuild = resetBuild && process.env.VITE_PUBLIC_SHARING !== '1';
-const researchModuleMarkers = ['/api/research', '仅研究模拟', '.backtest-panel'];
-const researchModuleScope = ownerResearchBuild ? [...staticAssets] : allAssets;
-for (const file of researchModuleScope) {
-  const source = readFileSync(file, 'utf8');
-  for (const marker of researchModuleMarkers) {
-    if (source.includes(marker)) {
-      throw new Error(ownerResearchBuild
-        ? `Owner-only research module marker "${marker}" reached the entry static closure: ${file}`
-        : `Default/sharing build emitted an owner-only research asset containing "${marker}": ${file}`);
+  walk(dist);
+  const html = readFileSync(pathInDist('index.html'), 'utf8');
+  const staticAssets = new Set();
+  const pending = [];
+  function add(file) {
+    if (!staticAssets.has(file)) {
+      staticAssets.add(file);
+      pending.push(file);
     }
   }
-}
-const entryBudget = process.env.VITE_PUBLIC_SHARING === '1' ? 320_000 : 315_500;
-if (entryBytes > entryBudget) {
-  throw new Error(`Entry is ${entryBytes} bytes; budget is ${entryBudget} bytes`);
+  const localAsset = (specifier, base) => {
+    if (/^(?:https?:|data:|\/\/)/.test(specifier)) throw new Error('External entry/static asset');
+    const path = specifier.split(/[?#]/)[0];
+    return pathInDist(relative(dist, path.startsWith('/')
+      ? resolve(dist, `.${path}`) : resolve(base, path)));
+  };
+  const entries = [];
+  for (const tag of html.matchAll(/<(script|link)\b[^>]*>/gi)) {
+    const attrs = Object.fromEntries([...tag[0].matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)]
+      .map(match => [match[1].toLowerCase(), match[2] ?? match[3]]));
+    if (tag[1].toLowerCase() === 'script' && attrs.src) {
+      const file = localAsset(attrs.src, dist);
+      entries.push(file);
+      add(file);
+    } else if (tag[1].toLowerCase() === 'link' && attrs.href
+      && ['stylesheet', 'modulepreload'].includes(attrs.rel)) {
+      add(localAsset(attrs.href, dist));
+    }
+  }
+  if (!entries.length) throw new Error('Build entry script was not found');
+  const manifestPath = resolve(dist, '.vite/manifest.json');
+  let manifest;
+  if (existsSync(manifestPath)) {
+    manifest = JSON.parse(readFileSync(pathInDist('.vite/manifest.json'), 'utf8'));
+    if (!manifest || Array.isArray(manifest) || typeof manifest !== 'object') throw new Error('Invalid manifest');
+    const byFile = new Map();
+    for (const [key, row] of Object.entries(manifest)) {
+      if (!row || typeof row.file !== 'string') throw new Error(`Invalid manifest row ${key}`);
+      const file = pathInDist(row.file);
+      byFile.set(file, row);
+      for (const asset of [...(row.css ?? []), ...(row.assets ?? [])]) pathInDist(asset);
+      for (const dependency of [...(row.imports ?? []), ...(row.dynamicImports ?? [])]) {
+        if (!Object.hasOwn(manifest, dependency)) throw new Error(`Missing manifest dependency ${dependency}`);
+      }
+    }
+    if (!entries.every(file => byFile.get(file)?.isEntry)) throw new Error('Manifest does not bind HTML entry');
+    const visited = new Set();
+    function visit(file) {
+      if (visited.has(file)) return;
+      visited.add(file);
+      const row = byFile.get(file);
+      if (!row) return;
+      add(file);
+      for (const asset of [...(row.css ?? []), ...(row.assets ?? [])]) add(pathInDist(asset));
+      for (const key of row.imports ?? []) visit(pathInDist(manifest[key].file));
+    }
+    for (const file of [...staticAssets]) visit(file);
+  } else if (requireManifest) {
+    throw new Error('Fresh Vite manifest is required');
+  }
+  while (pending.length) {
+    const file = pending.pop();
+    const source = readFileSync(file, 'utf8');
+    if (file.endsWith('.js') || file.endsWith('.mjs')) {
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+      for (const statement of parsed.statements) {
+        if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))
+          && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+          add(localAsset(statement.moduleSpecifier.text, dirname(file)));
+        }
+      }
+    } else if (file.endsWith('.css')) {
+      for (const match of source.matchAll(/@import\s+(?:url\(\s*)?["']([^"']+)["']/g)) {
+        add(localAsset(match[1], dirname(file)));
+      }
+    }
+  }
+  const flags = bundleFlags(env);
+  const reset = flags.VITE_RESET_WORKBENCH === '1';
+  const sharing = flags.VITE_PUBLIC_SHARING === '1';
+  const privateReview = flags.VITE_PRIVATE_REVIEW === '1';
+  const privateAI = flags.VITE_PRIVATE_AI === '1';
+  // App's reset LOCAL flow is separate from PrivateApp's owner session.
+  const rules = [
+    { name: 'local', markers: ['dragon-radar-local-v3'], allowed: reset && !sharing },
+    { name: 'review', markers: ['我的复盘', '人工验证', '.review-workspace'],
+      allowed: (reset && !sharing) || privateReview },
+    { name: 'owner', markers: ['/api/owner/'], allowed: privateReview },
+    { name: 'ai', markers: ['/api/ai/'], allowed: privateAI && !sharing },
+    { name: 'query', markers: ['/api/query/'], allowed: reset, lazyOnly: true },
+    { name: 'sentimentResearch', markers: ['/api/market/sentiment/research'], allowed: reset, lazyOnly: true },
+    { name: 'ownerResearch', markers: ['/api/research', '仅研究模拟', '.backtest-panel'],
+      allowed: reset && !sharing, lazyOnly: true },
+  ];
+  const isolation = {};
+  for (const rule of rules) {
+    const hits = [];
+    for (const file of allFiles) {
+      if (file === manifestPath) continue;
+      const source = readFileSync(file, 'utf8');
+      for (const marker of rule.markers) {
+        if (!source.includes(marker)) continue;
+        hits.push({ file: nameOf(file), marker, static: staticAssets.has(file) });
+        if (!rule.allowed) throw new Error(`Build emitted forbidden ${rule.name} marker "${marker}": ${nameOf(file)}`);
+        if (rule.lazyOnly && staticAssets.has(file)) {
+          throw new Error(`Research/query marker "${marker}" reached the entry static closure: ${nameOf(file)}`);
+        }
+      }
+    }
+    isolation[rule.name] = { allowed: rule.allowed, lazyOnly: !!rule.lazyOnly, passed: true, hits };
+  }
+  const entry = entries[0];
+  const entryBytes = lstatSync(entry).size;
+  const entryBudget = sharing ? 320_000 : 315_500;
+  if (entryBytes > entryBudget) throw new Error(`Entry is ${entryBytes} bytes; budget is ${entryBudget} bytes`);
+  return {
+    flags, entry: nameOf(entry), entries: entries.map(nameOf), entryBytes, entryBudget,
+    staticAssets: [...staticAssets].map(nameOf).sort(),
+    manifest: manifest ? '.vite/manifest.json' : null, isolation,
+  };
 }
 
-console.log(JSON.stringify({
-  entry: entry.slice(dist.length + 1).replaceAll('\\', '/'),
-  entryBytes,
-  staticAssets: [...staticAssets].map(file => file.slice(dist.length + 1).replaceAll('\\', '/')).sort(),
-}));
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  console.log(JSON.stringify(inspectBundle({ dist: resolve(process.cwd(), 'dist') })));
+}

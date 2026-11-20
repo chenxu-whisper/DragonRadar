@@ -18,12 +18,14 @@ from dragon_radar.http.errors import (
 from dragon_radar.http.routes.analysis import router as analysis_router
 from dragon_radar.http.routes.market import router as market_router
 from dragon_radar.http.routes.news import router as news_router
+from dragon_radar.http.routes.realtime import router as realtime_router
 from dragon_radar.http.routes.regulation import router as regulation_router
 from dragon_radar.http.routes.roles import router as roles_router
 from dragon_radar.http.routes.stock import router as stock_router
 from dragon_radar.http.routes.topics import router as topics_router
 from dragon_radar.http.selection import query_date, query_integer, query_values
 from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.realtime.repository import RealtimeRepository
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import NotFound, Repository
 
@@ -35,6 +37,7 @@ PUBLIC_READ_PATHS = frozenset(
         "/api/market/sector-flow",
         "/api/topics/{sector_id}",
         "/api/market/sentiment",
+        "/api/market/sentiment/research",
         "/api/market/heatmap",
         "/api/search",
         "/api/limit-up/ladder",
@@ -46,9 +49,14 @@ PUBLIC_READ_PATHS = frozenset(
         "/api/stock/{security_id}",
         "/api/stock/{security_id}/kline",
         "/api/news",
+        "/api/news/wordcloud",
         "/api/news/{article_id}",
         "/api/regulation/status",
         "/api/regulation/events",
+        "/api/realtime/quotes",
+        "/api/realtime/minutes",
+        "/api/realtime/anomalies",
+        "/api/market/sector-flow/intraday",
     }
 )
 
@@ -294,6 +302,11 @@ def create_public_app(
     )
     app.state.repository = repository
     app.state.analysis_repository = None
+    app.state.realtime_repository = (
+        RealtimeRepository(database, require_public_sharing=True)
+        if database is not None and hasattr(database, "engine")
+        else None
+    )
     register_error_handlers(app)
 
     @app.get("/health/live")
@@ -340,6 +353,7 @@ def create_public_app(
         topics_router,
         stock_router,
         analysis_router,
+        realtime_router,
     ):
         for route in router.routes:
             if route.path in PUBLIC_READ_PATHS and route.methods == {"GET"}:

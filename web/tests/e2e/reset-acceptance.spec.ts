@@ -311,7 +311,7 @@ for (const item of responsiveViews) {
   }
 }
 
-test('overview at 375px exports the current filter with immutable metadata', async ({ page }) => {
+test('overview at 375px exports the sorted visible page with immutable filter metadata', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await mockMarket(page);
   await page.goto(`/?view=overview&snapshot=${ID}&date=2026-09-10&market_filter=up&q=TEST001`);
@@ -319,7 +319,7 @@ test('overview at 375px exports the current filter with immutable metadata', asy
   await expect(page.getByRole('heading', { name: '市场总览' })).toBeVisible();
   await expectNoPageOverflow(page);
   const pending = page.waitForEvent('download');
-  await page.getByRole('button', { name: '导出当前筛选 CSV' }).click();
+  await page.getByRole('button', { name: '导出当前页 CSV' }).click();
   const download = await pending;
   expect(download.suggestedFilename()).toMatch(/^dragon-radar-overview-current-filter-/);
   const csv = await downloadText(download);

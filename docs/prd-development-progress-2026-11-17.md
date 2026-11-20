@@ -1,5 +1,25 @@
 # DragonRadar PRD 与开发进度对照：B1-B5 完成，八文件后端门禁通过
 
+2026-11-19 授权的 C0 五项／C1 八项验收已关闭，见
+[本批验收报告](acceptance/contract-c-2026-11-18.md)。独立规格／质量复审
+及最终整体一致性复核均为 PASS。控制器最终 contract-runtime
+`45252-1795068624675-c8683e1c` 与原有 production-isolation
+`26524-1795069437461-7b30f253` 均 exit 0，实际清理 removed、
+容器／卷／网络残留为空、秘密文件已删除。
+专用 Linux Chromium 验证信任前拒绝及信任后严格 owner TLS，
+两份真实 CLI 合成发布、证券／题材／文章／引用目标、独立复核与
+P1 原始归档不变／P2 生效、来源及 owner 撤权清空。公开 54／owner
+143 个 JS/CSS 状态、MIME、哈希通过；预期拒绝保留并精确分类。
+原有 Edge 忽略证书的结果仅证明既有隔离范围。
+最终 Node 146/146、TypeScript 通过；稳定完整前端为 47 文件／
+1412 Vitest／96 Node；无数据库读取契约为 171 passed／24 deselected，
+这 24 项集成用例未执行。Ruff／compileall／PRD 57／29／29／30 通过。
+源码及日志身份、失败到通过历史保留在报告中。
+2026-11-20 C2 六项有限验收已关闭：SPEC／QUALITY、最终 Linux185／320 单元、三全新构建、独立 Chrome66、清理与恢复后日常身份核对通过，见
+[C2 执行记录](acceptance/contract-c2-2026-11-19.md)。
+C3–C5 与 D 未执行，完整 `automated_acceptance` 保持 `unverified`；
+57 REQ／16 EX 的主状态不因本次有限验收整体提升。
+
 当前更新：2026-11-18，ActiveSDD B1-B5 在隔离
 `E:/ByteDance/Projects/Code/.temp/DragonRadar-ContractB` 完成授权的有限契约范围。
 需求基线：[开发需求 PRD](DragonRadar_开发需求PRD.md)。
