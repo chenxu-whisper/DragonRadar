@@ -228,9 +228,7 @@ def ai_evidence(database):
                 return False
             with lock:
                 counters["requests"] += 1
-                counters["receipts"].append(
-                    {"method": self.command, "path": self.path}
-                )
+                counters["receipts"].append({"method": self.command, "path": self.path})
                 if (
                     self.command != "POST"
                     or self.path != "/synthetic/c3-worker/exact"

@@ -340,7 +340,35 @@ _GATE_SPECS: dict[str, list[CommandSpec]] = {
     ],
     "frontend_e2e_legacy": [_spec(["npm", "run", "test:e2e"], cwd="web", timeout=1200)],
     "frontend_e2e_reset": [
-        _spec(["npm", "run", "test:e2e:reset"], cwd="web", timeout=1200)
+        _spec(["npm", "run", "test:e2e:reset"], cwd="web", timeout=1200),
+        _spec(
+            [
+                "npm",
+                "exec",
+                "--",
+                "playwright",
+                "test",
+                "--config",
+                "playwright.ig08-ig10.config.ts",
+            ],
+            cwd="web",
+            environment_class="private-review-ai",
+            timeout=1200,
+        ),
+        _spec(
+            [
+                "npm",
+                "exec",
+                "--",
+                "playwright",
+                "test",
+                "--config",
+                "playwright.ig08-ig10.config.ts",
+            ],
+            cwd="web",
+            environment_class="readonly-ig08",
+            environment_overrides={"DRAGON_IG08_READONLY": "1"},
+        ),
     ],
     "frontend_e2e_private": [
         _spec(["npm", "run", "test:e2e:private"], cwd="web", timeout=1200)

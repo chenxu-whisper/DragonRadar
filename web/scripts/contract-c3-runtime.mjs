@@ -3,6 +3,7 @@ import https from 'node:https';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { chromium } from '@playwright/test';
 import { sanitizeFixtureEvidence, fixtureEvidenceSecrets, fixtureChildEnvironment, recordFixtureBrowserIdentity,
   recordFixtureCommand } from './contract-synthetic-fixture.mjs';
 import { publishContractCheckpoint, ownerTransportRequestOptions } from './reset-contract-runtime-support.mjs';
@@ -85,7 +86,8 @@ export async function runC3Contract({ identity, root, compose, run, publicPort, 
   ];
   const started = Date.now();
   const child = spawn('node', args, { cwd: resolve(root, 'web'),
-    env: { ...fixtureChildEnvironment(), C3_ORIGIN: origin, C3_CHANNEL: channel } });
+    env: { ...fixtureChildEnvironment(), C3_ORIGIN: origin, C3_CHANNEL: channel,
+      C3_CHROMIUM_EXECUTABLE: chromium.executablePath() } });
   const stdout = [];
   const stderr = [];
   child.stdout.on('data', chunk => stdout.push(chunk));
@@ -118,7 +120,7 @@ export async function runC3Contract({ identity, root, compose, run, publicPort, 
       durationMs: Date.now() - started, status: child.exitCode, stdout: output, stderr: errors });
   }
   const evidence = JSON.parse(readFileSync(resolve(channel, 'evidence.json')));
-  recordFixtureBrowserIdentity(identity, { channel: 'chrome', version: evidence.chromium });
+  recordFixtureBrowserIdentity(identity, { channel: 'chromium', version: evidence.chromium });
   return { scope: 'C3 only; no C4/C5 promotion', ai, realtime, ownerRealtime, database: proof, browser: evidence };
 }
 

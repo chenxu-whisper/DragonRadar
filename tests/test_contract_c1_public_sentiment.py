@@ -75,6 +75,7 @@ async def test_public_research_is_publication_bound_and_unknown_fails_closed(
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://public.example"
     ) as client:
+
         async def read(snapshot_id):
             request = client.build_request(
                 "GET",
@@ -177,9 +178,7 @@ async def test_wordcloud_literal_route_keeps_publication_identity(surface):
             owner_repository=owners,
             origin=origin,
         )
-        headers = {
-            "Cookie": "__Host-dragon-private-session=synthetic-c1-test-token"
-        }
+        headers = {"Cookie": "__Host-dragon-private-session=synthetic-c1-test-token"}
     else:
         origin = "http://public.example"
         app = create_public_app(repository=repository)
@@ -187,6 +186,7 @@ async def test_wordcloud_literal_route_keeps_publication_identity(surface):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url=origin, headers=headers
     ) as client:
+
         async def read(snapshot_id):
             request = client.build_request(
                 "GET",

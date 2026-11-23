@@ -160,7 +160,13 @@ export async function runC1Contract({ identity, root, compose, run, ownerCa }) {
       run('docker', ['cp', resolve(root, 'web', path), `${id}:/work/web/${path}`]);
     }
     run('docker', ['exec', '-w', '/work/web', id, 'npm', 'ci', '--ignore-scripts', '--cache', '/tmp/npm-cache']);
-    run('docker', ['exec', id, 'chown', '-R', 'pwuser:pwuser', '/work']);
+    const hostUid = process.platform === 'linux' ? process.getuid?.() : undefined;
+    const hostGid = process.platform === 'linux' ? process.getgid?.() : undefined;
+    if (Number.isSafeInteger(hostUid) && hostUid > 0 && Number.isSafeInteger(hostGid)) {
+      run('docker', ['exec', id, 'groupmod', '-o', '-g', String(hostGid), 'pwuser']);
+      run('docker', ['exec', id, 'usermod', '-o', '-u', String(hostUid), 'pwuser']);
+    }
+    run('docker', ['exec', id, 'chown', '-R', 'pwuser:pwuser', '/home/pwuser', '/work', '/fixture']);
     if (mode === 'owner') {
       const pretrust = JSON.parse(run('docker', ['exec', '--user', 'pwuser', '-e', 'HOME=/home/pwuser',
         '-w', '/work/web', id, 'node', 'scripts/contract-c1-pretrust.mjs']));

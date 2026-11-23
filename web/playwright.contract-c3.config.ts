@@ -10,7 +10,8 @@ export default defineConfig({
   outputDir: `${process.env.C3_CHANNEL}/results`,
   reporter: [['line']],
   use: {
-    channel: 'chrome',
+    channel: 'chromium',
+    launchOptions: { executablePath: process.env.C3_CHROMIUM_EXECUTABLE },
     baseURL: process.env.C3_ORIGIN,
     ignoreHTTPSErrors: false,
     trace: 'retain-on-failure',

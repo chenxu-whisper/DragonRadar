@@ -68,12 +68,14 @@ async def test_public_exact_quote_denies_nonsharing_source_in_actual_database(da
             state="authorized",
             captured_at=NOW,
         ),
-        quotes=(QuoteInput(
-            security_id="SYNTH-C1-1",
-            last=Decimal("10"),
-            order_book_status="disabled",
-            order_book_unavailable_reason="order_book_not_authorized",
-        ),),
+        quotes=(
+            QuoteInput(
+                security_id="SYNTH-C1-1",
+                last=Decimal("10"),
+                order_book_status="disabled",
+                order_book_unavailable_reason="order_book_not_authorized",
+            ),
+        ),
     )
     RealtimeRepository(database, clock=lambda: NOW).ingest_quote_batch(
         batch, key="c3-private-quote"
@@ -90,11 +92,16 @@ async def test_public_exact_quote_denies_nonsharing_source_in_actual_database(da
         request = client.build_request("GET", path, content=EmptyRequestStream())
         request.headers.pop("transfer-encoding", None)
         response = await client.send(request)
-    print({
-        "method": "GET", "path": path, "source": source.model_dump(mode="json"),
-        "batch": batch.model_dump(mode="json"),
-        "status": response.status_code, "body": response.json(),
-    })
+    print(
+        {
+            "method": "GET",
+            "path": path,
+            "source": source.model_dump(mode="json"),
+            "batch": batch.model_dump(mode="json"),
+            "status": response.status_code,
+            "body": response.json(),
+        }
+    )
     assert response.status_code == 403, (
         f"Public EX04 leaked nonsharing exact source/batch: {response.status_code} "
         f"{response.text}"

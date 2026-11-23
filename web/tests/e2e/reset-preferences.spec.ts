@@ -726,7 +726,7 @@ test.describe('减弱动效', () => {
     await page.keyboard.press('Escape');
     await expect(paletteDialog(page)).toHaveCount(0);
     expect(pageErrors).toEqual([]);
-    const transition = await page.locator('button.command-palette-trigger')
+    const transition = await page.getByRole('button', { name: TRIGGER_NAME, exact: true })
       .evaluate(el => getComputedStyle(el).transitionDuration);
     expect(transition).toBe('0s');
   });

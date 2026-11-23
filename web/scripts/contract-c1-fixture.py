@@ -204,9 +204,7 @@ def database_proof(database):
 
     query = "SELECT current_database() AS database, current_schema() AS schema"
     with database.engine.connect() as connection:
-        proof = dict(
-            connection.execute(text(query)).mappings().one()
-        )
+        proof = dict(connection.execute(text(query)).mappings().one())
         proof["migration"] = connection.scalar(
             text("SELECT version_num FROM alembic_version")
         )
@@ -387,7 +385,12 @@ def main():
     parser.add_argument(
         "operation",
         choices=(
-            "generate", "news", "archive", "audit", "complete-task", "database-proof",
+            "generate",
+            "news",
+            "archive",
+            "audit",
+            "complete-task",
+            "database-proof",
         ),
     )
     parser.add_argument("--output", type=Path)
