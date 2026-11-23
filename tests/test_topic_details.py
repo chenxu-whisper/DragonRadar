@@ -369,7 +369,12 @@ async def test_unknown_sector_and_date_and_revocation_use_existing_selection():
     app = create_workbench_app(repository=repository)
     assert (await _get(app, selected, sector="absent")).status_code == 404
     assert (await _get(app, selected, date="2026-09-07")).status_code == 400
-    assert (await _get(app, selected, snapshot_id=str(uuid4()))).json()["data"] is None
+    unknown = await _get(app, selected, snapshot_id=str(uuid4()))
+    assert unknown.status_code == 404
+    assert unknown.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
     repository.denied = True
     assert (await _get(app, selected)).status_code == 403
 

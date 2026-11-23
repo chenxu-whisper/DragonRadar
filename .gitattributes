@@ -1,1 +1,2 @@
 *.sh text eol=lf
+src/dragon_radar/migrations/versions/*.py text eol=lf

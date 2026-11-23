@@ -458,10 +458,14 @@ async def test_unknown_publication_and_date_mismatch_contract(role_publication):
             params={"date": "2025-01-01", "snapshot_id": str(publication.id)},
         )
 
-    for response in (unknown, missing):
-        assert response.status_code == 200
-        assert response.json()["data"] is None
-        assert response.json()["quality_flags"] == ["no_data"]
+    assert unknown.status_code == 404
+    assert unknown.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
+    assert missing.status_code == 200
+    assert missing.json()["data"] is None
+    assert missing.json()["quality_flags"] == ["no_data"]
     assert mismatch.status_code == 400
 
 

@@ -16,6 +16,7 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -2286,12 +2287,19 @@ def _check_native_contract(
         ):
             errors.append("C3 provider admission/concurrency receipts differ.")
         for item in http["exact_results"]:
+            cost = item["decimal_cost"]
+            try:
+                decimal_cost = Decimal(cost) if isinstance(cost, str) else None
+            except InvalidOperation:
+                decimal_cost = None
             if (
                 item["status"] != "succeeded"
                 or item["verification_status"] != "passed"
                 or item["human_review_status"] != "unreviewed"
                 or item["token_usage"] != 10
-                or item["decimal_cost"] != "0.1"
+                or decimal_cost is None
+                or not decimal_cost.is_finite()
+                or decimal_cost != Decimal("0.1")
                 or not all(
                     item[key]
                     for key in (

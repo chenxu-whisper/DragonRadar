@@ -719,6 +719,94 @@ def test_c5_c3_actual_objects_fail_closed(tmp_path, mutation):
 
 
 @pytest.mark.parametrize(
+    "cost",
+    ["0.1", "0.100000", "0.10", "1e-1", "0.1000000000000000000000000000000"],
+)
+def test_c5_c3_exact_cost_accepts_equal_decimal_strings(tmp_path, cost):
+    raw, files = c3_fixture(tmp_path)
+    ai = raw["result"]["c1"]["ai"]
+    for item in ai["actual_http"]["exact_results"]:
+        item["decimal_cost"] = cost
+    files["c3-ai.json"] = json.dumps(ai).encode()
+
+    errors = VERIFIER["_native_contract_errors"]("frontend_contract_c3", raw, files, [])
+
+    assert errors == []
+
+
+@pytest.mark.parametrize("result_index", [0, 1])
+@pytest.mark.parametrize(
+    "cost",
+    [
+        "",
+        "invalid",
+        "NaN",
+        "sNaN",
+        "Infinity",
+        "-Infinity",
+        "0.100001",
+        "0.10000000000000000000000000000000000000000000000000001",
+        "0.09999999999999999999999999999999999999999999999999999",
+        "0",
+        "-0.1",
+        0.1,
+        1,
+        True,
+        None,
+        [],
+        {},
+    ],
+)
+def test_c5_c3_exact_cost_rejects_invalid_evidence(tmp_path, cost, result_index):
+    raw, files = c3_fixture(tmp_path)
+    ai = raw["result"]["c1"]["ai"]
+    ai["actual_http"]["exact_results"][result_index]["decimal_cost"] = cost
+    files["c3-ai.json"] = json.dumps(ai).encode()
+
+    errors = VERIFIER["_native_contract_errors"]("frontend_contract_c3", raw, files, [])
+
+    assert errors == ["C3 actual provider exact result/budget differs."]
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("status", "failed"),
+        ("verification_status", "failed"),
+        ("human_review_status", "reviewed"),
+        ("token_usage", 11),
+        ("task_id", ""),
+        ("snapshot_id", ""),
+        ("version", ""),
+        ("provider", ""),
+        ("model_version", ""),
+        ("prompt_version", ""),
+    ],
+)
+def test_c5_c3_exact_cost_keeps_other_evidence_constraints(tmp_path, field, value):
+    raw, files = c3_fixture(tmp_path)
+    ai = raw["result"]["c1"]["ai"]
+    for item in ai["actual_http"]["exact_results"]:
+        item["decimal_cost"] = "0.100000"
+    ai["actual_http"]["exact_results"][0][field] = value
+    files["c3-ai.json"] = json.dumps(ai).encode()
+
+    errors = VERIFIER["_native_contract_errors"]("frontend_contract_c3", raw, files, [])
+
+    assert errors == ["C3 actual provider exact result/budget differs."]
+
+
+def test_c5_c3_exact_cost_keeps_retained_native_binding(tmp_path):
+    raw, files = c3_fixture(tmp_path)
+    for item in raw["result"]["c1"]["ai"]["actual_http"]["exact_results"]:
+        item["decimal_cost"] = "0.100000"
+
+    errors = VERIFIER["_native_contract_errors"]("frontend_contract_c3", raw, files, [])
+
+    assert errors == ["C3 result differs from its retained native object."]
+
+
+@pytest.mark.parametrize(
     "mutation", ["partial", "grep", "smoke", "host-native", "cells", "zoom", "cleanup"]
 )
 def test_c5_c2_partial_or_missing_native_objects_never_pass(tmp_path, mutation):

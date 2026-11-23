@@ -559,7 +559,7 @@ async def test_regulation_parameters_fail_before_storage_access(path):
     assert repository.calls == 0
 
 
-async def test_unknown_snapshot_returns_the_standard_empty_envelope():
+async def test_unknown_snapshot_returns_not_found():
     repository = _SnapshotRepository(None)
     repository.snapshot = type("Never", (), {"id": uuid4()})()
 
@@ -572,6 +572,8 @@ async def test_unknown_snapshot_returns_the_standard_empty_envelope():
             },
         )
 
-    assert response.status_code == 200
-    assert response.json()["data"] is None
-    assert response.json()["quality_flags"] == ["no_data"]
+    assert response.status_code == 404
+    assert response.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
