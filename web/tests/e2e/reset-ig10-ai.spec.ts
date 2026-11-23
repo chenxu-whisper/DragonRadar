@@ -68,6 +68,7 @@ test('citation opens one same-PUB inline source panel and highlights the exact s
   await page.keyboard.press('Enter');
   const source = panel.getByRole('region', { name: '引用来源' });
   await expect(source).toBeVisible();
+  await expect(source.locator('mark')).toHaveText(articleA.summary);
   expect(reads).toHaveLength(1);
   expect(Object.fromEntries(reads[0].searchParams)).toEqual({
     revision: '3', snapshot_id: NEWS_SNAPSHOT,
@@ -75,13 +76,13 @@ test('citation opens one same-PUB inline source panel and highlights the exact s
   await expect(source).toContainText(ARTICLE_A);
   await expect(source).toContainText(articleA.revision_id);
   await expect(source).toContainText(citation.available_at);
-  await expect(source.locator('mark')).toHaveText(articleA.summary);
   await expect(source).toContainText('summary');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(source.getByRole('link')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(source).toHaveCount(0);
   await expect(trigger).toBeFocused();
+  expect(reads).toHaveLength(1);
 });
 
 for (const mismatch of ['owner_id', 'task_id', 'revision', 'snapshot_id', 'evidence_id', 'source_identity', 'value'] as const) {

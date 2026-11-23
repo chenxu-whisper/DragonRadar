@@ -49,9 +49,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [check, lock, store]);
   useEffect(() => {
-    if (!store.session) return;
-    const timer = setTimeout(() => store.checkExpiry(), Math.min(2147483647, Math.max(0, Date.parse(store.session.expires_at) - Date.now())));
-    return () => clearTimeout(timer);
+    const session = store.session;
+    if (!session) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        if (!active || store.session !== session) return;
+        store.checkExpiry();
+        // An early wakeup or the maximum timer delay must not end expiry monitoring.
+        if (store.session === session) schedule();
+      }, Math.min(2147483647, Math.max(0, Date.parse(session.expires_at) - Date.now())));
+    };
+    schedule();
+    return () => { active = false; clearTimeout(timer); };
   }, [store, version]);
   useEffect(() => {
     const release = registerLeaveGuard(() => {

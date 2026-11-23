@@ -195,19 +195,40 @@ test('403验证事实撤权保留人工历史与待提交更正', async ({ page 
 test('期限锁定、配对提交清码、退出取消与确认丢弃', async ({ page }) => {
   const db = reviewServer();
   await mockMarket(page); await mockReview(page, db);
-  let shortSession = false;
+  let shortExpiry: string | undefined;
+  let shortReads = 0;
   await page.route('**/api/owner/v1/session', async route => {
-    if (route.request().method() !== 'GET' || !shortSession) return route.fallback();
+    if (route.request().method() !== 'GET' || !shortExpiry) return route.fallback();
+    shortReads++;
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-      owner_id: db.owner, session_id: '40000000-0000-4000-8000-000000000001', expires_at: new Date(Date.now() + 900).toISOString(),
+      owner_id: db.owner, session_id: '40000000-0000-4000-8000-000000000001', expires_at: shortExpiry,
     }) });
   });
   await page.goto(`/?view=review&note=${NOTE}&snapshot=${ID}`);
   await page.getByLabel('判断', { exact: true }).fill('退出时丢弃');
-  shortSession = true;
+  await page.clock.install({ time: new Date('2026-11-23T12:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-11-23T12:00:01Z'));
+  const deadline = await page.evaluate(async () => {
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const { SessionStore } = await load('/src/features/review/session.ts');
+    const authenticate = SessionStore.prototype.authenticate;
+    const observation = window as typeof window & { adoptedSessionExpiry?: string };
+    SessionStore.prototype.authenticate = function(session: { expires_at: string }) {
+      authenticate.call(this, session);
+      observation.adoptedSessionExpiry = this.session?.expires_at;
+    };
+    return new Date(Date.now() + 900).toISOString();
+  });
+  shortExpiry = deadline;
   await page.getByRole('button', { name: '检查会话' }).click();
+  await expect.poll(() => shortReads).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { adoptedSessionExpiry?: string }).adoptedSessionExpiry,
+  )).toBe(deadline);
+  await page.clock.runFor(900);
   await expect(page.getByRole('heading', { name: '私人会话已锁定' })).toBeVisible();
-  shortSession = false;
+  await page.clock.resume();
+  shortExpiry = undefined;
   await page.getByLabel('一次性配对码').fill('synthetic-fixture-code');
   await page.getByRole('button', { name: '配对', exact: true }).click();
   await expect(page.getByLabel('判断', { exact: true })).toHaveValue('退出时丢弃');
