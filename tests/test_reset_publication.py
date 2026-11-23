@@ -536,8 +536,11 @@ async def test_fixed_publication_and_old_snapshot_ids_remain_pinned(
     assert pinned["snapshot_id"] == str(first.id)
     assert latest["snapshot_id"] == str(second.id)
     assert legacy["snapshot_id"] == str(command.market_snapshot_id)
-    assert unknown.status_code == 200
-    assert unknown.json()["data"] is None
+    assert unknown.status_code == 404
+    assert unknown.json() == {
+        "code": "NOT_FOUND",
+        "message": "Resource not found",
+    }
 
 
 @pytest.mark.anyio
