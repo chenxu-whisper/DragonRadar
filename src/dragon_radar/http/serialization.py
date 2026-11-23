@@ -4,6 +4,7 @@ import math
 from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
@@ -43,15 +44,28 @@ FINANCIAL_DECIMAL_FIELDS = frozenset(
     }
 )
 
+_SCALAR_TYPES = frozenset({str, int, float, bool, type(None), Decimal})
+
 
 def restore_decimal_fields(value: Any, key: str | None = None) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            item_key: restore_decimal_fields(item, item_key)
-            for item_key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
+    value_type = type(value)
+    if value_type is list or value_type is tuple:
         return [restore_decimal_fields(item, key) for item in value]
+    # Frozen archive trees contain mappingproxy/tuple and ordinary JSON scalars.
+    # Avoid Mapping's ABC dispatch at every scalar, while preserving the generic
+    # Mapping-first behavior for custom containers and subclasses.
+    if value_type not in _SCALAR_TYPES:
+        if (
+            value_type is dict
+            or value_type is MappingProxyType
+            or isinstance(value, Mapping)
+        ):
+            return {
+                item_key: restore_decimal_fields(item, item_key)
+                for item_key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [restore_decimal_fields(item, key) for item in value]
     if key in FINANCIAL_DECIMAL_FIELDS and isinstance(value, str):
         try:
             restored = Decimal(value)
