@@ -281,9 +281,11 @@ class Stack:
             for service in services.values():
                 assert service["labels"][RUN_LABEL] == self.project
                 for key, value in service.get("environment", {}).items():
-                    if key.startswith("DRAGON_AI_") and any(
-                        word in key for word in ("TOKEN", "PROVIDER", "MODEL_VERSION")
-                    ):
+                    if key in {
+                        "DRAGON_AI_TOKEN",
+                        "DRAGON_AI_PROVIDER",
+                        "DRAGON_AI_MODEL_VERSION",
+                    }:
                         assert value in ("", None)
                 for port in service.get("ports", []):
                     assert port["host_ip"] == "127.0.0.1"

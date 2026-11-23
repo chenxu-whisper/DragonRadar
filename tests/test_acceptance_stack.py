@@ -44,6 +44,8 @@ if a[0] == "compose":
         services["owner-api"]["command"] = [
             "serve-owner", "--origin", "https://" + authority]
         services["ai-worker"]["environment"]["DRAGON_AI_TOKEN"] = ""
+        services["ai-worker"]["environment"]["DRAGON_AI_MAX_TOKENS"] = "2048"
+        services["ai-worker"]["environment"]["DRAGON_AI_MAX_COST"] = "1"
         services["public-caddy"] = {"ports": [
             {"host_ip": "127.0.0.1", "published": "0", "target": 8080}]}
         for value in services.values():
@@ -228,6 +230,13 @@ def test_rejects_tampered_prior_ci_exports(harness):
     exports["DRAGON_OWNER_PORT"] = "8030"
     assert harness.run("setup", "--skip-build", **exports).returncode != 0
     assert len(harness.calls()) == calls
+
+
+def test_numeric_ai_budgets_allow_build_with_empty_credentials(harness):
+    result = harness.run("build")
+    assert result.returncode == 0, result.stderr
+    assert any("build" in call for call in harness.calls())
+    assert harness.run("teardown").returncode == 0
 
 
 @pytest.mark.parametrize("fault", ["mapping", "bind", "configsecret"])
