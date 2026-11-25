@@ -10,6 +10,7 @@
 | 当前产品需求 | [开发需求 PRD](DragonRadar_开发需求PRD.md) |
 | 本次全需求收口 | [2026-11-24 状态与设计入口](all-requirements-status-2026-11-24.md) |
 | 当前主工程整合与清理 | [2026-11-25 主工程记录](acceptance/all-requirements-main-integration-2026-11-25.md) |
+| 远端分支与评分验证整合 | [2026-11-25 远端整合记录](acceptance/remote-branch-integration-2026-11-25.md) |
 | 本次整合验证范围 | [源码冻结与最终门禁](acceptance/all-requirements-final-gates-2026-11-24.md) |
 | 既有能力与历史条件对照 | [2026-11-17 需求进度](prd-development-progress-2026-11-17.md) |
 | 前一阶段计划 | [2026-11-18 本机体验与工程验收](next-development-plan-2026-11-18.md) |
