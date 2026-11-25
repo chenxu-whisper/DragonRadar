@@ -13,6 +13,7 @@ import { evidenceStatusLabel, reasonLabel, roleLabel } from '../features/roles/l
 import { newsListPath } from '../features/news/api';
 import type { NewsListResponse } from '../features/news/types';
 import { CsvExportButton } from '../export/CsvExportButton';
+import type { RawPoint } from '../features/workbench/StockHistoryTable';
 
 type ReviewActionComponent = ComponentType<{ snapshot: string; security: string; context?: {
   trade_date: string | null; security_name: string | null; sector_id: string | null; sector_name: string | null;
@@ -79,6 +80,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
     : null, state.snapshot, refreshToken);
   const data = resource.data?.result;
   const rawData = rawKline.data?.data;
+  const rawPoints: RawPoint[] = rawData?.points || [];
   const pricedHistory = data?.history.filter(point => point.close !== null) || [];
   const firstPrice = pricedHistory[0];
   const inconsistentUnits = pricedHistory.some(point =>
@@ -155,6 +157,7 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
         <div><dt>成交额</dt><dd>{displayNumber(modernData.quote.amount)}</dd></div>
         <div><dt>正式监管事件</dt><dd>{modernData.regulation.formal_event_count === null ? '未知' : modernData.regulation.formal_event_count}</dd></div>
       </dl>
+      <p className="muted">报价币种 {modern.data!.basis.currency?.trim() || '单位未知'} · 价格单位 {modern.data!.basis.unit?.trim() || '单位未知'} · 未进行单位换算</p>
       <p className="detail-reasons">正式监管事件：{modernData.regulation.formal_event_count === null ? '未知' : modernData.regulation.formal_event_count}</p>
       <p className="detail-reasons">事件来源完整性：{modernData.regulation.event_source_completeness === 'complete' ? '完整' : '未知'}
         {modernData.regulation.reason ? ` · ${reasonLabel(modernData.regulation.reason)}` : ''}</p>
@@ -202,6 +205,10 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
           { key: 'close', header: 'close' },
           { key: 'volume', header: 'volume' },
           { key: 'amount', header: 'amount' },
+          { key: 'row_currency', header: 'row_currency' },
+          { key: 'price_unit', header: 'price_unit' },
+          { key: 'volume_unit', header: 'volume_unit' },
+          { key: 'amount_unit', header: 'amount_unit' },
           { key: 'roles', header: 'roles' },
           { key: 'formal_event_count', header: 'formal_event_count' },
         ]}
@@ -219,10 +226,14 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
             close: null,
             volume: null,
             amount: modernData.quote.amount,
+            row_currency: modern.data!.basis.currency,
+            price_unit: modern.data!.basis.unit,
+            volume_unit: null,
+            amount_unit: null,
             roles: modernData.roles.map(role => role.role_type).join('|'),
             formal_event_count: modernData.regulation.formal_event_count,
           },
-          ...(rawData?.points || []).map(point => ({
+          ...rawPoints.map(point => ({
             snapshot_id: rawKline.data!.snapshot_id,
             record_type: 'kline',
             security_id: rawData!.security_id,
@@ -230,20 +241,21 @@ function DetailContent({ state, snapshot, id, evidenceSector, refreshToken, Revi
             last: null,
             change_ratio: null,
             ...point,
+            row_currency: point.currency ?? null,
             roles: '',
             formal_event_count: null,
           })),
         ]}
       />
       {rawData && <>
-        <p className="muted">未复权价格 · 实际区间 {rawData.adjusted_start} 至 {rawData.adjusted_end} · 缺失处不连线</p>
+        <p className="muted">未复权价格 · 币种 {rawKline.data!.basis.currency?.trim() || '单位未知'} · 价格单位 {rawKline.data!.basis.unit?.trim() || '单位未知'} · 实际区间 {rawData.adjusted_start} 至 {rawData.adjusted_end} · 缺失处不连线 · 每日成交量与成交额单位见完整行情数据</p>
         <Chart
           option={rawOption}
           description={`${modernData.security_id} ${canDrawCandles ? '历史日线图' : '历史收盘价线图'}，未复权价格，缺失处断开。`}
         />
         <details className="evidence"><summary>查看完整行情数据（{rawData.points.length} 个交易日）</summary>
           {StockHistoryTable && <Suspense fallback={<p role="status">正在加载行情数据表…</p>}>
-            <StockHistoryTable key={`${state.snapshot}:${id}:${rawQuery}`} points={rawData.points} />
+            <StockHistoryTable key={`${state.snapshot}:${id}:${rawQuery}`} points={rawData.points} basis={rawKline.data!.basis} />
           </Suspense>}
         </details>
       </>}

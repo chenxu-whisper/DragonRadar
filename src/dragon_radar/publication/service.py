@@ -1,6 +1,7 @@
 """Atomic publication orchestration."""
 
 import hashlib
+import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -8,10 +9,12 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, update
 
+from dragon_radar.domain.clocks import utc, validate_publication_time
 from dragon_radar.domain.models import MarketBatch, SourceGrant
 from dragon_radar.domain.quality import grant_allows_display, validate_batch
 from dragon_radar.news.repository import NewsRepository
 from dragon_radar.news.service import NewsService
+from dragon_radar.publication.clocks import archive_domain, resolve_domain_inputs
 from dragon_radar.publication.models import (
     DOMAIN_NAMES,
     DomainMaterialization,
@@ -50,6 +53,44 @@ from dragon_radar.topics.repository import TopicRepository
 from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
 
 Materializer = Callable[[object, PublicationCommand], DomainMaterialization]
+
+
+def _publication_identity(command, summary_selections):
+    from dragon_radar.news.summary_publication import (
+        SummarySelection,
+        selection_identity,
+    )
+
+    if (
+        not isinstance(summary_selections, (list, tuple))
+        or len(summary_selections) > 10000
+    ):
+        raise ValueError("Invalid summary selection collection")
+    selected = [
+        SummarySelection.model_validate(value).model_dump(mode="json")
+        for value in summary_selections
+    ]
+    selected.sort(
+        key=lambda value: (
+            value["article_id"],
+            value["article_revision_id"],
+            value["summary_id"],
+        )
+    )
+    selection_identity(selected)
+    if selected and command.news_input_id is None:
+        raise ValueError("Summary selection requires a news input")
+    payload = command.model_dump(mode="json")
+    if selected:
+        payload["summary_selections"] = selected
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return canonical, hashlib.sha256(canonical.encode()).hexdigest(), tuple(selected)
 
 
 def _stored_json(value):
@@ -359,11 +400,15 @@ class PublicationService:
         *,
         key: str,
         materializers: Mapping[str, Materializer] | None = None,
+        summary_selections=(),
     ) -> Publication:
         _identifier(key)
         command = PublicationCommand.model_validate(command.model_dump())
-        canonical = command.canonical_json()
-        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        canonical, digest, selected_summaries = _publication_identity(
+            command, summary_selections
+        )
+        if selected_summaries and materializers and "news" in materializers:
+            raise ValueError("Selected summary materialization cannot be overridden")
         current_stage = "validate"
         result_id = None
         result_record = None
@@ -430,8 +475,34 @@ class PublicationService:
                         dependencies,
                     ) = self._prepare_inputs(connection, command)
                     overrides = dict(materializers or {})
+                    summary_materializer = None
+                    if selected_summaries:
+                        from dragon_radar.news.summary_publication import (
+                            PromotedSummaryMaterializer,
+                        )
+                        from dragon_radar.public_daily_ai.repository import (
+                            PublicDailyAIRepository,
+                        )
+
+                        summary_materializer = PromotedSummaryMaterializer(
+                            NewsService,
+                            PublicDailyAIRepository(
+                                self.database, self.repository, clock=self.clock
+                            ),
+                            selected_summaries,
+                        )
+                        dependencies = list(
+                            dict.fromkeys(
+                                [
+                                    *dependencies,
+                                    *summary_materializer.dependencies(news_context),
+                                ]
+                            )
+                        )
                     references = command.input_references()
                     source_ids = {dependency[0] for dependency in dependencies}
+                    if summary_materializer is not None:
+                        source_ids.update(summary_materializer.source_ids(connection))
                     if (
                         command.role_input_id is not None
                         and "role" not in command.disabled_domains
@@ -453,6 +524,7 @@ class PublicationService:
                     )
                     results = {}
                     role_dependencies = ()
+                    last_completion = None
                     for domain in DOMAIN_NAMES:
                         current_stage = domain
                         if domain in command.disabled_domains:
@@ -468,9 +540,17 @@ class PublicationService:
                         elif domain == "topic":
                             result = self._topic_materialization(topic_context)
                         elif domain == "news":
-                            result = NewsService.materialize_context(
-                                news_context,
-                                topic_context=topic_context,
+                            result = (
+                                summary_materializer.materialize_context(
+                                    news_context,
+                                    connection=connection,
+                                    topic_context=topic_context,
+                                )
+                                if summary_materializer is not None
+                                else NewsService.materialize_context(
+                                    news_context,
+                                    topic_context=topic_context,
+                                )
                             )
                         elif domain == "regulation":
                             result = RegulationRepository.materialize_context(
@@ -484,6 +564,86 @@ class PublicationService:
                             )
                         else:
                             raise ValueError(f"No materializer registered for {domain}")
+                        if (result.status == "ready") != (
+                            references[domain] is not None
+                        ):
+                            raise ValueError(
+                                "Materialization status contradicts input reference"
+                            )
+                        # Sample immediately after the actual domain materializer,
+                        # before resolving metadata or sampling unified PUB time.
+                        completed_at = (
+                            utc(self.clock()) if result.status == "ready" else None
+                        )
+                        if completed_at is not None:
+                            if (
+                                last_completion is not None
+                                and completed_at < last_completion
+                            ):
+                                raise ValueError("Backward domain completion clock")
+                            last_completion = completed_at
+                            if domain == "news" and selected_summaries:
+                                for article in result.payload["articles"]:
+                                    artifact = article.get("summary_artifact")
+                                    if (
+                                        artifact is not None
+                                        and utc(
+                                            datetime.fromisoformat(
+                                                artifact["available_at"]
+                                            )
+                                        )
+                                        > completed_at
+                                    ):
+                                        raise ValueError(
+                                            "Summary is unavailable before completion"
+                                        )
+                        cutoff = None
+                        clock_dependencies = []
+                        if result.status == "ready":
+                            if domain == "market":
+                                cutoff = market_context[2].as_of
+                            elif domain == "topic":
+                                cutoff = topic_context[2].as_of
+                            elif domain == "news":
+                                cutoff = news_context["root"]["as_of"]
+                            elif domain == "regulation":
+                                cutoff = regulation_context["snapshot"].as_of
+                            elif domain == "role":
+                                cutoff = self.roles._role_rows(
+                                    connection, (command.role_input_id,)
+                                )[command.role_input_id]["knowledge_cutoff"]
+                            clock_dependencies = [
+                                dependency[:3]
+                                for dependency in (*dependencies, *role_dependencies)
+                                if dependency[3] == domain
+                                # Promoted text is a derived artifact; supplier
+                                # receipt clocks come from its original article.
+                                and dependency[1] != "promoted_news_summary"
+                            ]
+                            if (
+                                domain in ("market", "news")
+                                and topic_context is not None
+                            ):
+                                clock_dependencies.append(
+                                    (
+                                        topic_context[0]["source_id"],
+                                        "topic_import_batch",
+                                        topic_context[0]["batch_id"],
+                                    )
+                                )
+                        lineage = archive_domain(
+                            domain=domain,
+                            input_id=references[domain],
+                            as_of=cutoff,
+                            status=result.status,
+                            inputs=resolve_domain_inputs(
+                                connection,
+                                clock_dependencies,
+                                regulation_context=regulation_context,
+                            ),
+                            computed_at=completed_at,
+                        )
+                        result = result.model_copy(update={"clock_lineage": lineage})
                         results[domain] = result
                     dependencies.extend(role_dependencies)
 
@@ -500,7 +660,13 @@ class PublicationService:
                         .mappings()
                         .first()
                     )
-                    now = self.clock()
+                    now = validate_publication_time(
+                        (
+                            result.clock_lineage.computed_at
+                            for result in results.values()
+                        ),
+                        self.clock(),
+                    )
                     publication_id = uuid4()
                     domains = {
                         domain: results[domain].status for domain in DOMAIN_NAMES
@@ -542,6 +708,9 @@ class PublicationService:
                                 payload=result.model_dump(mode="json")["payload"],
                                 coverage=result.model_dump(mode="json")["coverage"],
                                 quality_flags=list(result.quality_flags),
+                                clock_lineage=result.clock_lineage.model_dump(
+                                    mode="json", by_alias=True
+                                ),
                             )
                         )
                     for source_id, archive_type, archive_id, domain in dependencies:

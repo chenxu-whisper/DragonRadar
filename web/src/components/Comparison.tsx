@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 import { intervalQuery, type ResearchState } from '../state';
 import { formatDecimal, label } from '../format';
@@ -7,6 +7,12 @@ import { analysisRange } from '../features/analysis/query';
 import type { Envelope, Interval, ResetCurveData, Snapshot, WorkbenchEnvelope } from '../types';
 import { Chart, lineStyles } from './Chart';
 import { Exclusions, Percent, ResourceStatus, TableScroll, type Patch } from './Common';
+import type { AnalysisSelection } from '../features/analysis-jobs/types';
+
+const OwnerAnalysisJobPanel = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  && import.meta.env.VITE_PUBLIC_SHARING !== '1'
+  && import.meta.env.VITE_PRIVATE_REVIEW === '1'
+  ? lazy(() => import('../features/analysis-jobs/OwnerAnalysisJobPanel')) : null;
 
 function curveValue(value: number | null, mode: 'normalized' | 'drawdown'): string {
   if (value === null) return '—';
@@ -27,6 +33,7 @@ export function Comparison({ state, patch, refreshToken, snapshot, reset = false
     state.snapshot, refreshToken,
   );
   let resetQuery = '';
+  let selection: AnalysisSelection | undefined;
   try {
     if (reset && snapshot && state.compare.length <= 5) {
       const range = analysisRange(state, snapshot.result.calendar_sessions);
@@ -38,13 +45,31 @@ export function Comparison({ state, patch, refreshToken, snapshot, reset = false
         benchmark: state.benchmark,
         adj: state.adj,
       }).toString();
+      selection = {
+        snapshot_id: state.snapshot, start: range.start, end: range.end,
+        benchmark: state.benchmark, adj: state.adj, symbols: [...state.compare],
+        sessions: snapshot.result.calendar_sessions.filter(day => day >= range.start && day <= range.end),
+      };
     }
   } catch { /* The interval form reports invalid windows. */ }
+  const fingerprint = JSON.stringify([
+    state.view, state.return_view, state.return_snapshot, state.return_date, state.return_sector,
+    resetQuery, state.date, state.sort, state.rank_order,
+    state.q, state.page, state.page_size, mode,
+  ]);
+  const [handoff, setHandoff] = useState<string | null>(null);
+  const [jobCompletedFor, setJobCompletedFor] = useState<string | null>(null);
+  const stopped = handoff === fingerprint;
   const resetResource = useResource<WorkbenchEnvelope<ResetCurveData | null>>(
-    reset && state.compare.length && resetQuery ? `/api/compare/curves?${resetQuery}` : null,
+    reset && state.compare.length && resetQuery && !stopped ? `/api/compare/curves?${resetQuery}` : null,
     state.snapshot,
     refreshToken,
   );
+  useEffect(() => {
+    if (!resetQuery || !state.compare.length || !resetResource.loading || stopped) return;
+    const timer = setTimeout(() => setHandoff(fingerprint), 5000);
+    return () => clearTimeout(timer);
+  }, [resetQuery, fingerprint, resetResource.loading, stopped, refreshToken, state.compare.length]);
   const data = resource.data;
   const option = useMemo(() => ({
     tooltip: { trigger: 'axis', renderMode: 'richText' },
@@ -58,7 +83,7 @@ export function Comparison({ state, patch, refreshToken, snapshot, reset = false
       connectNulls: false, showSymbol: false, lineStyle: { type: lineStyles[i % 5], width: 2 },
     })) || [],
   }), [data]);
-  const resetData = resetResource.data;
+  const resetData = stopped ? undefined : resetResource.data;
   const dates = resetData?.data?.curves[0]?.points.map(point => point.trade_date) || [];
   const resetOption = useMemo(() => ({
     tooltip: { trigger: 'axis', renderMode: 'richText' },
@@ -92,6 +117,18 @@ export function Comparison({ state, patch, refreshToken, snapshot, reset = false
       <label><input type="radio" name="curve-mode" value="drawdown" checked={mode === 'drawdown'} onChange={() => setMode('drawdown')} />回撤</label>
     </div>
     <ResourceStatus resource={resetResource} name="比较曲线" />
+    {stopped && <p className="notice" role="status">
+      归档读取超过五秒，旧请求已失效。
+      <button type="button" onClick={() => { setHandoff(null); resetResource.refresh(); }}>重试归档读取</button>
+    </p>}
+    {(stopped || resetData?.reason === 'analysis_not_precomputed') && OwnerAnalysisJobPanel && selection
+      && <Suspense fallback={<p role="status">正在加载后台分析入口…</p>}>
+        <OwnerAnalysisJobPanel selection={selection} fingerprint={fingerprint}
+          onSucceeded={() => { setJobCompletedFor(fingerprint); setHandoff(null); resetResource.refresh(); }} />
+      </Suspense>}
+    {jobCompletedFor === fingerprint && !resetResource.loading
+      && (resetData?.data === null || resetResource.error)
+      && <p role="status" className="notice">后台计算已成功，但归档结果仍不可用；请显式重试归档读取。</p>}
     {!resetQuery && <p role="alert" className="notice">请输入有效研究区间后比较。</p>}
     {resetData?.data === null && <p className="notice" role="status">
       {state.adj !== 'raw' ? '当前来源无法证明该复权口径' : '当前比较曲线不可用'}

@@ -334,10 +334,22 @@ def test_news_routes_project_frozen_list_and_detail_wire_contracts():
         "summary",
         "event_id",
         "revision",
+        "revision_id",
+        "received_at",
+        "ai_preview",
     }
     assert listed["source"] == "synthetic"
     assert listed["article_type"] == "announcement"
     assert listed["summary"] == "Synthetic licensed summary."
+    assert listed["ai_preview"] == {
+        "status": "unavailable",
+        "text": None,
+        "truncated": False,
+        "reason": "summary_not_archived",
+        "summary_id": None,
+        "summary_revision": None,
+        "provenance": None,
+    }
 
     detail = _detail_article(internal)
     assert {
@@ -1079,6 +1091,17 @@ async def test_public_get_requires_date_filters_pages_and_reads_only_publication
             "source": "synthetic",
             "source_version": "news-v1",
             "published_at": (NOW - timedelta(hours=4)).isoformat(),
+            "received_at": (NOW - timedelta(hours=2)).isoformat(),
+            "revision_id": str(REVISION_A1),
+            "ai_preview": {
+                "status": "unavailable",
+                "text": None,
+                "truncated": False,
+                "reason": "summary_not_archived",
+                "summary_id": None,
+                "summary_revision": None,
+                "provenance": None,
+            },
             "available_at": (NOW - timedelta(hours=1)).isoformat(),
             "article_type": "announcement",
             "summary": "Synthetic licensed summary.",

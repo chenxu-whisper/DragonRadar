@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../../api';
 import { Pager, ResourceStatus, TableScroll } from '../../components/Common';
 import { timestamp } from '../../format';
+import { SourceClockBoundary } from '../lineage/SourceClockBoundary';
 import type { Resource } from '../../hooks/useResource';
 import {
   disclosurePath,
@@ -31,6 +32,9 @@ interface Props {
 const PAGE_SIZE = 20;
 const HISTORY_DAYS = 30;
 const SYNTHETIC_BADGE = '合成演示数据 · 未获真实行情授权';
+const SourceClocks = import.meta.env.VITE_PUBLIC_SHARING !== '1'
+  ? lazy(() => import('../lineage/SourceClocks'))
+  : null;
 
 const completenessNames: Record<SeatCompleteness, string> = {
   complete: '完整',
@@ -123,12 +127,13 @@ function ContributionTable({ contributions }: { contributions: SeatContribution[
   return <TableScroll label="席位历史组成披露横向滚动">
     <table className="responsive-record-table" aria-label="席位历史组成披露">
       <thead><tr>
-        <th>披露日期</th><th>证券</th><th>修订</th><th>原因</th>
+        <th>披露日期</th><th>披露 ID</th><th>证券</th><th>修订</th><th>原因</th>
         <th>来源行</th><th>席位名</th><th>映射</th><th>权限状态（接口原值）</th>
       </tr></thead>
       <tbody>{contributions.map(contribution =>
         <tr key={`${contribution.disclosure_id}-${contribution.source_row_id}-${contribution.revision}`}>
           <th data-label="披露日期">{contribution.disclosure_date}</th>
+          <td data-label="披露 ID">{contribution.disclosure_id}</td>
           <td data-label="证券">{contribution.security_id}</td>
           <td data-label="修订">{contribution.revision}</td>
           <td data-label="原因">{contribution.reason}</td>
@@ -232,7 +237,12 @@ function SeatHistoryDialog({
   </dialog>;
 }
 
-export function SeatsPanel({ date, securityId, asOf, refreshToken = 0 }: Props) {
+export function SeatsPanel(props: Props) {
+  return <SourceClockBoundary key={JSON.stringify([props.date, props.securityId, props.asOf])}
+    label="龙虎榜席位证据"><SeatsPanelContent {...props} /></SourceClockBoundary>;
+}
+
+function SeatsPanelContent({ date, securityId, asOf, refreshToken = 0 }: Props) {
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(PAGE_SIZE);
   const [active, setActive] = useState<{
@@ -311,6 +321,13 @@ export function SeatsPanel({ date, securityId, asOf, refreshToken = 0 }: Props) 
         <div><dt>平台接收时间</dt><dd><time dateTime={item.received_at}>{timestamp(item.received_at)}</time></dd></div>
         <div><dt>可用时间</dt><dd><time dateTime={item.available_at}>{timestamp(item.available_at)}</time></dd></div>
       </dl>
+      {SourceClocks && envelope && <Suspense fallback={<p role="status">正在加载来源时钟入口…</p>}>
+        <SourceClocks selection={{
+          type: 'lhb', source_id: item.source_id, source_version: item.source_version,
+          disclosure_id: item.disclosure_id, revision: item.revision, as_of: envelope.as_of,
+        }} label={`披露来源时钟 · ${item.source_id} / ${item.source_version} · ${item.disclosure_id} · 修订 ${item.revision}`}
+          refreshToken={refreshToken} />
+      </Suspense>}
       <TableScroll label="龙虎榜席位记录横向滚动">
         <table className="responsive-record-table" aria-label={`披露 ${item.disclosure_id} 席位记录`}>
           <thead><tr>

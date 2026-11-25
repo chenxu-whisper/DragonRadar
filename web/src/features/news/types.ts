@@ -1,4 +1,5 @@
 import type { WorkbenchEnvelope } from '../../types';
+import type { PromotedSummaryPreview } from './PromotedSummaryPreview';
 
 export type NewsType = '' | 'news' | 'announcement' | 'research';
 export type NewsContentScope = 'none' | 'summary' | 'full';
@@ -31,11 +32,14 @@ export interface NewsListArticle {
   source: string;
   source_version: string;
   published_at: string;
+  received_at?: string;
+  revision_id?: string;
   available_at: string;
   article_type: Exclude<NewsType, ''>;
   summary: string | null;
   event_id: string;
   revision: number;
+  ai_preview?: PromotedSummaryPreview | null;
 }
 
 export interface NewsArticle extends NewsListArticle {

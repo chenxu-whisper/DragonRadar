@@ -1,4 +1,4 @@
-import { useEffect, useMemo, type ComponentType } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType } from 'react';
 import { useResource } from '../../hooks/useResource';
 import type { ResearchState, Sort } from '../../state';
 import type { ResetRankData, Snapshot, WorkbenchEnvelope } from '../../types';
@@ -8,6 +8,12 @@ import { analysisRange, analysisSortDescriptor } from './query';
 import { CsvExportButton } from '../../export/CsvExportButton';
 import { reportIndexItems } from '../preferences/commands';
 import { UnavailableModules } from '../workbench/PageStructure';
+import type { AnalysisSelection } from '../analysis-jobs/types';
+
+const OwnerAnalysisJobPanel = import.meta.env.VITE_RESET_WORKBENCH === '1'
+  && import.meta.env.VITE_PUBLIC_SHARING !== '1'
+  && import.meta.env.VITE_PRIVATE_REVIEW === '1'
+  ? lazy(() => import('../analysis-jobs/OwnerAnalysisJobPanel')) : null;
 
 export interface ResetAnalysisProps {
   state: ResearchState;
@@ -28,12 +34,14 @@ function ratio(value: number | null, signed = true): string {
 function ResetSortHead({ title, field, state, patch }: {
   title: string; field: Sort; state: ResearchState; patch: Patch;
 }) {
-  const current = analysisSortDescriptor(state.sort);
+  const current = analysisSortDescriptor(state.sort, state.rank_order);
   const selected = analysisSortDescriptor(field);
   const active = current.requestField === selected.requestField;
-  const order = selected.direction;
+  const order = active ? current.direction : selected.direction;
+  const nextOrder = active ? order === 'asc' ? 'desc' : 'asc' : selected.direction;
   return <th aria-sort={active ? order === 'asc' ? 'ascending' : 'descending' : 'none'}>
-    <button className="sort-button" title={`按${title}排序`} onClick={() => patch({ sort: field, order, page: 1 })}>
+    <button className="sort-button" title={`按${title}${nextOrder === 'asc' ? '升序' : '降序'}排序`}
+      onClick={() => patch({ sort: field, rank_order: active ? nextOrder : undefined, page: 1 })}>
       {title}
     </button>
   </th>;
@@ -41,7 +49,8 @@ function ResetSortHead({ title, field, state, patch }: {
 
 export function ResetAnalysis({ state, patch, refreshToken, open, compare, snapshot, ReviewActions }: ResetAnalysisProps) {
   let query = '', error = '';
-  const sort = analysisSortDescriptor(state.sort);
+  let selection: AnalysisSelection | undefined;
+  const sort = analysisSortDescriptor(state.sort, state.rank_order);
   try {
     if (snapshot) {
       const range = analysisRange(state, snapshot.result.calendar_sessions);
@@ -52,15 +61,32 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
         benchmark: state.benchmark,
         adj: state.adj,
         sort: sort.requestField,
+        order: sort.direction,
       }).toString();
+      selection = {
+        snapshot_id: state.snapshot, start: range.start, end: range.end,
+        benchmark: state.benchmark, adj: state.adj, symbols: [],
+        sessions: snapshot.result.calendar_sessions.filter(day => day >= range.start && day <= range.end),
+      };
     }
   } catch (failure) { error = (failure as Error).message; }
+  const fingerprint = JSON.stringify([
+    query, state.date, state.q, state.page, state.page_size, state.compare,
+  ]);
+  const [handoff, setHandoff] = useState<string | null>(null);
+  const [jobCompletedFor, setJobCompletedFor] = useState<string | null>(null);
+  const stopped = handoff === fingerprint;
   const resource = useResource<WorkbenchEnvelope<ResetRankData | null>>(
-    query ? `/api/rank/range?${query}` : null,
+    query && !stopped ? `/api/rank/range?${query}` : null,
     state.snapshot,
     refreshToken,
   );
-  const response = resource.data;
+  const response = stopped ? undefined : resource.data;
+  useEffect(() => {
+    if (!query || !resource.loading || stopped) return;
+    const timer = setTimeout(() => setHandoff(fingerprint), 5000);
+    return () => clearTimeout(timer);
+  }, [query, fingerprint, resource.loading, stopped, refreshToken]);
   const filtered = useMemo(() => {
     const term = state.q.toLowerCase();
     return (response?.data?.ranking || []).filter(item =>
@@ -85,6 +111,18 @@ export function ResetAnalysis({ state, patch, refreshToken, open, compare, snaps
     <IntervalForm state={state} patch={patch} reset />
     {error && <p role="alert" className="notice error">{error}</p>}
     <ResourceStatus resource={resource} name="涨幅排行" />
+    {stopped && <p className="notice" role="status">
+      归档读取超过五秒，旧请求已失效。
+      <button type="button" onClick={() => { setHandoff(null); resource.refresh(); }}>重试归档读取</button>
+    </p>}
+    {(stopped || response?.reason === 'analysis_not_precomputed') && OwnerAnalysisJobPanel && selection
+      && <Suspense fallback={<p role="status">正在加载后台分析入口…</p>}>
+        <OwnerAnalysisJobPanel selection={selection} fingerprint={fingerprint}
+          onSucceeded={() => { setJobCompletedFor(fingerprint); setHandoff(null); resource.refresh(); }} />
+      </Suspense>}
+    {jobCompletedFor === fingerprint && !resource.loading
+      && (response?.data === null || resource.error)
+      && <p role="status" className="notice">后台计算已成功，但归档结果仍不可用；请显式重试归档读取。</p>}
     {!rankData && <UnavailableModules view="analysis" ids={['ranking']} loading={resource.loading} />}
     {response?.data === null && <p className="notice" role="status">
       {state.adj !== 'raw' ? '当前来源无法证明该复权口径' : '当前区间分析不可用'}

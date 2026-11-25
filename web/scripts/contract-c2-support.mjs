@@ -23,7 +23,8 @@ export const metadataColumns = ['snapshot_id', 'trade_date', 'as_of', 'rule_vers
   'unit', 'currency', 'price_type', 'benchmark'];
 export const dataColumns = {
   overview: ['security_id', 'code', 'name', 'direction'],
-  news: ['article_id', 'article_type', 'source', 'source_version', 'title', 'published_at', 'available_at', 'revision'],
+  news: ['article_id', 'article_type', 'source', 'source_version', 'title', 'published_at',
+    'received_at', 'available_at', 'revision', 'revision_id'],
   leaders: ['rank', 'security_id', 'name', 'sector_id', 'boards', 'evidence_status'],
   analysis: ['rank', 'security_id', 'name', 'topics', 'return_ratio', 'excess_return_ratio', 'max_drawdown_ratio', 'amount_change_ratio'],
   stock: ['record_type', 'security_id', 'row_trade_date', 'last', 'change_ratio', 'open', 'high', 'low', 'close', 'volume', 'amount', 'roles', 'formal_event_count'],

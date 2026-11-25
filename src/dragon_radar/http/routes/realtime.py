@@ -181,6 +181,26 @@ def _envelope(
     }
 
 
+@router.get("/api/realtime/lineage")
+def realtime_lineage(request: Request):
+    query = query_values(request, {"source_id", "kind", "batch_id", "as_of"})
+    if set(query) != {"source_id", "kind", "batch_id", "as_of"}:
+        raise ValueError("Exact realtime lineage selection is required")
+    source_id = _identifier(query["source_id"], "source_id")
+    batch_id = _identifier(query["batch_id"], "batch_id")
+    if query["kind"] not in {"quotes", "minutes", "sector_flow", "anomalies"}:
+        raise ValueError("Invalid lineage kind")
+    repository = _repository(request)
+    return DecimalJSONResponse(
+        repository.get_lineage(
+            source_id=source_id,
+            kind=query["kind"],
+            batch_id=batch_id,
+            as_of=_as_of(query["as_of"], repository),
+        )
+    )
+
+
 @router.get("/api/realtime/quotes")
 def realtime_quotes(request: Request):
     query = query_values(

@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 from threading import RLock
 from uuid import UUID
 
-from sqlalchemy import and_, func, literal_column, or_, select
+from sqlalchemy import BigInteger, and_, func, literal_column, not_, or_, select
 
 from dragon_radar.domain.models import MarketBatch, SourceGrant
 from dragon_radar.domain.quality import grant_allows_ai
@@ -41,7 +41,13 @@ from dragon_radar.storage.models import (
     snapshots,
     source_grants,
 )
-from dragon_radar.storage.repository import Forbidden, NotFound, Repository, _uuid
+from dragon_radar.storage.repository import (
+    Conflict,
+    Forbidden,
+    NotFound,
+    Repository,
+    _uuid,
+)
 from dragon_radar.topics.models import TopicBatch
 from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
 
@@ -50,6 +56,24 @@ from dragon_radar.topics.tables import topic_import_batches, topic_snapshots
 # storage-side defense-in-depth guard so an over-wide window fails loudly
 # instead of silently truncating the timeline.
 _PUBLISHED_WINDOW_MAX_DISTINCT_DATES = 250
+
+
+def _publication_input_dependency():
+    """Sidecar promotions have their own authorization, outside base PUB inputs."""
+    return not_(
+        or_(
+            and_(
+                source_dependencies.c.archive_type == "public_daily_ai",
+                source_dependencies.c.derived_type == "daily_ai",
+                source_dependencies.c.archive_id == source_dependencies.c.derived_id,
+            ),
+            and_(
+                source_dependencies.c.archive_type == "promoted_news_summary",
+                source_dependencies.c.derived_type == "news_summary",
+                source_dependencies.c.archive_id == source_dependencies.c.derived_id,
+            ),
+        )
+    )
 
 
 def _publication(row: Mapping) -> Publication:
@@ -115,6 +139,34 @@ def source_has_active_withdrawal(connection, source_id: str) -> bool:
         .limit(1)
     )
     return action is not None and action != "restored"
+
+
+def artifact_was_display_withdrawn(
+    connection, source_id: str, archive_type: str, archive_id: UUID
+) -> bool:
+    """Display restore cannot reapprove dependencies predating its immutable cutoff."""
+    cutoff = withdrawal_records.c.details[
+        "artifact_cutoff_dependency_sequence"
+    ].astext.cast(BigInteger)
+    return (
+        connection.scalar(
+            select(withdrawal_records.c.id)
+            .join(
+                source_dependencies,
+                source_dependencies.c.source_id == withdrawal_records.c.source_id,
+            )
+            .where(
+                withdrawal_records.c.source_id == source_id,
+                withdrawal_records.c.scope == "display",
+                withdrawal_records.c.action == "blocked",
+                source_dependencies.c.archive_type == archive_type,
+                source_dependencies.c.archive_id == archive_id,
+                source_dependencies.c.dependency_sequence <= cutoff,
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _role_validation_input_ids(payload) -> set[UUID]:
@@ -401,6 +453,7 @@ class PublicationRepository:
                 )
                 .where(
                     source_dependencies.c.publication_id == record.id,
+                    _publication_input_dependency(),
                 )
             )
             .mappings()
@@ -488,6 +541,17 @@ class PublicationRepository:
 
     @staticmethod
     def _result(row: Mapping) -> PublicationResult:
+        from dragon_radar.domain.clocks import DomainClockArchive
+        from dragon_radar.http.errors import DataUnavailable
+
+        try:
+            lineage = (
+                DomainClockArchive.model_validate(row["clock_lineage"])
+                if row.get("clock_lineage") is not None
+                else None
+            )
+        except ValueError:
+            raise DataUnavailable from None
         return PublicationResult(
             publication_id=row["publication_id"],
             domain=row["domain"],
@@ -496,6 +560,7 @@ class PublicationRepository:
             payload=row["payload"],
             coverage=row["coverage"],
             quality_flags=tuple(row["quality_flags"]),
+            clock_lineage=lineage,
         )
 
     def _lock_sources(self, connection, source_ids) -> dict:
@@ -628,7 +693,10 @@ class PublicationRepository:
             raise Forbidden("Publication topic identity is invalid")
 
         news_dependencies = [
-            row for row in dependencies if row["derived_type"] == "news"
+            row
+            for row in dependencies
+            if row["derived_type"] == "news"
+            and row["archive_type"] != "promoted_news_summary"
         ]
         if record.news_input_id is not None:
             root = news_snapshot_rows.get(record.news_input_id)
@@ -646,7 +714,8 @@ class PublicationRepository:
             }
             actual = {
                 (row["source_id"], row["archive_type"], row["archive_id"])
-                for row in news_dependencies
+                for row in dependencies
+                if row["derived_type"] == "news"
             }
             news_result = next(
                 (
@@ -657,6 +726,27 @@ class PublicationRepository:
                 None,
             )
             try:
+                from dragon_radar.news.summary_publication import NewsSummaryArtifact
+
+                for article in news_result["payload"]["articles"]:
+                    if article.get("summary_artifact") is not None:
+                        artifact = NewsSummaryArtifact.model_validate(
+                            article["summary_artifact"]
+                        )
+                        artifact.bind(article)
+                        expected.add(
+                            (
+                                artifact.source_id,
+                                "promoted_news_summary",
+                                artifact.summary_id,
+                            )
+                        )
+                if any(
+                    row["derived_id"] != record.id or row["publication_id"] != record.id
+                    for row in dependencies
+                    if row["derived_type"] == "news"
+                ):
+                    raise ValueError
                 payload_identity = {
                     (
                         UUID(article["article_id"]),
@@ -666,7 +756,7 @@ class PublicationRepository:
                     )
                     for article in news_result["payload"]["articles"]
                 }
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, Conflict):
                 raise Forbidden("Publication news lineage is invalid") from None
             item_identity = {
                 (
@@ -682,7 +772,7 @@ class PublicationRepository:
                 or news_result is None
                 or news_result["status"] != "ready"
                 or news_result["input_id"] != record.news_input_id
-                or len(expected) != len(items)
+                or len(news_dependencies) != len(items)
                 or actual != expected
                 or payload_identity != item_identity
             ):
@@ -873,7 +963,10 @@ class PublicationRepository:
         dependencies = (
             connection.execute(
                 select(source_dependencies)
-                .where(source_dependencies.c.publication_id.in_(publication_ids))
+                .where(
+                    source_dependencies.c.publication_id.in_(publication_ids),
+                    _publication_input_dependency(),
+                )
                 .order_by(
                     source_dependencies.c.source_id,
                     source_dependencies.c.archive_type,
@@ -1163,6 +1256,7 @@ class PublicationRepository:
                 )
                 .where(
                     source_dependencies.c.publication_id.in_(publication_ids),
+                    _publication_input_dependency(),
                     withdrawal_records.c.action.in_(("deidentified", "deleted")),
                 )
                 .distinct()
@@ -1200,6 +1294,58 @@ class PublicationRepository:
                 raise
             authorized.append(snapshot)
         return authorized
+
+    def get_lineage(self, publication_id: UUID | str, trade_date: date) -> dict:
+        from dragon_radar.domain.clocks import utc
+        from dragon_radar.http.errors import DataUnavailable
+        from dragon_radar.publication.clocks import publication_lineage
+
+        publication_id = _uuid(publication_id)
+        with self.database.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(publications).where(publications.c.id == publication_id)
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFound("Publication not found")
+            if row["status"] != "published":
+                raise Forbidden("Publication is not available")
+            # Reauthorize current and embedded grants on every metadata read.
+            snapshot = self._authorized_records(connection, [row])[0]
+            if snapshot.trade_date != trade_date:
+                raise ValueError("Publication date mismatch")
+            cutoffs = {"market": snapshot.batch.as_of}
+            if snapshot.publication.topic_snapshot_id is not None:
+                topic = connection.execute(
+                    select(topic_import_batches.c.canonical_json)
+                    .join(
+                        topic_snapshots,
+                        topic_snapshots.c.batch_id == topic_import_batches.c.id,
+                    )
+                    .where(
+                        topic_snapshots.c.id == snapshot.publication.topic_snapshot_id
+                    )
+                ).scalar_one()
+                cutoffs["topic"] = TopicBatch.model_validate_json(topic).as_of
+            for domain in ("news", "regulation"):
+                value = snapshot.result(domain).payload.get("as_of")
+                if value is not None:
+                    try:
+                        cutoffs[domain] = utc(datetime.fromisoformat(value))
+                    except (TypeError, ValueError):
+                        raise DataUnavailable from None
+            if snapshot.publication.role_input_id is not None:
+                cutoffs["role"] = connection.scalar(
+                    select(role_runs.c.knowledge_cutoff).where(
+                        role_runs.c.id == snapshot.publication.role_input_id
+                    )
+                )
+            return publication_lineage(
+                snapshot.publication, snapshot.results, legacy_cutoffs=cutoffs
+            )
 
     def get_publication(self, publication_id: UUID | str) -> Publication | None:
         publication_id = _uuid(publication_id)
@@ -1245,6 +1391,55 @@ class PublicationRepository:
             [row],
             ai_domains=frozenset(ai_domains),
         )[0]
+
+    def get_ai_source_grant(self, connection, source_id: str) -> SourceGrant:
+        """Lock and read one current source grant inside the artifact transaction."""
+        if not connection.in_transaction():
+            raise ValueError("AI source authorization requires a transaction")
+        return self.market._source(connection, source_id)
+
+    def get_ai_source_ids(self, connection, publication_ids) -> set[str]:
+        """Resolve origin sources without acquiring source locks or authorizing."""
+        if not connection.in_transaction():
+            raise ValueError("AI source resolution requires a transaction")
+        ids = {_uuid(value) for value in publication_ids}
+        if not ids:
+            return set()
+        dependencies = select(source_dependencies.c.source_id).where(
+            source_dependencies.c.publication_id.in_(ids),
+            _publication_input_dependency(),
+        )
+        market_sources = (
+            select(snapshots.c.source_id)
+            .join(publications, publications.c.market_snapshot_id == snapshots.c.id)
+            .where(publications.c.id.in_(ids))
+        )
+        topic_sources = (
+            select(topic_snapshots.c.source_id)
+            .join(
+                publications,
+                publications.c.topic_snapshot_id == topic_snapshots.c.id,
+            )
+            .where(publications.c.id.in_(ids))
+        )
+        news_sources = (
+            select(news_article_revisions.c.source_id)
+            .join(
+                news_snapshot_items,
+                news_snapshot_items.c.article_revision_id
+                == news_article_revisions.c.id,
+            )
+            .join(
+                publications,
+                publications.c.news_input_id == news_snapshot_items.c.snapshot_id,
+            )
+            .where(publications.c.id.in_(ids))
+        )
+        return set(
+            connection.execute(
+                dependencies.union(market_sources, topic_sources, news_sources)
+            ).scalars()
+        )
 
     def get_published_snapshot(
         self, snapshot_id: UUID | str

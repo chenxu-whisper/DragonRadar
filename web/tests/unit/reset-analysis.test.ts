@@ -10,6 +10,8 @@ import {
   validateKlineResponse,
   validateRankResponse,
 } from '../../src/features/analysis/validation';
+import { rankingForRequest } from '../fixtures/ranking-direction';
+import type { ResetRankItem } from '../../src/types';
 
 const sessions = Array.from({ length: 130 }, (_, index) =>
   new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10));
@@ -90,6 +92,16 @@ function klineData(chartType: 'candlestick' | 'line' = 'candlestick') {
 }
 
 describe('reset analysis query projection', () => {
+  it.each([
+    ['interval_return', 'return'], ['excess_return', 'excess_return'],
+    ['maximum_drawdown', 'drawdown'], ['amount_change', 'amount_change'],
+  ] as const)('uses explicit direction for %s without mutating its default', (sort, requestField) => {
+    const before = analysisSortDescriptor(sort);
+    for (const direction of ['asc', 'desc'] as const) {
+      expect(analysisSortDescriptor(sort, direction)).toEqual({ requestField, direction });
+    }
+    expect(analysisSortDescriptor(sort)).toEqual(before);
+  });
   it('uses exactly N+1 calendar positions ending at the snapshot', () => {
     expect(analysisRange({ n: 20, start: '', end: '' }, sessions)).toEqual({
       start: sessions[109],
@@ -143,6 +155,127 @@ describe('reset analysis query projection', () => {
 });
 
 describe('reset analysis response validation', () => {
+  const directionRows: ResetRankItem[] = [
+    ['D', 0.1, 0.2], ['A', -0.1, 0], ['C', 0.1, 0.2], ['B', 0, 0.1],
+  ].map(([security_id, value, drawdown]) => ({
+    ...rankData().ranking[0], security_id: security_id as string,
+    return_ratio: value as number, excess_return_ratio: (value as number) - 0.02,
+    max_drawdown_ratio: drawdown as number, amount_change_ratio: value as number,
+  }));
+
+  for (const sort of ['return', 'excess_return', 'drawdown', 'amount_change'] as const) {
+    it.each(['asc', 'desc'] as const)(`accepts Unicode codepoint identity ties for ${sort} %s`, order => {
+      const params = new URLSearchParams(query);
+      params.set('sort', sort); params.set('order', order);
+      const data = rankData();
+      // Fixed Python str ordering: U+E000 precedes U+10000, unlike UTF-16 ordering.
+      data.ranking = [
+        { ...data.ranking[0], security_id: '\uE000', rank: 1 },
+        { ...data.ranking[0], security_id: '\u{10000}', rank: 1 },
+      ];
+      expect(validateRankResponse(
+        envelope(data, { expected: 3, valid: 2, excluded: 0, missing: 1 }), params,
+      )).toBeNull();
+    });
+
+    it.each(['asc', 'desc'] as const)(`rejects reversed Unicode identity ties for ${sort} %s`, order => {
+      const params = new URLSearchParams(query);
+      params.set('sort', sort); params.set('order', order);
+      const data = rankData();
+      data.ranking = [
+        { ...data.ranking[0], security_id: '\u{10000}', rank: 1 },
+        { ...data.ranking[0], security_id: '\uE000', rank: 1 },
+      ];
+      expect(validateRankResponse(
+        envelope(data, { expected: 3, valid: 2, excluded: 0, missing: 1 }), params,
+      )).toBe('malformed');
+    });
+
+    it.each(['asc', 'desc'] as const)(`validates ${sort} %s and rejects the opposite response`, order => {
+      const params = new URLSearchParams(query);
+      params.set('sort', sort); params.set('order', order);
+      const data = { ...rankData(), ranking: rankingForRequest(directionRows, params), exclusions: [] };
+      expect(data.ranking.map(row => row.security_id)).toEqual(order === 'asc' ? ['A', 'B', 'C', 'D'] : ['C', 'D', 'B', 'A']);
+      expect(data.ranking.map(row => row.rank)).toEqual(order === 'asc' ? [1, 2, 3, 3] : [1, 1, 3, 4]);
+      const body = envelope(data, { expected: 4, valid: 4, excluded: 0, missing: 0 });
+      expect(validateRankResponse(body, params)).toBeNull();
+      params.set('order', order === 'asc' ? 'desc' : 'asc');
+      expect(validateRankResponse(body, params)).toBe('malformed');
+    });
+  }
+
+  for (const shape of ['null-last', 'all-null'] as const) {
+    it.each(['asc', 'desc'] as const)(`accepts Unicode identity ${shape} ties for %s`, order => {
+      const params = new URLSearchParams(query);
+      params.set('sort', 'amount_change'); params.set('order', order);
+      const base = rankData().ranking[0];
+      const ranking: ResetRankItem[] = [
+        ...(shape === 'null-last' ? [{ ...base, security_id: 'A' }] : []),
+        { ...base, security_id: '\uE000', rank: null, amount_change_ratio: null },
+        { ...base, security_id: '\u{10000}', rank: null, amount_change_ratio: null },
+      ];
+      const data = { ...rankData(), ranking, exclusions: [] };
+      expect(validateRankResponse(envelope(data, {
+        expected: ranking.length, valid: ranking.length - 2, excluded: 0, missing: 2,
+      }), params)).toBeNull();
+    });
+
+    it.each(['asc', 'desc'] as const)(`rejects reversed Unicode identity ${shape} ties for %s`, order => {
+      const params = new URLSearchParams(query);
+      params.set('sort', 'amount_change'); params.set('order', order);
+      const base = rankData().ranking[0];
+      const ranking: ResetRankItem[] = [
+        ...(shape === 'null-last' ? [{ ...base, security_id: 'A' }] : []),
+        { ...base, security_id: '\u{10000}', rank: null, amount_change_ratio: null },
+        { ...base, security_id: '\uE000', rank: null, amount_change_ratio: null },
+      ];
+      const data = { ...rankData(), ranking, exclusions: [] };
+      expect(validateRankResponse(envelope(data, {
+        expected: ranking.length, valid: ranking.length - 2, excluded: 0, missing: 2,
+      }), params)).toBe('malformed');
+    });
+  }
+
+  it.each(['asc', 'desc'] as const)('projects fixture Unicode ties to fixed codepoint goldens for %s', order => {
+    const params = new URLSearchParams(query);
+    params.set('sort', 'amount_change'); params.set('order', order);
+    const base = rankData().ranking[0];
+    const ids = ['\u{10000}A', '\uE000A', '\u{10000}', '\uE000', 'A'];
+    const rows = ids.map(security_id => ({ ...base, security_id }));
+    const expectedIds = ['A', '\uE000', '\uE000A', '\u{10000}', '\u{10000}A'];
+    expect(rankingForRequest(rows, params).map(row => [row.security_id, row.rank]))
+      .toEqual(expectedIds.map(id => [id, 1]));
+    expect(rankingForRequest(rows.map(row => ({ ...row, amount_change_ratio: null })), params)
+      .map(row => [row.security_id, row.rank]))
+      .toEqual(expectedIds.map(id => [id, null]));
+  });
+
+  it.each(['asc', 'desc'] as const)('validates null-last and all-null ranking for %s', order => {
+    const params = new URLSearchParams(query); params.set('sort', 'amount_change'); params.set('order', order);
+    const rows = [...directionRows, { ...directionRows[0], security_id: 'E', amount_change_ratio: null }];
+    const data = { ...rankData(), ranking: rankingForRequest(rows, params), exclusions: [] };
+    expect(data.ranking.at(-1)).toMatchObject({ security_id: 'E', rank: null });
+    expect(validateRankResponse(envelope(data, { expected: 5, valid: 4, excluded: 0, missing: 1 }), params)).toBeNull();
+    data.ranking = rankingForRequest(rows.map(row => ({ ...row, amount_change_ratio: null })), params);
+    expect(data.ranking.map(row => row.security_id)).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(validateRankResponse(envelope(data, { expected: 5, valid: 0, excluded: 0, missing: 5 }), params)).toBeNull();
+    data.ranking.reverse();
+    expect(validateRankResponse(envelope(data, { expected: 5, valid: 0, excluded: 0, missing: 5 }), params)).toBe('malformed');
+  });
+
+  it.each(['asc', 'desc'] as const)('rejects unstable tie identity ordering for %s', order => {
+    const params = new URLSearchParams(query); params.set('order', order);
+    const data = { ...rankData(), ranking: rankingForRequest(directionRows, params), exclusions: [] };
+    const c = data.ranking.findIndex(row => row.security_id === 'C');
+    [data.ranking[c], data.ranking[c + 1]] = [data.ranking[c + 1], data.ranking[c]];
+    expect(validateRankResponse(envelope(data, { expected: 4, valid: 4, excluded: 0, missing: 0 }), params)).toBe('malformed');
+  });
+
+  it.each(['order=', 'order=ASC', 'order=invalid', 'order=asc&order=desc'])('rejects invalid requested direction %s', suffix => {
+    const params = new URLSearchParams(query);
+    new URLSearchParams(suffix).forEach((value, key) => params.append(key, value));
+    expect(validateRankResponse(envelope(rankData(), { expected: 2, valid: 1, excluded: 0, missing: 1 }), params)).toBe('malformed');
+  });
   it('rejects curves whose common axis ends before adjusted_end', () => {
     const data = curvesData();
     data.curves[0].points[1].trade_date = '2026-09-09';

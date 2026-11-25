@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ID, mockMarket, resetSummary, snapshot } from '../fixtures/market';
 import type { BacktestRunStatus } from '../../src/features/research/backtest-client';
+import { materializedResearch, researchCapabilities } from '../fixtures/research';
 
 /**
  * Task 17 owner research surface E2E (AC-14/AC-15, TR-17.2).
@@ -36,42 +37,11 @@ const manifestFixture = {
   },
 } as const;
 
-const succeededResult = () => ({
-  metrics: {
-    initial_equity: '100000.00',
-    final_equity: '102345.67',
-    total_return: '0.0235',
-    max_drawdown: '0.0120',
-  },
-  equity: [
-    { trade_date: '2025-01-06', equity: '100000.00' },
-    { trade_date: '2025-06-27', equity: '102345.67' },
-  ],
-  trades: [{
-    security_id: 'TEST001',
-    side: 'buy',
-    quantity: 100,
-    signal_date: '2025-01-06',
-    trade_date: '2025-01-07',
-    raw_close: '10.00',
-    fill_price: '10.01',
-    gross_amount: '1001.00',
-    commission: '5.00',
-    stamp_tax: '0.00',
-    net_cash_delta: '-1006.00',
-  }],
-  rejections: [],
-  quality: [],
-  folds: [],
-  baseline: { cost_sensitivity: [] },
-  ablation: null,
-});
-
-function runRecord(status: BacktestRunStatus, extra: Record<string, unknown> = {}) {
+function runRecord(status: BacktestRunStatus, hash: string, extra: Record<string, unknown> = {}) {
   return {
     run_id: RUN_ID,
     status,
-    config_hash: 'a'.repeat(64),
+    config_hash: hash,
     research_only: true,
     result: null,
     failure: null,
@@ -125,11 +95,20 @@ async function mockResearchRoutes(
 ): Promise<ResearchMocks> {
   const mocks: ResearchMocks = { calls: [], submitBodies: [], cancelBodies: [], runGets: 0 };
   const sequence = options.runSequence ?? ['queued', 'running', 'succeeded'];
+  let artifact: ReturnType<typeof materializedResearch>;
   await page.route('**/api/research/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     mocks.calls.push({ method: request.method(), path });
 
+    if (request.method() === 'GET' && path === '/api/research/capabilities') {
+      const query = new URL(request.url()).searchParams;
+      expect([...query.keys()].sort()).toEqual(['end', 'snapshot_id', 'start']);
+      expect(query.get('snapshot_id')).toBe(ID);
+      return route.fulfill({ json: researchCapabilities(ID, {
+        start: query.get('start')!, end: query.get('end')!,
+      }) });
+    }
     if (request.method() === 'GET' && path === `/api/research/manifests/${ID}`) {
       if (options.gate) await options.gate;
       if (options.manifest === 'malformed') {
@@ -139,17 +118,21 @@ async function mockResearchRoutes(
     }
     if (request.method() === 'POST' && path === '/api/research/backtests') {
       mocks.submitBodies.push(request.postDataJSON());
+      artifact = materializedResearch(request.postDataJSON());
       return route.fulfill({ json: { run_id: RUN_ID, status: 'queued' } });
+    }
+    if (request.method() === 'GET' && path === `/api/research/backtests/${RUN_ID}/config`) {
+      return route.fulfill({ json: { run_id: RUN_ID, config_hash: artifact.hash, config: artifact.config } });
     }
     if (request.method() === 'GET' && path === `/api/research/backtests/${RUN_ID}`) {
       mocks.runGets += 1;
       const status = sequence[Math.min(mocks.runGets - 1, sequence.length - 1)];
-      const extra = status === 'succeeded' ? { result: succeededResult() } : {};
-      return route.fulfill({ json: runRecord(status, extra) });
+      const extra = status === 'succeeded' ? { result: artifact.result } : {};
+      return route.fulfill({ json: runRecord(status, artifact.hash, extra) });
     }
     if (request.method() === 'POST' && path === `/api/research/backtests/${RUN_ID}/cancel`) {
       mocks.cancelBodies.push(request.postDataJSON());
-      return route.fulfill({ json: runRecord('cancelled') });
+      return route.fulfill({ json: runRecord('cancelled', artifact.hash) });
     }
     return route.fulfill({ status: 500, json: { code: 'UNEXPECTED_RESEARCH_CALL' } });
   });
@@ -166,6 +149,14 @@ function collectConsoleErrors(page: Page): string[] {
 
 async function gotoAnalysis(page: Page): Promise<void> {
   await page.goto(`/?view=analysis&snapshot=${ID}&date=${DATE}`);
+}
+
+async function selectKernelWindow(page: Page) {
+  const panel = page.getByRole('region', { name: '研究回测' });
+  await panel.getByLabel('回测周期（开始）').fill('2025-02-10');
+  await panel.getByLabel('回测周期（结束）').fill('2025-02-14');
+  await panel.getByLabel('持仓数量').fill('2');
+  await panel.getByLabel('调仓周期').fill('2');
 }
 
 test.describe('Task 17 owner research backtest workbench', () => {
@@ -193,6 +184,7 @@ test.describe('Task 17 owner research backtest workbench', () => {
     expect(research.calls.filter(call => call.method === 'POST')).toEqual([]);
 
     releaseManifest();
+    await selectKernelWindow(page);
     await expect(submit).toBeEnabled();
     await expect(panel.getByText('研究清单未就绪，提交回测已暂停。')).toHaveCount(0);
 
@@ -222,17 +214,18 @@ test.describe('Task 17 owner research backtest workbench', () => {
     const experiment = body.experiment as { legs: string[] };
     expect(experiment.legs).toContain('baseline');
 
-    const status = panel.getByRole('status');
+    const status = panel.getByRole('status').filter({ hasText: '运行状态：' });
     await expect(status).toHaveText('运行状态：排队中');
     await expect(status).toHaveText('运行状态：运行中');
     await expect(status).toHaveText('运行状态：已完成');
 
     const result = panel.getByRole('region', { name: '回测结果' });
     await expect(result).toBeVisible();
-    await expect(result.getByRole('table', { name: '净值曲线' })).toContainText('2025-06-27');
-    await expect(result.getByRole('table', { name: '成交流水' })).toContainText('TEST001');
-    await expect(result).toContainText('期末权益');
-    await expect(result).toContainText('102345.67');
+    await expect(result.getByRole('table', { name: '账户权益（金额，非归一化价格）' })).toContainText('2025-02-14');
+    await expect(result.getByRole('region', { name: '成交流水' })).toContainText('X1');
+    await expect(result.locator('[data-metric="final_equity"]').first()).toContainText('final_equity');
+    const actual = materializedResearch(body);
+    await expect(result).toContainText(actual.result.metrics.final_equity);
 
     // 200% zoom keeps the whole research surface inside the layout viewport.
     // Under CSS zoom the root's own layout metrics stay in its local coordinate
@@ -257,15 +250,16 @@ test.describe('Task 17 owner research backtest workbench', () => {
     await gotoAnalysis(page);
     const panel = page.getByRole('region', { name: '研究回测' });
     await expect(panel).toBeVisible();
+    await selectKernelWindow(page);
     await expect(panel.getByRole('button', { name: '提交回测' })).toBeEnabled();
 
     await panel.getByRole('button', { name: '提交回测' }).click();
-    await expect(panel.getByRole('status')).toHaveText('运行状态：排队中');
+    await expect(panel.getByRole('status').filter({ hasText: '运行状态：' })).toHaveText('运行状态：排队中');
     const getsAtCancel = research.runGets;
     expect(getsAtCancel).toBeGreaterThanOrEqual(1);
 
     await panel.getByRole('button', { name: '取消运行' }).click();
-    await expect(panel.getByRole('status')).toHaveText('运行状态：已取消');
+    await expect(panel.getByRole('status').filter({ hasText: '运行状态：' })).toHaveText('运行状态：已取消');
 
     expect(research.cancelBodies).toHaveLength(1);
     const cancelBody = research.cancelBodies[0] as Record<string, unknown>;

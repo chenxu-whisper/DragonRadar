@@ -1,3 +1,5 @@
+import { rankSortDescriptor } from './query';
+
 type ObjectValue = Record<string, unknown>;
 export type AnalysisValidationError = 'malformed' | 'date_mismatch' | 'security_mismatch';
 
@@ -80,10 +82,10 @@ function exclusionIds(value: unknown): Set<string> | null {
 }
 
 const rankFields = {
-  return: ['return_ratio', true],
-  excess_return: ['excess_return_ratio', true],
-  drawdown: ['max_drawdown_ratio', false],
-  amount_change: ['amount_change_ratio', true],
+  return: 'return_ratio',
+  excess_return: 'excess_return_ratio',
+  drawdown: 'max_drawdown_ratio',
+  amount_change: 'amount_change_ratio',
 } as const;
 
 function nearlyEqual(left: number, right: number): boolean {
@@ -91,7 +93,23 @@ function nearlyEqual(left: number, right: number): boolean {
     Math.max(1, Math.abs(left), Math.abs(right)) * 8;
 }
 
+function compareCodepoints(left: string, right: string): number {
+  // Match Python str ordering, including supplementary characters.
+  let a = 0, b = 0;
+  while (a < left.length && b < right.length) {
+    const leftPoint = left.codePointAt(a) as number;
+    const rightPoint = right.codePointAt(b) as number;
+    if (leftPoint !== rightPoint) return leftPoint - rightPoint;
+    a += leftPoint > 0xffff ? 2 : 1;
+    b += rightPoint > 0xffff ? 2 : 1;
+  }
+  return (left.length - a) - (right.length - b);
+}
+
 export function validateRankResponse(value: unknown, query: URLSearchParams): AnalysisValidationError | null {
+  const requestedOrder = query.get('order');
+  if (query.getAll('order').length > 1 ||
+    (requestedOrder !== null && requestedOrder !== 'asc' && requestedOrder !== 'desc')) return 'malformed';
   if (!envelope(value)) return 'malformed';
   if (!basisMatches(value, query, true)) return 'malformed';
   if (unavailable(value)) return null;
@@ -138,12 +156,18 @@ export function validateRankResponse(value: unknown, query: URLSearchParams): An
     }
     ids.add(item.security_id);
   }
-  const [field, descending] = rankField;
+  const field = rankField;
+  const descending = rankSortDescriptor(sort as keyof typeof rankFields, requestedOrder ?? undefined).direction === 'desc';
   let previousValue: number | undefined;
   let reachedNull = false;
   let valid = 0;
   for (const [index, item] of (data.ranking as ObjectValue[]).entries()) {
     const current = item[field];
+    const previous = index > 0 ? data.ranking[index - 1] as ObjectValue : undefined;
+    if (previous && current === previous[field] &&
+      compareCodepoints(item.security_id as string, previous.security_id as string) < 0) {
+      return 'malformed';
+    }
     if (current === null) {
       if (item.rank !== null) return 'malformed';
       reachedNull = true;

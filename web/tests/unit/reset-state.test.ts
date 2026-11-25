@@ -1,9 +1,42 @@
 import { describe, expect, it } from 'vitest';
 import { parseState, stateSearch } from '../../src/state';
+import { analysisSortDescriptor } from '../../src/features/analysis/query';
 
 const snapshot = '00000000-0000-4000-8000-000000000001';
 
 describe('explicit reset URL state', () => {
+  it.each(['asc', 'desc'] as const)('round trips explicit rank_order=%s through stock return state', rank_order => {
+    const parsed = parseState(`?view=analysis&sort=amount_change&rank_order=${rank_order}&order=asc&page=3&q=TEST`, false, true);
+    expect(parsed.notices).toEqual([]);
+    expect(parsed.state.rank_order).toBe(rank_order);
+    const stock = { ...parsed.state, view: 'stock' as const, security: 'TEST001', return_view: 'analysis' as const };
+    const restored = parseState(stateSearch(stock, false, true), false, true, '/stock/TEST001').state;
+    expect(restored).toMatchObject({ rank_order, page: 3, q: 'TEST', return_view: 'analysis' });
+    expect(parseState(stateSearch(parsed.state, false, true), false, true).state).toEqual(parsed.state);
+  });
+
+  it.each([
+    'rank_order=', 'rank_order=ASC', 'rank_order=DESC', 'rank_order=invalid',
+    'rank_order=asc&rank_order=desc', 'rank_order=desc&rank_order=desc',
+  ])('normalizes invalid ranking direction with the existing notice: %s', suffix => {
+    const parsed = parseState(`?view=analysis&sort=amount_change&${suffix}`, false, true);
+    expect(parsed.state.rank_order).toBeUndefined();
+    expect(parsed.notices).toEqual(['无效的网址参数已重置，请检查研究条件。']);
+    expect(new URLSearchParams(stateSearch(parsed.state, false, true)).has('rank_order')).toBe(false);
+  });
+
+  for (const order of ['', '&order=asc', '&order=desc']) {
+    it.each([
+      ['interval_return', 'desc'], ['excess_return', 'desc'],
+      ['maximum_drawdown', 'asc'], ['amount_change', 'desc'],
+    ] as const)('preserves old %s default %s with global order ' + order, (sort, direction) => {
+      const parsed = parseState(`?view=analysis&sort=${sort}${order}`, false, true);
+      expect(parsed.state.rank_order).toBeUndefined();
+      expect(analysisSortDescriptor(parsed.state.sort, parsed.state.rank_order).direction).toBe(direction);
+      expect(new URLSearchParams(stateSearch(parsed.state, false, true)).has('rank_order')).toBe(false);
+    });
+  }
+
   it.each(['news', 'leaders', 'regulation', 'review'])('round trips %s without owner mode', view => {
     const query = `?view=${view}&snapshot=${snapshot}&date=2026-09-10&q=TEST&sort=amount&order=desc&page=3`;
     const parsed = parseState(query, false, true);

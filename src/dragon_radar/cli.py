@@ -131,6 +131,12 @@ def _ai_integer(value: str, minimum: int, maximum: int) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dragon-radar")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser(
+        "supplier-compare", help="Compare two frozen supplier archives offline"
+    )
+    commands.add_parser(
+        "ai-output", help="Manage output licensing and validate summary selections"
+    )
     commands.add_parser("migrate", help="Apply packaged PostgreSQL migrations")
     register = commands.add_parser(
         "source-register", help="Register a local source grant"
@@ -197,6 +203,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     publication_publish.add_argument("path", type=Path)
     publication_publish.add_argument("--key", required=True)
+    publication_publish.add_argument("--summary-selections", type=Path)
     role_materialize = commands.add_parser(
         "role-materialize", help="Materialize immutable role evidence"
     )
@@ -296,10 +303,30 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    # Dedicated validators own these namespaces and run before shared storage.
+    if tokens and tokens[0] == "supplier-compare":
+        from dragon_radar.ingestion.comparison_cli import main as compare_main
+
+        return compare_main(tokens[1:])
+    if tokens and tokens[0] == "ai-output":
+        from dragon_radar.public_daily_ai.cli import main as output_main
+
+        return output_main(tokens[1:])
+    args = _parser().parse_args(tokens)
     database = None
     ai_config = None
+    summary_selections = ()
     try:
+        if args.command == "publication-publish" and args.summary_selections:
+            from dragon_radar.public_daily_ai.cli import (
+                load_document,
+                validate_selections,
+            )
+
+            summary_selections = validate_selections(
+                load_document(args.summary_selections.read_text(encoding="utf-8"))
+            )["summary_selections"]
         if args.command == "ai-worker":
             from dragon_radar.ai.provider import load_provider_config
 
@@ -446,7 +473,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.path.read_text(encoding="utf-8")
             )
             publication = PublicationService(database, repository).publish(
-                command, key=args.key
+                command,
+                key=args.key,
+                summary_selections=summary_selections,
             )
             result = {
                 "snapshot_id": str(publication.id),

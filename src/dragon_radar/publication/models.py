@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import Field, JsonValue, StrictBool, field_validator, model_validator
 
+from dragon_radar.domain.clocks import DomainClockArchive
 from dragon_radar.domain.models import FrozenModel
 from dragon_radar.storage.models import Snapshot
 from dragon_radar.topics.models import ImmutableJsonObject
@@ -65,6 +66,7 @@ class DomainMaterialization(FrozenModel):
     payload: ImmutableJsonObject = {}
     coverage: ImmutableJsonObject = {}
     quality_flags: tuple[str, ...] = ()
+    clock_lineage: DomainClockArchive | None = None
 
 
 class PublicationResult(FrozenModel):
@@ -75,6 +77,7 @@ class PublicationResult(FrozenModel):
     payload: ImmutableJsonObject
     coverage: ImmutableJsonObject
     quality_flags: tuple[str, ...]
+    clock_lineage: DomainClockArchive | None = None
 
 
 class Publication(FrozenModel):

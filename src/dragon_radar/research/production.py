@@ -73,6 +73,10 @@ from dragon_radar.research.pit import (
     UniversePolicy,
     assemble_pit_window,
 )
+from dragon_radar.research.result_contracts import (
+    RESEARCH_RESULT_SCHEMA_VERSION,
+    validate_result,
+)
 from dragon_radar.research.worker import (
     ResearchInputsUnavailable,
     assert_compute_budget,
@@ -840,6 +844,10 @@ def validate_input_run(
     # Receipt/use permissions are checked again for the actual claimed run.
     _suppliers(suppliers, start, bundle["methods"])
     _suppliers(suppliers, finish, bundle["methods"])
+    try:
+        validate_result(run["result"], cfg)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ValueError("production result contract invalid") from exc
     actual = run_backtest(
         cfg,
         frames,
@@ -848,6 +856,19 @@ def validate_input_run(
         policy=policy,
         benchmark_closes=benchmark or None,
     ).model_dump(mode="json")
+    if run["result"].get("schema_version") == RESEARCH_RESULT_SCHEMA_VERSION:
+        from dragon_radar.research.materialization import materialize_result
+
+        actual = materialize_result(
+            actual,
+            cfg,
+            frames,
+            {cfg.parameters.factor_id: factors},
+            anchor=anchor,
+            policy=policy,
+            publications=bundle["publications"],
+            computed_at=finish,
+        )
     if _digest(run["result_sha256"]) != _hash(run["result"]) or canonical_json(
         actual
     ) != canonical_json(run["result"]):
@@ -889,6 +910,7 @@ class ProductionResearchCompute:
         expected_code: Callable[[], str],
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         publication_sequence: Callable[[UUID], int] | None = None,
+        result_version: str = "v1",
     ):
         self.asset_root = Path(asset_root)
         self.record_path = _text(record_path)
@@ -918,6 +940,38 @@ class ProductionResearchCompute:
         self.expected_code = expected_code
         self.clock = clock
         self.publication_sequence = publication_sequence
+        if result_version not in ("v1", "v2"):
+            raise ValueError("unsupported research result version")
+        self.result_version = result_version
+
+    @property
+    def compute_contract_sha256(self):
+        from dragon_radar.research.cache_contract import compute_contract
+
+        return compute_contract(self.result_version)
+
+    def prepare_history(self, config):
+        """Authenticate the exact archive used by compute, independently of output."""
+        from dragon_radar.research.materialization import authorized_frame_mapping
+
+        try:
+            frozen, suppliers, candidate, now, _ = self._authenticated()
+            bundle = frozen.to_dict()
+            cfg, anchor, frames, _, policy, _ = _validate_bundle(
+                bundle, suppliers, candidate, now
+            )
+            if cfg.canonical_json() != config.canonical_json():
+                raise ValueError("trusted history config mismatch")
+            return authorized_frame_mapping(
+                frames,
+                anchor=anchor,
+                publications=bundle["publications"],
+                policy=policy,
+            )
+        except (EvidenceError, ValueError, TypeError, KeyError, OSError):
+            raise ResearchInputsUnavailable(
+                "trusted frame mapping unavailable"
+            ) from None
 
     def _authenticated(self):
         now = _now(self.clock())
@@ -1044,6 +1098,20 @@ class ProductionResearchCompute:
                 raise ValueError("production proof changed during computation")
             if finished < started:
                 raise ValueError("production execution clock went backwards")
+            if self.result_version == "v2":
+                from dragon_radar.research.materialization import materialize_result
+
+                actual = materialize_result(
+                    actual,
+                    cfg,
+                    frames,
+                    {cfg.parameters.factor_id: factors},
+                    anchor=anchor,
+                    policy=policy,
+                    publications=bundle["publications"],
+                    computed_at=finished,
+                )
+            validate_result(actual, cfg)
             artifact = {
                 "schema": RUN_SCHEMA,
                 "candidate": bundle["candidate"],
@@ -1082,6 +1150,7 @@ def load_production_compute(
     request_path: Path,
     *,
     database=None,
+    result_version: str = "v1",
 ) -> ProductionResearchCompute:
     """Owner CLI opt-in; private request schema independent of candidate.json.
 
@@ -1159,6 +1228,7 @@ def load_production_compute(
         context=request["context"],
         expected_code=lambda: current_source_identity(CODE_ROOT),
         publication_sequence=sequence_for,
+        result_version=result_version,
     )
     compute.prepare()
     return compute

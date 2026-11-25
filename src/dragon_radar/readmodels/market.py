@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
+from uuid import UUID
 
 from dragon_radar.analytics.metrics import _decimal_context, _index, _observation
 from dragon_radar.domain.models import LimitUpEvent, MarketBatch
 from dragon_radar.domain.quality import state_at
+from dragon_radar.readmodels.index_history import materialize_index_history
 from dragon_radar.readmodels.sentiment_research import (
     REASON_NO_LIMIT_EVENTS,
     REASON_NO_TRADABLE_MEMBERS_FROM_YESTERDAY_GE2_SET,
@@ -785,7 +787,12 @@ def _topics(
 
 
 def materialize_market(
-    batch: MarketBatch, topic_batch: TopicBatch | None
+    batch: MarketBatch,
+    topic_batch: TopicBatch | None,
+    *,
+    market_snapshot_id: UUID | None = None,
+    source_archive_id: UUID | None = None,
+    source_archive_digest: str | None = None,
 ) -> dict[str, Any]:
     """Build every Task09 read model once, while publication inputs are bound."""
     returns, return_coverage = _daily_returns(batch, batch.trade_date)
@@ -905,7 +912,25 @@ def materialize_market(
                 "reason": None if item["close"] is not None else item["reason"],
             }
         )
+    coordinates = (market_snapshot_id, source_archive_id, source_archive_digest)
+    if any(value is not None for value in coordinates) and any(
+        value is None for value in coordinates
+    ):
+        raise ValueError("All original archive coordinates are required")
+    history = (
+        {
+            "index_history": materialize_index_history(
+                batch,
+                market_snapshot_id=market_snapshot_id,
+                source_archive_id=source_archive_id,
+                source_archive_digest=source_archive_digest,
+            )
+        }
+        if all(value is not None for value in coordinates)
+        else {}
+    )
     return {
+        **history,
         "schema": MARKET_READ_MODEL_SCHEMA,
         "schema_version": MARKET_READ_MODEL_SCHEMA_VERSION,
         "overview": {

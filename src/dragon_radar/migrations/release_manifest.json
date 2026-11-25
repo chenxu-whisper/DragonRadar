@@ -1,7 +1,7 @@
 {
   "schema": "dragon-radar.migration-release-manifest",
   "schema_version": 1,
-  "head": "0014_research",
+  "head": "0018_research_contract",
   "rollback_mode": "backup_restore_only",
   "supported_from": [
     "0001_foundation",
@@ -173,6 +173,34 @@
       "parent": "0013_query",
       "sha256": "2bf6fe5d3d05317e5c4f02572a441c693289a9af8c84f7a08cf1a226f6240abe",
       "bytes": 1954
+    },
+    {
+      "filename": "0015_daily_ai.py",
+      "revision": "0015_daily_ai",
+      "parent": "0014_research",
+      "sha256": "eb9ce275badc44eebf72366f425cab976ba3f4360a26a4e203766d4d872857df",
+      "bytes": 14298
+    },
+    {
+      "filename": "0016_clock_lineage.py",
+      "revision": "0016_clock_lineage",
+      "parent": "0015_daily_ai",
+      "sha256": "c84a92c9f2fdfc402be4ecf84e6b57d6b84d67b194b6fac69393f967675fcc0e",
+      "bytes": 2335
+    },
+    {
+      "filename": "0017_analysis_limits.py",
+      "revision": "0017_analysis_limits",
+      "parent": "0016_clock_lineage",
+      "sha256": "7ffb43cc5754480f68c6e98d29223a81e4edf61ec0eebf5dad1967c3ca042f98",
+      "bytes": 2405
+    },
+    {
+      "filename": "0018_research_contract.py",
+      "revision": "0018_research_contract",
+      "parent": "0017_analysis_limits",
+      "sha256": "3143ea445be67a8cbe9b99e8903981b93d1c702bf8bc0e600411cb5e822810a5",
+      "bytes": 3225
     }
   ]
 }

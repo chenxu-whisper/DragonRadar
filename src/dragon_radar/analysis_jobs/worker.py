@@ -7,6 +7,14 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import timedelta
 from typing import Any
 
+from dragon_radar.analysis_jobs.limits import (
+    MAX_WALL_CLOCK_MS,
+    AnalysisBudget,
+    AnalysisBudgetExceeded,
+    AnalysisCapacityExceeded,
+    validate_dimensions,
+    validate_result_size,
+)
 from dragon_radar.analysis_jobs.models import AnalysisJobCommand, AnalysisJobRecord
 from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
 from dragon_radar.publication.models import PublishedSnapshot
@@ -18,8 +26,12 @@ from dragon_radar.storage.repository import Forbidden, NotFound
 def materialize_custom_analysis(
     snapshot: PublishedSnapshot,
     command: AnalysisJobCommand,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Compute one request from the immutable market batch bound to a publication."""
+    check = checkpoint or AnalysisBudget().checkpoint
+    check()
     batch = snapshot.batch
     sessions = tuple(
         day for day in batch.calendar.sessions if command.start <= day <= command.end
@@ -28,6 +40,12 @@ def materialize_custom_analysis(
         raise ValueError("Analysis window has no trading sessions")
     projection = MarketProjection(batch)
     eligible_security_ids = _eligible_security_ids(projection)
+    check()
+    validate_dimensions(
+        sessions=len(sessions),
+        securities=len(eligible_security_ids),
+        observations=len(sessions) * len(eligible_security_ids),
+    )
     if not set(command.symbols) <= set(eligible_security_ids):
         raise NotFound("Stock not found")
 
@@ -60,6 +78,7 @@ def materialize_custom_analysis(
         sessions,
         command.benchmark,
         eligible_security_ids,
+        checkpoint=check,
     )
     projected = window["adjustments"][command.adjustment]
     stored_curves = projected["curves"]
@@ -107,7 +126,7 @@ def materialize_custom_analysis(
         if requested
         else [dict(row) for row in projected["exclusions"]]
     )
-    return {
+    result = {
         "schema": "dragon-radar.custom-analysis",
         "schema_version": 1,
         "algorithm_version": command.algorithm_version,
@@ -127,6 +146,10 @@ def materialize_custom_analysis(
         "benchmark_reasons": projected["benchmark_reasons"],
         "curves": curves,
     }
+    check()
+    validate_result_size(result)
+    check()
+    return result
 
 
 class AnalysisJobWorker:
@@ -137,6 +160,7 @@ class AnalysisJobWorker:
         worker_id: str,
         lease_for: timedelta = timedelta(seconds=30),
         max_attempts: int = 3,
+        monotonic: Callable[[], float] = time.monotonic,
         compute: Callable[
             [PublishedSnapshot, AnalysisJobCommand], dict[str, Any]
         ] = materialize_custom_analysis,
@@ -146,6 +170,7 @@ class AnalysisJobWorker:
         self.lease_for = lease_for
         self.max_attempts = max_attempts
         self.compute = compute
+        self.monotonic = monotonic
 
     def run_once(self) -> AnalysisJobRecord | None:
         lease = self.repository.claim(
@@ -171,7 +196,27 @@ class AnalysisJobWorker:
             )
         heartbeat_seconds = self.lease_for.total_seconds() / 3
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self.compute, snapshot, lease.job.command)
+            budget = AnalysisBudget(
+                getattr(lease.job, "max_wall_clock_ms", MAX_WALL_CLOCK_MS),
+                clock=self.monotonic,
+            )
+
+            def compute_with_budget():
+                budget.checkpoint()
+                if self.compute is materialize_custom_analysis:
+                    value = self.compute(
+                        snapshot,
+                        lease.job.command,
+                        checkpoint=budget.checkpoint,
+                    )
+                else:
+                    value = self.compute(snapshot, lease.job.command)
+                budget.checkpoint()
+                validate_result_size(value)
+                budget.checkpoint()
+                return value
+
+            future = executor.submit(compute_with_budget)
             while not future.done():
                 try:
                     future.result(timeout=heartbeat_seconds)
@@ -189,6 +234,8 @@ class AnalysisJobWorker:
                 return self.repository.fail(lease, {"code": "input_forbidden"})
             except NotFound:
                 return self.repository.fail(lease, {"code": "input_unavailable"})
+            except (AnalysisBudgetExceeded, AnalysisCapacityExceeded) as error:
+                return self.repository.fail(lease, {"code": error.code})
             except Exception as error:
                 return self.repository.fail(
                     lease,

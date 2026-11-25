@@ -6,6 +6,7 @@ import type {
   NewsType,
   WordCloudRequest,
 } from './types';
+import { validatePromotedSummaryPreview } from './PromotedSummaryPreview';
 
 type Failure = 'malformed_response' | 'selection_mismatch' | 'article_mismatch' | null;
 const UUID = /^[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
@@ -51,6 +52,19 @@ function association(value: unknown, target: 'security' | 'topic'): boolean {
 
 function listArticle(value: unknown): value is NewsListArticle {
   if (!record(value)) return false;
+  if (Object.hasOwn(value, 'revision_id')
+    && (typeof value.revision_id !== 'string' || !UUID.test(value.revision_id))) return false;
+  if (Object.hasOwn(value, 'received_at')
+    && (typeof value.received_at !== 'string'
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value.received_at)
+      || !Number.isFinite(Date.parse(value.received_at)))) return false;
+  if (Object.hasOwn(value, 'ai_preview') && value.ai_preview !== null) {
+    try {
+      validatePromotedSummaryPreview(value.ai_preview);
+    } catch {
+      return false;
+    }
+  }
   return typeof value.article_id === 'string' && UUID.test(value.article_id) &&
     Number.isInteger(value.revision) && Number(value.revision) >= 1 &&
     typeof value.event_id === 'string' && UUID.test(value.event_id) &&

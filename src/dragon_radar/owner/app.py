@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 
+from dragon_radar.ai.publication import AIPublicationService
 from dragon_radar.ai.repository import AITaskRepository
 from dragon_radar.ai.service import AIService
 from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
@@ -16,6 +17,7 @@ from dragon_radar.analysis_jobs.routes import install_analysis_job_routes
 from dragon_radar.api import StorageUnavailable, create_app
 from dragon_radar.http.app import create_workbench_app
 from dragon_radar.http.routes.ai import install_ai_routes
+from dragon_radar.http.routes.ai_publication import install_ai_publication_routes
 from dragon_radar.http.routes.news import install_news_review_routes
 from dragon_radar.http.routes.query import install_query_routes
 from dragon_radar.http.routes.research import install_research_routes
@@ -43,6 +45,7 @@ from dragon_radar.owner.security import (
 )
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.query.repository import QueryRepository
+from dragon_radar.research.cache_contract import deployment_result_version
 from dragon_radar.research.repository import ResearchRunRepository
 from dragon_radar.review.routes import install_review_routes
 from dragon_radar.storage.database import Database
@@ -56,7 +59,11 @@ from dragon_radar.storage.repository import (
 
 _RESET_READ_PATHS = {
     "/api/snapshots/list",
+    "/api/snapshots/lineage",
     "/api/snapshots/{snapshot_id}",
+    "/api/index/{security_id}/history",
+    "/api/market/daily-ai",
+    "/api/market/daily-ai/archives",
     "/api/market/overview",
     "/api/market/sector-flow",
     "/api/topics/{sector_id}",
@@ -78,9 +85,13 @@ _RESET_READ_PATHS = {
     "/api/regulation/status",
     "/api/regulation/events",
     "/api/realtime/quotes",
+    "/api/realtime/lineage",
     "/api/realtime/minutes",
     "/api/realtime/anomalies",
     "/api/market/sector-flow/intraday",
+    "/api/lhb",
+    "/api/lhb/lineage",
+    "/api/lhb/seats/{seat_id}",
 }
 
 
@@ -99,6 +110,7 @@ def create_owner_app(
 ) -> FastAPI:
     """No implicit migration, initialization, dotenv, proxy trust or public routes."""
     validate_origin(origin)
+    research_result_version = deployment_result_version()
     owned = all(
         dependency is None
         for dependency in (
@@ -164,6 +176,7 @@ def create_owner_app(
             database,
             owner_repository,
             publication_repository,
+            result_version=research_result_version,
         )
     if ai_service is None and database is not None:
         ai_service = AIService(
@@ -210,6 +223,11 @@ def create_owner_app(
     app.state.analysis_repository = analysis_repository
     app.state.research_repository = research_repository
     app.state.ai_service = ai_service
+    app.state.ai_publication_service = (
+        AIPublicationService(ai_service.tasks, publication_repository)
+        if ai_service is not None
+        else None
+    )
     app.state.news_repository = news_repository
     app.state.query_repository = query_repository
     app.state.owner_origin = origin
@@ -220,6 +238,9 @@ def create_owner_app(
         analysis_repository=analysis_repository,
     )
     app.state.realtime_repository = workbench.state.realtime_repository
+    app.state.public_daily_ai_service = workbench.state.public_daily_ai_service
+    app.state.public_daily_ai_repository = workbench.state.public_daily_ai_repository
+    app.state.lhb_repository = workbench.state.lhb_repository
     read_routes = (
         nested
         for route in workbench.routes
@@ -321,6 +342,7 @@ def create_owner_app(
     install_analysis_job_routes(app)
     install_research_routes(app)
     install_ai_routes(app)
+    install_ai_publication_routes(app)
     install_news_review_routes(app)
     install_query_routes(app)
     app.add_middleware(OwnerGate, origin=origin, owner_repository=owner_repository)

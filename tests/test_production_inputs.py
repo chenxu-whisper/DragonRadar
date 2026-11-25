@@ -654,6 +654,24 @@ def test_production_compute_authenticates_actual_kernel_and_archives_run(signed_
     module.validate_input_run(bundle, artifact, suppliers, kwargs["candidate"], now)
 
 
+def test_b7_production_history_is_derived_from_authenticated_inputs(signed_inputs):
+    from dragon_radar.research.cache_contract import compute_contract
+    from dragon_radar.research.worker import ResearchInputsUnavailable
+
+    kwargs, bundle, _, _ = signed_inputs
+    compute = production().ProductionResearchCompute(**kwargs, result_version="v2")
+    cfg = parse(BacktestConfig, bundle["config"])
+    assert compute.compute_contract_sha256 == compute_contract("v2")
+    trusted = compute.prepare_history(cfg)
+    result = compute(published_snapshot(bundle), cfg, lambda: None)
+    assert trusted == result["lineage"]["frames"]
+    result["lineage"]["frames"][0]["frame_sha256"] = "f" * 64
+    assert compute.prepare_history(cfg) == trusted
+    wrong = cfg.model_copy(update={"snapshot_id": UUID(int=1)})
+    with pytest.raises(ResearchInputsUnavailable):
+        compute.prepare_history(wrong)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -891,7 +909,13 @@ def test_owner_cli_injects_authenticated_compute_only_when_explicit(
     selected = research_worker.call_args.kwargs["compute"]
     if explicit:
         assert selected is fake_compute
-        loader.assert_called_once_with(request, database=repository.database)
+        from dragon_radar.research.cache_contract import deployment_result_version
+
+        loader.assert_called_once_with(
+            request,
+            database=repository.database,
+            result_version=deployment_result_version(),
+        )
     else:
         assert selected is cli.fail_closed_research_compute
         loader.assert_not_called()

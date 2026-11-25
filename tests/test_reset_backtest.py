@@ -34,6 +34,7 @@ from dragon_radar.research.ablation import (
     AblationLeg,
     AblationReport,
 )
+from dragon_radar.research.cache_contract import compute_contract
 from dragon_radar.research.engine import (
     FactorFrame,
     FactorPoint,
@@ -64,6 +65,7 @@ from dragon_radar.research.pit import (
     UniversePolicy,
     assemble_pit_window,
 )
+from dragon_radar.research.result_contracts import json_value
 from dragon_radar.research.walk_forward import PhasePublication
 
 BACKTEST_MODULES = (
@@ -2610,17 +2612,17 @@ def test_0014_migration_is_unique_head_and_database_is_ready(database) -> None:
 
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0014_research"
+    assert SCHEMA_REVISION == "0018_research_contract"
     config = Config()
     config.set_main_option("script_location", "dragon_radar:migrations")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0014_research"]
+    assert script.get_heads() == ["0018_research_contract"]
     assert script.get_revision("0014_research").down_revision == "0013_query"
     assert database.ready()
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0014_research"
+            == "0018_research_contract"
         )
     inspector = inspect(database.engine)
     assert {"research_backtest_runs", "research_backtest_cache"} <= set(
@@ -3036,7 +3038,7 @@ def test_0014_research_downgrade_is_forbidden(database_url) -> None:
     try:
         with database.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "head")
+            command.upgrade(config, "0014_research")
         with (
             pytest.raises(
                 RuntimeError,
@@ -3070,11 +3072,13 @@ def _research_session(owners):
 
 
 @pytest.fixture
-def run_repo(database, repository):
+def run_repo(database, repository, monkeypatch):
+    import sys
     from types import SimpleNamespace
 
     from dragon_radar.owner.repository import OwnerRepository
     from dragon_radar.publication.repository import PublicationRepository
+    from dragon_radar.research.models import InputManifests
     from dragon_radar.research.repository import ResearchRunRepository
 
     owners = OwnerRepository(database, clock=lambda: T10_NOW)
@@ -3086,6 +3090,27 @@ def run_repo(database, repository):
         owners,
         PublicationRepository(database, repository, clock=lambda: T10_NOW),
         clock=lambda: T10_NOW,
+    )
+    context = runs.input_manifest(session.token, publication.id)
+    manifests = InputManifests.model_validate_json(
+        json.dumps({k: v for k, v in context.items() if k != "snapshot_id"})
+    )
+    original_config = config
+
+    def bound_config(**changes):
+        values = {
+            "period": period(start=E_D1, end=E_D5),
+            "parameters": parameters(top_n=2, rebalance_period=2),
+            "input_manifests": manifests,
+            **changes,
+        }
+        return original_config(**values)
+
+    monkeypatch.setattr(sys.modules[__name__], "config", bound_config)
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "T11_RESULT",
+        _ex15_result(_submission(publication.id)),
     )
     return SimpleNamespace(
         runs=runs,
@@ -3203,7 +3228,8 @@ def test_research_submit_conflicts_when_same_key_changes_config(run_repo) -> Non
         ctx.runs.submit(ctx.session.token, ctx.session.csrf, changed)
 
     stored = ctx.runs.get(ctx.session.token, first.id)
-    assert stored.config.parameters.top_n == 10
+    assert stored.config == first.config
+    assert stored.config != changed.config
     with ctx.runs.database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT count(*) FROM research_backtest_runs")) == 1
@@ -3309,7 +3335,7 @@ def test_research_config_hash_cache_reuses_result_across_owners(run_repo) -> Non
     lease = ctx.runs.claim("research-worker-1")
     assert lease is not None
     assert lease.run.id == first.id
-    ctx.runs.succeed(lease, T11_RESULT)
+    ctx.runs.succeed(lease, T11_RESULT, executing_contract=compute_contract("v1"))
 
     other = _second_owner_session(ctx.runs.database)
     cached = ctx.runs.submit(
@@ -3320,7 +3346,7 @@ def test_research_config_hash_cache_reuses_result_across_owners(run_repo) -> Non
     assert cached.owner_id == other.owner_id
     assert cached.id != first.id
     assert cached.status == "succeeded"
-    assert cached.result == T11_RESULT
+    assert json_value(cached.result) == T11_RESULT
     assert cached.completed_at == T10_NOW
     with pytest.raises(NotFound):
         ctx.runs.get(ctx.session.token, cached.id)
@@ -3401,7 +3427,7 @@ def test_research_cancel_running_run_invalidates_lease_and_blocks_completion(
     assert cancelled.completed_at == T10_NOW
 
     with pytest.raises(Conflict, match="no longer active"):
-        ctx.runs.succeed(lease, T11_RESULT)
+        ctx.runs.succeed(lease, T11_RESULT, executing_contract=compute_contract("v1"))
     with pytest.raises(Conflict, match="no longer active"):
         ctx.runs.renew(lease)
     with pytest.raises(Conflict, match="no longer active"):
@@ -3432,7 +3458,7 @@ def test_research_cancel_rejects_terminal_runs(run_repo, terminal) -> None:
     )
     if terminal == "succeeded":
         lease = ctx.runs.claim("research-worker-1")
-        ctx.runs.succeed(lease, T11_RESULT)
+        ctx.runs.succeed(lease, T11_RESULT, executing_contract=compute_contract("v1"))
     elif terminal == "failed":
         lease = ctx.runs.claim("research-worker-1")
         ctx.runs.fail(lease, {"code": "engine_failed"})
@@ -3508,8 +3534,10 @@ def test_research_expired_lease_is_reclaimable_but_stale_worker_cannot_finish(
     assert second.run.attempt_count == 2
 
     with pytest.raises(Conflict, match="no longer active"):
-        ctx.runs.succeed(first, T11_RESULT)
-    completed = ctx.runs.succeed(second, T11_RESULT)
+        ctx.runs.succeed(first, T11_RESULT, executing_contract=compute_contract("v1"))
+    completed = ctx.runs.succeed(
+        second, T11_RESULT, executing_contract=compute_contract("v1")
+    )
     assert completed.status == "succeeded"
 
 
@@ -3558,7 +3586,7 @@ def test_research_claim_validates_policy_and_fails_exhausted_run(run_repo) -> No
     assert exhausted.result is None
     assert exhausted.completed_at == T10_NOW + timedelta(seconds=22)
     with pytest.raises(Conflict):
-        ctx.runs.succeed(second, T11_RESULT)
+        ctx.runs.succeed(second, T11_RESULT, executing_contract=compute_contract("v1"))
 
 
 def test_research_renew_keeps_active_lease_and_rejects_expired(run_repo) -> None:
@@ -3679,17 +3707,30 @@ def test_research_succeed_pins_immutable_cache_and_authoritative_result(
 
     first_lease = ctx.runs.claim("research-worker-1")
     assert first_lease is not None
-    completed_first = ctx.runs.succeed(first_lease, T11_RESULT)
-    assert completed_first.result == T11_RESULT
+    completed_first = ctx.runs.succeed(
+        first_lease, T11_RESULT, executing_contract=compute_contract("v1")
+    )
+    assert json_value(completed_first.result) == T11_RESULT
 
     second_lease = ctx.runs.claim("research-worker-2")
     assert second_lease is not None
-    competing_result = {
-        "schema_version": T10_ENGINE_VERSION,
-        "summary": {"total_return": "9.9999"},
-    }
-    completed_second = ctx.runs.succeed(second_lease, competing_result)
-    assert completed_second.result == T11_RESULT
+    import copy
+
+    from dragon_radar.research.repository import ResearchCacheConflict
+
+    competing_result = copy.deepcopy(T11_RESULT)
+    competing_result["quality"][0]["events"].append(
+        {
+            "trade_date": competing_result["quality"][0]["trade_date"],
+            "code": "factor_section_empty",
+            "security_id": None,
+        }
+    )
+    with pytest.raises(ResearchCacheConflict):
+        ctx.runs.succeed(
+            second_lease, competing_result, executing_contract=compute_contract("v1")
+        )
+    ctx.runs.fail(second_lease, {"code": "result_cache_conflict"})
 
     with ctx.runs.database.engine.connect() as connection:
         cache_row = (
@@ -3716,7 +3757,7 @@ def test_research_succeed_pins_immutable_cache_and_authoritative_result(
         run_statuses = (
             connection.execute(select(research_backtest_runs.c.status)).scalars().all()
         )
-        assert run_statuses == ["succeeded", "succeeded"]
+        assert sorted(run_statuses) == ["failed", "succeeded"]
 
 
 def test_research_result_and_failure_must_be_json_objects(run_repo) -> None:
@@ -3768,30 +3809,13 @@ def _ex14_body(snapshot_id, *, key=None, **config_changes) -> dict:
 
 
 def _ex15_result(submission) -> dict:
-    # Minimal object that still carries every EX15 envelope key; the route is
-    # a thin materialized-result reader and must validate transport, not the
-    # engine schema (Task 13 owns producing the real BacktestResult).
-    return {
-        "schema_version": T10_ENGINE_VERSION,
-        "research_only": True,
-        "config_hash": submission.config.config_hash,
-        "snapshot_id": str(submission.config.snapshot_id),
-        "manifests": submission.config.input_manifests.model_dump(mode="json"),
-        "versions": {"strategy_id": submission.config.strategy_id},
-        "metrics": {"total_return": "0.1250"},
-        "equity": [{"trade_date": "2025-01-06", "equity": "1000000.00"}],
-        "trades": [],
-        "rejections": [],
-        "quality": [],
-        "folds": None,
-        "walk_forward": None,
-        "baseline": {
-            "status": "completed",
-            "metrics": {"total_return": "0.1250"},
-            "cost_sensitivity": [],
-        },
-        "ablation": None,
-    }
+    return run_backtest(
+        submission.config,
+        _eng_frames({day: dict(ENG_FLAT) for day in ENG_DAYS}),
+        _factor_frames(ENG_VALUES_BY_DAY),
+        anchor=_eng_anchor(),
+        policy=UniversePolicy(),
+    ).model_dump(mode="json")
 
 
 def _research_owner_app(ctx):
@@ -4004,7 +4028,9 @@ async def test_research_http_get_returns_ex15_envelope_with_research_only(
 
         lease = ctx.runs.claim("research-worker-1")
         assert lease is not None
-        ctx.runs.succeed(lease, _ex15_result(submission))
+        ctx.runs.succeed(
+            lease, _ex15_result(submission), executing_contract=compute_contract("v1")
+        )
 
         fetched = await client.get(
             f"{T12_PATH}/{run_id}", headers=_t12_headers(ctx.session)
@@ -4042,7 +4068,7 @@ async def test_research_http_get_returns_ex15_envelope_with_research_only(
     assert result["research_only"] is True
     assert result["config_hash"] == submission.config.config_hash
     # Monetary values stay Decimal strings through the JSONB round trip.
-    assert result["metrics"]["total_return"] == "0.1250"
+    assert result["metrics"] == _ex15_result(submission)["metrics"]
     assert isinstance(result["equity"][0]["equity"], str)
 
     for secret in (
@@ -4051,7 +4077,7 @@ async def test_research_http_get_returns_ex15_envelope_with_research_only(
         str(ctx.session.owner_id),
         "lease",
         "request_hash",
-        "input_manifest",
+        '"input_manifest":',
         "attempt_count",
     ):
         assert secret not in fetched.text
@@ -4276,7 +4302,9 @@ async def test_research_http_cancel_rejects_terminal_run_with_conflict(
         run_id = created.json()["run_id"]
         lease = ctx.runs.claim("research-worker-1")
         assert lease is not None
-        ctx.runs.succeed(lease, _ex15_result(submission))
+        ctx.runs.succeed(
+            lease, _ex15_result(submission), executing_contract=compute_contract("v1")
+        )
 
         conflict = await client.post(
             _cancel_url(run_id),
@@ -4612,10 +4640,16 @@ def _t13_submit(ctx, **changes):
 
 
 def _t13_worker(ctx, compute, **kwargs):
+    from dragon_radar.research.cache_contract import compute_contract
     from dragon_radar.research.worker import ResearchBacktestWorker
 
     kwargs.setdefault("worker_id", "research-worker-1")
-    return ResearchBacktestWorker(ctx.runs, compute=compute, **kwargs)
+
+    def identified_compute(*args):
+        return compute(*args)
+
+    identified_compute.compute_contract_sha256 = compute_contract("v1")
+    return ResearchBacktestWorker(ctx.runs, compute=identified_compute, **kwargs)
 
 
 def _t13_ok_compute():
@@ -4686,7 +4720,7 @@ def test_research_worker_succeeds_queued_run_end_to_end(run_repo) -> None:
     assert record.id == submitted.id
     assert record.status == "succeeded"
     assert record.attempt_count == 1
-    assert record.result == T11_RESULT
+    assert json_value(record.result) == T11_RESULT
     assert record.failure is None
     assert record.completed_at == T10_NOW
     assert seen == {
@@ -4807,7 +4841,7 @@ def test_research_worker_renews_lease_while_long_compute_is_running(
 
     assert completed.status == "succeeded"
     assert completed.attempt_count == 1
-    assert completed.result == T11_RESULT
+    assert json_value(completed.result) == T11_RESULT
 
 
 def test_research_worker_cancel_takes_effect_at_next_checkpoint_without_result(
@@ -4896,6 +4930,7 @@ def test_research_worker_compute_budget_gate_fails_before_compute(
     def reject(_config):
         raise worker_module.ComputeBudgetExceeded("top_n", limit=1, actual=10)
 
+    original_budget_check = worker_module.assert_compute_budget
     monkeypatch.setattr(worker_module, "assert_compute_budget", reject)
 
     def compute(snapshot, config, checkpoint):
@@ -4915,7 +4950,7 @@ def test_research_worker_compute_budget_gate_fails_before_compute(
         "actual": 10,
     }
 
-    monkeypatch.undo()
+    monkeypatch.setattr(worker_module, "assert_compute_budget", original_budget_check)
     follow = _t13_submit(ctx)
     completed = _t13_worker(
         ctx, _t13_ok_compute(), worker_id="research-worker-2"
@@ -5068,9 +5103,11 @@ def test_research_worker_stale_succeed_conflict_leaves_no_half_result(
     ctx.runs.clock = lambda: T10_NOW + timedelta(seconds=22)
     second_lease = ctx.runs.claim("research-worker-2", lease_for=timedelta(seconds=10))
     assert second_lease is not None
-    completed = ctx.runs.succeed(second_lease, T11_RESULT)
+    completed = ctx.runs.succeed(
+        second_lease, T11_RESULT, executing_contract=compute_contract("v1")
+    )
     assert completed.status == "succeeded"
-    assert completed.result == T11_RESULT
+    assert json_value(completed.result) == T11_RESULT
 
 
 def test_research_worker_retry_limit_fails_run_but_other_runs_stay_claimable(

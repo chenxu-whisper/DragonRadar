@@ -130,7 +130,22 @@ def bar_issues(bar: DailyBar, batch: MarketBatch) -> tuple[QualityIssue, ...]:
 
     if (bar.source_id, bar.source_version) != (batch.source_id, batch.source_version):
         add("source_mismatch", "Bar source/version differs from batch")
-    if bar.adjustment_version != batch.adjustment_version:
+    identity = state_at(batch, bar.security_id, bar.trade_date)
+    explicit_index = (
+        identity is not None
+        and identity.security_type == "index"
+        and bar.index_basis is not None
+    )
+    if bar.index_basis is not None and not explicit_index:
+        add("index_identity", "Index basis requires a known effective index identity")
+    if explicit_index:
+        if (
+            not bar.adjustment_factor.is_finite()
+            or bar.adjustment_factor != 1
+            or bar.adjustment_version != "raw-index-v1"
+        ):
+            add("index_adjustment", "Index history requires raw factor 1/raw-index-v1")
+    elif bar.adjustment_version != batch.adjustment_version:
         add("adjustment_mismatch", "Bar factor version differs from batch")
     if bar.available_at > batch.as_of:
         add("late_bar", "Bar was not known at the batch cutoff")
@@ -182,7 +197,21 @@ def bar_issues(bar: DailyBar, batch: MarketBatch) -> tuple[QualityIssue, ...]:
         value = getattr(bar, name)
         if value is not None and name not in nonfinite and value < 0:
             add(code, f"{name} must be nonnegative")
-    if (
+    if explicit_index:
+        basis = bar.index_basis
+        if (
+            bar.price_unit != basis.price_unit
+            or bar.volume_unit != basis.volume_unit
+            or bar.amount_unit != "currency"
+        ):
+            add("unit_contract", "Index units differ from the declared basis")
+        if basis.volume_unit == "not_applicable" and bar.volume is not None:
+            add("index_volume", "Not-applicable index volume must be null")
+        if (bar.amount is not None and basis.amount_currency is None) or (
+            basis.amount_currency is not None and bar.currency != basis.amount_currency
+        ):
+            add("index_amount_currency", "Index amount requires a declared currency")
+    elif (
         bar.price_unit != "currency/share"
         or bar.volume_unit not in {"share", "lot"}
         or bar.amount_unit != "currency"
@@ -362,6 +391,15 @@ def validate_batch(batch: MarketBatch, *, now: datetime) -> QualityReport:
         if len(bars) > 1:
             add("duplicate_bar", "Duplicate security/date bars", *key)
             valid_keys.discard(key)
+
+    index_bases: dict[str, set] = defaultdict(set)
+    for bar in batch.bars:
+        identity = state_at(batch, bar.security_id, bar.trade_date)
+        if identity is not None and identity.security_type == "index":
+            index_bases[bar.security_id].add(bar.index_basis)
+    for sid, bases in index_bases.items():
+        if len(bases) > 1:
+            add("index_series_mismatch", "Index history mixes series or units", sid)
 
     event_keys: set[tuple[str, date]] = set()
     for event in batch.limit_up_events:

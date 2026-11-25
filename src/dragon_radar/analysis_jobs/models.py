@@ -21,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
+from dragon_radar.analysis_jobs.limits import MAX_WALL_CLOCK_MS
 from dragon_radar.domain.models import FrozenModel, Identifier
 from dragon_radar.owner.models import owner_principals  # noqa: F401
 from dragon_radar.publication.tables import publications  # noqa: F401
@@ -92,6 +93,9 @@ class AnalysisJobRecord(_StrictFrozenModel):
     adjustment_version: Identifier
     status: JobStatus
     attempt_count: Annotated[int, Field(ge=0)]
+    max_wall_clock_ms: Annotated[int, Field(ge=1, le=MAX_WALL_CLOCK_MS)] = (
+        MAX_WALL_CLOCK_MS
+    )
     result: ImmutableJsonObject | None = None
     failure: ImmutableJsonObject | None = None
     created_at: datetime
@@ -139,6 +143,12 @@ analysis_jobs = Table(
     Column("input_manifest", JSONB, nullable=False),
     Column("status", String(20), nullable=False),
     Column("attempt_count", Integer, nullable=False),
+    Column(
+        "max_wall_clock_ms",
+        Integer,
+        nullable=False,
+        server_default=str(MAX_WALL_CLOCK_MS),
+    ),
     Column("available_at", DateTime(timezone=True), nullable=False),
     Column("lease_token", PGUUID(as_uuid=True)),
     Column("lease_owner", String(100)),
@@ -150,6 +160,10 @@ analysis_jobs = Table(
     Column("completed_at", DateTime(timezone=True)),
     UniqueConstraint("owner_id", "idempotency_key"),
     CheckConstraint("attempt_count >= 0"),
+    CheckConstraint(
+        "max_wall_clock_ms BETWEEN 1 AND 300000",
+        name="analysis_jobs_wall_clock_budget",
+    ),
     CheckConstraint("status IN ('queued', 'running', 'succeeded', 'failed')"),
     CheckConstraint(
         "(status = 'queued' AND lease_token IS NULL "

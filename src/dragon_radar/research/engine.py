@@ -34,6 +34,7 @@ from dragon_radar.research.execution import (
 from dragon_radar.research.ledger import (
     EquityPoint,
     LedgerState,
+    Metrics,
     OrderOutcome,
     apply_fill,
     cost_sensitivity_models,
@@ -201,12 +202,12 @@ class RunVersions(StrictFrozenModel):
 class CostSensitivityResult(StrictFrozenModel):
     tier: CostTier
     cost_multiplier: Decimal
-    metrics: object
+    metrics: Metrics
 
 
 class BaselineLeg(StrictFrozenModel):
     status: Literal["completed"] = "completed"
-    metrics: object
+    metrics: Metrics
     cost_sensitivity: tuple[CostSensitivityResult, ...]
 
 
@@ -217,7 +218,7 @@ class BacktestResult(StrictFrozenModel):
     snapshot_id: UUID
     manifests: InputManifests
     versions: RunVersions
-    metrics: object
+    metrics: Metrics
     equity: tuple[EquityPoint, ...]
     trades: tuple[Fill, ...]
     rejections: tuple[Rejection, ...]

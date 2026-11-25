@@ -13,6 +13,9 @@
  * the gateway code passes through untouched.
  */
 
+import { validateConfig, validateResearchEnvelope } from './result-validation';
+import { configHash } from './config-canonical';
+
 const UUID_PATTERN = '[\\da-f]{8}-[\\da-f]{4}-[1-5][\\da-f]{3}-[89ab][\\da-f]{3}-[\\da-f]{12}';
 const UUID = new RegExp(`^${UUID_PATTERN}$`, 'i');
 /**
@@ -21,7 +24,7 @@ const UUID = new RegExp(`^${UUID_PATTERN}$`, 'i');
  * /api/research is reachable through this client.
  */
 const RESEARCH_PATH = new RegExp(
-  `^/api/research/(?:backtests(?:/${UUID_PATTERN}(?:/cancel)?)?|manifests/${UUID_PATTERN})$`,
+  `^/api/research/(?:backtests(?:/${UUID_PATTERN}(?:/(?:cancel|config))?)?|manifests/${UUID_PATTERN})$`,
   'i',
 );
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -48,6 +51,8 @@ export interface BacktestRunRecord {
   research_only: true;
   result: Record<string, unknown> | null;
   failure: Record<string, unknown> | null;
+  /** In-memory owner context, NOT a seventh EX15 wire field or local preference. */
+  config_context?: Record<string, unknown>;
 }
 
 export interface BacktestCommand {
@@ -90,7 +95,7 @@ const ALLOWED_CODES_BY_STATUS: Record<number, readonly string[]> = {
   403: ['FORBIDDEN'],
   404: ['NOT_FOUND'],
   409: ['VERSION_CONFLICT'],
-  503: ['STORAGE_UNAVAILABLE'],
+  503: ['STORAGE_UNAVAILABLE', 'DATA_UNAVAILABLE'],
 };
 
 /** Research route status -> fallback code when the body omits a code or lies. */
@@ -160,9 +165,10 @@ export async function researchRequest(
 ): Promise<unknown> {
   const method = options.method ?? 'GET';
   if (typeof path !== 'string'
-    || !RESEARCH_PATH.test(path)
+    || !(RESEARCH_PATH.test(path) || (method === 'GET' && capabilityPath(path)))
     || path.includes('\\')
-    || path.includes('?')
+    || (path.includes('?') && !capabilityPath(path))
+    || (method === 'POST' && !(path === '/api/research/backtests' || /\/cancel$/.test(path)))
     || (method === 'GET' && options.body !== undefined)) {
     throw new BacktestClientError(400, 'INVALID_PARAM');
   }
@@ -248,9 +254,17 @@ function validateRunRecord(data: unknown): BacktestRunRecord {
     || !isUuid(data.run_id)
     || !RUN_STATUSES.has(data.status as BacktestRunStatus)
     || typeof data.config_hash !== 'string'
+    || !/^[a-f0-9]{64}$/.test(data.config_hash)
     || data.research_only !== true
     || (data.result !== null && !isRecord(data.result))
     || (data.failure !== null && !isRecord(data.failure))) {
+    throw new BacktestClientError(502, 'malformed_response');
+  }
+  if (data.status === 'succeeded') {
+    if (data.result === null || data.failure !== null) throw new BacktestClientError(502, 'malformed_response');
+  } else if (data.result !== null
+    || (data.status === 'failed' ? !isRecord(data.failure)
+      : data.failure !== null && !(data.status === 'cancelled' && isRecord(data.failure) && data.failure.code === 'cancelled'))) {
     throw new BacktestClientError(502, 'malformed_response');
   }
   return data as unknown as BacktestRunRecord;
@@ -273,11 +287,85 @@ export async function submitBacktest(
 export async function getBacktestRun(
   runId: string,
   signal?: AbortSignal,
+  frozenConfig?: Record<string, unknown>,
 ): Promise<BacktestRunRecord> {
   if (!isUuid(runId)) throw new BacktestClientError(400, 'INVALID_PARAM');
-  return validateRunRecord(
+  const record = validateRunRecord(
     await researchRequest(`/api/research/backtests/${runId}`, { signal }),
   );
+  const context = frozenConfig ?? (await getBacktestConfig(runId, signal)).config;
+  try {
+    await validateResearchEnvelope(record, context, runId);
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    throw new BacktestClientError(502, error instanceof Error ? error.message : 'malformed_response');
+  }
+  if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+  return { ...record, config_context: context };
+}
+
+export async function getBacktestConfig(runId: string, signal?: AbortSignal): Promise<{
+  run_id: string; config_hash: string; config: Record<string, unknown>;
+}> {
+  if (!isUuid(runId)) throw new BacktestClientError(400, 'INVALID_PARAM');
+  const data = await researchRequest(`/api/research/backtests/${runId}/config`, { signal });
+  try {
+    if (!isRecord(data) || !exactKeys(data, ['run_id', 'config_hash', 'config'])
+      || data.run_id !== runId || !isRecord(data.config)) throw new Error('selection_mismatch');
+    const config = validateConfig(data.config);
+    if (data.config_hash !== await configHash(config)) throw new Error('selection_mismatch');
+    if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    return { run_id: runId, config_hash: String(data.config_hash), config };
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    throw new BacktestClientError(502, error instanceof Error ? error.message : 'malformed_response');
+  }
+}
+
+export interface ResearchCapability {
+  id: string; status: 'ready' | 'disabled'; reason: string | null;
+  method_version: string | null; approval_evidence_sha256: string | null;
+}
+export interface ResearchCapabilities {
+  snapshot_id: string; period: { start: string; end: string };
+  factors: ResearchCapability[]; walk_forward: ResearchCapability; ai_variant: ResearchCapability;
+}
+
+function capabilityPath(path: string): boolean {
+  if (!path.startsWith('/api/research/capabilities?')) return false;
+  const url = new URL(path, 'https://research.invalid');
+  const pairs = [...url.searchParams.entries()];
+  return !url.hash && pairs.length === 3
+    && new Set(pairs.map(([key]) => key)).size === 3
+    && pairs.every(([key]) => ['snapshot_id', 'start', 'end'].includes(key))
+    && isUuid(url.searchParams.get('snapshot_id'))
+    && ['start', 'end'].every(key => /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get(key) ?? ''));
+}
+
+export async function getResearchCapabilities(
+  snapshotId: string, period: { start: string; end: string }, signal?: AbortSignal,
+): Promise<ResearchCapabilities> {
+  if (!isUuid(snapshotId)) throw new BacktestClientError(400, 'INVALID_PARAM');
+  const query = new URLSearchParams({ snapshot_id: snapshotId, start: period.start, end: period.end });
+  const data = await researchRequest(`/api/research/capabilities?${query}`, { signal });
+  if (!isRecord(data) || !exactKeys(data, ['snapshot_id', 'period', 'factors', 'walk_forward', 'ai_variant'])
+    || data.snapshot_id !== snapshotId || !isRecord(data.period)
+    || !exactKeys(data.period, ['start', 'end']) || data.period.start !== period.start || data.period.end !== period.end
+    || !Array.isArray(data.factors) || data.factors.length !== 5) throw new BacktestClientError(502, 'selection_mismatch');
+  const validate = (value: unknown, id: string) => {
+    if (!isRecord(value) || !exactKeys(value, ['id', 'status', 'reason', 'method_version', 'approval_evidence_sha256'])
+      || value.id !== id) throw new BacktestClientError(502, 'malformed_response');
+    if (value.status === 'ready') {
+      if (value.reason !== null || typeof value.method_version !== 'string' || !VERSION_TOKEN.test(value.method_version)
+        || typeof value.approval_evidence_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.approval_evidence_sha256)) throw new BacktestClientError(502, 'malformed_response');
+    } else if (value.status !== 'disabled' || !['approved_method_unavailable', 'required_domain_unavailable',
+      'phase_series_unavailable', 'real_evaluation_inputs_unavailable', 'ai_score_inputs_unavailable'].includes(String(value.reason))) {
+      throw new BacktestClientError(502, 'malformed_response');
+    }
+  };
+  data.factors.forEach((value, i) => validate(value, ['FAC-R01', 'FAC-R02', 'FAC-R03', 'FAC-C01', 'FAC-C02'][i]));
+  validate(data.walk_forward, 'walk-forward-anchored-v1'); validate(data.ai_variant, 'ai_variant');
+  return data as unknown as ResearchCapabilities;
 }
 
 /**
@@ -341,13 +429,22 @@ export async function cancelBacktestRun(
 ): Promise<BacktestRunRecord> {
   if (!isUuid(runId)) throw new BacktestClientError(400, 'INVALID_PARAM');
   const command = createBacktestCommand({}, crypto.randomUUID());
-  return validateRunRecord(
+  const record = validateRunRecord(
     await researchRequest(`/api/research/backtests/${runId}/cancel`, {
       method: 'POST',
       body: command.body,
       signal,
     }),
   );
+  const context = (await getBacktestConfig(runId, signal)).config;
+  try {
+    await validateResearchEnvelope(record, context, runId);
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    throw new BacktestClientError(502, error instanceof Error ? error.message : 'malformed_response');
+  }
+  if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+  return { ...record, config_context: context };
 }
 
 /** One-second polling cadence while the run is queued or running. */

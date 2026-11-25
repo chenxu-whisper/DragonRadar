@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.exc import SQLAlchemyError
 
+from dragon_radar.analysis_jobs.limits import AnalysisCapacityExceeded
 from dragon_radar.analysis_jobs.models import AnalysisJobCommand, AnalysisJobRecord
 from dragon_radar.analysis_jobs.repository import AnalysisJobRepository
 from dragon_radar.api import StorageUnavailable as LegacyStorageUnavailable
@@ -60,6 +61,8 @@ class _AnalysisJobRoute(APIRoute):
                 )
             except (DataUnavailable, ArithmeticError, QualityRejected):
                 return error_response(503, "DATA_UNAVAILABLE", "Data unavailable")
+            except AnalysisCapacityExceeded as error:
+                return error_response(400, error.code, "Analysis capacity exceeded")
             except ValueError:
                 return error_response(400, "INVALID_PARAM", "Invalid request")
             except BoundaryError as error:

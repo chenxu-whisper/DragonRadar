@@ -71,6 +71,7 @@ export function OverviewAITools({
       version={version}
       date={date}
       marketContext={marketContext}
+      allowPublicSafeDailyReview
       onAdopt={adopt}
     /></div>}
   </div>;

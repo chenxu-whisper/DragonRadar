@@ -630,8 +630,8 @@ async def _concurrent_research_load(
             FactorFrame(
                 trade_date=day,
                 factor_id="FAC-R01",
-                metric="synthetic_cross_section",
-                window="synthetic_daily",
+                metric="relative_strength_20",
+                window="20d",
                 unit="ratio",
                 points=tuple(
                     FactorPoint(security_id=item.security_id, value=item.close)
@@ -678,6 +678,9 @@ async def _concurrent_research_load(
         finally:
             active.clear()
 
+    from dragon_radar.research.cache_contract import compute_contract
+
+    compute.compute_contract_sha256 = compute_contract("v1")
     worker = ResearchBacktestWorker(
         runs,
         worker_id="task27-performance-research",

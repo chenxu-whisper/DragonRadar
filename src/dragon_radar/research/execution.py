@@ -156,7 +156,9 @@ def simulate_fill(
         )
     gross_amount = _quantize_money(fill_price * quantity_decimal)
     raw_commission = gross_amount * rules.commission_rate
-    commission = max(_quantize_money(raw_commission), rules.min_commission)
+    commission = _quantize_money(
+        max(_quantize_money(raw_commission), rules.min_commission)
+    )
     stamp_tax = (
         _quantize_money(gross_amount * rules.stamp_tax_rate)
         if order.side == "sell"

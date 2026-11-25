@@ -1,6 +1,8 @@
 """Release migration manifest tests freeze the Task 00-20 Alembic graph."""
 
 import hashlib
+import inspect
+import io
 import json
 import os
 import re
@@ -10,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 import zipfile
 from contextlib import contextmanager
@@ -39,12 +42,26 @@ SUPPORTED_FROM = [
     "0013_query",
     "0014_research",
 ]
+RELEASE_HEAD = "0018_research_contract"
+ADDITIVE_REVISIONS = [
+    "0015_daily_ai",
+    "0016_clock_lineage",
+    "0017_analysis_limits",
+    RELEASE_HEAD,
+]
 
 
 @pytest.fixture
 def verifier():
     assert SCRIPT.exists(), "Task 21 migration verifier has not been implemented"
-    return runpy.run_path(str(SCRIPT))
+    original_path = sys.path[:]
+    original_pythonpath = os.environ.get("PYTHONPATH")
+    try:
+        return runpy.run_path(str(SCRIPT))
+    finally:
+        sys.path[:] = original_path
+        if original_pythonpath is not None:
+            os.environ["PYTHONPATH"] = original_pythonpath
 
 
 @pytest.fixture
@@ -143,11 +160,11 @@ def test_release_manifest_matches_single_linear_graph(verifier):
     assert manifest["rollback_mode"] == "backup_restore_only"
     assert manifest["supported_from"] == SUPPORTED_FROM
     assert graph["bases"] == ["0001_foundation"]
-    assert graph["heads"] == ["0014_research"]
-    assert graph["revision_count"] == 22
+    assert graph["heads"] == [RELEASE_HEAD]
+    assert graph["revision_count"] == 26
     assert result == {
-        "head": "0014_research",
-        "revision_count": 22,
+        "head": RELEASE_HEAD,
+        "revision_count": 26,
         "errors": [],
     }
 
@@ -158,8 +175,14 @@ def test_release_manifest_accepts_repository_root(verifier):
 
 def test_release_manifest_hashes_match_committed_git_blobs():
     manifest = read_manifest()
+    historical = [
+        entry
+        for entry in manifest["revisions"]
+        if entry["revision"] not in ADDITIVE_REVISIONS
+    ]
+    assert len(historical) == 22
 
-    for entry in manifest["revisions"]:
+    for entry in historical:
         relative_path = (MIGRATIONS / "versions" / entry["filename"]).relative_to(ROOT)
         committed_bytes = subprocess.check_output(
             ["git", "cat-file", "blob", f"HEAD:{relative_path.as_posix()}"],
@@ -169,6 +192,248 @@ def test_release_manifest_hashes_match_committed_git_blobs():
         assert b"\r\n" not in committed_bytes
         assert entry["sha256"] == hashlib.sha256(committed_bytes).hexdigest()
         assert entry["bytes"] == len(committed_bytes)
+
+
+def test_additive_manifest_hashes_match_workingtree_bytes(verifier):
+    entries = [
+        entry
+        for entry in read_manifest()["revisions"]
+        if entry["revision"] in ADDITIVE_REVISIONS
+    ]
+    assert [entry["revision"] for entry in entries] == ADDITIVE_REVISIONS
+    for entry in entries:
+        content = verifier["canonical_migration_bytes"](
+            MIGRATIONS / "versions" / entry["filename"]
+        )
+        assert entry["sha256"] == hashlib.sha256(content).hexdigest()
+        assert entry["bytes"] == len(content)
+
+
+def test_workingtree_generation_refuses_invalid_manifest_before_database(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    namespace = verifier["generate_schema_contract"].__globals__
+    monkeypatch.setitem(
+        namespace,
+        "verify_manifest",
+        lambda _: {"errors": ["hash failure"]},
+    )
+    monkeypatch.setitem(
+        namespace,
+        "_run_generation_lifecycle",
+        lambda _: pytest.fail("invalid manifest reached database"),
+    )
+    with pytest.raises(ValueError, match="hash failure"):
+        namespace["generate_workingtree_schema_contract"](
+            tmp_path / "contract.json", "unused", tmp_path / "evidence.json"
+        )
+
+
+def test_workingtree_generation_labels_explicit_unaudited_evidence(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    namespace = verifier["generate_schema_contract"].__globals__
+    contract = {"tables": [], "constraints": [], "indexes": [], "triggers": []}
+    monkeypatch.setitem(namespace, "verify_manifest", lambda _: {"errors": []})
+    monkeypatch.setitem(namespace, "_run_generation_lifecycle", lambda _: contract)
+    output = tmp_path / "contract.json"
+    evidence_path = tmp_path / "evidence.json"
+    namespace["generate_workingtree_schema_contract"](output, "unused", evidence_path)
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["provenance"] == "WORKINGTREE"
+    assert evidence["release_validated"] is False
+    assert evidence["audited_commit"] == "WORKINGTREE"
+    assert evidence["head"] == RELEASE_HEAD
+    assert (
+        evidence["schema_contract_sha256"]
+        == hashlib.sha256(output.read_bytes()).hexdigest()
+    )
+    assert (
+        evidence["release_manifest_sha256"]
+        == hashlib.sha256(
+            (MIGRATIONS / "release_manifest.json").read_bytes()
+        ).hexdigest()
+    )
+
+
+def test_generated_disposable_schema_names_are_test_scoped(verifier):
+    assert verifier["_new_schema_name"]().startswith("test_")
+    assert verifier["_new_upgrade_schema_name"]().startswith("test_")
+    prefix = verifier["_new_wheel_schema_prefix"]()
+    assert prefix.startswith("test_")
+    assert len(verifier["_new_upgrade_schema_name"](prefix)) <= 63
+
+
+def test_intermediate_upgrade_policy_is_additive_not_supported_from_rewrite(verifier):
+    assert verifier["SUPPORTED_FROM"] == SUPPORTED_FROM
+    assert verifier.get("INTERMEDIATE_REVISIONS") == [
+        "0014_research",
+        *ADDITIVE_REVISIONS,
+    ]
+    parameter = inspect.signature(verifier["exercise_upgrade"]).parameters.get(
+        "intermediate"
+    )
+    assert parameter is not None
+    assert parameter.default is False
+
+
+def test_intermediate_upgrade_proves_each_step_and_preserves_legacy_rows(
+    verifier,
+    database_url,
+):
+    result = verifier["exercise_upgrade"](
+        database_url, "0014_research", intermediate=True
+    )
+    assert result["to_revision"] == RELEASE_HEAD
+    assert result["sentinel_preserved"] is True
+    assert result["ready"] is True
+    assert result["baseline_projection"] == [
+        "analysis_jobs.max_wall_clock_ms",
+        "research_backtest_runs.result_schema_version",
+        "research_backtest_runs.compute_contract_sha256",
+    ]
+    steps = result["intermediate_steps"]
+    assert [step["to_revision"] for step in steps] == ADDITIVE_REVISIONS
+    assert all(step["sentinel_preserved"] is True for step in steps)
+    assert all(re.fullmatch(r"[0-9a-f]{64}", step["catalog_sha256"]) for step in steps)
+
+
+def test_intermediate_steps_capture_each_catalog_and_stop_on_lost_sentinel(
+    verifier,
+    monkeypatch,
+):
+    namespace = verifier["exercise_upgrade"].__globals__
+    assert "exercise_upgrade_steps" in namespace
+    applied = []
+    monkeypatch.setitem(
+        namespace, "_upgrade", lambda _, revision: applied.append(revision)
+    )
+    monkeypatch.setitem(
+        namespace, "_sentinel_preserved", lambda *args: len(applied) < 3
+    )
+    monkeypatch.setitem(
+        namespace,
+        "_schema_contract_functions",
+        lambda: (lambda _: {"tables": applied[:]}, lambda _: None),
+    )
+
+    class Connection:
+        def scalar(self, _):
+            return applied[-1]
+
+    with pytest.raises(ValueError, match="0017_analysis_limits sentinel"):
+        namespace["exercise_upgrade_steps"](
+            Connection(), ADDITIVE_REVISIONS, "legacy", {}
+        )
+    assert applied == ADDITIVE_REVISIONS[:3]
+
+
+def test_intermediate_baseline_projection_only_mutates_test_schemas(
+    verifier,
+):
+    namespace = verifier["exercise_upgrade"].__globals__
+    assert "prepare_intermediate_baseline" in namespace
+    statements = []
+
+    class Connection:
+        def __init__(self, schema="public"):
+            self.schema = schema
+
+        def scalar(self, statement, parameters=None):
+            if str(statement) == "SELECT current_schema()":
+                return self.schema
+            return True
+
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    with pytest.raises(ValueError, match="test schema"):
+        namespace["prepare_intermediate_baseline"](Connection())
+    assert statements == []
+    removed = namespace["prepare_intermediate_baseline"](Connection("test_projection"))
+    assert removed == [
+        "publication_results.clock_lineage",
+        "analysis_jobs.max_wall_clock_ms",
+        "research_backtest_runs.result_schema_version",
+        "research_backtest_runs.compute_contract_sha256",
+    ]
+    assert len(statements) == 4
+    assert all("DROP COLUMN" in statement for statement in statements)
+
+
+def test_wheel_rejects_unaudited_release_before_install(
+    verifier,
+    tmp_path,
+    monkeypatch,
+):
+    namespace = verifier["verify_installed_wheel"].__globals__
+    monkeypatch.setitem(namespace, "validate_audited_commit", lambda *args: "a" * 40)
+    monkeypatch.setitem(
+        namespace,
+        "verify_repository_commit",
+        lambda *args: {"errors": ["uncommitted additive release"]},
+    )
+    monkeypatch.setitem(
+        namespace,
+        "resolve_wheel_path",
+        lambda _: pytest.fail("invalid audited release reached wheel installation"),
+    )
+    with pytest.raises(ValueError, match="uncommitted additive release"):
+        verifier["verify_installed_wheel"](
+            "unused", tmp_path / "unknown.whl", tmp_path / "output.json", "a" * 40
+        )
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_wheel_commit_gate_compares_actual_packaged_resources(
+    verifier,
+    tmp_path,
+    monkeypatch,
+    tamper,
+):
+    namespace = verifier["verify_installed_wheel"].__globals__
+    assert "verify_wheel_commit_resources" in namespace
+    manifest = read_manifest()
+    resources = {
+        "dragon_radar/migrations/release_manifest.json": (
+            MIGRATIONS / "release_manifest.json"
+        ).read_bytes(),
+        "dragon_radar/storage/schema_contract.json": (
+            ROOT / "src/dragon_radar/storage/schema_contract.json"
+        ).read_bytes(),
+        **{
+            f"dragon_radar/migrations/{filename}": (MIGRATIONS / filename).read_bytes()
+            for filename in ("env.py",)
+        },
+        **{
+            f"dragon_radar/migrations/versions/{entry['filename']}": (
+                MIGRATIONS / "versions" / entry["filename"]
+            ).read_bytes()
+            for entry in manifest["revisions"]
+        },
+    }
+    monkeypatch.setitem(
+        namespace,
+        "_committed_blob",
+        lambda _, commit, path: resources[path.removeprefix("src/")],
+    )
+    wheel = tmp_path / "resources.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, content in resources.items():
+            if tamper and name.endswith("schema_contract.json"):
+                content += b" "
+            archive.writestr(name, content)
+    if tamper:
+        with pytest.raises(
+            ValueError, match="wheel resource differs from audited commit"
+        ):
+            namespace["verify_wheel_commit_resources"](wheel, "a" * 40)
+    else:
+        namespace["verify_wheel_commit_resources"](wheel, "a" * 40)
 
 
 def test_migration_fingerprint_normalizes_crlf_but_not_bare_cr(verifier, tmp_path):
@@ -507,7 +772,7 @@ def test_release_manifest_rejects_duplicate_json_keys(
         verifier["load_release_manifest"](path)
 
 
-def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
+def test_cli_refuses_uncommitted_default_release_from_any_working_directory(tmp_path):
     result = subprocess.run(
         [sys.executable, str(SCRIPT)],
         cwd=tmp_path,
@@ -518,9 +783,48 @@ def test_cli_validates_default_manifest_from_any_working_directory(tmp_path):
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "0014_research" in result.stdout
-    assert "22 revisions" in result.stdout
+    if read_manifest() == json.loads(
+        subprocess.check_output(
+            [
+                "git",
+                "cat-file",
+                "blob",
+                "HEAD:src/dragon_radar/migrations/release_manifest.json",
+            ],
+            cwd=ROOT,
+        )
+    ):
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "verified" not in result.stderr
+
+
+def test_default_cli_clean_gate_prevents_success_for_valid_draft(
+    verifier,
+    monkeypatch,
+    capsys,
+):
+    namespace = verifier["main"].__globals__
+    monkeypatch.setitem(
+        namespace,
+        "verify_manifest",
+        lambda _: {
+            "head": RELEASE_HEAD,
+            "revision_count": 26,
+            "errors": [],
+        },
+    )
+
+    def dirty(*args):
+        raise ValueError("tracked migrations differ from HEAD")
+
+    monkeypatch.setitem(namespace, "require_clean_migration_tree", dirty)
+    assert verifier["main"]([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "tracked migrations differ from HEAD" in captured.err
 
 
 def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
@@ -545,10 +849,29 @@ def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
         ],
         cwd=ROOT,
     )
+    historical_source = tmp_path / "historical-source"
+    source_archive = subprocess.check_output(
+        [
+            "git",
+            "--no-replace-objects",
+            "archive",
+            commit,
+            "src/dragon_radar",
+        ],
+        cwd=ROOT,
+    )
+    with tarfile.open(fileobj=io.BytesIO(source_archive)) as archive:
+        archive.extractall(historical_source, filter="data")
+    # The historical verifier rejects external PYTHONPATH entries. Its own
+    # adjacent package must be the actual committed source, not today's draft.
+    historical_verifier = historical_source / "src" / "historical_verifier.py"
+    historical_verifier.write_bytes(verifier_bytes)
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
     result = subprocess.run(
         [
             sys.executable,
-            str(SCRIPT),
+            str(historical_verifier),
             "--repository-root",
             str(ROOT),
             "--audited-commit",
@@ -556,6 +879,7 @@ def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
             "--json",
         ],
         cwd=tmp_path,
+        env=environment,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -610,6 +934,42 @@ def test_cli_emits_machine_readable_verification_for_audited_commit(tmp_path):
     }
 
 
+def test_current_verifier_never_reports_old_head_as_additive_release(tmp_path):
+    commit = audited_head()
+    committed = json.loads(
+        subprocess.check_output(
+            [
+                "git",
+                "--no-replace-objects",
+                "cat-file",
+                "blob",
+                f"{commit}:src/dragon_radar/migrations/release_manifest.json",
+            ],
+            cwd=ROOT,
+        )
+    )
+    if committed["head"] == RELEASE_HEAD:
+        return
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repository-root",
+            str(ROOT),
+            "--audited-commit",
+            commit,
+            "--json",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "commit verification failed" in result.stderr
+
+
 def test_machine_verifier_ignores_external_pythonpath(tmp_path):
     package = tmp_path / "polluted" / "dragon_radar" / "storage"
     package.mkdir(parents=True)
@@ -624,11 +984,24 @@ def test_machine_verifier_ignores_external_pythonpath(tmp_path):
     )
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(tmp_path / "polluted")
+    historical_verifier = tmp_path / "historical_verifier.py"
+    historical_verifier.write_bytes(
+        subprocess.check_output(
+            [
+                "git",
+                "--no-replace-objects",
+                "cat-file",
+                "blob",
+                f"{audited_head()}:scripts/verify_release_migrations.py",
+            ],
+            cwd=ROOT,
+        )
+    )
 
     result = subprocess.run(
         [
             sys.executable,
-            str(SCRIPT),
+            str(historical_verifier),
             "--repository-root",
             str(ROOT),
             "--audited-commit",
@@ -674,6 +1047,17 @@ def test_machine_verifier_removes_pythonpath_before_importing_alembic(tmp_path):
         encoding="utf-8",
     )
     environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    baseline = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(MIGRATIONS)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
     environment["PYTHONPATH"] = str(tmp_path / "polluted")
 
     result = subprocess.run(
@@ -687,17 +1071,25 @@ def test_machine_verifier_removes_pythonpath_before_importing_alembic(tmp_path):
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == baseline.returncode
+    assert result.stdout == baseline.stdout
+    assert result.stderr == baseline.stderr
     assert not marker.exists()
 
 
 def test_machine_verifier_rejects_pythonhome_before_third_party_import(
     monkeypatch,
 ):
-    monkeypatch.setenv("PYTHONHOME", "caller-controlled")
+    original_path = sys.path[:]
+    with monkeypatch.context() as isolated:
+        # The standalone verifier intentionally strips external import paths.
+        # Its early refusal must not mutate the test runner's import state.
+        isolated.setattr(sys, "path", original_path[:])
+        isolated.setenv("PYTHONHOME", "caller-controlled")
 
-    with pytest.raises(RuntimeError, match="PYTHONHOME"):
-        runpy.run_path(str(SCRIPT))
+        with pytest.raises(RuntimeError, match="PYTHONHOME"):
+            runpy.run_path(str(SCRIPT))
+    assert sys.path == original_path
 
 
 def test_cli_returns_nonzero_with_actionable_errors(
@@ -722,7 +1114,7 @@ def test_supported_revision_upgrades_with_sentinel(
     result = verifier["exercise_upgrade"](database_url, revision)
 
     assert result["from_revision"] == revision
-    assert result["to_revision"] == "0014_research"
+    assert result["to_revision"] == RELEASE_HEAD
     assert result["sentinel_preserved"] is True
     assert result["ready"] is True
 
@@ -774,7 +1166,7 @@ def test_built_wheel_contains_all_release_migration_resources(built_wheel):
         f"dragon_radar/migrations/versions/{path.name}"
         for path in (MIGRATIONS / "versions").glob("*.py")
     }
-    assert len(migration_files) == 22
+    assert len(migration_files) == 26
     assert "dragon_radar/migrations/release_manifest.json" in names
     assert "dragon_radar/storage/schema_contract.json" in names
 
@@ -833,6 +1225,12 @@ def test_wheel_parent_cleans_exact_run_prefix_after_helper_failure(
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setitem(verifier_globals, "_run_process", run_process)
+    monkeypatch.setitem(
+        verifier_globals, "verify_repository_commit", lambda *_: {"errors": []}
+    )
+    monkeypatch.setitem(
+        verifier_globals, "verify_wheel_commit_resources", lambda *_: None
+    )
     try:
         with pytest.raises((subprocess.TimeoutExpired, RuntimeError)):
             verifier["verify_installed_wheel"](
@@ -843,7 +1241,7 @@ def test_wheel_parent_cleans_exact_run_prefix_after_helper_failure(
             )
 
         assert created_prefix is not None
-        assert re.fullmatch(r"release_wheel_[0-9a-f]{32}_", created_prefix)
+        assert re.fullmatch(r"test_wheel_[0-9a-f]{32}_", created_prefix)
         with admin.connect() as connection:
             remaining = connection.scalar(
                 text(
@@ -1070,6 +1468,15 @@ def test_wheel_failure_removes_stale_evidence_before_work(
 
     monkeypatch.setitem(verifier_globals, "_run_process", run_process)
     monkeypatch.setitem(verifier_globals, "_drop_wheel_schemas", lambda *_: None)
+    monkeypatch.setitem(
+        verifier_globals, "validate_audited_commit", lambda value, *_: value
+    )
+    monkeypatch.setitem(
+        verifier_globals, "verify_repository_commit", lambda *_: {"errors": []}
+    )
+    monkeypatch.setitem(
+        verifier_globals, "verify_wheel_commit_resources", lambda *_: None
+    )
 
     with pytest.raises((ValueError, RuntimeError)):
         verifier["verify_installed_wheel"](
@@ -1206,6 +1613,23 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
         check=False,
     )
 
+    committed_manifest = json.loads(
+        subprocess.check_output(
+            [
+                "git",
+                "--no-replace-objects",
+                "cat-file",
+                "blob",
+                f"{audited_head()}:src/dragon_radar/migrations/release_manifest.json",
+            ],
+            cwd=ROOT,
+        )
+    )
+    if committed_manifest["head"] != RELEASE_HEAD:
+        assert result.returncode == 1
+        assert not output.exists()
+        assert "installed wheel migration verification failed" in result.stderr
+        return
     assert result.returncode == 0, result.stderr
     evidence = json.loads(output.read_text(encoding="utf-8"))
     assert set(evidence) == {
@@ -1231,7 +1655,7 @@ def test_installed_wheel_runs_fresh_and_supported_upgrades(
     assert f"dragon_radar imported from {imported_from}" in result.stdout
     assert not imported_from.is_relative_to(ROOT)
     assert evidence["fresh"] == {
-        "to_revision": "0014_research",
+        "to_revision": RELEASE_HEAD,
         "ready": True,
     }
     assert [item["from_revision"] for item in evidence["supported_upgrades"]] == (
@@ -2713,13 +3137,11 @@ def test_clean_migration_gate_uses_strict_git_argv(
     verifier,
     monkeypatch,
 ):
-    observed = {}
+    observed = []
 
     def fake_run(root, argv, **kwargs):
-        observed["root"] = root
-        observed["argv"] = argv
-        observed["kwargs"] = kwargs
-        return SimpleNamespace(returncode=0)
+        observed.append((root, argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setitem(
         verifier["require_clean_migration_tree"].__globals__,
@@ -2729,14 +3151,42 @@ def test_clean_migration_gate_uses_strict_git_argv(
 
     verifier["require_clean_migration_tree"](ROOT)
 
-    assert observed["argv"] == [
-        "diff",
-        "--quiet",
-        "HEAD",
-        "--",
-        "src/dragon_radar/migrations",
+    assert [argv for _, argv, _ in observed] == [
+        ["diff", "--quiet", "HEAD", "--", "src/dragon_radar/migrations"],
+        [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "src/dragon_radar/migrations",
+        ],
     ]
-    assert observed["root"] == ROOT
+    assert all(root == ROOT for root, _, _ in observed)
+
+
+@pytest.mark.parametrize(
+    "returncode, stdout",
+    [
+        (0, "src/dragon_radar/migrations/versions/0015_daily_ai.py\n"),
+        (1, ""),
+    ],
+)
+def test_clean_migration_gate_rejects_untracked_or_unreadable_inventory(
+    verifier,
+    monkeypatch,
+    returncode,
+    stdout,
+):
+    namespace = verifier["require_clean_migration_tree"].__globals__
+
+    def git(root, argv, **kwargs):
+        if argv[0] == "diff":
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=returncode, stdout=stdout)
+
+    monkeypatch.setitem(namespace, "_git_process", git)
+    with pytest.raises(ValueError, match="untracked migration"):
+        verifier["require_clean_migration_tree"](ROOT)
 
 
 def test_atomic_contract_output_preserves_target_and_removes_temp_on_failure(
@@ -2769,7 +3219,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 ):
     events = []
     verifier_globals = verifier["generate_schema_contract"].__globals__
-    schema = "schema_contract_" + ("a" * 32)
+    schema = "test_schema_contract_" + ("a" * 32)
     contract = {
         "schema": "dragon-radar.postgresql-schema-contract",
         "schema_version": 1,
@@ -2798,7 +3248,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 
         def scalar(self, statement):
             events.append(str(statement))
-            return "0014_research"
+            return RELEASE_HEAD
 
     class FakeEngine:
         @contextmanager
@@ -2859,7 +3309,7 @@ def test_generation_asserts_revision_writes_contract_and_always_cleans_up(
 @pytest.mark.parametrize(
     ("revision", "close_fails", "expected_error"),
     [
-        ("0014_research", False, "capture failed"),
+        (RELEASE_HEAD, False, "capture failed"),
         ("wrong_revision", False, "generated database revision"),
     ],
     ids=["capture", "revision"],
@@ -2875,7 +3325,7 @@ def test_generation_failure_leaves_no_output_or_schema(
     output = tmp_path / "contract.json"
     verifier_globals = verifier["generate_schema_contract"].__globals__
     events = []
-    schema = "schema_contract_" + ("b" * 32)
+    schema = "test_schema_contract_" + ("b" * 32)
 
     class FakeUrl:
         def difference_update_query(self, keys):
@@ -2966,7 +3416,7 @@ def _configure_generation_failures(
     dispose=False,
 ):
     verifier_globals = verifier["_run_generation_lifecycle"].__globals__
-    schema = "schema_contract_" + ("c" * 32)
+    schema = "test_schema_contract_" + ("c" * 32)
     events = []
     contract = {
         "schema": "dragon-radar.postgresql-schema-contract",
@@ -2997,7 +3447,7 @@ def _configure_generation_failures(
                 raise RuntimeError("drop failed")
 
         def scalar(self, _statement):
-            return "0014_research"
+            return RELEASE_HEAD
 
     class FakeEngine:
         @contextmanager
@@ -3074,7 +3524,7 @@ def test_generation_preserves_primary_and_all_cleanup_failures(
         "dispose failed",
     ]
     assert events[-2:] == [
-        'DROP SCHEMA "schema_contract_cccccccccccccccccccccccccccccccc" CASCADE',
+        'DROP SCHEMA "test_schema_contract_cccccccccccccccccccccccccccccccc" CASCADE',
         "admin disposed",
     ]
     assert "never-print" not in repr(raised.value)
@@ -3132,7 +3582,7 @@ def test_write_cli_never_reveals_database_password(
     assert secret not in captured.out + captured.err
 
 
-def test_actual_generation_matches_committed_contract_and_drops_schema(
+def test_actual_generation_matches_packaged_contract_and_drops_schema(
     verifier,
     tmp_path,
     monkeypatch,
@@ -3143,7 +3593,7 @@ def test_actual_generation_matches_committed_contract_and_drops_schema(
     from sqlalchemy import create_engine, text
     from sqlalchemy.engine import make_url
 
-    schema = "schema_contract_" + os.urandom(16).hex()
+    schema = "test_schema_contract_" + os.urandom(16).hex()
     verifier_globals = verifier["generate_schema_contract"].__globals__
     monkeypatch.setitem(verifier_globals, "_new_schema_name", lambda: schema)
     output = tmp_path / "schema_contract.json"

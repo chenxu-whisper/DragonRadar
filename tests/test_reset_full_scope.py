@@ -750,17 +750,17 @@ def test_public_app_has_no_post_and_no_private_namespace():
 # ---------------------------------------------------------------------------
 
 
-def test_migration_head_is_0014_research_with_task27_revision():
+def test_migration_head_is_0018_research_contract_with_task27_revision():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0014_research"
+    assert SCHEMA_REVISION == "0018_research_contract"
     config = Config()
     config.set_main_option("script_location", "dragon_radar:migrations")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0014_research"]
+    assert script.get_heads() == ["0018_research_contract"]
     revisions = {migration.revision for migration in script.walk_revisions()}
     assert "0014_research" in revisions
 
@@ -801,6 +801,7 @@ def test_task27_implemented_artifacts_are_present():
     assert {path.name for path in research_feature.glob("*.tsx")} == {
         "BacktestPanel.tsx",
         "OwnerBacktestWorkbench.tsx",
+        "ResearchEvidence.tsx",
         "SentimentPanel.tsx",
         "SimulationPanel.tsx",
     }

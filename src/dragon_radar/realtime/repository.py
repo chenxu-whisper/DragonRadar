@@ -1329,6 +1329,73 @@ class RealtimeRepository(Repository):
         )
         return candidates
 
+    def get_lineage(
+        self, *, source_id: str, kind: str, batch_id: str, as_of: datetime
+    ) -> dict:
+        from dragon_radar.publication.clocks import source_lineage
+        from dragon_radar.storage.repository import NotFound
+
+        _identifier(source_id)
+        _identifier(batch_id)
+        kinds = {
+            "quotes": "quote",
+            "minutes": "minute",
+            "sector_flow": "sector_flow",
+            "anomalies": "minute",
+        }
+        if kind not in kinds:
+            raise ValueError("Invalid realtime lineage kind")
+        as_of = _utc(as_of, "as_of")
+        with self.database.engine.begin() as connection:
+            batch = self._select_authorized_batch(
+                connection, source_id=source_id, batch_id=batch_id, as_of=as_of
+            )
+            if batch is None:
+                raise NotFound("Realtime batch not found")
+            archive_kind = connection.scalar(
+                select(realtime_import_attempts.c.details["kind"].as_string())
+                .where(
+                    realtime_import_attempts.c.source_id == source_id,
+                    realtime_import_attempts.c.batch_id == batch_id,
+                    realtime_import_attempts.c.status.in_(("accepted", "incomplete")),
+                    realtime_import_attempts.c.payload_hash == batch["payload_hash"],
+                )
+                .limit(1)
+            )
+            if archive_kind != kinds[kind]:
+                raise NotFound("Realtime kind/batch mismatch")
+            events = (batch["source_event_at"],)
+            receipts = (batch["received_at"],)
+            if kind in ("minutes", "anomalies"):
+                bars = (
+                    connection.execute(
+                        select(realtime_minute_bars).where(
+                            realtime_minute_bars.c.source_id == source_id,
+                            realtime_minute_bars.c.batch_id == batch_id,
+                            realtime_minute_bars.c.source_version
+                            == batch["source_version"],
+                            realtime_minute_bars.c.available_at <= as_of,
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                if not bars:
+                    raise NotFound("Realtime minute lineage not visible")
+                events = tuple(row["event_at"] for row in bars)
+                receipts = tuple(row["received_at"] for row in bars)
+            return source_lineage(
+                identity={
+                    "source_id": source_id,
+                    "source_version": batch["source_version"],
+                    "kind": kind,
+                    "batch_id": batch_id,
+                },
+                as_of=as_of,
+                events=events,
+                receipts=receipts,
+            )
+
     def list_quotes(
         self,
         *,

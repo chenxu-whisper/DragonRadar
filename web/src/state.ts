@@ -8,6 +8,7 @@ export interface ResearchState {
   section?: string;
   view: View; snapshot: string; date: string; q: string; sort: Sort;
   order: 'asc' | 'desc'; page: number; page_size: number; n: number;
+  rank_order?: 'asc' | 'desc';
   start: string; end: string; compare: string[]; security: string;
   benchmark: string; adj: Adjustment;
   return_view: 'overview' | 'analysis' | 'leaders' | 'news' | 'review' | 'regulation'; note: string;
@@ -109,6 +110,12 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
   if (returnSector !== undefined && (returnSector.length > 200 || returnSector === '.' || returnSector === '..')) {
     invalid(); returnSector = undefined;
   }
+  let rank_order: ResearchState['rank_order'];
+  if (reset && p.has('rank_order')) {
+    const values = p.getAll('rank_order');
+    if (values.length === 1 && (values[0] === 'asc' || values[0] === 'desc')) rank_order = values[0];
+    else invalid();
+  }
   return { state: {
     view, snapshot, note: note.toLowerCase(), date: date('date'), q: q.slice(0, 100), sort,
     order: choice('order', ['asc', 'desc'], 'asc'), page: integer('page', 1, 100000),
@@ -120,7 +127,7 @@ export function parseState(search: string, allowPrivate = false, reset = false, 
       : ['overview', 'analysis'], 'overview'),
     market_filter: choice('market_filter', ['', 'up', 'down', 'flat', 'limit_up', 'limit_down'], ''),
     sector, role: selectedRole,
-    ...(reset ? { roles, ...(returnSnapshot ? { return_snapshot: returnSnapshot.toLowerCase() } : {}),
+    ...(reset ? { roles, ...(rank_order ? { rank_order } : {}), ...(returnSnapshot ? { return_snapshot: returnSnapshot.toLowerCase() } : {}),
       ...(returnDate ? { return_date: returnDate } : {}),
       ...(returnSector !== undefined ? { return_sector: returnSector } : {}) } : {}),
     article: article.toLowerCase(), news_type, news_source,
@@ -138,7 +145,7 @@ export function stateSearch(state: ResearchState, allowPrivate = false, reset = 
   const p = new URLSearchParams();
   const keys: (keyof ResearchState)[] = [
     'view', 'snapshot', 'date', 'q', 'sort', 'order', 'page', 'page_size', 'n', 'start', 'end',
-    ...(reset ? ['benchmark', 'adj', 'section', 'return_snapshot', 'return_date'] as const : []),
+    ...(reset ? ['benchmark', 'adj', 'section', 'return_snapshot', 'return_date', 'rank_order'] as const : []),
     'compare', 'security', 'return_view', 'note', 'market_filter', 'sector', 'role',
     'article', 'news_type', 'news_source',
   ];

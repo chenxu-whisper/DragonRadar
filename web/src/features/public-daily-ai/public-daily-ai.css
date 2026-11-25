@@ -1,0 +1,15 @@
+.public-daily-ai { border-top: 2px solid var(--accent, #9d382a); padding: 1.25rem 0; color: var(--text, #24302c); }
+.public-daily-ai header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.public-daily-ai h3 { margin: .25rem 0; font-family: Georgia, "Noto Serif SC", serif; font-size: 1.65rem; }
+.public-daily-ai__eyebrow { font-size: .75rem; letter-spacing: .12em; color: var(--muted, #5c6b64); }
+.public-daily-ai__identity { font-size: .8rem; overflow-wrap: anywhere; color: var(--muted, #5c6b64); }
+.public-daily-ai__versions { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+.public-daily-ai button, .public-daily-ai select { font: inherit; padding: .5rem .75rem; border: 1px solid var(--border, #9ea9a2); border-radius: .25rem; background: var(--surface, #fff); color: inherit; }
+.public-daily-ai button:focus-visible, .public-daily-ai select:focus-visible { outline: 2px solid var(--accent, #9d382a); outline-offset: 3px; }
+.public-daily-ai__proof { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; padding: 1rem 0; border-block: 1px solid var(--border, #d9dfda); }
+.public-daily-ai dt { font-size: .75rem; color: var(--muted, #5c6b64); }
+.public-daily-ai dd { margin: .5rem 0 0; font-size: .85rem; overflow-wrap: anywhere; }
+.public-daily-ai h4 { margin: 1.5rem 0 .75rem; }
+.public-daily-ai li { margin: .5rem 0; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.public-daily-ai blockquote { margin: .5rem 0; padding-left: 1rem; border-left: 2px solid var(--border, #9ea9a2); }
+@media (max-width: 640px) { .public-daily-ai header { align-items: start; flex-direction: column; } .public-daily-ai__proof { grid-template-columns: 1fr; } .public-daily-ai select { max-width: 100%; } }

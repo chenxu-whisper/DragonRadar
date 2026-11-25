@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import type { EChartsCoreOption } from 'echarts/core';
 import { ApiError } from '../../api';
 import { Chart } from '../../components/Chart';
@@ -28,6 +28,36 @@ import type {
   SectorFlowResponse,
   SectorFlowSelection,
 } from './types';
+import type { RealtimeIdentity } from '../lineage/types';
+import { SourceClockBoundary } from '../lineage/SourceClockBoundary';
+
+const SourceClocks = import.meta.env.VITE_PUBLIC_SHARING !== '1'
+  ? lazy(() => import('../lineage/SourceClocks'))
+  : null;
+
+function RealtimeBatchClocks({ response, kind, batches, refreshToken }: {
+  response: { source: string | null; source_version: string | null; as_of: string };
+  kind: RealtimeIdentity['kind'];
+  batches: { batch_id: string; source_id?: string; source_version?: string }[];
+  refreshToken: number;
+}) {
+  if (!SourceClocks) return null;
+  const selections = new Map<string, RealtimeIdentity>();
+  for (const batch of batches) {
+    const source = batch.source_id ?? response.source;
+    const version = batch.source_version ?? response.source_version;
+    if (!source || !version || !batch.batch_id) continue;
+    const identity = {
+      source_id: source, source_version: version, kind, batch_id: batch.batch_id,
+    };
+    selections.set(JSON.stringify(identity), identity);
+  }
+  return <>{[...selections].map(([key, identity]) =>
+    <Suspense key={key} fallback={<p role="status">Loading clock controls…</p>}>
+      <SourceClocks selection={{ type: 'realtime', ...identity, as_of: response.as_of }}
+        label={`${kind} source clocks · ${identity.batch_id}`} refreshToken={refreshToken} />
+    </Suspense>)}</>;
+}
 
 interface Props {
   date: string;
@@ -284,7 +314,12 @@ export function FlowLedger({ response }: { response: SectorFlowResponse }) {
   </>;
 }
 
-export default function RealtimePanel({
+export default function RealtimePanel(props: Props) {
+  return <SourceClockBoundary key={JSON.stringify([props.date, props.securityIds, props.sectorId])}
+    label="实时证据账本"><RealtimePanelContent {...props} /></SourceClockBoundary>;
+}
+
+function RealtimePanelContent({
   date,
   securityIds,
   sectorId,
@@ -454,6 +489,8 @@ export default function RealtimePanel({
         <div><dt>平台接收时间</dt><dd><time dateTime={quoteData.received_at}>{timestamp(quoteData.received_at)}</time></dd></div>
         <div><dt>覆盖</dt><dd><CoverageText value={quotes.data?.coverage ?? null} /></dd></div>
       </dl>
+      {quotes.data && <RealtimeBatchClocks response={quotes.data} kind="quotes"
+        batches={[{ batch_id: quoteData.quote_batch_id }]} refreshToken={refreshToken} />}
       <TableScroll label="实时报价横向滚动">
         <table className="responsive-record-table" aria-label="实时报价">
           <thead><tr><th>证券</th><th>最新价</th><th>成交量</th><th>成交额</th><th>盘口</th></tr></thead>
@@ -482,6 +519,8 @@ export default function RealtimePanel({
         </span>}
       </div>
       {minutes.data && <MinuteLedger response={minutes.data} />}
+      {minutes.data && <RealtimeBatchClocks response={minutes.data} kind="minutes"
+        batches={minuteData?.bars ?? []} refreshToken={refreshToken} />}
     </section>}
 
     {anomalySelection && <section className="leaders-section" aria-labelledby="anomaly-ledger-title">
@@ -509,6 +548,8 @@ export default function RealtimePanel({
         : anomalies.data && <p className="empty">当前选择没有异动事件。</p>}
       {anomalyRaw.hasMore && <button type="button" onClick={anomalyRaw.loadMore}
         disabled={anomalyRaw.loading}>加载更多异动</button>}
+      {anomalies.data && <RealtimeBatchClocks response={anomalies.data} kind="anomalies"
+        batches={anomalyData?.events ?? []} refreshToken={refreshToken} />}
     </section>}
 
     {flowSelection && <section className="leaders-section" aria-labelledby="flow-ledger-title">
@@ -517,6 +558,8 @@ export default function RealtimePanel({
         {flowData && <StatusToken status={flowData.status} />}
       </div>
       {flow.data && <FlowLedger response={flow.data} />}
+      {flow.data && <RealtimeBatchClocks response={flow.data} kind="sector_flow"
+        batches={flowData?.points ?? []} refreshToken={refreshToken} />}
     </section>}
 
     {settled && !hasAnyData && !quotes.error && !minutes.error && !anomalies.error && !flow.error &&

@@ -211,12 +211,22 @@ class RetentionService:
         _identifier(source_id)
         with self.database.engine.begin() as connection:
             self._revoke_grant(connection, source_id, storage=False)
+            cutoff = connection.scalar(
+                select(
+                    func.coalesce(
+                        func.max(source_dependencies.c.dependency_sequence), 0
+                    )
+                ).where(source_dependencies.c.source_id == source_id)
+            )
             row = self._append(
                 connection,
                 source_id=source_id,
                 scope="display",
                 action="blocked",
-                details={"cache_invalidated": True},
+                details={
+                    "cache_invalidated": True,
+                    "artifact_cutoff_dependency_sequence": cutoff,
+                },
             )
         self.cache.clear_source(source_id)
         return _record(row)
@@ -274,6 +284,7 @@ class RetentionService:
                     select(
                         source_dependencies.c.publication_id,
                         source_dependencies.c.derived_type,
+                        source_dependencies.c.derived_id,
                     )
                     .join(
                         withdrawal_dependencies,
@@ -283,9 +294,21 @@ class RetentionService:
                     .where(withdrawal_dependencies.c.withdrawal_id == row["id"])
                 )
                 pairs = set(connection.execute(affected).tuples())
-                for publication_id, domain in sorted(
-                    pairs, key=lambda pair: (str(pair[0]), pair[1])
+                for publication_id, domain, derived_id in sorted(
+                    pairs, key=lambda pair: (str(pair[0]), pair[1], str(pair[2]))
                 ):
+                    if domain in {"daily_ai", "news_summary"}:
+                        from dragon_radar.public_daily_ai.retention import (
+                            erase_artifact,
+                        )
+
+                        erase_artifact(
+                            connection,
+                            withdrawal_id=row["id"],
+                            artifact_id=derived_id,
+                            derived_type=domain,
+                        )
+                        continue
                     predicate = (
                         publication_results.c.publication_id == publication_id,
                         publication_results.c.domain == domain,

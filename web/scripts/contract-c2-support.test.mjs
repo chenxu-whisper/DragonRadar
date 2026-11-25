@@ -59,6 +59,21 @@ test('applicability is exactly 320 unique cells, 160 independent pairs and no pu
 test('matrix accepts complete measured task, zoom and cleanup evidence', () => {
   assertMatrix(complete());
 });
+test('matrix accepts actual news CSV receipt and immutable revision columns', () => {
+  const cells = complete();
+  const cell = cells.find(value => value.surface === 'news');
+  const headers = [...support.metadataColumns,
+    'article_id', 'article_type', 'source', 'source_version', 'title',
+    'published_at', 'received_at', 'available_at', 'revision', 'revision_id'];
+  const rows = cell.download.expectedRows.map((row, index) => Object.fromEntries(
+    headers.map(header => [header, header === 'received_at' ? '2026-09-10T01:00:00Z'
+      : header === 'revision_id' ? `immutable-revision-${index}` : row[header] ?? '']),
+  ));
+  cell.download.expectedRows = rows;
+  cell.download.decoded = [headers.join(','),
+    ...rows.map(row => headers.map(header => row[header]).join(','))].join('\r\n');
+  assertMatrix(cells);
+});
 test('C5 raw file binding rejects a changed recorded size', () => {
   assert.throws(() => support.assertBuildEvidence({
     source: [{ path: 'web/package-lock.json', sha256: hash, size: 99 },

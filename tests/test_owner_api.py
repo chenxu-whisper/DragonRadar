@@ -454,9 +454,9 @@ async def test_no_config_still_registers_all_market_routes(monkeypatch):
     monkeypatch.delenv("DRAGON_DATABASE_URL", raising=False)
     app = owner_app()
     expected = {
-        route.path for route in create_app().routes if route.path.startswith("/api/v1/")
+        path for path in create_app().openapi()["paths"] if path.startswith("/api/v1/")
     }
-    assert expected <= {route.path for route in app.routes}
+    assert expected <= app.openapi()["paths"].keys()
 
 
 async def test_context_reauthorizes_inside_future_business_transaction(owners):

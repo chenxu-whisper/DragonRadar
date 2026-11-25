@@ -302,7 +302,7 @@ def _submit(service, session, publication, **changes):
 def test_ai_schema_remains_ready_at_research_migration_head(database):
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0014_research"
+    assert SCHEMA_REVISION == "0018_research_contract"
     assert database.ready()
     tables = set(inspect(database.engine).get_table_names())
     assert {
@@ -637,6 +637,8 @@ def test_ai_permission_is_required_at_submit_and_worker_read(ai_setup, repositor
 
 
 def test_ai_uses_public_transaction_aware_publication_snapshot_boundary(ai_setup):
+    from ast import ImportFrom, parse
+
     tasks, service, _owners, session, publication = ai_setup
 
     with tasks.database.engine.begin() as connection:
@@ -649,7 +651,19 @@ def test_ai_uses_public_transaction_aware_publication_snapshot_boundary(ai_setup
     assert snapshot.publication.id == publication.id
     for relative in Path("src/dragon_radar/ai").glob("*.py"):
         source = relative.read_text(encoding="utf-8")
-        assert "publication.tables" not in source
+        if relative.name == "publication.py":
+            # The approved owner promotion writer shares PUB's dependency
+            # sequence, while snapshot reads still use the public facade.
+            imports = {
+                name.name
+                for node in parse(source).body
+                if isinstance(node, ImportFrom)
+                and node.module == "dragon_radar.publication.tables"
+                for name in node.names
+            }
+            assert imports == {"PUBLICATION_SEQUENCE_LOCK", "source_dependencies"}
+        else:
+            assert "publication.tables" not in source
         assert "._authorized_records" not in source
 
 

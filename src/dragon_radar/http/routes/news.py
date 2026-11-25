@@ -27,6 +27,7 @@ from dragon_radar.news.service import (
     NEWS_SCHEMA,
     NEWS_SCHEMA_VERSION,
 )
+from dragon_radar.news.summary_publication import NewsSummaryArtifact, summary_preview
 from dragon_radar.news.wordcloud import TOKENIZER_V1, WORDCLOUD_GROUPS
 from dragon_radar.owner.security import (
     BoundaryError,
@@ -64,7 +65,7 @@ def _selection(request: Request, *, detail: bool = False):
     return query, trade_date, snapshot_id
 
 
-def _article(value) -> bool:
+def _article(value, version=2) -> bool:
     if not isinstance(value, dict):
         return False
     required = {
@@ -89,6 +90,8 @@ def _article(value) -> bool:
         "securities",
         "topics",
     }
+    if version == 3:
+        required.add("summary_artifact")
     if set(value) != required:
         return False
     try:
@@ -132,6 +135,12 @@ def _article(value) -> bool:
         or not isinstance(value["topics"], list)
     ):
         return False
+    if version == 3 and value["summary_artifact"] is not None:
+        try:
+            artifact = NewsSummaryArtifact.model_validate(value["summary_artifact"])
+            artifact.bind(value)
+        except (ValueError, TypeError, KeyError, Conflict):
+            return False
     return all(_association(item, "security") for item in value["securities"]) and all(
         _association(item, "topic") for item in value["topics"]
     )
@@ -177,13 +186,16 @@ def _association(value, target_type: str) -> bool:
     )
 
 
-def _list_article(article: dict) -> dict:
+def _list_article(article: dict, preview=None) -> dict:
     return {
         "article_id": article["article_id"],
         "title": article["title"],
         "source": article["source"]["id"],
         "source_version": article["source"]["version"],
         "published_at": article["published_at"],
+        "received_at": article["received_at"],
+        "revision_id": article["revision_id"],
+        "ai_preview": preview if preview is not None else summary_preview(),
         "available_at": article["available_at"],
         "article_type": article["type"],
         "summary": article["summary"],
@@ -192,7 +204,7 @@ def _list_article(article: dict) -> dict:
     }
 
 
-def _detail_article(article: dict) -> dict:
+def _detail_article(article: dict, preview=None, summary_text=None) -> dict:
     securities = article["securities"]
     return {
         "article_id": article["article_id"],
@@ -203,7 +215,8 @@ def _detail_article(article: dict) -> dict:
         "published_at": article["published_at"],
         "received_at": article["received_at"],
         "article_type": article["type"],
-        "ai_summary": article["ai_summary"],
+        "ai_summary": summary_text,
+        "ai_preview": preview if preview is not None else summary_preview(),
         "related_security_ids": sorted(
             {association["security_id"] for association in securities}
         ),
@@ -230,17 +243,54 @@ def _payload(snapshot: PublishedSnapshot):
     if (
         not isinstance(value, dict)
         or value.get("schema") != NEWS_SCHEMA
-        or value.get("schema_version") != NEWS_SCHEMA_VERSION
+        or value.get("schema_version") not in (NEWS_SCHEMA_VERSION, 3)
         or value.get("rule_version") != NEWS_RULE_VERSION
         or not isinstance(value.get("articles"), list)
-        or not all(_article(article) for article in value["articles"])
+        or not all(
+            _article(article, value["schema_version"]) for article in value["articles"]
+        )
         or not isinstance(value.get("sources"), list)
         or not all(isinstance(source, str) and source for source in value["sources"])
         or type(value.get("event_count")) is not int
         or value["event_count"] < 0
     ):
         raise DataUnavailable
+    for article in value["articles"]:
+        if article.get("summary_artifact") is not None:
+            artifact = NewsSummaryArtifact.model_validate(article["summary_artifact"])
+            if artifact.available_at > snapshot.published_at:
+                raise DataUnavailable
     return value, archived_coverage(dict(result.coverage)), None
+
+
+def _authorized_summary(request, article):
+    value = article.get("summary_artifact")
+    if value is None:
+        return summary_preview(), None
+    # Validate even denied artifacts: corruption must never masquerade as missing.
+    try:
+        artifact = NewsSummaryArtifact.model_validate(value)
+        artifact.bind(article)
+    except (ValueError, TypeError, KeyError, Conflict):
+        raise DataUnavailable from None
+    registry = getattr(request.app.state, "public_daily_ai_repository", None)
+    if registry is None:
+        return summary_preview(reason="summary_not_eligible"), None
+    try:
+        with registry.database.engine.begin() as connection:
+            current = registry.summary(
+                connection, artifact.summary_id, artifact.summary_revision, article
+            )
+            if current != artifact.model_dump(mode="json", by_alias=True):
+                raise DataUnavailable
+    except Forbidden:
+        reason = (
+            "summary_sharing_denied" if registry.public else "summary_display_denied"
+        )
+        return summary_preview(reason=reason), None
+    except (NotFound, ValueError, TypeError, KeyError, Conflict):
+        raise DataUnavailable from None
+    return summary_preview(artifact), artifact.text
 
 
 def _wordcloud_scope(value) -> bool:
@@ -387,7 +437,10 @@ def list_news(request: Request):
     items.sort(key=lambda item: item["available_at"], reverse=True)
     total = len(items)
     start = (page - 1) * size
-    selected = [_list_article(item) for item in items[start : start + size]]
+    selected = [
+        _list_article(item, _authorized_summary(request, item)[0])
+        for item in items[start : start + size]
+    ]
     data = {
         "articles": selected,
         "page": page,
@@ -450,7 +503,8 @@ def news_detail(article_id: UUID, request: Request):
     ]
     if len(matches) != 1:
         raise NotFound("News article not found")
-    return _response(snapshot, _detail_article(matches[0]), coverage)
+    preview, text = _authorized_summary(request, matches[0])
+    return _response(snapshot, _detail_article(matches[0], preview, text), coverage)
 
 
 class _NewsReviewRoute(APIRoute):

@@ -16,6 +16,9 @@ from dragon_radar.http.errors import (
     register_error_handlers,
 )
 from dragon_radar.http.routes.analysis import router as analysis_router
+from dragon_radar.http.routes.daily_ai import install_daily_ai_routes
+from dragon_radar.http.routes.indexes import router as indexes_router
+from dragon_radar.http.routes.lineage import router as lineage_router
 from dragon_radar.http.routes.market import router as market_router
 from dragon_radar.http.routes.news import router as news_router
 from dragon_radar.http.routes.realtime import router as realtime_router
@@ -25,6 +28,8 @@ from dragon_radar.http.routes.stock import router as stock_router
 from dragon_radar.http.routes.topics import router as topics_router
 from dragon_radar.http.selection import query_date, query_integer, query_values
 from dragon_radar.http.serialization import DecimalJSONResponse
+from dragon_radar.public_daily_ai.repository import PublicDailyAIRepository
+from dragon_radar.public_daily_ai.service import PublicDailyAIService
 from dragon_radar.realtime.repository import RealtimeRepository
 from dragon_radar.storage.database import Database
 from dragon_radar.storage.repository import NotFound, Repository
@@ -32,7 +37,11 @@ from dragon_radar.storage.repository import NotFound, Repository
 PUBLIC_READ_PATHS = frozenset(
     {
         "/api/snapshots/list",
+        "/api/snapshots/lineage",
         "/api/snapshots/{snapshot_id}",
+        "/api/index/{security_id}/history",
+        "/api/market/daily-ai",
+        "/api/market/daily-ai/archives",
         "/api/market/overview",
         "/api/market/sector-flow",
         "/api/topics/{sector_id}",
@@ -301,6 +310,17 @@ def create_public_app(
         redirect_slashes=False,
     )
     app.state.repository = repository
+    app.state.publication_repository = repository
+    app.state.public_daily_ai_service = (
+        PublicDailyAIService(PublicDailyAIRepository(database, repository))
+        if database is not None and hasattr(database, "engine")
+        else None
+    )
+    app.state.public_daily_ai_repository = (
+        app.state.public_daily_ai_service.repository
+        if app.state.public_daily_ai_service is not None
+        else None
+    )
     app.state.analysis_repository = None
     app.state.realtime_repository = (
         RealtimeRepository(database, require_public_sharing=True)
@@ -338,6 +358,9 @@ def create_public_app(
         }
         return DecimalJSONResponse(payload)
 
+    app.router.routes.extend(lineage_router.routes)
+    install_daily_ai_routes(app)
+
     @app.get("/api/snapshots/{snapshot_id}")
     def get_snapshot_summary(snapshot_id: UUID, request: Request):
         snapshot = _repository(request).get_published_snapshot(snapshot_id)
@@ -353,6 +376,7 @@ def create_public_app(
         topics_router,
         stock_router,
         analysis_router,
+        indexes_router,
         realtime_router,
     ):
         for route in router.routes:
@@ -360,7 +384,12 @@ def create_public_app(
                 app.router.routes.append(route)
 
     mounted = {
-        route.path for route in app.router.routes if route.path.startswith("/api/")
+        nested.path
+        for route in app.router.routes
+        for nested in getattr(
+            getattr(route, "original_router", None), "routes", [route]
+        )
+        if getattr(nested, "path", "").startswith("/api/")
     }
     if mounted != PUBLIC_READ_PATHS:
         raise RuntimeError("Public read route allowlist is incomplete")

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { TableScroll } from '../../components/Common';
-import type { ResetKlinePoint } from '../../types';
+import type { ResetKlinePoint, WorkbenchEnvelope } from '../../types';
 
 const fields = [
   ['trade_date', '交易日期'], ['open', '开盘'], ['high', '最高'], ['low', '最低'],
@@ -9,7 +9,12 @@ const fields = [
 type Field = typeof fields[number][0];
 const number = (value: number) => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value);
 
-export default function StockHistoryTable({ points }: { points: ResetKlinePoint[] }) {
+export type RawPoint = ResetKlinePoint & Partial<Record<'currency' | 'price_unit' | 'volume_unit' | 'amount_unit', string | null>>;
+const unitText = (value: string | null | undefined) => value?.trim() || '单位未知';
+
+export default function StockHistoryTable({ points, basis }: {
+  points: RawPoint[]; basis?: WorkbenchEnvelope<unknown>['basis'];
+}) {
   const [page, setPage] = useState(1), [size, setSize] = useState(50);
   const [sort, setSort] = useState<Field>('trade_date'), [order, setOrder] = useState<'asc' | 'desc'>('asc');
   const sorted = useMemo(() => [...points].sort((a, b) => {
@@ -37,14 +42,19 @@ export default function StockHistoryTable({ points }: { points: ResetKlinePoint[
           <th key={field} aria-sort={sort === field ? order === 'asc' ? 'ascending' : 'descending' : 'none'}>
             <button aria-label={`${label}排序`} onClick={() => changeSort(field)}>{label}{sort === field ? order === 'asc' ? ' ↑' : ' ↓' : ''}</button>
           </th>,
-        )}</tr></thead>
+        )}<th>币种 / 单位</th></tr></thead>
         <tbody>{sorted.slice((current - 1) * size, current * size).map(point =>
           <tr key={point.trade_date}>{fields.map(([field, label]) => {
             const value = point[field];
             return field === 'trade_date'
               ? <th key={field} data-label={label}>{value}</th>
               : <td key={field} data-label={label}>{value === null ? '—' : number(value as number)}</td>;
-          })}</tr>,
+          })}<td data-label="币种 / 单位">
+            币种 {unitText(point.currency === undefined ? basis?.currency : point.currency)}
+            {' · '}价格 {unitText(point.price_unit === undefined ? basis?.unit : point.price_unit)}
+            {' · '}成交量 {unitText(point.volume_unit)}
+            {' · '}成交额 {unitText(point.amount_unit)}
+          </td></tr>,
         )}</tbody>
       </table>
     </TableScroll>

@@ -32,3 +32,6 @@ node_modules/
 /docs/data-license-*.md
 /docs/data-license-*.txt
 /docs/proofs/*.json
+
+# Archived local engineering deliveries
+/deliverables/

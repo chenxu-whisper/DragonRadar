@@ -216,10 +216,11 @@ def test_analysis_worker_command_constructs_dependencies_and_runs(monkeypatch):
             calls.append(("jobs",))
 
     class FakeResearchRuns:
-        def __init__(self, actual_database, owners, publications):
+        def __init__(self, actual_database, owners, publications, *, result_version):
             assert actual_database is database
             assert isinstance(owners, FakeOwners)
             assert isinstance(publications, FakePublications)
+            assert result_version == owner_cli.deployment_result_version()
             calls.append(("research_runs",))
 
     class FakeWorker:
@@ -1027,8 +1028,9 @@ async def test_cached_rank_counts_suspension_as_legal_exclusion(job_setup):
     }
 
 
-def test_worker_rejects_index_in_expected_security_ids_as_analysis_symbol(job_setup):
+def test_submit_rejects_index_in_expected_security_ids_as_analysis_symbol(job_setup):
     from dragon_radar.analysis_jobs.worker import AnalysisJobWorker
+    from dragon_radar.storage.repository import NotFound
 
     jobs, _owners, session, _publication = job_setup
     publication = _publish(
@@ -1049,23 +1051,18 @@ def test_worker_rejects_index_in_expected_security_ids_as_analysis_symbol(job_se
         ),
         suffix="-index-symbol",
     )
-    submitted = jobs.submit(
-        session.token,
-        session.csrf,
-        _command(
-            publication.id,
-            benchmark="BENCHMARK",
-            symbols=("OTHER_INDEX",),
-        ),
-        key="index-symbol",
-    )
-
-    failed = AnalysisJobWorker(jobs, worker_id="index-symbol-worker").run_once()
-
-    assert failed.id == submitted.id
-    assert failed.status == "failed"
-    assert failed.failure == {"code": "input_unavailable"}
-    assert failed.result is None
+    with pytest.raises(NotFound, match="Stock not found"):
+        jobs.submit(
+            session.token,
+            session.csrf,
+            _command(
+                publication.id,
+                benchmark="BENCHMARK",
+                symbols=("OTHER_INDEX",),
+            ),
+            key="index-symbol",
+        )
+    assert AnalysisJobWorker(jobs, worker_id="index-symbol-worker").run_once() is None
 
 
 def test_worker_rechecks_source_authorization_after_submit(job_setup):

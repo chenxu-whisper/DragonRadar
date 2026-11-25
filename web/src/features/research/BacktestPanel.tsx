@@ -15,14 +15,18 @@ import {
   cancelBacktestRun,
   createBacktestCommand,
   getBacktestRun,
+  getResearchCapabilities,
   pollBacktestDecision,
   submitBacktest,
   type BacktestManifestContext,
   type BacktestRunRecord,
   type BacktestRunStatus,
+  type ResearchCapabilities,
 } from './backtest-client';
 import './backtest-panel.css';
-import { TableScroll } from '../../components/Common';
+import { ResearchEvidence } from './ResearchEvidence';
+import { validateResearchResult } from './result-validation';
+import { asciiCanonical, normalizedConfig } from './config-canonical';
 
 export const STRATEGY_ID = 'factor-cross-sectional-topn-v1';
 export const RESEARCH_BACKTEST_SCHEMA_VERSION = 'dragon-radar.research-backtest/v1';
@@ -107,7 +111,7 @@ export function emptyBacktestDraft(): BacktestDraft {
     slippage_model: 'fixed_rate',
     stamp_tax_side: 'sell',
     random_seed: '20250106',
-    include_ai_variant: true,
+    include_ai_variant: false,
     walk_forward_enabled: false,
     folds: '',
     train_sessions: '',
@@ -369,6 +373,7 @@ interface BacktestConfigFormProps {
   onDraft: (draft: BacktestDraft) => void;
   onSubmit: () => void;
   onCancel: () => void;
+  capabilities?: ResearchCapabilities | null;
 }
 
 export function BacktestConfigForm({
@@ -379,8 +384,10 @@ export function BacktestConfigForm({
   onDraft,
   onSubmit,
   onCancel,
+  capabilities,
 }: BacktestConfigFormProps) {
-  const submitDisabled = busy || !manifestReady || hasBacktestErrors(errors);
+  const factorReady = capabilities?.factors.some(item => item.id === draft.factor_id && item.status === 'ready') === true;
+  const submitDisabled = busy || !manifestReady || !factorReady || hasBacktestErrors(errors);
   const patch = (partial: Partial<BacktestDraft>) => onDraft({ ...draft, ...partial });
   return <form
     className="backtest-form"
@@ -433,9 +440,12 @@ export function BacktestConfigForm({
         value={draft.factor_id}
         onChange={event => patch({ factor_id: event.target.value })}
       >
-        {FACTOR_IDS.map(factor => <option key={factor} value={factor}>{factor}</option>)}
+        {FACTOR_IDS.map(factor => <option key={factor}
+          disabled={!capabilities?.factors.some(item => item.id === factor && item.status === 'ready')}
+          value={factor}>{factor}</option>)}
       </select>
     </label>
+    {!factorReady && <p>approved_method_unavailable：当前窗口没有批准且可用的冻结因子输入。</p>}
     <label>佣金费率
       <input
         name="commission_rate"
@@ -489,6 +499,7 @@ export function BacktestConfigForm({
     <label className="backtest-check">
       <input
         type="checkbox"
+        disabled={capabilities?.ai_variant.status !== 'ready'}
         checked={draft.include_ai_variant}
         onChange={event => patch({ include_ai_variant: event.target.checked })}
       />纳入 AI 对照腿（消融对照）
@@ -496,6 +507,7 @@ export function BacktestConfigForm({
     <label className="backtest-check">
       <input
         type="checkbox"
+        disabled={capabilities?.walk_forward.status !== 'ready'}
         checked={draft.walk_forward_enabled}
         onChange={event => patch({ walk_forward_enabled: event.target.checked })}
       />启用滚动折数（Walk-Forward）
@@ -540,46 +552,6 @@ export function BacktestConfigForm({
   </form>;
 }
 
-const METRIC_LABELS: Array<[string, string]> = [
-  ['initial_equity', '初始权益'],
-  ['final_equity', '期末权益'],
-  ['total_return', '总收益率'],
-  ['benchmark_return', '基准收益率'],
-  ['excess_return', '超额收益率'],
-  ['max_drawdown', '最大回撤'],
-  ['turnover_rate', '换手率'],
-  ['total_commission', '佣金合计'],
-  ['total_stamp_tax', '印花税合计'],
-  ['total_cost', '成本合计'],
-  ['unfillable_count_ratio', '无法成交数量占比'],
-  ['unfillable_amount_ratio', '无法成交金额占比'],
-];
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function MetricList({ metrics }: { metrics: unknown }) {
-  const record = asRecord(metrics);
-  const rows = METRIC_LABELS.filter(([key]) => record[key] !== undefined);
-  if (rows.length === 0) return <p className="muted">暂无指标</p>;
-  return <dl className="backtest-metrics">
-    {rows.map(([key, label]) => <div className="backtest-metric" key={key}>
-      <dt>{label}</dt>
-      <dd>{String(record[key])}</dd>
-    </div>)}
-  </dl>;
-}
-
-function rejectionLabel(reason: unknown): string {
-  if (typeof reason === 'string' && Object.hasOwn(BACKTEST_REJECTION_LABELS, reason)) {
-    return BACKTEST_REJECTION_LABELS[reason as BacktestRejectionReason];
-  }
-  return '其他保守拒单情形';
-}
-
 interface AblationLegView {
   leg: string;
   status: string;
@@ -600,7 +572,7 @@ export function AblationSection({ ablation }: { ablation: BacktestAblationView |
     <div data-testid="ablation-baseline" className="ablation-leg">
       <h4>baseline 基线腿</h4>
       <p className="muted">状态：{ablation.baseline.status === 'completed' ? '已完成' : ablation.baseline.status}</p>
-      {ablation.baseline.metrics && <MetricList metrics={ablation.baseline.metrics} />}
+      <p>config_context_unavailable：完整结果验证后才可展示基线指标。</p>
     </div>
     <div data-testid="ablation-ai-variant" className="ablation-leg ablation-disabled">
       <h4>ai_variant AI 对照腿</h4>
@@ -618,136 +590,14 @@ export function BacktestResultView({ record }: { record: BacktestRunRecord }) {
       <p className="muted">暂无物化结果</p>
     </section>;
   }
-  const result = asRecord(record.result);
-  const equity = Array.isArray(result.equity) ? result.equity as Record<string, unknown>[] : [];
-  const trades = Array.isArray(result.trades) ? result.trades as Record<string, unknown>[] : [];
-  const rejections = Array.isArray(result.rejections) ? result.rejections as Record<string, unknown>[] : [];
-  const quality = Array.isArray(result.quality) ? result.quality as Record<string, unknown>[] : [];
-  const folds = Array.isArray(result.folds) ? result.folds as Record<string, unknown>[] : [];
-  const baseline = asRecord(result.baseline);
-  const sensitivity = Array.isArray(baseline.cost_sensitivity)
-    ? baseline.cost_sensitivity as Record<string, unknown>[]
-    : [];
-  const ablation = (result.ablation ?? null) as BacktestAblationView | null;
-
-  return <section className="backtest-result" aria-label="回测结果">
-    <h3>回测结果</h3>
-    <MetricList metrics={result.metrics} />
-
-    <h4>净值曲线</h4>
-    <TableScroll label="净值曲线横向滚动">
-      <table aria-label="净值曲线">
-        <thead><tr><th>交易日</th><th>账户权益</th></tr></thead>
-        <tbody>
-          {equity.length === 0
-            ? <tr><td colSpan={2} className="muted">暂无净值点</td></tr>
-            : equity.map((point, index) => <tr key={`${point.trade_date}-${index}`}>
-              <td data-label="交易日">{String(point.trade_date)}</td>
-              <td data-label="账户权益" className="numeric">{String(point.equity)}</td>
-            </tr>)}
-        </tbody>
-      </table>
-    </TableScroll>
-
-    <h4>成交流水</h4>
-    <TableScroll label="成交流水横向滚动">
-      <table aria-label="成交流水">
-        <thead><tr>
-          <th>证券代码</th><th>方向</th><th>数量</th><th>信号日</th><th>成交日</th>
-          <th>原始收盘</th><th>成交价</th><th>成交额</th><th>佣金</th><th>印花税</th><th>资金净额</th>
-        </tr></thead>
-        <tbody>
-          {trades.length === 0
-            ? <tr><td colSpan={11} className="muted">暂无成交</td></tr>
-            : trades.map((trade, index) => <tr key={`${trade.security_id}-${trade.trade_date}-${index}`}>
-              <td data-label="证券代码">{String(trade.security_id)}</td>
-              <td data-label="方向">{trade.side === 'buy' ? '买入' : '卖出'}</td>
-              <td data-label="数量" className="numeric">{String(trade.quantity)}</td>
-              <td data-label="信号日">{String(trade.signal_date)}</td>
-              <td data-label="成交日">{String(trade.trade_date)}</td>
-              <td data-label="原始收盘" className="numeric">{String(trade.raw_close)}</td>
-              <td data-label="成交价" className="numeric">{String(trade.fill_price)}</td>
-              <td data-label="成交额" className="numeric">{String(trade.gross_amount)}</td>
-              <td data-label="佣金" className="numeric">{String(trade.commission)}</td>
-              <td data-label="印花税" className="numeric">{String(trade.stamp_tax)}</td>
-              <td data-label="资金净额" className="numeric">{String(trade.net_cash_delta)}</td>
-            </tr>)}
-        </tbody>
-      </table>
-    </TableScroll>
-
-    <h4>拒单说明</h4>
-    <TableScroll label="拒单说明横向滚动">
-      <table aria-label="拒单说明">
-        <thead><tr><th>证券代码</th><th>方向</th><th>数量</th><th>信号日</th><th>成交日</th><th>拒单原因</th></tr></thead>
-        <tbody>
-          {rejections.length === 0
-            ? <tr><td colSpan={6} className="muted">暂无拒单</td></tr>
-            : rejections.map((rejection, index) => <tr key={`rejection-${index}`}>
-              <td data-label="证券代码">{String(rejection.security_id)}</td>
-              <td data-label="方向">{rejection.side === 'buy' ? '买入' : '卖出'}</td>
-              <td data-label="数量" className="numeric">{String(rejection.quantity)}</td>
-              <td data-label="信号日">{String(rejection.signal_date)}</td>
-              <td data-label="成交日">{String(rejection.trade_date)}</td>
-              <td data-label="拒单原因">{rejectionLabel(rejection.reason)}</td>
-            </tr>)}
-        </tbody>
-      </table>
-    </TableScroll>
-
-    <h4>因子体检</h4>
-    {quality.length === 0
-      ? <p className="muted">暂无因子体检记录</p>
-      : quality.map((day, index) => {
-          const coverage = asRecord(day.factor_coverage);
-          return <div className="backtest-quality" key={`quality-${index}`}>
-            <span className="backtest-quality-date">{String(day.trade_date)}</span>
-            <span>预期 {String(coverage.expected ?? '—')}</span>
-            <span>有效 {String(coverage.valid ?? '—')}</span>
-            <span>排除 {String(coverage.excluded ?? '—')}</span>
-            <span>缺失 {String(coverage.missing ?? '—')}</span>
-          </div>;
-        })}
-
-    <h4>成本敏感性</h4>
-    <TableScroll label="成本敏感性横向滚动">
-      <table aria-label="成本敏感性">
-        <thead><tr><th>成本档位</th><th>成本乘数</th><th>总收益率</th></tr></thead>
-        <tbody>
-          {sensitivity.length === 0
-            ? <tr><td colSpan={3} className="muted">暂无成本敏感性结果</td></tr>
-            : sensitivity.map((entry, index) => {
-                const metrics = asRecord(entry.metrics);
-                return <tr key={`sensitivity-${index}`}>
-                  <td data-label="成本档位">{String(entry.tier)}</td>
-                  <td data-label="成本乘数" className="numeric">{String(entry.cost_multiplier)}</td>
-                  <td data-label="总收益率" className="numeric">{String(metrics.total_return ?? '—')}</td>
-                </tr>;
-              })}
-        </tbody>
-      </table>
-    </TableScroll>
-
-    {folds.length > 0 && <>
-      <h4>滚动折数</h4>
-      <TableScroll label="滚动折数横向滚动">
-        <table aria-label="滚动折数">
-          <thead><tr><th>折序号</th><th>训练起</th><th>训练止</th><th>测试起</th><th>测试止</th></tr></thead>
-          <tbody>
-            {folds.map((fold, index) => <tr key={`fold-${index}`}>
-              <td data-label="折序号">{String(fold.fold_index)}</td>
-              <td data-label="训练起">{String(fold.train_start)}</td>
-              <td data-label="训练止">{String(fold.train_end)}</td>
-              <td data-label="测试起">{String(fold.test_start)}</td>
-              <td data-label="测试止">{String(fold.test_end)}</td>
-            </tr>)}
-          </tbody>
-        </table>
-      </TableScroll>
-    </>}
-
-    <AblationSection ablation={ablation} />
-  </section>;
+  try {
+    const result = validateResearchResult(record.result, record.config_context ?? null, record.config_hash);
+    if (record.status !== 'succeeded' || record.failure !== null) throw new Error('malformed_response');
+    return <ResearchEvidence result={result} runId={record.run_id}
+      rejectionLabels={BACKTEST_REJECTION_LABELS} />;
+  } catch (error) {
+    return <p role="alert">{error instanceof Error ? error.message : 'malformed_response'}</p>;
+  }
 }
 
 function isAbortError(failure: unknown): boolean {
@@ -765,22 +615,73 @@ export default function BacktestPanel({ manifest }: { manifest: BacktestManifest
   const [record, setRecord] = useState<BacktestRunRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [capabilities, setCapabilities] = useState<ResearchCapabilities | null>(null);
+  const [pollPaused, setPollPaused] = useState(false);
   const mounted = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generation = useRef(0);
+  const frozenConfig = useRef<Record<string, unknown> | undefined>(undefined);
+  const pending = useRef<{ fingerprint: string; command: ReturnType<typeof createBacktestCommand> } | null>(null);
 
   const errors = validateBacktestDraft(draft);
   const manifestError = validateManifestContext(manifest);
   const manifestReady = manifestError === null;
 
-  const refreshRecord = useCallback(async (runId: string) => {
+  const refreshRecord = useCallback(async (runId: string, explicitRetry = false) => {
+    if (explicitRetry) generation.current += 1;
+    const epoch = generation.current;
+    const controller = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = controller;
     try {
-      const current = await getBacktestRun(runId);
-      if (mounted.current) setRecord(current);
+      const current = await getBacktestRun(runId, controller.signal, frozenConfig.current);
+      if (mounted.current && epoch === generation.current && !controller.signal.aborted) {
+        frozenConfig.current = current.config_context;
+        setPollPaused(false);
+        setRecord(current);
+      }
     } catch (failure) {
-      if (mounted.current && !isAbortError(failure)) setError(failureMessage(failure));
+      if (mounted.current && epoch === generation.current && !controller.signal.aborted && !isAbortError(failure)) {
+        setPollPaused(true);
+        setError(failureMessage(failure));
+        if (failure instanceof BacktestClientError && [401, 403, 404].includes(failure.status)) {
+          frozenConfig.current = undefined; pending.current = null; setRecord(null);
+        }
+      }
     }
   }, []);
+
+  const manifestFingerprint = manifest ? asciiCanonical(manifest) : '';
+  useEffect(() => {
+    generation.current += 1;
+    abortRef.current?.abort();
+    frozenConfig.current = undefined;
+    pending.current = null;
+    setRecord(null); setPollPaused(false); setBusy(false);
+    const clear = () => {
+      generation.current += 1; abortRef.current?.abort();
+      frozenConfig.current = undefined; pending.current = null;
+      setRecord(null); setCapabilities(null); setBusy(false); setPollPaused(true);
+    };
+    window.addEventListener('private-session-lock', clear);
+    return () => window.removeEventListener('private-session-lock', clear);
+  }, [manifestFingerprint]);
+
+  useEffect(() => {
+    setCapabilities(null);
+    if (!manifestReady || !manifest || errors.start_date || errors.end_date) return;
+    const controller = new AbortController();
+    const epoch = generation.current;
+    void getResearchCapabilities(manifest.snapshot_id, {
+      start: draft.start_date, end: draft.end_date,
+    }, controller.signal).then(value => {
+      if (!controller.signal.aborted && epoch === generation.current) setCapabilities(value);
+    }).catch(failure => {
+      if (!controller.signal.aborted && epoch === generation.current) setError(failureMessage(failure));
+    });
+    return () => controller.abort();
+  }, [manifestFingerprint, manifestReady, draft.start_date, draft.end_date, errors.start_date, errors.end_date]);
 
   useEffect(() => {
     mounted.current = true;
@@ -792,31 +693,50 @@ export default function BacktestPanel({ manifest }: { manifest: BacktestManifest
   }, []);
 
   useEffect(() => {
-    if (!record || !pollBacktestDecision(record).poll) return;
+    if (!record || busy || pollPaused || !pollBacktestDecision(record).poll) return;
     const delayMs = pollBacktestDecision(record).delayMs;
     pollTimer.current = setTimeout(() => { void refreshRecord(record.run_id); }, delayMs);
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [record, refreshRecord]);
+  }, [record, busy, pollPaused, refreshRecord]);
 
   const handleSubmit = async () => {
-    if (busy || !manifestReady || hasBacktestErrors(errors)) return;
+    if (busy || !manifestReady || hasBacktestErrors(errors)
+      || !capabilities?.factors.some(item => item.id === draft.factor_id && item.status === 'ready')) return;
+    generation.current += 1;
+    const epoch = generation.current;
+    abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy(true);
     setError('');
     try {
-      const key = crypto.randomUUID();
-      const payload = buildBacktestPayload(draft, manifest, key);
-      const command = createBacktestCommand(payload, key);
+      const payload = buildBacktestPayload(draft, manifest, crypto.randomUUID());
+      const { idempotency_key: unusedKey, ...input } = payload;
+      void unusedKey;
+      const config = normalizedConfig(input);
+      const fingerprint = asciiCanonical(config);
+      const command = pending.current?.fingerprint === fingerprint
+        ? pending.current.command : createBacktestCommand(config);
+      pending.current = { fingerprint, command };
+      frozenConfig.current = config;
+      setRecord(null); setPollPaused(false);
       const accepted = await submitBacktest(command, controller.signal);
-      if (!mounted.current) return;
+      if (!mounted.current || epoch !== generation.current || controller.signal.aborted) return;
+      pending.current = null;
+      setBusy(false);
       await refreshRecord(accepted.run_id);
     } catch (failure) {
-      if (mounted.current && !isAbortError(failure)) setError(failureMessage(failure));
+      if (mounted.current && epoch === generation.current && !controller.signal.aborted && !isAbortError(failure)) {
+        setError(failureMessage(failure));
+        if (failure instanceof BacktestClientError && !failure.uncertain) pending.current = null;
+        if (failure instanceof BacktestClientError && [401, 403].includes(failure.status)) {
+          frozenConfig.current = undefined; setRecord(null);
+        }
+      }
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current && epoch === generation.current && !controller.signal.aborted) setBusy(false);
     }
   };
 
@@ -824,17 +744,20 @@ export default function BacktestPanel({ manifest }: { manifest: BacktestManifest
     // Cancellation targets the cooperative queued/running window; a terminal
     // run or the pre-submit state is a silent no-op.
     if (!record || !pollBacktestDecision(record).poll) return;
+    generation.current += 1;
+    const epoch = generation.current;
+    abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy(true);
     setError('');
     try {
       const cancelled = await cancelBacktestRun(record.run_id, controller.signal);
-      if (mounted.current) setRecord(cancelled);
+      if (mounted.current && epoch === generation.current && !controller.signal.aborted) setRecord(cancelled);
     } catch (failure) {
-      if (mounted.current && !isAbortError(failure)) setError(failureMessage(failure));
+      if (mounted.current && epoch === generation.current && !controller.signal.aborted && !isAbortError(failure)) setError(failureMessage(failure));
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current && epoch === generation.current && !controller.signal.aborted) setBusy(false);
     }
   };
 
@@ -855,10 +778,12 @@ export default function BacktestPanel({ manifest }: { manifest: BacktestManifest
       errors={errors}
       busy={busy}
       manifestReady={manifestReady}
+      capabilities={capabilities}
       onDraft={setDraft}
       onSubmit={() => void handleSubmit()}
       onCancel={() => void handleCancel()}
     />
     {record && <BacktestResultView record={record} />}
+    {record && pollPaused && <button type="button" disabled={busy} onClick={() => { void refreshRecord(record.run_id, true); }}>重试读取原始运行</button>}
   </section>;
 }

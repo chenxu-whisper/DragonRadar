@@ -270,11 +270,7 @@ SELECT
     trigger_record.tgname AS trigger_name,
     trigger_record.tgenabled AS enabled_code,
     trigger_record.tgtype AS trigger_type,
-    pg_catalog.pg_get_expr(
-        trigger_record.tgqual,
-        trigger_record.tgrelid,
-        false
-    ) AS when_expression,
+    pg_catalog.pg_get_triggerdef(trigger_record.oid, false) AS trigger_definition,
     pg_catalog.encode(trigger_record.tgargs, 'hex') AS arguments,
     CASE
         WHEN function_namespace.oid = namespace.oid THEN 'current_schema'
@@ -418,6 +414,64 @@ def _trigger_events(trigger_type: int) -> list[str]:
     return [event for bit, event in event_bits if trigger_type & bit]
 
 
+def _trigger_when_expression(definition: str) -> str | None:
+    """Read the catalog-deparsed WHEN without losing OLD/NEW relation aliases."""
+
+    def quoted_end(start):
+        quote = definition[start]
+        escaped = (
+            quote == "'"
+            and start > 0
+            and definition[start - 1] in "eE"
+            and (start < 2 or not definition[start - 2].isalnum())
+        )
+        cursor = start + 1
+        while cursor < len(definition):
+            if escaped and definition[cursor] == "\\":
+                cursor += 2
+            elif definition[cursor] == quote:
+                if cursor + 1 < len(definition) and definition[cursor + 1] == quote:
+                    cursor += 2
+                else:
+                    return cursor + 1
+            else:
+                cursor += 1
+        raise ValueError("Unterminated quoted trigger definition")
+
+    cursor = 0
+    while cursor < len(definition):
+        if definition[cursor] in "'\"":
+            cursor = quoted_end(cursor)
+            continue
+        word = re.match(r"[A-Za-z_][A-Za-z_0-9$]*", definition[cursor:])
+        if word is None:
+            cursor += 1
+            continue
+        cursor += len(word[0])
+        if word[0].upper() != "WHEN":
+            continue
+        while cursor < len(definition) and definition[cursor].isspace():
+            cursor += 1
+        if cursor >= len(definition) or definition[cursor] != "(":
+            raise ValueError("Invalid catalog trigger condition")
+        start = cursor + 1
+        depth = 1
+        cursor = start
+        while cursor < len(definition):
+            if definition[cursor] in "'\"":
+                cursor = quoted_end(cursor)
+                continue
+            if definition[cursor] == "(":
+                depth += 1
+            elif definition[cursor] == ")":
+                depth -= 1
+                if depth == 0:
+                    return definition[start:cursor]
+            cursor += 1
+        raise ValueError("Unterminated catalog trigger condition")
+    return None
+
+
 def capture_triggers(connection: Connection) -> list[dict[str, object]]:
     """Capture noninternal trigger behavior and function definitions."""
     enabled_values = {
@@ -444,7 +498,7 @@ def capture_triggers(connection: Connection) -> list[dict[str, object]]:
                 "timing": _trigger_timing(trigger_type),
                 "events": _trigger_events(trigger_type),
                 "level": "ROW" if trigger_type & 1 else "STATEMENT",
-                "when": row["when_expression"],
+                "when": _trigger_when_expression(str(row["trigger_definition"])),
                 "arguments": str(row["arguments"]),
                 "function_schema": str(row["function_schema"]),
                 "function_name": str(row["function_name"]),
@@ -916,6 +970,23 @@ def compare_schema_contract(
     actual: Mapping[str, object],
 ) -> list[str]:
     """Return stable mismatch descriptions for two normalized contracts."""
+
+    def records(contract: Mapping[str, object], collection: str) -> list[str]:
+        fingerprints = []
+        for record in contract.get(collection, []):
+            if not isinstance(record, Mapping):
+                continue
+            if collection == "tables":
+                # ADD COLUMN appends physically, whereas a fresh metadata CREATE
+                # may place that same named column earlier. Column properties
+                # remain exact; FK/index key positions keep their own ordering.
+                record = {
+                    **record,
+                    "columns": sorted(record["columns"], key=_record_sort_key),
+                }
+            fingerprints.append(_record_sort_key(record))
+        return sorted(fingerprints) if collection == "tables" else fingerprints
+
     errors = []
     for field in ("schema", "schema_version", "postgresql_major"):
         if expected.get(field) != actual.get(field):
@@ -924,16 +995,8 @@ def compare_schema_contract(
                 f"found {actual.get(field)!r}"
             )
     for collection in ("tables", "constraints", "indexes", "triggers"):
-        expected_records = [
-            _record_sort_key(record)
-            for record in expected.get(collection, [])
-            if isinstance(record, Mapping)
-        ]
-        actual_records = [
-            _record_sort_key(record)
-            for record in actual.get(collection, [])
-            if isinstance(record, Mapping)
-        ]
+        expected_records = records(expected, collection)
+        actual_records = records(actual, collection)
         if expected_records != actual_records:
             missing = list(
                 (Counter(expected_records) - Counter(actual_records)).elements()

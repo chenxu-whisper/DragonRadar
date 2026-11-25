@@ -15,7 +15,10 @@ from dragon_radar.http.errors import (
     register_error_handlers,
 )
 from dragon_radar.http.routes.analysis import router as analysis_router
+from dragon_radar.http.routes.daily_ai import install_daily_ai_routes
+from dragon_radar.http.routes.indexes import router as indexes_router
 from dragon_radar.http.routes.lhb import router as lhb_router
+from dragon_radar.http.routes.lineage import router as lineage_router
 from dragon_radar.http.routes.market import router as market_router
 from dragon_radar.http.routes.news import router as news_router
 from dragon_radar.http.routes.realtime import router as realtime_router
@@ -30,6 +33,8 @@ from dragon_radar.http.selection import (
 )
 from dragon_radar.http.serialization import DecimalJSONResponse
 from dragon_radar.lhb.repository import LHBRepository
+from dragon_radar.public_daily_ai.repository import PublicDailyAIRepository
+from dragon_radar.public_daily_ai.service import PublicDailyAIService
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.realtime.repository import RealtimeRepository
 from dragon_radar.storage.database import Database
@@ -105,6 +110,17 @@ def create_workbench_app(
         lifespan=lifespan,
     )
     app.state.repository = repository
+    app.state.publication_repository = repository
+    app.state.public_daily_ai_service = (
+        PublicDailyAIService(PublicDailyAIRepository(database, repository))
+        if database is not None and hasattr(database, "engine")
+        else None
+    )
+    app.state.public_daily_ai_repository = (
+        app.state.public_daily_ai_service.repository
+        if app.state.public_daily_ai_service is not None
+        else None
+    )
     app.state.analysis_repository = analysis_repository
     app.state.realtime_repository = realtime_repository
     app.state.lhb_repository = lhb_repository
@@ -143,6 +159,9 @@ def create_workbench_app(
         }
         return DecimalJSONResponse(payload)
 
+    app.include_router(lineage_router)
+    install_daily_ai_routes(app)
+
     @app.get("/api/snapshots/{snapshot_id}")
     def get_snapshot_summary(snapshot_id: UUID, request: Request):
         snapshot = get_repository(request).get_snapshot(snapshot_id)
@@ -157,6 +176,7 @@ def create_workbench_app(
     app.include_router(topics_router)
     app.include_router(stock_router)
     app.include_router(analysis_router)
+    app.include_router(indexes_router)
     app.include_router(realtime_router)
     app.include_router(lhb_router)
 

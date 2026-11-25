@@ -214,6 +214,25 @@ def serialize_seat_history(history: SeatHistory, *, date: date) -> dict:
     }
 
 
+@router.get("/api/lhb/lineage")
+def lhb_lineage(request: Request):
+    query = query_values(request, {"source_id", "disclosure_id", "revision", "as_of"})
+    if set(query) != {"source_id", "disclosure_id", "revision", "as_of"}:
+        raise ValueError("Exact disclosure lineage selection is required")
+    source_id = _identifier(query["source_id"], "source_id")
+    disclosure_id = _identifier(query["disclosure_id"], "disclosure_id")
+    revision = query_integer(query["revision"], 1, 2_147_483_647)
+    as_of = _as_of(query["as_of"])
+    return DecimalJSONResponse(
+        _repository(request).get_lineage(
+            source_id=source_id,
+            disclosure_id=disclosure_id,
+            revision=revision,
+            as_of=as_of,
+        )
+    )
+
+
 @router.get("/api/lhb")
 def lhb_disclosures(request: Request):
     query = query_values(

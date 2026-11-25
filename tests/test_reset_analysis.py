@@ -1,6 +1,7 @@
 """Pure publication-time analysis and stock read-model contracts."""
 
 import json
+from copy import deepcopy
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal, Inexact, localcontext
 from uuid import uuid4
@@ -8,6 +9,190 @@ from uuid import uuid4
 import pytest
 from factories import bar, batch, state
 from httpx import ASGITransport, AsyncClient
+
+_DIRECTION_METRICS = (
+    ("return", "return_ratio"),
+    ("excess_return", "excess_return_ratio"),
+    ("drawdown", "max_drawdown_ratio"),
+    ("amount_change", "amount_change_ratio"),
+)
+
+
+@pytest.mark.parametrize(("sort", "field"), _DIRECTION_METRICS)
+@pytest.mark.parametrize(
+    ("order", "ids", "ranks"),
+    (
+        ("asc", ["A", "B", "C", "D", "E"], [1, 2, 3, 3, None]),
+        ("desc", ["C", "D", "B", "A", "E"], [1, 1, 3, 4, None]),
+    ),
+)
+def test_rank_direction_orders_ties_nulls_and_copies_rows(
+    sort, field, order, ids, ranks
+):
+    from dragon_radar.http.routes.analysis import _sorted_ranking
+
+    rows = [
+        {"security_id": security, field: value, "rank": 99}
+        for security, value in (
+            ("E", None),
+            ("D", Decimal("0.1")),
+            ("A", Decimal("-0.1") if sort != "drawdown" else Decimal("0")),
+            ("C", Decimal("0.1")),
+            ("B", Decimal("0") if sort != "drawdown" else Decimal("0.05")),
+        )
+    ]
+    original = deepcopy(rows)
+    ranked = _sorted_ranking(rows, sort, order)
+    assert [row["security_id"] for row in ranked] == ids
+    assert [row["rank"] for row in ranked] == ranks
+    assert rows == original
+    assert all(row is not original_row for row in ranked for original_row in rows)
+
+
+@pytest.mark.parametrize(("sort", "field"), _DIRECTION_METRICS)
+@pytest.mark.parametrize("order", ("asc", "desc"))
+def test_rank_direction_all_null_is_stable(sort, field, order):
+    from dragon_radar.http.routes.analysis import _sorted_ranking
+
+    rows = [{"security_id": value, field: None} for value in ("B", "A")]
+    ranked = _sorted_ranking(rows, sort, order)
+    assert [row["security_id"] for row in ranked] == ["A", "B"]
+    assert [row["rank"] for row in ranked] == [None, None]
+
+
+@pytest.mark.parametrize(
+    ("sort", "order", "ids", "ranks"),
+    (
+        ("return", "asc", ["D", "A", "E"], [1, 2, 2]),
+        ("return", "desc", ["A", "E", "D"], [1, 1, 3]),
+        ("excess_return", "asc", ["D", "A", "E"], [1, 2, 2]),
+        ("excess_return", "desc", ["A", "E", "D"], [1, 1, 3]),
+        ("drawdown", "asc", ["A", "E", "D"], [1, 1, 3]),
+        ("drawdown", "desc", ["D", "A", "E"], [1, 2, 2]),
+        ("amount_change", "asc", ["D", "E", "A"], [1, 1, 3]),
+        ("amount_change", "desc", ["A", "D", "E"], [1, 2, 2]),
+    ),
+)
+@pytest.mark.anyio
+async def test_rank_direction_api_projects_archive_without_mutation(
+    sort, order, ids, ranks
+):
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    original = _mutable_market_payload(snapshot)
+    app = create_workbench_app(repository=_PublishedRepository(snapshot))
+    params = {
+        "snapshot_id": str(snapshot.id),
+        "start": str(_sessions()[0]),
+        "end": str(_sessions()[-1]),
+        "adj": "raw",
+        "sort": sort,
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/api/rank/range", params={**params, "order": order}
+        )
+        default = await client.get("/api/rank/range", params=params)
+        explicit_default = await client.get(
+            "/api/rank/range",
+            params={**params, "order": "asc" if sort == "drawdown" else "desc"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["security_id"] for row in body["data"]["ranking"]] == ids
+    assert [row["rank"] for row in body["data"]["ranking"]] == ranks
+    assert default.json() == explicit_default.json()
+    assert body["coverage"] == default.json()["coverage"]
+    assert body["data"]["exclusions"] == default.json()["data"]["exclusions"]
+    assert _mutable_market_payload(snapshot) == original
+
+
+@pytest.mark.anyio
+async def test_rank_direction_invalid_queries_rejected_before_storage():
+    from dragon_radar.http.app import create_workbench_app
+
+    repository = _PublishedRepository(_published_analysis_snapshot())
+    app = create_workbench_app(repository=repository)
+    query = f"start={_sessions()[0]}&end={_sessions()[-1]}"
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        for suffix in (
+            "order=",
+            "order=ASC",
+            "order=DESC",
+            "order=wrong",
+            "order=asc&order=desc",
+            "order=asc&order=asc",
+            "order=asc&unknown=1",
+        ):
+            response = await client.get(f"/api/rank/range?{query}&{suffix}")
+            assert response.status_code == 400, suffix
+        response = await client.get(f"/api/compare/curves?{query}&symbols=A&order=asc")
+        assert response.status_code == 400
+    assert repository.accesses == 0
+
+
+@pytest.mark.anyio
+async def test_rank_direction_reuses_one_custom_calculation():
+    from dragon_radar.analysis_jobs.models import AnalysisJobCommand
+    from dragon_radar.analysis_jobs.worker import materialize_custom_analysis
+    from dragon_radar.http.app import create_workbench_app
+
+    snapshot = _published_analysis_snapshot()
+    days = _sessions()[1:]
+    command = AnalysisJobCommand(
+        snapshot_id=snapshot.id,
+        start=days[0],
+        end=days[-1],
+        benchmark="B000300",
+        adjustment="raw",
+        symbols=(),
+    )
+    result = materialize_custom_analysis(snapshot, command)
+    original = json.dumps(result, sort_keys=True, default=str)
+    requested_keys = []
+
+    class Cache:
+        @staticmethod
+        def get_cache(requested):
+            assert requested == command
+            requested_keys.append(requested.cache_key)
+            return result
+
+    app = create_workbench_app(
+        repository=_PublishedRepository(snapshot), analysis_repository=Cache()
+    )
+    common = {
+        "snapshot_id": str(snapshot.id),
+        "start": str(days[0]),
+        "end": str(days[-1]),
+        "adj": "raw",
+        "sort": "return",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        ascending = await client.get(
+            "/api/rank/range", params={**common, "order": "asc"}
+        )
+        descending = await client.get(
+            "/api/rank/range", params={**common, "order": "desc"}
+        )
+    assert ascending.status_code == descending.status_code == 200
+    low, high = ascending.json(), descending.json()
+    assert requested_keys == [command.cache_key, command.cache_key]
+    assert low["snapshot_id"] == high["snapshot_id"] == str(snapshot.id)
+    assert low["coverage"] == high["coverage"]
+    assert low["data"]["exclusions"] == high["data"]["exclusions"]
+    low_values = [row["return_ratio"] for row in low["data"]["ranking"]]
+    high_values = [row["return_ratio"] for row in high["data"]["ranking"]]
+    assert low_values == sorted(low_values)
+    assert high_values == sorted(high_values, reverse=True)
+    assert json.dumps(result, sort_keys=True, default=str) == original
 
 
 def _sessions(count: int = 21) -> tuple[date, ...]:
@@ -1400,7 +1585,8 @@ async def test_precomputed_compare_rejects_invalid_curve_baseline_and_values(
 
 
 @pytest.mark.anyio
-async def test_rank_keeps_return_valid_rows_with_null_sort_value_last():
+@pytest.mark.parametrize("order", ("asc", "desc"))
+async def test_rank_keeps_return_valid_rows_with_null_sort_value_last(order):
     from dragon_radar.http.app import create_workbench_app
 
     source = _analysis_batch()
@@ -1429,6 +1615,7 @@ async def test_rank_keeps_return_valid_rows_with_null_sort_value_last():
                 "end": str(_sessions()[-1]),
                 "benchmark": "B000300",
                 "sort": "amount_change",
+                "order": order,
                 "adj": "raw",
             },
         )

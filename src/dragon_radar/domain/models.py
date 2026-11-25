@@ -109,11 +109,22 @@ class SecurityState(FrozenModel):
     pool_version: Identifier
 
 
+class IndexBasis(FrozenModel):
+    """Provider-declared index series; never inferred from code or prices."""
+
+    series_type: Literal["price", "total_return"]
+    series_reference: Identifier
+    price_unit: Literal["point"]
+    amount_currency: Identifier | None
+    volume_unit: Literal["share", "lot", "not_applicable"]
+
+
 class DailyBar(FrozenModel):
     """Raw daily prices, not adjusted OHLC. Missing close is quarantinable.
 
-    Supply all open/high/low or none for close-only data. Prices are currency
-    per share; volume and turnover retain declared units. The provided factor
+    Supply all open/high/low or none for close-only data. Stock prices are
+    currency per share; an explicit index_basis declares point prices.
+    Volume and turnover retain declared units. The provided factor
     multiplies raw close. Limits apply ONLY to limit_date == trade_date;
     unknown limit metadata is not equivalent to an explicit no-limit session.
     previous_close is the provider's raw daily-return reference, when supplied.
@@ -135,6 +146,7 @@ class DailyBar(FrozenModel):
     price_unit: Identifier
     volume_unit: Identifier
     amount_unit: Identifier
+    index_basis: IndexBasis | None = None
     volume: ExactDecimal | None = None
     amount: ExactDecimal | None = None
     turnover_rate: ExactDecimal | None = None

@@ -2903,7 +2903,7 @@ def test_representative_regulation_table_families_reject_truncate(
 def test_schema_revision_advances_to_research_after_query():
     from dragon_radar.storage.database import SCHEMA_REVISION
 
-    assert SCHEMA_REVISION == "0014_research"
+    assert SCHEMA_REVISION == "0018_research_contract"
 
 
 def test_research_migration_head_descends_from_query_and_earlier_revisions():
@@ -2914,7 +2914,7 @@ def test_research_migration_head_descends_from_query_and_earlier_revisions():
     config.set_main_option("script_location", "dragon_radar:migrations")
 
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0014_research"]
+    assert script.get_heads() == ["0018_research_contract"]
     assert "0011_ai_task_gap_fixes" not in {
         migration.revision for migration in script.walk_revisions()
     }
@@ -3210,7 +3210,7 @@ def test_regulation_tables_are_append_only_and_migration_is_ready(database):
     regulations = RegulationRepository(database, clock=lambda: NOW)
     regulations.register_rule(_rule(), key="regulation-immutable-rule")
 
-    assert SCHEMA_REVISION == "0014_research"
+    assert SCHEMA_REVISION == "0018_research_contract"
     assert database.ready()
     inspector = inspect(database.engine)
     assert {

@@ -1,7 +1,7 @@
 """Pure publication-time analysis read models."""
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 from decimal import Decimal, localcontext
 from typing import Any, Literal
@@ -117,6 +117,8 @@ def _amount_change(bars: Sequence[DailyBar]) -> tuple[Decimal | None, str | None
 def _display_curves(
     bars: Sequence[DailyBar | None],
     adjustment: Adjustment,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> tuple[list[Decimal | None], list[Decimal | None]]:
     if not bars or bars[0] is None:
         return [None] * len(bars), [None] * len(bars)
@@ -126,6 +128,8 @@ def _display_curves(
     drawdown = []
     with localcontext(_decimal_context()):
         for bar in bars:
+            if checkpoint is not None:
+                checkpoint()
             if bar is None:
                 normalized.append(None)
                 drawdown.append(None)
@@ -156,11 +160,15 @@ def _series(
     security_id: str,
     sessions: tuple[date, ...],
     adjustment: Adjustment,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     batch = projection.batch
     reasons = set(_batch_reasons(batch))
     bars = []
     for day in sessions:
+        if checkpoint is not None:
+            checkpoint()
         observation, errors = projection.observation(security_id, day)
         reasons.update(errors)
         bars.append(observation)
@@ -178,7 +186,11 @@ def _series(
         amount_bars.append(records[0])
     amount_change, amount_reason = _amount_change(amount_bars)
 
-    display_normalized, display_drawdown = _display_curves(bars, adjustment)
+    display_normalized, display_drawdown = _display_curves(
+        bars,
+        adjustment,
+        checkpoint=checkpoint,
+    )
     if _batch_reasons(batch) or unit_mismatch:
         display_normalized = [None] * len(sessions)
         display_drawdown = [None] * len(sessions)
@@ -214,6 +226,8 @@ def _window(
     sessions: tuple[date, ...],
     benchmark_id: str,
     eligible_security_ids: Sequence[str] | None = None,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     batch = projection.batch
     stock_ids = (
@@ -239,12 +253,25 @@ def _window(
         "adjustments": {},
     }
     for adjustment in ("raw", "adjusted"):
-        stock_series = {
-            security_id: _series(projection, security_id, sessions, adjustment)
-            for security_id in stock_ids
-        }
+        stock_series = {}
+        for security_id in stock_ids:
+            if checkpoint is not None:
+                checkpoint()
+            stock_series[security_id] = _series(
+                projection,
+                security_id,
+                sessions,
+                adjustment,
+                checkpoint=checkpoint,
+            )
         benchmark = (
-            _series(projection, benchmark_id, sessions, adjustment)
+            _series(
+                projection,
+                benchmark_id,
+                sessions,
+                adjustment,
+                checkpoint=checkpoint,
+            )
             if benchmark_identity_valid
             else {
                 "return_ratio": None,
@@ -258,6 +285,8 @@ def _window(
         exclusions = []
         curves = {}
         for security_id in stock_ids:
+            if checkpoint is not None:
+                checkpoint()
             current = stock_series[security_id]
             reasons = list(current["reasons"])
             value = current["return_ratio"]

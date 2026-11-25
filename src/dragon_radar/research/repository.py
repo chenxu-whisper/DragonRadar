@@ -26,15 +26,28 @@ from sqlalchemy.engine import Connection
 from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.publication.tables import publications
+from dragon_radar.research.cache_contract import SCHEMAS, compute_contract
 from dragon_radar.research.models import (
     BacktestConfig,
+    BacktestPeriod,
     BacktestSubmission,
     DomainManifest,
     InputManifests,
     ManifestVersions,
     StrictFrozenModel,
 )
-from dragon_radar.research.tables import research_backtest_cache, research_backtest_runs
+from dragon_radar.research.result_contracts import (
+    ResearchDataUnavailable,
+    canonical,
+    manifests_equal,
+    validate_envelope,
+    validate_result,
+)
+from dragon_radar.research.tables import (
+    research_backtest_cache,
+    research_backtest_cache_v2,
+    research_backtest_runs,
+)
 from dragon_radar.storage.repository import (
     Conflict,
     Forbidden,
@@ -50,6 +63,12 @@ from dragon_radar.topics.models import ImmutableJsonObject
 DEFAULT_MAX_WALL_CLOCK_MS = 300_000
 
 ResearchRunStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
+
+
+class ResearchCacheConflict(Conflict):
+    """Deterministic facts differ; not a stale lease or first-writer success."""
+
+
 WorkerIdentifier = Annotated[
     StrictStr,
     Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:-]+$"),
@@ -70,6 +89,35 @@ def _json_object(value: Mapping) -> dict:
     if not isinstance(stored, dict):
         raise ValueError("Research result must be an object")
     return stored
+
+
+def validated_cache_result(cached, config, *, candidate=None):
+    """Never trust a cache key in place of its immutable input/result binding."""
+    frozen = BacktestConfig.model_validate_json(
+        canonical(cached["input_manifest"]["config"])
+    )
+    if frozen.canonical_json() != config.canonical_json():
+        raise ValueError("cached frozen config mismatch")
+    payload = cached["result"]
+    validate_result(payload, config)
+    if payload["schema_version"] == SCHEMAS["v2"]:
+        history = cached["input_manifest"].get("history")
+        if history is None or canonical(history) != canonical(
+            payload["lineage"]["frames"]
+        ):
+            raise ValueError("cached authoritative frame mapping mismatch")
+
+    def facts(value):
+        value = json.loads(canonical(value))
+        if value.get("schema_version") == SCHEMAS["v2"]:
+            # Completion is the immutable first computation's clock, not a
+            # deterministic input fact. Cache reuse retains that original clock.
+            value["lineage"].pop("computed_at", None)
+        return canonical(value)
+
+    if candidate is not None and facts(payload) != facts(candidate):
+        raise ValueError("conflicting deterministic materialized result")
+    return payload
 
 
 def manifest_from_snapshot(snapshot: PublishedSnapshot) -> dict:
@@ -132,6 +180,8 @@ class ResearchRunRecord(StrictFrozenModel):
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    result_schema_version: str = SCHEMAS["v1"]
+    compute_contract_sha256: str = "0" * 64
 
 
 class ResearchRunLease(StrictFrozenModel):
@@ -143,13 +193,13 @@ class ResearchRunLease(StrictFrozenModel):
     expires_at: datetime
 
 
-def _record(row) -> ResearchRunRecord:
+def _record_body(row) -> ResearchRunRecord:
     # JSONB hydration returns strings/arrays; JSON-mode validation rebuilds
     # UUID, date and tuple fields under the strict model.
     config = BacktestConfig.model_validate_json(
         json.dumps(row["input_manifest"]["config"], ensure_ascii=True)
     )
-    return ResearchRunRecord(
+    record = ResearchRunRecord(
         id=row["id"],
         owner_id=row["owner_id"],
         config=config,
@@ -161,7 +211,35 @@ def _record(row) -> ResearchRunRecord:
         created_at=row["created_at"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],
+        result_schema_version=row.get("result_schema_version", SCHEMAS["v1"]),
+        compute_contract_sha256=row.get("compute_contract_sha256", "0" * 64),
     )
+    try:
+        validate_envelope(
+            {
+                "run_id": str(record.id),
+                "status": record.status,
+                "config_hash": config.config_hash,
+                "research_only": True,
+                "result": record.result,
+                "failure": record.failure,
+            },
+            config,
+            run_id=record.id,
+        )
+        if record.result is not None:
+            if record.result["schema_version"] != record.result_schema_version:
+                raise ValueError("frozen result contract mismatch")
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ResearchDataUnavailable("materialized research data unavailable") from exc
+    return record
+
+
+def _record(row) -> ResearchRunRecord:
+    try:
+        return _record_body(row)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ResearchDataUnavailable("materialized research data unavailable") from exc
 
 
 class ResearchRunRepository:
@@ -172,11 +250,39 @@ class ResearchRunRepository:
         publication_repository: PublicationRepository,
         *,
         clock: Callable[[], datetime] | None = None,
+        result_version: str = "v1",
+        approved_descriptor: Mapping | None = None,
     ):
         self.database = database
         self.owners = owner_repository
         self.publications = publication_repository
         self.clock = clock or (lambda: datetime.now(UTC))
+        if result_version not in SCHEMAS:
+            raise ValueError("unsupported deployment research contract")
+        self.result_schema_version = SCHEMAS[result_version]
+        self.compute_contract_sha256 = compute_contract(
+            result_version,
+            approved_descriptor=approved_descriptor,
+        )
+
+    @staticmethod
+    def _cache_table(schema):
+        return (
+            research_backtest_cache_v2
+            if schema == SCHEMAS["v2"]
+            else research_backtest_cache
+        )
+
+    @staticmethod
+    def _cache_where(table, config_hash, schema, contract):
+        predicate = table.c.config_hash == config_hash
+        if table is research_backtest_cache_v2:
+            predicate = and_(
+                predicate,
+                table.c.result_schema_version == schema,
+                table.c.compute_contract_sha256 == contract,
+            )
+        return predicate
 
     def _now(self) -> datetime:
         value = self.clock()
@@ -204,6 +310,87 @@ class ResearchRunRepository:
         if row["status"] != "published":
             raise Forbidden("Publication is not available")
         return self.publications._authorized_records(connection, [row])[0]
+
+    def _validate_history(
+        self,
+        connection: Connection,
+        result,
+        *,
+        config=None,
+        contract=None,
+        trusted_history=None,
+    ) -> None:
+        if result is None or result.get("schema_version") != SCHEMAS["v2"]:
+            return
+        try:
+            frozen = json.loads(canonical(result))
+            frames = frozen["lineage"]["frames"]
+            if trusted_history is None:
+                if config is None or contract is None:
+                    raise ValueError("trusted historical mapping unavailable")
+                cached = (
+                    connection.execute(
+                        select(research_backtest_cache_v2).where(
+                            self._cache_where(
+                                research_backtest_cache_v2,
+                                config.config_hash,
+                                SCHEMAS["v2"],
+                                contract,
+                            )
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if cached is None:
+                    raise ValueError("trusted historical mapping unavailable")
+                validated_cache_result(cached, config)
+                trusted_history = cached["input_manifest"]["history"]
+            if canonical(frames) != canonical(trusted_history):
+                raise ValueError("historical archive digest/cutoff mismatch")
+            identities = [UUID(frame["publication_id"]) for frame in frames]
+            rows = (
+                connection.execute(
+                    select(publications).where(publications.c.id.in_(identities))
+                )
+                .mappings()
+                .all()
+            )
+            by_id = {row["id"]: row for row in rows}
+            if len(by_id) != len(identities):
+                raise ValueError("historical publications unavailable")
+            completed = datetime.fromisoformat(
+                frozen["lineage"]["computed_at"].replace("Z", "+00:00")
+            )
+            for frame, identity in zip(frames, identities, strict=True):
+                row = by_id[identity]
+                if row["status"] != "published":
+                    raise Forbidden("Historical publication access denied")
+                expected = (
+                    row["publication_sequence"],
+                    row["trade_date"].isoformat(),
+                    str(row["market_snapshot_id"]),
+                    str(row["topic_snapshot_id"]) if row["topic_snapshot_id"] else None,
+                    str(row["role_input_id"]) if row["role_input_id"] else None,
+                )
+                actual = tuple(
+                    frame[key]
+                    for key in (
+                        "publication_sequence",
+                        "trade_date",
+                        "market_snapshot_id",
+                        "topic_snapshot_id",
+                        "role_snapshot_id",
+                    )
+                )
+                cutoff = datetime.fromisoformat(frame["as_of"].replace("Z", "+00:00"))
+                if actual != expected or not cutoff <= row["published_at"] <= completed:
+                    raise ValueError("historical publication binding mismatch")
+            self.publications._authorized_records(connection, rows)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ResearchDataUnavailable(
+                "materialized research history unavailable"
+            ) from exc
 
     def input_manifest(self, token: str, snapshot_id: UUID | str) -> dict:
         """Authorize an owner session, then project the publication manifest.
@@ -272,7 +459,19 @@ class ResearchRunRepository:
         request_hash = config.config_hash
 
         # Authorization precedes every idempotency replay or cache lookup.
-        self._authorized_input(connection, config.snapshot_id)
+        snapshot = self._authorized_input(connection, config.snapshot_id)
+        manifest_context = manifest_from_snapshot(snapshot)
+        authoritative = InputManifests.model_validate_json(
+            canonical(
+                {
+                    key: value
+                    for key, value in manifest_context.items()
+                    if key != "snapshot_id"
+                }
+            )
+        )
+        if not manifests_equal(config.input_manifests, authoritative):
+            raise Conflict("Research input manifests do not match publication")
         manifest = {"config": config.model_dump(mode="json")}
         self._lock(connection, f"research-backtest:{owner_id}:{key}")
         existing = (
@@ -288,17 +487,43 @@ class ResearchRunRepository:
         if existing is not None:
             if existing["request_hash"] != request_hash:
                 raise Conflict("Idempotency key already belongs to another request")
-            return _record(existing)
+            record = _record(existing)
+            self._validate_history(
+                connection,
+                record.result,
+                config=record.config,
+                contract=record.compute_contract_sha256,
+            )
+            return record
 
+        cache = self._cache_table(self.result_schema_version)
         cached = (
             connection.execute(
-                select(research_backtest_cache).where(
-                    research_backtest_cache.c.config_hash == config.config_hash,
+                select(cache).where(
+                    self._cache_where(
+                        cache,
+                        config.config_hash,
+                        self.result_schema_version,
+                        self.compute_contract_sha256,
+                    )
                 )
             )
             .mappings()
             .first()
         )
+        if cached is not None:
+            try:
+                validated_cache_result(cached, config)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise ResearchDataUnavailable(
+                    "materialized research cache unavailable"
+                ) from exc
+            self._validate_history(
+                connection,
+                cached["result"],
+                config=config,
+                contract=self.compute_contract_sha256,
+            )
         now = self._now()
         values = {
             "id": uuid4(),
@@ -306,6 +531,8 @@ class ResearchRunRepository:
             "idempotency_key": key,
             "request_hash": request_hash,
             "config_hash": config.config_hash,
+            "result_schema_version": self.result_schema_version,
+            "compute_contract_sha256": self.compute_contract_sha256,
             "snapshot_id": config.snapshot_id,
             "input_manifest": manifest,
             "status": "succeeded" if cached is not None else "queued",
@@ -351,7 +578,50 @@ class ResearchRunRepository:
             if row is None:
                 raise NotFound("Research run not found")
             self._authorized_input(connection, row["snapshot_id"])
-            return _record(row)
+            record = _record(row)
+            self._validate_history(
+                connection,
+                record.result,
+                config=record.config,
+                contract=record.compute_contract_sha256,
+            )
+            return record
+
+    def run_config(self, token: str, run_id: UUID | str) -> dict:
+        record = self.get(token, run_id)
+        return {
+            "run_id": str(record.id),
+            "config_hash": record.config.config_hash,
+            "config": record.config.model_dump(mode="json"),
+        }
+
+    def capabilities(
+        self, token: str, snapshot_id: UUID | str, period: BacktestPeriod
+    ) -> dict:
+        from dragon_radar.research.capabilities import disabled_capabilities
+
+        if self.owners is None:
+            raise Forbidden("Owner access is unavailable")
+        snapshot_id = _uuid(snapshot_id)
+        with self.database.engine.begin() as connection:
+            self.owners.authorize_connection(connection, token)
+            snapshot = self._authorized_input(connection, snapshot_id)
+            sessions = tuple(
+                day
+                for day in snapshot.market_snapshot.batch.calendar.sessions
+                if period.start <= day <= period.end
+            )
+            if (
+                not sessions
+                or len(sessions) > 250
+                or sessions[0] != period.start
+                or sessions[-1] != period.end
+                or period.end > snapshot.trade_date
+            ):
+                raise ValueError("Research capability window unavailable")
+            # No package registry is supplied by this deployment. Enumerated
+            # kernel IDs alone are not evidence of production readiness.
+            return disabled_capabilities(snapshot_id, period)
 
     def claim(
         self,
@@ -533,30 +803,89 @@ class ResearchRunRepository:
         self,
         lease: ResearchRunLease,
         result: Mapping,
+        *,
+        executing_contract=None,
+        trusted_history=None,
     ) -> ResearchRunRecord:
         result = _json_object(result)
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
+            from dragon_radar.research.worker import contract_matches
+
+            if not contract_matches(_record(row), executing_contract):
+                raise ValueError("executing compute differs from frozen run contract")
             self._authorized_input(connection, row["snapshot_id"])
-            now = self._now()
-            connection.execute(
-                pg_insert(research_backtest_cache)
-                .values(
-                    id=uuid4(),
-                    config_hash=row["config_hash"],
-                    engine_version=row["input_manifest"]["config"]["schema_version"],
-                    input_manifest=row["input_manifest"],
-                    result=result,
-                    created_at=now,
-                )
-                .on_conflict_do_nothing(
-                    index_elements=[research_backtest_cache.c.config_hash]
-                )
+            config = BacktestConfig.model_validate_json(
+                canonical(row["input_manifest"]["config"])
             )
-            authoritative = connection.scalar(
-                select(research_backtest_cache.c.result).where(
-                    research_backtest_cache.c.config_hash == row["config_hash"],
+            validate_result(result, config)
+            if (
+                row["result_schema_version"] == SCHEMAS["v2"]
+                and trusted_history is None
+            ):
+                raise ResearchDataUnavailable("trusted historical mapping unavailable")
+            self._validate_history(connection, result, trusted_history=trusted_history)
+            if result["schema_version"] != row["result_schema_version"]:
+                raise ValueError(
+                    "worker result differs from frozen deployment contract"
                 )
+            now = self._now()
+            cache = self._cache_table(row["result_schema_version"])
+            cache_manifest = dict(row["input_manifest"])
+            if row["result_schema_version"] == SCHEMAS["v2"]:
+                cache_manifest["history"] = json.loads(canonical(trusted_history))
+            cache_values = dict(
+                id=uuid4(),
+                config_hash=row["config_hash"],
+                input_manifest=cache_manifest,
+                result=result,
+                created_at=now,
+            )
+            if cache is research_backtest_cache_v2:
+                cache_values.update(
+                    result_schema_version=row["result_schema_version"],
+                    compute_contract_sha256=row["compute_contract_sha256"],
+                )
+                unique = [
+                    cache.c.config_hash,
+                    cache.c.result_schema_version,
+                    cache.c.compute_contract_sha256,
+                ]
+            else:
+                cache_values["engine_version"] = row["input_manifest"]["config"][
+                    "schema_version"
+                ]
+                unique = [cache.c.config_hash]
+            connection.execute(
+                pg_insert(cache)
+                .values(**cache_values)
+                .on_conflict_do_nothing(index_elements=unique)
+            )
+            cached = (
+                connection.execute(
+                    select(cache).where(
+                        self._cache_where(
+                            cache,
+                            row["config_hash"],
+                            row["result_schema_version"],
+                            row["compute_contract_sha256"],
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            try:
+                authoritative = validated_cache_result(cached, config, candidate=result)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise ResearchCacheConflict(
+                    "Conflicting immutable research cache"
+                ) from exc
+            self._validate_history(
+                connection,
+                authoritative,
+                config=config,
+                contract=row["compute_contract_sha256"],
             )
             completed = (
                 connection.execute(

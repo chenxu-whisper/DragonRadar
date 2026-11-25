@@ -113,7 +113,7 @@ export function selectPublicEdgeSubnet(run) {
 const RESEARCH_UUID = '00000000-0000-4000-8000-0000000000aa';
 
 export const RESEARCH_OWNER_READ_PATTERN =
-  '^/api/research/(manifests/[0-9a-fA-F-]{36}|backtests/[0-9a-fA-F-]{36})$';
+  '^/api/research/(capabilities|manifests/[0-9a-fA-F-]{36}|backtests/[0-9a-fA-F-]{36}(/config)?)$';
 export const RESEARCH_OWNER_WRITE_PATTERN =
   '^/api/research/backtests(/[0-9a-fA-F-]{36}/cancel)?$';
 
@@ -122,6 +122,7 @@ export const RESEARCH_OWNER_WRITE_PATTERN =
 export const RESEARCH_OWNER_READ_PROBES = [
   `/api/research/manifests/${RESEARCH_UUID}`,
   `/api/research/backtests/${RESEARCH_UUID}`,
+  `/api/research/backtests/${RESEARCH_UUID}/config`,
 ];
 
 // Whitelisted owner writes: without a CSRF header the app rejects them with a
@@ -142,8 +143,10 @@ export const RESEARCH_EDGE_DENY_PROBES = [
 
 // The workbench/public edge denies the whole namespace regardless of method.
 export const RESEARCH_PUBLIC_DENY_PROBES = [
+  '/api/research/capabilities',
   `/api/research/manifests/${RESEARCH_UUID}`,
   `/api/research/backtests/${RESEARCH_UUID}`,
+  `/api/research/backtests/${RESEARCH_UUID}/config`,
   '/api/research/backtests',
   `/api/research/backtests/${RESEARCH_UUID}/cancel`,
 ];

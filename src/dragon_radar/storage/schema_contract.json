@@ -119,6 +119,44 @@
     },
     {
       "columns": [
+        "archive_version"
+      ],
+      "deferrable": false,
+      "expression": "(archive_version > 0)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "promoted_news_summaries_archive_version_check",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "promoted_news_summaries"
+    },
+    {
+      "columns": [
+        "archive_version"
+      ],
+      "deferrable": false,
+      "expression": "(archive_version > 0)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "public_daily_ai_archives_archive_version_check",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "public_daily_ai_archives"
+    },
+    {
+      "columns": [
         "article_id",
         "revision"
       ],
@@ -325,6 +363,86 @@
     },
     {
       "columns": [
+        "artifact_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "ai_artifact_revocations_artifact_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "artifact_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "ai_artifact_private_links",
+      "table": "ai_artifact_revocations"
+    },
+    {
+      "columns": [
+        "artifact_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "ai_artifact_verifications_artifact_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "artifact_id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "ai_artifact_private_links",
+      "table": "ai_artifact_verifications"
+    },
+    {
+      "columns": [
+        "artifact_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "ai_artifact_private_links_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_artifact_private_links"
+    },
+    {
+      "columns": [
+        "artifact_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "ai_artifact_verifications_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_artifact_verifications"
+    },
+    {
+      "columns": [
         "association_id",
         "revision"
       ],
@@ -480,6 +598,90 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "news_article_revisions"
+    },
+    {
+      "columns": [
+        "base_publication_id",
+        "archive_version",
+        "article_revision_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "promoted_news_summaries_base_publication_id_archive_version_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "promoted_news_summaries"
+    },
+    {
+      "columns": [
+        "base_publication_id",
+        "archive_version",
+        "article_revision_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "public_daily_ai_archives_base_publication_id_archive_versio_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "public_daily_ai_archives"
+    },
+    {
+      "columns": [
+        "base_publication_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "promoted_news_summaries_base_publication_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "publications",
+      "table": "promoted_news_summaries"
+    },
+    {
+      "columns": [
+        "base_publication_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "public_daily_ai_archives_base_publication_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "publications",
+      "table": "public_daily_ai_archives"
     },
     {
       "columns": [
@@ -755,6 +957,66 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "lhb_disclosure_revisions"
+    },
+    {
+      "columns": [
+        "compute_contract_sha256"
+      ],
+      "deferrable": false,
+      "expression": "((compute_contract_sha256)::text ~ '^[0-9a-f]{64}$'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_compute_contract",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
+        "config_hash",
+        "compute_contract_sha256"
+      ],
+      "deferrable": false,
+      "expression": "(((config_hash)::text ~ '^[0-9a-f]{64}$'::text) AND ((compute_contract_sha256)::text ~ '^[0-9a-f]{64}$'::text))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_cache_v2_digests",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_cache_v2"
+    },
+    {
+      "columns": [
+        "config_hash",
+        "result_schema_version",
+        "compute_contract_sha256"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "research_backtest_cache_v2_contract_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_cache_v2"
     },
     {
       "columns": [
@@ -1537,6 +1799,44 @@
       "key_expressions": [],
       "kind": "primary_key",
       "match_type": null,
+      "name": "ai_artifact_revocations_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_artifact_revocations"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "ai_output_entitlement_revocations_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_output_entitlement_revocations"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
       "name": "ai_task_cancellations_pkey",
       "on_delete": null,
       "on_update": null,
@@ -2107,6 +2407,44 @@
       "key_expressions": [],
       "kind": "primary_key",
       "match_type": null,
+      "name": "promoted_news_summaries_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "promoted_news_summaries"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "public_daily_ai_archives_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "public_daily_ai_archives"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
       "name": "publication_attempts_pkey",
       "on_delete": null,
       "on_update": null,
@@ -2362,6 +2700,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "research_backtest_cache"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "research_backtest_cache_v2_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_cache_v2"
     },
     {
       "columns": [
@@ -2734,6 +3091,25 @@
       "key_expressions": [],
       "kind": "unique",
       "match_type": null,
+      "name": "ai_output_entitlement_revocations_idempotency_key_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_output_entitlement_revocations"
+    },
+    {
+      "columns": [
+        "idempotency_key"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
       "name": "import_batches_idempotency_key_key",
       "on_delete": null,
       "on_update": null,
@@ -2975,6 +3351,26 @@
     },
     {
       "columns": [
+        "input_sha256",
+        "evidence_sha256"
+      ],
+      "deferrable": false,
+      "expression": "(((input_sha256)::text ~ '^[0-9a-f]{64}$'::text) AND ((evidence_sha256)::text ~ '^[0-9a-f]{64}$'::text))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "input_clock_evidence_hashes",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "input_clock_evidence"
+    },
+    {
+      "columns": [
         "input_state"
       ],
       "deferrable": false,
@@ -3194,6 +3590,25 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "role_validation_commands"
+    },
+    {
+      "columns": [
+        "max_wall_clock_ms"
+      ],
+      "deferrable": false,
+      "expression": "((max_wall_clock_ms >= 1) AND (max_wall_clock_ms <= 300000))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "analysis_jobs_wall_clock_budget",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "analysis_jobs"
     },
     {
       "columns": [
@@ -3595,6 +4010,26 @@
       "key_expressions": [],
       "kind": "unique",
       "match_type": null,
+      "name": "ai_artifact_revocations_owner_id_idempotency_key_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_artifact_revocations"
+    },
+    {
+      "columns": [
+        "owner_id",
+        "idempotency_key"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
       "name": "ai_task_cancellations_owner_id_idempotency_key_key",
       "on_delete": null,
       "on_update": null,
@@ -3743,6 +4178,27 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "owner_commands"
+    },
+    {
+      "columns": [
+        "owner_id",
+        "kind",
+        "idempotency_key"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "ai_artifact_private_links_owner_id_kind_idempotency_key_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_artifact_private_links"
     },
     {
       "columns": [
@@ -3925,6 +4381,48 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "watch_entries"
+    },
+    {
+      "columns": [
+        "owner_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "ai_artifact_private_links_owner_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "owner_principals",
+      "table": "ai_artifact_private_links"
+    },
+    {
+      "columns": [
+        "owner_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "ai_artifact_revocations_owner_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "owner_principals",
+      "table": "ai_artifact_revocations"
     },
     {
       "columns": [
@@ -4664,6 +5162,26 @@
     },
     {
       "columns": [
+        "provider_published_at",
+        "first_received_at"
+      ],
+      "deferrable": false,
+      "expression": "((provider_published_at IS NULL) OR (first_received_at IS NULL) OR (provider_published_at <= first_received_at))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "input_clock_evidence_receipt_order",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "input_clock_evidence"
+    },
+    {
+      "columns": [
         "publication_id",
         "domain"
       ],
@@ -4755,6 +5273,44 @@
       "key_expressions": [],
       "kind": "unique",
       "match_type": null,
+      "name": "promoted_news_summaries_publication_sequence_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "promoted_news_summaries"
+    },
+    {
+      "columns": [
+        "publication_sequence"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "public_daily_ai_archives_publication_sequence_key",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "public_daily_ai_archives"
+    },
+    {
+      "columns": [
+        "publication_sequence"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
       "name": "publications_publication_sequence_key",
       "on_delete": null,
       "on_update": null,
@@ -4823,6 +5379,46 @@
     },
     {
       "columns": [
+        "reference"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "ai_output_entitlement_revocations_reference_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "reference"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "ai_output_entitlements",
+      "table": "ai_output_entitlement_revocations"
+    },
+    {
+      "columns": [
+        "reference"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "ai_output_entitlements_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "ai_output_entitlements"
+    },
+    {
+      "columns": [
         "regulation_input_id"
       ],
       "deferrable": false,
@@ -4863,6 +5459,44 @@
     },
     {
       "columns": [
+        "result_schema_version"
+      ],
+      "deferrable": false,
+      "expression": "((result_schema_version)::text = 'dragon-radar.research-backtest-result/v2'::text)",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_cache_v2_schema",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_cache_v2"
+    },
+    {
+      "columns": [
+        "result_schema_version"
+      ],
+      "deferrable": false,
+      "expression": "((result_schema_version)::text = ANY ((ARRAY['dragon-radar.research-backtest/v1'::character varying, 'dragon-radar.research-backtest-result/v2'::character varying])::text[]))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "research_backtest_runs_result_schema",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "research_backtest_runs"
+    },
+    {
+      "columns": [
         "result_type"
       ],
       "deferrable": false,
@@ -4879,6 +5513,27 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "regulation_commands"
+    },
+    {
+      "columns": [
+        "review_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
+      "name": "ai_artifact_private_links_review_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "ai_task_reviews",
+      "table": "ai_artifact_private_links"
     },
     {
       "columns": [
@@ -6753,6 +7408,27 @@
     {
       "columns": [
         "source_event_at",
+        "provider_published_at",
+        "first_received_at"
+      ],
+      "deferrable": false,
+      "expression": "((source_event_at IS NOT NULL) OR (provider_published_at IS NOT NULL) OR (first_received_at IS NOT NULL))",
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "check",
+      "match_type": null,
+      "name": "input_clock_evidence_observation",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "input_clock_evidence"
+    },
+    {
+      "columns": [
+        "source_event_at",
         "received_at",
         "available_at"
       ],
@@ -6857,6 +7533,51 @@
       "referenced_schema": null,
       "referenced_table": null,
       "table": "source_dependencies"
+    },
+    {
+      "columns": [
+        "source_id",
+        "archive_type",
+        "archive_id",
+        "revision_key",
+        "input_sha256"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "unique",
+      "match_type": null,
+      "name": "input_clock_evidence_content",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "input_clock_evidence"
+    },
+    {
+      "columns": [
+        "source_id",
+        "archive_type",
+        "archive_id",
+        "revision_key"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "primary_key",
+      "match_type": null,
+      "name": "input_clock_evidence_pkey",
+      "on_delete": null,
+      "on_update": null,
+      "operators": [],
+      "referenced_columns": [],
+      "referenced_schema": null,
+      "referenced_table": null,
+      "table": "input_clock_evidence"
     },
     {
       "columns": [
@@ -8580,6 +9301,27 @@
       "key_expressions": [],
       "kind": "foreign_key",
       "match_type": "simple",
+      "name": "ai_artifact_private_links_task_id_fkey",
+      "on_delete": "no_action",
+      "on_update": "no_action",
+      "operators": [],
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_schema": "current_schema",
+      "referenced_table": "ai_tasks",
+      "table": "ai_artifact_private_links"
+    },
+    {
+      "columns": [
+        "task_id"
+      ],
+      "deferrable": false,
+      "expression": null,
+      "initially_deferred": false,
+      "key_expressions": [],
+      "kind": "foreign_key",
+      "match_type": "simple",
       "name": "ai_task_cancellations_task_id_fkey",
       "on_delete": "restrict",
       "on_update": "no_action",
@@ -9373,6 +10115,28 @@
     {
       "access_method": "btree",
       "key_expressions": [
+        "artifact_id"
+      ],
+      "name": "ai_artifact_private_links_pkey",
+      "predicate": null,
+      "table": "ai_artifact_private_links",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "artifact_id"
+      ],
+      "name": "ai_artifact_verifications_pkey",
+      "predicate": null,
+      "table": "ai_artifact_verifications",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
         "association_id",
         "revision"
       ],
@@ -9493,6 +10257,70 @@
     {
       "access_method": "btree",
       "key_expressions": [
+        "base_publication_id",
+        "archive_version",
+        "article_revision_id"
+      ],
+      "name": "promoted_news_summaries_base_publication_id_archive_version_key",
+      "predicate": null,
+      "table": "promoted_news_summaries",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "base_publication_id",
+        "archive_version",
+        "article_revision_id"
+      ],
+      "name": "public_daily_ai_archives_base_publication_id_archive_versio_key",
+      "predicate": null,
+      "table": "public_daily_ai_archives",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "base_publication_id",
+        "archive_version",
+        "id"
+      ],
+      "name": "promoted_news_summaries_listing",
+      "predicate": null,
+      "table": "promoted_news_summaries",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "base_publication_id",
+        "archive_version",
+        "id"
+      ],
+      "name": "public_daily_ai_archives_listing",
+      "predicate": null,
+      "table": "public_daily_ai_archives",
+      "unique": false,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "base_publication_id",
+        "archive_version"
+      ],
+      "name": "public_daily_ai_pub_version",
+      "predicate": null,
+      "table": "public_daily_ai_archives",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
         "batch_id"
       ],
       "name": "snapshots_batch_id_key",
@@ -9537,6 +10365,19 @@
     {
       "access_method": "btree",
       "key_expressions": [
+        "config_hash",
+        "result_schema_version",
+        "compute_contract_sha256"
+      ],
+      "name": "research_backtest_cache_v2_contract_key",
+      "predicate": null,
+      "table": "research_backtest_cache_v2",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
         "config_hash"
       ],
       "name": "research_backtest_cache_config_hash_key",
@@ -9566,6 +10407,19 @@
       "predicate": null,
       "table": "source_dependencies",
       "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "derived_type",
+        "derived_id",
+        "dependency_sequence"
+      ],
+      "name": "source_dependencies_ai_reverse",
+      "predicate": null,
+      "table": "source_dependencies",
+      "unique": false,
       "valid": true
     },
     {
@@ -9699,6 +10553,28 @@
       "name": "role_results_pending_identity",
       "predicate": null,
       "table": "role_results",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "ai_artifact_revocations_pkey",
+      "predicate": null,
+      "table": "ai_artifact_revocations",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "ai_output_entitlement_revocations_pkey",
+      "predicate": null,
+      "table": "ai_output_entitlement_revocations",
       "unique": true,
       "valid": true
     },
@@ -10037,6 +10913,28 @@
       "key_expressions": [
         "id"
       ],
+      "name": "promoted_news_summaries_pkey",
+      "predicate": null,
+      "table": "promoted_news_summaries",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "public_daily_ai_archives_pkey",
+      "predicate": null,
+      "table": "public_daily_ai_archives",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
       "name": "publication_attempts_pkey",
       "predicate": null,
       "table": "publication_attempts",
@@ -10183,6 +11081,17 @@
       "name": "research_backtest_cache_pkey",
       "predicate": null,
       "table": "research_backtest_cache",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "id"
+      ],
+      "name": "research_backtest_cache_v2_pkey",
+      "predicate": null,
+      "table": "research_backtest_cache_v2",
       "unique": true,
       "valid": true
     },
@@ -10392,6 +11301,17 @@
       "name": "withdrawal_records_pkey",
       "predicate": null,
       "table": "withdrawal_records",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "idempotency_key"
+      ],
+      "name": "ai_output_entitlement_revocations_idempotency_key_key",
+      "predicate": null,
+      "table": "ai_output_entitlement_revocations",
       "unique": true,
       "valid": true
     },
@@ -10626,6 +11546,18 @@
         "owner_id",
         "idempotency_key"
       ],
+      "name": "ai_artifact_revocations_owner_id_idempotency_key_key",
+      "predicate": null,
+      "table": "ai_artifact_revocations",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "owner_id",
+        "idempotency_key"
+      ],
       "name": "ai_task_cancellations_owner_id_idempotency_key_key",
       "predicate": null,
       "table": "ai_task_cancellations",
@@ -10713,6 +11645,19 @@
       "name": "owner_commands_pkey",
       "predicate": null,
       "table": "owner_commands",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "owner_id",
+        "kind",
+        "idempotency_key"
+      ],
+      "name": "ai_artifact_private_links_owner_id_kind_idempotency_key_key",
+      "predicate": null,
+      "table": "ai_artifact_private_links",
       "unique": true,
       "valid": true
     },
@@ -10868,6 +11813,28 @@
       "key_expressions": [
         "publication_sequence"
       ],
+      "name": "promoted_news_summaries_publication_sequence_key",
+      "predicate": null,
+      "table": "promoted_news_summaries",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "publication_sequence"
+      ],
+      "name": "public_daily_ai_archives_publication_sequence_key",
+      "predicate": null,
+      "table": "public_daily_ai_archives",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "publication_sequence"
+      ],
       "name": "publications_publication_sequence_key",
       "predicate": null,
       "table": "publications",
@@ -10882,6 +11849,17 @@
       "name": "topic_snapshots_publication_sequence_key",
       "predicate": null,
       "table": "topic_snapshots",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "reference"
+      ],
+      "name": "ai_output_entitlements_pkey",
+      "predicate": null,
+      "table": "ai_output_entitlements",
       "unique": true,
       "valid": true
     },
@@ -11338,6 +12316,35 @@
       "name": "source_dependencies_source_id_archive_type_archive_id_deriv_key",
       "predicate": null,
       "table": "source_dependencies",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "archive_type",
+        "archive_id",
+        "revision_key",
+        "input_sha256"
+      ],
+      "name": "input_clock_evidence_content",
+      "predicate": null,
+      "table": "input_clock_evidence",
+      "unique": true,
+      "valid": true
+    },
+    {
+      "access_method": "btree",
+      "key_expressions": [
+        "source_id",
+        "archive_type",
+        "archive_id",
+        "revision_key"
+      ],
+      "name": "input_clock_evidence_pkey",
+      "predicate": null,
+      "table": "input_clock_evidence",
       "unique": true,
       "valid": true
     },
@@ -12073,6 +13080,135 @@
         }
       ],
       "name": "security_state_history"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "artifact_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "input_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "output_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "verification_version",
+          "nullable": false,
+          "type": "character varying(100)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "model_version",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "prompt_version",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "verified_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "ai_artifact_verifications"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "artifact_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "kind",
+          "nullable": false,
+          "type": "character varying(30)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "owner_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "task_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "draft_revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "review_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "request_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "consent_reference",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "ai_artifact_private_links"
     },
     {
       "columns": [
@@ -13124,6 +14260,60 @@
         {
           "generated": null,
           "identity": null,
+          "name": "artifact_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "owner_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "request_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "character varying(40)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "revoked_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "ai_artifact_revocations"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
           "name": "association_id",
           "nullable": false,
           "type": "uuid"
@@ -13165,6 +14355,184 @@
         }
       ],
       "name": "news_association_reviews"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "base_publication_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "trade_date",
+          "nullable": false,
+          "type": "date"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "archive_version",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "publication_sequence",
+          "nullable": false,
+          "type": "bigint"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "supersedes",
+          "nullable": true,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "published_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "content_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "safe_payload",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "rights_manifest",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "attestation_reference",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "article_revision_id",
+          "nullable": true,
+          "type": "uuid"
+        }
+      ],
+      "name": "promoted_news_summaries"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "base_publication_id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "trade_date",
+          "nullable": false,
+          "type": "date"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "archive_version",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "publication_sequence",
+          "nullable": false,
+          "type": "bigint"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "supersedes",
+          "nullable": true,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "published_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "content_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "safe_payload",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "rights_manifest",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "attestation_reference",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "article_revision_id",
+          "nullable": true,
+          "type": "uuid"
+        }
+      ],
+      "name": "public_daily_ai_archives"
     },
     {
       "columns": [
@@ -13594,6 +14962,60 @@
         }
       ],
       "name": "research_backtest_cache"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "config_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "result_schema_version",
+          "nullable": false,
+          "type": "character varying(100)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "compute_contract_sha256",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "input_manifest",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "result",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "research_backtest_cache_v2"
     },
     {
       "columns": [
@@ -14693,6 +16115,13 @@
         {
           "generated": null,
           "identity": null,
+          "name": "max_wall_clock_ms",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "generated": null,
+          "identity": null,
           "name": "available_at",
           "nullable": false,
           "type": "timestamp with time zone"
@@ -14790,6 +16219,20 @@
           "generated": null,
           "identity": null,
           "name": "config_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "result_schema_version",
+          "nullable": false,
+          "type": "character varying(100)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "compute_contract_sha256",
           "nullable": false,
           "type": "character varying(64)"
         },
@@ -15687,6 +17130,46 @@
         }
       ],
       "name": "role_validations"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "id",
+          "nullable": false,
+          "type": "uuid"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reference",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reason_reference",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "revoked_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "ai_output_entitlement_revocations"
     },
     {
       "columns": [
@@ -17170,9 +18653,49 @@
           "name": "quality_flags",
           "nullable": false,
           "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "clock_lineage",
+          "nullable": true,
+          "type": "jsonb"
         }
       ],
       "name": "publication_results"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "reference",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "document",
+          "nullable": false,
+          "type": "jsonb"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "content_hash",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "registered_at",
+          "nullable": false,
+          "type": "timestamp with time zone"
+        }
+      ],
+      "name": "ai_output_entitlements"
     },
     {
       "columns": [
@@ -18175,6 +19698,81 @@
         {
           "generated": null,
           "identity": null,
+          "name": "archive_type",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "archive_id",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "revision_key",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_version",
+          "nullable": false,
+          "type": "character varying(200)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "input_sha256",
+          "nullable": false,
+          "type": "character varying(64)"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_event_at",
+          "nullable": true,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "provider_published_at",
+          "nullable": true,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "first_received_at",
+          "nullable": true,
+          "type": "timestamp with time zone"
+        },
+        {
+          "generated": null,
+          "identity": null,
+          "name": "evidence_sha256",
+          "nullable": false,
+          "type": "character varying(64)"
+        }
+      ],
+      "name": "input_clock_evidence"
+    },
+    {
+      "columns": [
+        {
+          "generated": null,
+          "identity": null,
+          "name": "source_id",
+          "nullable": false,
+          "type": "text"
+        },
+        {
+          "generated": null,
+          "identity": null,
           "name": "grant",
           "nullable": false,
           "type": "jsonb"
@@ -18282,6 +19880,63 @@
       "deferrable": false,
       "enabled": "origin",
       "events": [
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "input_clock_evidence_no_delete",
+      "table": "input_clock_evidence",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "promoted_news_summaries_immutable",
+      "table": "promoted_news_summaries",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "public_daily_ai_archives_immutable",
+      "table": "public_daily_ai_archives",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
         "INSERT",
         "UPDATE",
         "DELETE"
@@ -18358,6 +20013,25 @@
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "INSERT"
+      ],
+      "function_definition_sha256": "2e169a88f505c22ccfe8152b1c4fafd3de752abb045761e3561446ded7fd9752",
+      "function_name": "guard_ai_withdrawal_binding",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "withdrawal_dependencies_ai_insert_guard",
+      "table": "withdrawal_dependencies",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": "is_ai_artifact_dependency(new.source_dependency_id)"
     },
     {
       "arguments": "",
@@ -18471,7 +20145,7 @@
       "table": "withdrawal_dependencies",
       "timing": "BEFORE",
       "update_of_columns": [],
-      "when": null
+      "when": "(NOT is_ai_artifact_dependency(new.source_dependency_id))"
     },
     {
       "arguments": "",
@@ -18868,6 +20542,101 @@
       "level": "ROW",
       "name": "role_validations_chain",
       "table": "role_validations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_artifact_private_links_no_truncate",
+      "table": "ai_artifact_private_links",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_artifact_revocations_no_truncate",
+      "table": "ai_artifact_revocations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_artifact_verifications_no_truncate",
+      "table": "ai_artifact_verifications",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_output_entitlement_revocations_no_truncate",
+      "table": "ai_output_entitlement_revocations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_output_entitlements_no_truncate",
+      "table": "ai_output_entitlements",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null
@@ -19322,6 +21091,25 @@
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "STATEMENT",
+      "name": "input_clock_evidence_no_truncate",
+      "table": "input_clock_evidence",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
       "name": "limit_up_record_no_truncate",
       "table": "limit_up_record",
       "timing": "BEFORE",
@@ -19607,6 +21395,44 @@
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "STATEMENT",
+      "name": "promoted_news_summaries_no_truncate",
+      "table": "promoted_news_summaries",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "public_daily_ai_archives_no_truncate",
+      "table": "public_daily_ai_archives",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
       "name": "publication_attempts_no_truncate",
       "table": "publication_attempts",
       "timing": "BEFORE",
@@ -19837,6 +21663,25 @@
       "level": "STATEMENT",
       "name": "research_backtest_cache_no_truncate",
       "table": "research_backtest_cache",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "TRUNCATE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "research_backtest_cache_v2_no_truncate",
+      "table": "research_backtest_cache_v2",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null
@@ -20612,6 +22457,106 @@
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "STATEMENT",
+      "name": "ai_artifact_private_links_immutable",
+      "table": "ai_artifact_private_links",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_artifact_revocations_immutable",
+      "table": "ai_artifact_revocations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_artifact_verifications_immutable",
+      "table": "ai_artifact_verifications",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_output_entitlement_revocations_immutable",
+      "table": "ai_output_entitlement_revocations",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "ai_output_entitlements_immutable",
+      "table": "ai_output_entitlements",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
       "name": "ai_task_cancellations_append_only",
       "table": "ai_task_cancellations",
       "timing": "BEFORE",
@@ -21252,6 +23197,26 @@
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "STATEMENT",
+      "name": "research_backtest_cache_v2_immutable",
+      "table": "research_backtest_cache_v2",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE",
+        "DELETE"
+      ],
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
       "name": "review_note_revisions_immutable",
       "table": "review_note_revisions",
       "timing": "BEFORE",
@@ -21706,12 +23671,50 @@
       "events": [
         "UPDATE"
       ],
-      "function_definition_sha256": "1c1880e9764131f0a7af0d9034c05de53a4c9c7f07c4c706adcc2b127f9fecd2",
-      "function_name": "guard_publication_regulation_binding",
+      "function_definition_sha256": "006698a28766d198f6ca05b15fdb084e08d791acfff4280c8bb7396e14eebdf7",
+      "function_name": "guard_ai_artifact_erasure",
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "ROW",
-      "name": "publications_regulation_binding",
+      "name": "promoted_news_summaries_erasure",
+      "table": "promoted_news_summaries",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "006698a28766d198f6ca05b15fdb084e08d791acfff4280c8bb7396e14eebdf7",
+      "function_name": "guard_ai_artifact_erasure",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "public_daily_ai_archives_erasure",
+      "table": "public_daily_ai_archives",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "0dc42a30d6ff257d07d18df1ec842fc5b039578c3bbabdfc7982ee27e4fcc2fd",
+      "function_name": "guard_publication_news_binding",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "publications_news_binding",
       "table": "publications",
       "timing": "BEFORE",
       "update_of_columns": [],
@@ -21725,12 +23728,12 @@
       "events": [
         "UPDATE"
       ],
-      "function_definition_sha256": "39436ebd27493d8c68f8757dab5fa1d243c2e793c80b23dc9c4748e31ae04bfb",
-      "function_name": "guard_publication_news_binding",
+      "function_definition_sha256": "1c1880e9764131f0a7af0d9034c05de53a4c9c7f07c4c706adcc2b127f9fecd2",
+      "function_name": "guard_publication_regulation_binding",
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "ROW",
-      "name": "publications_news_binding",
+      "name": "publications_regulation_binding",
       "table": "publications",
       "timing": "BEFORE",
       "update_of_columns": [],
@@ -21763,13 +23766,51 @@
       "events": [
         "UPDATE"
       ],
-      "function_definition_sha256": "73a3454386433f2e1c90e56a82e68b2d40bb5d76f27fcb06fc95373f7e162476",
+      "function_definition_sha256": "554f6eafb6065724598c17b063b86983f2251d5523262c3a60a33e95183f7c2d",
+      "function_name": "reject_immutable_mutation",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "STATEMENT",
+      "name": "input_clock_evidence_no_update",
+      "table": "input_clock_evidence",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "79dd1b56b5b6a82127d61b8e93fc818ae4c5d1e81adc27f598298ed62eecd9eb",
       "function_name": "guard_analysis_job_inputs",
       "function_schema": "current_schema",
       "initially_deferred": false,
       "level": "ROW",
       "name": "analysis_jobs_immutable_inputs",
       "table": "analysis_jobs",
+      "timing": "BEFORE",
+      "update_of_columns": [],
+      "when": null
+    },
+    {
+      "arguments": "",
+      "constraint": null,
+      "deferrable": false,
+      "enabled": "origin",
+      "events": [
+        "UPDATE"
+      ],
+      "function_definition_sha256": "b036c52ed11dd25c8fc04e35dfe995f61c6f2bc2c0888198e2b368a1396e1d6d",
+      "function_name": "guard_research_backtest_inputs",
+      "function_schema": "current_schema",
+      "initially_deferred": false,
+      "level": "ROW",
+      "name": "research_backtest_runs_immutable_inputs",
+      "table": "research_backtest_runs",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null
@@ -21789,25 +23830,6 @@
       "level": "ROW",
       "name": "ai_tasks_guard",
       "table": "ai_tasks",
-      "timing": "BEFORE",
-      "update_of_columns": [],
-      "when": null
-    },
-    {
-      "arguments": "",
-      "constraint": null,
-      "deferrable": false,
-      "enabled": "origin",
-      "events": [
-        "UPDATE"
-      ],
-      "function_definition_sha256": "fcd8c4cde85e58e38b045ce9fa8bc4b3baee72e60bbdfedc5246ae9f7a39bcab",
-      "function_name": "guard_research_backtest_inputs",
-      "function_schema": "current_schema",
-      "initially_deferred": false,
-      "level": "ROW",
-      "name": "research_backtest_runs_immutable_inputs",
-      "table": "research_backtest_runs",
       "timing": "BEFORE",
       "update_of_columns": [],
       "when": null

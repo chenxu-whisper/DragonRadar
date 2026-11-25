@@ -371,7 +371,7 @@ test('private AI previews selected fragments, polls, and protects edited notes o
   await panel.getByRole('button', { name: '采用草稿' }).click();
   await expect(panel.getByRole('alert')).toContainText('编辑器已在提交后变化');
   await panel.getByRole('button', { name: '另存为新笔记' }).click();
-  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+  await expect(panel.getByRole('status').filter({ hasText: '回读验证通过' })).toContainText('回读验证通过');
   await expect(page.getByRole('button', { name: /AI 每日复盘/ })).toBeVisible();
   await expect(page.getByRole('textbox', { name: '正文', exact: true }))
     .toHaveValue('提交后本地已修改');
@@ -493,7 +493,7 @@ test('cross-snapshot adoption preserves the selected note and saves task provena
   await expect(page.getByRole('textbox', { name: '正文', exact: true }))
     .toHaveValue('必须保留的旧正文');
   await panel.getByRole('button', { name: '另存为新笔记' }).click();
-  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+  await expect(panel.getByRole('status').filter({ hasText: '回读验证通过' })).toContainText('回读验证通过');
 
   const bindings = await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -582,7 +582,7 @@ test('overview daily AI expands snapshot facts without sending private notes and
   await expect(panel.getByRole('heading', { name: '推断', exact: true })).toBeVisible();
   await expect(panel.getByRole('heading', { name: '缺失证据', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: '采用草稿', exact: true }).click();
-  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+  await expect(panel.getByRole('status').filter({ hasText: '回读验证通过' })).toContainText('回读验证通过');
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '我的复盘', exact: true }).click();
   await expect(page.getByRole('button', { name: '私人原始笔记', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'AI 每日速览 2026-09-10', exact: true }).click();
@@ -742,7 +742,7 @@ test('overview retains the accepted AI result across collapse without another PO
   expect(submissions).toBe(1);
   expect(reviews).toBe(1);
   await panel.getByRole('button', { name: '采用草稿', exact: true }).click();
-  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+  await expect(panel.getByRole('status').filter({ hasText: '回读验证通过' })).toContainText('回读验证通过');
 });
 
 test('AI accepts normalized UTC publication instants on submit, poll and review reads', async ({ page }) => {
@@ -776,6 +776,6 @@ test('AI accepts normalized UTC publication instants on submit, poll and review 
   await panel.getByRole('button', { name: '接受校验草稿', exact: true }).click();
   await expect(panel).toContainText('人工审核：accepted');
   await panel.getByRole('button', { name: '采用草稿', exact: true }).click();
-  await expect(panel.getByRole('status')).toContainText('回读验证通过');
+  await expect(panel.getByRole('status').filter({ hasText: '回读验证通过' })).toContainText('回读验证通过');
   await expect(panel.getByRole('alert')).toHaveCount(0);
 });

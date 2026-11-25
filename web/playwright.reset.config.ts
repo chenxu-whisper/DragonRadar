@@ -63,6 +63,7 @@ export default defineConfig(explicitWorkbench ? {
   testMatch: 'reset-*.spec.ts',
   testIgnore: [
     '**/reset-ai.spec.ts', '**/reset-ai-public.spec.ts',
+    '**/reset-analysis-jobs.spec.ts',
     '**/reset-contract*.spec.ts',
     '**/reset-ig08.spec.ts', '**/reset-ig10-ai.spec.ts',
   ],

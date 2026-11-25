@@ -48,7 +48,7 @@ def _query(request: Request, *, comparison: bool):
     if comparison:
         allowed.add("symbols")
     else:
-        allowed.add("sort")
+        allowed.update({"sort", "order"})
     query = query_values(request, allowed)
     if "start" not in query or "end" not in query:
         raise ValueError("A start and end date are required")
@@ -66,6 +66,9 @@ def _query(request: Request, *, comparison: bool):
     sort = query.get("sort", "return")
     if not comparison and sort not in _SORT_FIELDS:
         raise ValueError("Invalid sort")
+    order = query.get("order")
+    if order is not None and order not in {"asc", "desc"}:
+        raise ValueError("Invalid order")
     symbols = None
     if comparison:
         raw_symbols = query.get("symbols")
@@ -87,6 +90,7 @@ def _query(request: Request, *, comparison: bool):
         "adjustment": adjustment,
         "benchmark": benchmark,
         "sort": sort,
+        "order": order,
         "symbols": symbols,
         "trade_date": trade_date,
         "snapshot_id": snapshot_id,
@@ -194,8 +198,12 @@ def _adjustment(analysis, name: str):
     return reason
 
 
-def _sorted_ranking(rows, sort: str):
+def _sorted_ranking(rows, sort: str, order: str | None = None):
     field, descending = _SORT_FIELDS[sort]
+    if order is not None:
+        if order not in {"asc", "desc"}:
+            raise ValueError("Invalid order")
+        descending = order == "desc"
     ranked = [dict(row) for row in rows]
     ranked.sort(key=lambda row: row["security_id"])
     ranked.sort(
@@ -545,7 +553,7 @@ def rank_range(request: Request):
         exclusion_ids = _exclusion_ids(exclusions, allowed_ids)
         if ranking_ids & exclusion_ids or ranking_ids | exclusion_ids != allowed_ids:
             raise DataUnavailable
-        rows = _sorted_ranking(projected_rows, values["sort"])
+        rows = _sorted_ranking(projected_rows, values["sort"], values["order"])
     except (AttributeError, KeyError, TypeError, ValueError):
         raise DataUnavailable from None
     if not isinstance(exclusions, list):

@@ -24,6 +24,7 @@ into this IO layer.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -33,11 +34,18 @@ from typing import Any
 
 from dragon_radar.publication.models import PublishedSnapshot
 from dragon_radar.research import models as research_models
+from dragon_radar.research.cache_contract import SCHEMAS
 from dragon_radar.research.models import BacktestConfig
 from dragon_radar.research.repository import (
+    ResearchCacheConflict,
     ResearchRunLease,
     ResearchRunRecord,
     ResearchRunRepository,
+)
+from dragon_radar.research.result_contracts import (
+    ResearchDataUnavailable,
+    canonical,
+    validate_result,
 )
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
@@ -47,6 +55,46 @@ Checkpoint = Callable[[], None]
 ResearchCompute = Callable[
     [PublishedSnapshot, BacktestConfig, Checkpoint], Mapping[str, Any]
 ]
+
+
+def contract_matches(run, executing_contract):
+    """Only pre-0018 v1 rows have the distinguished zero legacy identity."""
+    expected = getattr(run, "compute_contract_sha256", "0" * 64)
+    schema = getattr(run, "result_schema_version", None)
+    if expected == "0" * 64:
+        return schema in (None, SCHEMAS["v1"])
+    return (
+        type(executing_contract) is str
+        and len(executing_contract) == 64
+        and executing_contract == expected
+    )
+
+
+def finish_validated_result(
+    repository, lease, result, *, executing_contract=None, trusted_history=None
+):
+    try:
+        validate_result(result, lease.run.config)
+        expected = getattr(lease.run, "result_schema_version", result["schema_version"])
+        if expected != result["schema_version"]:
+            raise ValueError("frozen run contract mismatch")
+    except (ValueError, TypeError, KeyError):
+        return repository.fail(lease, {"code": "result_contract_invalid"})
+    if not contract_matches(lease.run, executing_contract):
+        return repository.fail(lease, {"code": "compute_contract_mismatch"})
+    try:
+        if getattr(lease.run, "compute_contract_sha256", "0" * 64) == "0" * 64:
+            return repository.succeed(lease, result)
+        return repository.succeed(
+            lease,
+            result,
+            executing_contract=executing_contract,
+            trusted_history=trusted_history,
+        )
+    except ResearchCacheConflict:
+        return repository.fail(lease, {"code": "result_cache_conflict"})
+    except (ValueError, TypeError, KeyError, ResearchDataUnavailable):
+        return repository.fail(lease, {"code": "result_contract_invalid"})
 
 
 class ResearchRunCancelled(RuntimeError):
@@ -165,8 +213,27 @@ class ResearchBacktestWorker:
         )
         if lease is None:
             return None
+        executing_contract = getattr(self.compute, "compute_contract_sha256", None)
+        if not contract_matches(lease.run, executing_contract):
+            return self._finish_or_rehydrate(
+                lease,
+                lambda active: self.repository.fail(
+                    active, {"code": "compute_contract_mismatch"}
+                ),
+            )
+        trusted_history = None
         try:
             snapshot = self.repository.load_input(lease)
+            if (
+                getattr(lease.run, "result_schema_version", SCHEMAS["v1"])
+                == SCHEMAS["v2"]
+            ):
+                loader = getattr(self.compute, "prepare_history", None)
+                if not callable(loader):
+                    raise ResearchInputsUnavailable("trusted frame mapping unavailable")
+                trusted_history = json.loads(canonical(loader(lease.run.config)))
+        except ResearchInputsUnavailable:
+            return self.repository.fail(lease, {"code": "input_unavailable"})
         except Forbidden:
             return self.repository.fail(lease, {"code": "input_forbidden"})
         except NotFound:
@@ -211,6 +278,13 @@ class ResearchBacktestWorker:
                 ) from None
 
         heartbeat_seconds = self.lease_for.total_seconds() / 3
+        if getattr(self.compute, "compute_contract_sha256", None) != executing_contract:
+            return self._finish_or_rehydrate(
+                lease,
+                lambda active: self.repository.fail(
+                    active, {"code": "compute_contract_mismatch"}
+                ),
+            )
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 self.compute, snapshot, lease.run.config, checkpoint
@@ -309,7 +383,18 @@ class ResearchBacktestWorker:
             return self.repository.fetch_run(lease.run.id)
         return self._finish_or_rehydrate(
             holder["lease"],
-            lambda active: self.repository.succeed(active, result),
+            lambda active: finish_validated_result(
+                self.repository,
+                active,
+                result,
+                executing_contract=(
+                    executing_contract
+                    if getattr(self.compute, "compute_contract_sha256", None)
+                    == executing_contract
+                    else None
+                ),
+                trusted_history=trusted_history,
+            ),
         )
 
     def run_forever(

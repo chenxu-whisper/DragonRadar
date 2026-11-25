@@ -69,9 +69,10 @@ test('fixture environment preserves OS essentials but no inherited configuration
 
 test('fixture identity uses a sibling evidence directory and a random fixture-only password', () => {
   const make = utility('createFixtureIdentity');
-  const a = make({ root, runId });
-  const b = make({ root, runId: '123-457-abcdef12' });
-  assert.equal(a.state, resolve(root, '..', 'reset-contract-runtime', runId));
+  const worktreeRoot = resolve(root, '..', '.temp', 'DragonRadar-Fixture');
+  const a = make({ root: worktreeRoot, runId });
+  const b = make({ root: worktreeRoot, runId: '123-457-abcdef12' });
+  assert.equal(a.state, resolve(worktreeRoot, '..', 'reset-contract-runtime', runId));
   assert.equal(a.project, project);
   assert.match(a.password, /^[a-f0-9]{48}$/);
   assert.notEqual(a.password, b.password);

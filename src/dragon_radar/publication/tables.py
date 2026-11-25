@@ -109,6 +109,45 @@ publication_results = Table(
     CheckConstraint("status IN ('ready', 'missing', 'disabled')"),
 )
 
+publication_results.append_column(Column("clock_lineage", JSONB))
+
+input_clock_evidence = Table(
+    "input_clock_evidence",
+    metadata,
+    Column("source_id", Text, primary_key=True),
+    Column("archive_type", String(200), primary_key=True),
+    Column("archive_id", String(200), primary_key=True),
+    Column("revision_key", String(200), primary_key=True),
+    Column("source_version", String(200), nullable=False),
+    Column("input_sha256", String(64), nullable=False),
+    Column("source_event_at", DateTime(timezone=True)),
+    Column("provider_published_at", DateTime(timezone=True)),
+    Column("first_received_at", DateTime(timezone=True)),
+    Column("evidence_sha256", String(64), nullable=False),
+    CheckConstraint(
+        "input_sha256 ~ '^[0-9a-f]{64}$' AND evidence_sha256 ~ '^[0-9a-f]{64}$'",
+        name="input_clock_evidence_hashes",
+    ),
+    CheckConstraint(
+        "source_event_at IS NOT NULL OR provider_published_at IS NOT NULL "
+        "OR first_received_at IS NOT NULL",
+        name="input_clock_evidence_observation",
+    ),
+    CheckConstraint(
+        "provider_published_at IS NULL OR first_received_at IS NULL "
+        "OR provider_published_at <= first_received_at",
+        name="input_clock_evidence_receipt_order",
+    ),
+    UniqueConstraint(
+        "source_id",
+        "archive_type",
+        "archive_id",
+        "revision_key",
+        "input_sha256",
+        name="input_clock_evidence_content",
+    ),
+)
+
 publication_attempts = Table(
     "publication_attempts",
     metadata,

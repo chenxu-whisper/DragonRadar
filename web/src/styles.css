@@ -555,6 +555,7 @@ body:has(dialog[open]) { overflow: hidden; }
     white-space: nowrap;
   }
   .responsive-record-table .security-button { min-height: 0; }
+  .candidate-table .security-button, .analysis-ranking .security-button { min-height: 44px; }
   .evidence-groups { grid-template-columns: minmax(0, 1fr); }
   .news-controls { align-items: stretch; }
   .news-controls > label { flex: 1 1 140px; min-width: 0; }

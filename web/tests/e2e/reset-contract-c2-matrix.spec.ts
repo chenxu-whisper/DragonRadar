@@ -77,6 +77,14 @@ function exactCsv(result: { text: string; expectedRows?: Record<string, string>[
   result.expectedRows = rows;
   return rows.length;
 }
+function exactNewsColumns(text: string) {
+  expect(Object.keys(parseCsv(text)[0]).slice(9)).toEqual([
+    'article_id', 'article_type', 'source', 'source_version', 'title',
+    'published_at', 'received_at', 'available_at', 'revision', 'revision_id',
+  ]);
+  expect(text).not.toContain('ai_preview');
+  expect(text).not.toContain('ai_summary');
+}
 async function mainTask(page: Page, surface: string, audit: Awaited<ReturnType<typeof mockC2>>) {
   let result;
   let rowCount = 0, targets: string[] = [], record: any;
@@ -116,6 +124,7 @@ async function mainTask(page: Page, surface: string, audit: Awaited<ReturnType<t
     await expect(page.getByRole('region', { name: '消息详情' })).toContainText('公告主体代码 TEST001');
     await openClose(page, page.getByRole('region', { name: '关联证券与题材' }).getByRole('button', { name: '合成测试证券1', exact: true }), undefined, audit);
     result = await download(page, '导出当前页 CSV');
+    exactNewsColumns(result.text);
     expect(result.text).toContain('机器人公司签署合成测试订单');
     expect(result.text).not.toContain('行业跟踪');
     expect(result.text).toContain('""news_type"":""announcement""');
@@ -125,6 +134,9 @@ async function mainTask(page: Page, surface: string, audit: Awaited<ReturnType<t
     await expect(page.getByRole('region', { name: '消息列表' }).locator('.news-list-row strong')).toHaveText(expected.map(a => a.title));
     result = await download(page, '导出当前页 CSV');
     await audit.settled();
+    exactNewsColumns(result.text);
+    expect(parseCsv(result.text).map(row => [row.received_at, row.revision_id]))
+      .toEqual(expected.map(item => [item.received_at, item.revision_id]));
     rowCount = exactCsv(result, audit.payloads['/api/news'], { news_type: 'announcement', news_source: '', q: '', page: 2, page_size: 20 }, expected);
     targets = expected.map(a => a.article_id);
   } else if (surface === 'leaders') {

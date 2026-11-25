@@ -35,20 +35,29 @@ export interface AnalysisSortDescriptor {
   direction: 'asc' | 'desc';
 }
 
-const analysisSorts: Partial<Record<Sort, AnalysisSortDescriptor>> = {
-  interval_return: { requestField: 'return', direction: 'desc' },
-  excess_return: { requestField: 'excess_return', direction: 'desc' },
-  maximum_drawdown: { requestField: 'drawdown', direction: 'asc' },
-  amount: { requestField: 'amount_change', direction: 'desc' },
-  amount_change: { requestField: 'amount_change', direction: 'desc' },
+const analysisSorts: Partial<Record<Sort, AnalysisSortDescriptor['requestField']>> = {
+  interval_return: 'return',
+  excess_return: 'excess_return',
+  maximum_drawdown: 'drawdown',
+  amount: 'amount_change',
+  amount_change: 'amount_change',
 };
-const defaultAnalysisSort: AnalysisSortDescriptor = {
-  requestField: 'return',
-  direction: 'desc',
+const defaultDirections: Record<AnalysisSortDescriptor['requestField'], AnalysisSortDescriptor['direction']> = {
+  return: 'desc',
+  excess_return: 'desc',
+  drawdown: 'asc',
+  amount_change: 'desc',
 };
 
-export function analysisSortDescriptor(sort: Sort): AnalysisSortDescriptor {
-  return analysisSorts[sort] ?? defaultAnalysisSort;
+export function rankSortDescriptor(
+  requestField: AnalysisSortDescriptor['requestField'],
+  rankOrder?: AnalysisSortDescriptor['direction'],
+): AnalysisSortDescriptor {
+  return { requestField, direction: rankOrder ?? defaultDirections[requestField] };
+}
+
+export function analysisSortDescriptor(sort: Sort, rankOrder?: AnalysisSortDescriptor['direction']): AnalysisSortDescriptor {
+  return rankSortDescriptor(analysisSorts[sort] ?? 'return', rankOrder);
 }
 
 export function analysisSort(sort: Sort): 'return' | 'excess_return' | 'drawdown' | 'amount_change' {

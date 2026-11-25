@@ -10,6 +10,7 @@ import { ResourceStatus, type Patch } from './Common';
 const PreferenceControls = lazy(async () => ({
   default: (await import('../features/preferences/PreferenceControls')).PreferenceControls,
 }));
+const SnapshotClocks = lazy(() => import('../features/lineage/SnapshotClocks'));
 // 等尺寸（44px 高）占位，避免 chunk 加载完成前控件区布局跳动。
 const preferenceFallback = <>
   <span className="pref-toggle theme-toggle pref-toggle-placeholder" aria-hidden="true" />
@@ -25,6 +26,7 @@ export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, re
 }) {
   const { denied } = useAccess();
   const [offset, setOffset] = useState(0);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const date = state.date || snapshot?.trade_date || '';
   useEffect(() => setOffset(0), [date]);
   const versions = useResource<Snapshot[] | WorkbenchEnvelope<{ snapshots: WorkbenchEnvelope<ResetSnapshotData>[] }>>(
@@ -67,7 +69,7 @@ export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, re
       <button onClick={refresh} title="重新读取当前快照与研究数据" aria-label="刷新快照"><RefreshCw size={17} />{refreshing ? '刷新中' : '刷新'}</button>
       {!denied && paletteTrigger}
       {reset && <Suspense fallback={preferenceFallback}><PreferenceControls /></Suspense>}
-    <details className="snapshot-details">
+    <details className="snapshot-details" onToggle={event => setDetailsOpen(event.currentTarget.open)}>
     <summary aria-label="来源、覆盖率与版本详情">快照详情</summary>
     <div className="snapshot-details-panel">
     {(offset > 0 || options.length === 100) && <div className="version-pages">
@@ -87,6 +89,9 @@ export function SnapshotHeader({ state, snapshot, patch, refresh, refreshing, re
         <span><strong>来源时间</strong> {timestamp(snapshot.source_time)}</span>
       </> : <span>尚未载入匹配快照，来源与覆盖未知</span>}
     </div>
+    {reset && detailsOpen && snapshot && !denied && <Suspense fallback={<p role="status">正在读取时钟来源…</p>}>
+      <SnapshotClocks snapshotId={snapshot.snapshot_id} date={snapshot.trade_date} refreshToken={refreshToken} />
+    </Suspense>}
     </div>
     </details>
     </div>

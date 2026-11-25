@@ -3961,23 +3961,57 @@ def _q2_upgrade_to_query(database_url):
 
 
 def _q2_seed_query_record(database):
-    """Create one owner/publication parent chain and one immutable query row."""
-    from factories import NOW, batch, grant
-    from sqlalchemy import text
+    """Create FK-valid historical parents and one immutable query row."""
+    from hashlib import sha256
 
+    from factories import NOW, batch, grant
+    from sqlalchemy import insert, text
+
+    from dragon_radar.publication.models import DOMAIN_NAMES, PublicationCommand
+    from dragon_radar.publication.tables import publications
     from dragon_radar.storage.repository import Repository
 
     repository = Repository(database, clock=lambda: NOW)
     repository.register_source(grant())
-    # Publications cannot be inserted directly as 'published' (the
-    # guard_publication_transition trigger only allows draft inserts), so the
-    # parent chain goes through the real publication service.
-    publication = _q2_publish_market(
-        database, repository, batch(), key="q5-mig-publication"
+    market = batch()
+    snapshot = repository.publish(
+        repository.import_batch(market, key="q5-mig-market").id
     )
+    command = PublicationCommand(
+        trade_date=market.trade_date,
+        market_snapshot_id=snapshot.id,
+        disabled_domains=DOMAIN_NAMES[1:],
+    )
+    canonical = command.canonical_json()
+    publication_id = uuid.uuid4()
     owner_id = uuid.uuid4()
     query_id = uuid.uuid4()
     with database.engine.begin() as connection:
+        # This probe tests 0013's query-table mutation triggers, not a current
+        # publication API. A legal draft supplies its FK without requiring
+        # post-0013 clock tables or falsely claiming a published snapshot.
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "0013_query"
+        )
+        connection.execute(
+            insert(publications).values(
+                id=publication_id,
+                trade_date=market.trade_date,
+                version=1,
+                status="draft",
+                market_snapshot_id=snapshot.id,
+                domains={
+                    domain: "ready" if domain == "market" else "disabled"
+                    for domain in DOMAIN_NAMES
+                },
+                coverage={},
+                quality_flags=[],
+                command_json=canonical,
+                command_hash=sha256(canonical.encode()).hexdigest(),
+                created_at=NOW,
+                published_at=None,
+            )
+        )
         connection.execute(
             text(
                 """
@@ -4004,7 +4038,7 @@ def _q2_seed_query_record(database):
             {
                 "query_id": query_id,
                 "owner_id": owner_id,
-                "publication_id": publication.id,
+                "publication_id": publication_id,
                 "hash": "b" * 64,
                 "ast": json.dumps(
                     {

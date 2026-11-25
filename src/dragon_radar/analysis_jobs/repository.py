@@ -6,10 +6,17 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, insert, or_, select, text, update
+from sqlalchemy import and_, func, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Connection
 
+from dragon_radar.analysis_jobs.limits import (
+    MAX_NONTERMINAL_JOBS,
+    MAX_WALL_CLOCK_MS,
+    AnalysisCapacityExceeded,
+    validate_dimensions,
+    validate_result_size,
+)
 from dragon_radar.analysis_jobs.models import (
     AnalysisJobCommand,
     AnalysisJobLease,
@@ -19,6 +26,8 @@ from dragon_radar.analysis_jobs.models import (
 )
 from dragon_radar.publication.repository import PublicationRepository
 from dragon_radar.publication.tables import publications
+from dragon_radar.readmodels.analysis import _eligible_security_ids
+from dragon_radar.readmodels.projection import MarketProjection
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound, _identifier
 
 
@@ -50,6 +59,7 @@ def _record(row) -> AnalysisJobRecord:
         adjustment_version=manifest["adjustment_version"],
         status=row["status"],
         attempt_count=row["attempt_count"],
+        max_wall_clock_ms=row["max_wall_clock_ms"],
         result=row["result"],
         failure=row["failure"],
         created_at=row["created_at"],
@@ -191,6 +201,22 @@ class AnalysisJobRepository:
                 raise Conflict("Idempotency key already belongs to another request")
             return _record(existing)
 
+        sessions = tuple(
+            day
+            for day in snapshot.batch.calendar.sessions
+            if command.start <= day <= command.end
+        )
+        if not sessions or command.end > snapshot.trade_date:
+            raise ValueError("Analysis window is outside its publication")
+        eligible = _eligible_security_ids(MarketProjection(snapshot.batch))
+        validate_dimensions(
+            sessions=len(sessions),
+            securities=len(eligible),
+            observations=len(sessions) * len(eligible),
+        )
+        if not set(command.symbols) <= set(eligible):
+            raise NotFound("Stock not found")
+
         cached = (
             connection.execute(
                 select(analysis_job_cache).where(
@@ -200,6 +226,20 @@ class AnalysisJobRepository:
             .mappings()
             .first()
         )
+        if cached is not None:
+            validate_result_size(cached["result"])
+        else:
+            self._lock(connection, f"analysis-admission:{owner_id}")
+            pending = connection.scalar(
+                select(func.count())
+                .select_from(analysis_jobs)
+                .where(
+                    analysis_jobs.c.owner_id == owner_id,
+                    analysis_jobs.c.status.in_(("queued", "running")),
+                )
+            )
+            if pending >= MAX_NONTERMINAL_JOBS:
+                raise AnalysisCapacityExceeded("owner_nonterminal_jobs")
         now = self._now()
         values = {
             "id": uuid4(),
@@ -211,6 +251,7 @@ class AnalysisJobRepository:
             "input_manifest": manifest,
             "status": "succeeded" if cached is not None else "queued",
             "attempt_count": 0,
+            "max_wall_clock_ms": MAX_WALL_CLOCK_MS,
             "available_at": now,
             "lease_token": None,
             "lease_owner": None,
@@ -238,11 +279,14 @@ class AnalysisJobRepository:
                 command,
                 snapshot.batch.adjustment_version,
             )
-            return connection.scalar(
+            result = connection.scalar(
                 select(analysis_job_cache.c.result).where(
                     analysis_job_cache.c.cache_key == cache_key,
                 )
             )
+            if result is not None:
+                validate_result_size(result)
+            return result
 
     def get(self, token: str, job_id: UUID | str) -> AnalysisJobRecord:
         if self.owners is None:
@@ -412,6 +456,7 @@ class AnalysisJobRepository:
         return row
 
     def succeed(self, lease: AnalysisJobLease, result: Mapping) -> AnalysisJobRecord:
+        validate_result_size(result)
         result = _json_object(result)
         with self.database.engine.begin() as connection:
             row = self._active_lease(connection, lease)
@@ -436,6 +481,7 @@ class AnalysisJobRepository:
                     analysis_job_cache.c.cache_key == row["cache_key"],
                 )
             )
+            validate_result_size(authoritative)
             completed = (
                 connection.execute(
                     update(analysis_jobs)

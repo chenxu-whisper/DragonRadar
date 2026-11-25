@@ -26,10 +26,18 @@ from dragon_radar.owner.security import (
     json_object,
     storage_unavailable,
 )
-from dragon_radar.research.models import BacktestConfig, BacktestSubmission
+from dragon_radar.research.models import (
+    BacktestConfig,
+    BacktestPeriod,
+    BacktestSubmission,
+)
 from dragon_radar.research.repository import (
     ResearchRunRecord,
     ResearchRunRepository,
+)
+from dragon_radar.research.result_contracts import (
+    ResearchDataUnavailable,
+    validate_envelope,
 )
 from dragon_radar.storage.repository import Conflict, Forbidden, NotFound
 
@@ -59,6 +67,10 @@ class _ResearchRoute(APIRoute):
                 return await route_handler(request)
             except RequestValidationError:
                 return error_response(400, "INVALID_PARAM", "Invalid request")
+            except ResearchDataUnavailable:
+                return error_response(
+                    503, "DATA_UNAVAILABLE", "Research data unavailable"
+                )
             except ValidationError:
                 return error_response(400, "INVALID_PARAM", "Invalid request")
             except Forbidden:
@@ -127,7 +139,7 @@ def _jsonable(value):
 
 
 def _safe_record(record: ResearchRunRecord) -> dict:
-    return {
+    payload = {
         "run_id": str(record.id),
         "status": record.status,
         "config_hash": record.config.config_hash,
@@ -135,10 +147,40 @@ def _safe_record(record: ResearchRunRecord) -> dict:
         "result": _jsonable(record.result),
         "failure": _jsonable(record.failure),
     }
+    try:
+        return validate_envelope(payload, record.config, run_id=record.id)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ResearchDataUnavailable("materialized research data unavailable") from exc
 
 
 def install_research_routes(app: FastAPI) -> None:
     router = APIRouter(route_class=_ResearchRoute)
+
+    @router.get("/api/research/capabilities")
+    def get_capabilities(request: Request, owner: OwnerRead):
+        pairs = list(request.query_params.multi_items())
+        if len(pairs) != 3 or {key for key, _ in pairs} != {
+            "snapshot_id",
+            "start",
+            "end",
+        }:
+            raise invalid_request()
+        params = dict(pairs)
+        period = BacktestPeriod.model_validate_json(
+            json.dumps(
+                {
+                    "start": params["start"],
+                    "end": params["end"],
+                }
+            )
+        )
+        return DecimalJSONResponse(
+            _repository(request).capabilities(
+                owner.token,
+                UUID(params["snapshot_id"]),
+                period,
+            )
+        )
 
     @router.post("/api/research/backtests")
     def submit_backtest(request: Request, owner: OwnerWrite):
@@ -158,6 +200,11 @@ def install_research_routes(app: FastAPI) -> None:
         _no_query(request)
         record = _repository(request).get(owner.token, run_id)
         return DecimalJSONResponse(_safe_record(record))
+
+    @router.get("/api/research/backtests/{run_id}/config")
+    def get_run_config(run_id: UUID, request: Request, owner: OwnerRead):
+        _no_query(request)
+        return DecimalJSONResponse(_repository(request).run_config(owner.token, run_id))
 
     @router.get("/api/research/manifests/{snapshot_id}")
     def get_input_manifest(snapshot_id: UUID, request: Request, owner: OwnerRead):

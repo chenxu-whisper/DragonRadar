@@ -3,6 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { ID, mockMarket, resetSummary, snapshot } from '../fixtures/market';
 import { mockRotation } from '../fixtures/rotation';
 import { mockNews, NEWS_SNAPSHOT } from '../fixtures/news';
+import { researchCapabilities } from '../fixtures/research';
 
 // Task 29 full-scope cross-domain acceptance. The per-domain specs already cover
 // each slice deeply; this spec proves the slices stay *consistent together*: one
@@ -55,6 +56,16 @@ async function mockResearchBoundary(page: Page): Promise<ResearchCall[]> {
     researchCalls.push({ method: request.method(), path });
     if (request.method() === 'GET' && path === `/api/research/manifests/${ID}`) {
       return route.fulfill({ json: researchManifest });
+    }
+    if (request.method() === 'GET' && path === '/api/research/capabilities') {
+      const query = new URL(request.url()).searchParams;
+      expect([...query.keys()].sort()).toEqual(['end', 'snapshot_id', 'start']);
+      expect(Object.fromEntries(query)).toEqual({
+        snapshot_id: ID, start: '2025-01-06', end: '2025-06-27',
+      });
+      return route.fulfill({ json: researchCapabilities(ID, {
+        start: '2025-01-06', end: '2025-06-27',
+      }) });
     }
     return route.fulfill({ status: 500, json: { code: 'UNEXPECTED_RESEARCH_CALL' } });
   });
@@ -233,6 +244,12 @@ test('pinned daily publication survives 总览→梯队→涨幅 navigation whil
   await expect(page).toHaveURL(new RegExp(`snapshot=${ID}`));
   await expect(page.getByRole('region', { name: '白名单查询面板' })).toBeVisible();
   await expect(page.getByLabel('快照版本')).toHaveValue(ID);
+  // Query and owner research load independently. Keep this view mounted until
+  // its publication-bound owner read has actually happened before returning.
+  await expect(page.getByRole('region', { name: '研究回测' })).toBeVisible();
+  await expect.poll(() => probes.researchCalls.some(
+    call => call.method === 'GET' && call.path === `/api/research/manifests/${ID}`,
+  )).toBe(true);
 
   await nav(page, '市场总览').click();
   await expect(page.getByRole('heading', { name: '市场总览', exact: true })).toBeVisible();
@@ -259,7 +276,9 @@ test('pinned daily publication survives 总览→梯队→涨幅 navigation whil
   await expect.poll(() => probes.researchCalls.length).toBeGreaterThan(0);
   expect(probes.researchCalls.filter(call => call.method !== 'GET')).toEqual([]);
   expect(probes.researchCalls.every(
-    call => call.method === 'GET' && call.path === `/api/research/manifests/${ID}`,
+    call => call.method === 'GET' && [
+      `/api/research/manifests/${ID}`, '/api/research/capabilities',
+    ].includes(call.path),
   )).toBe(true);
   expect(probes.aiUrls).toEqual([]);
   expect(consoleErrors).toEqual([]);
@@ -530,7 +549,9 @@ test('Task 27 owner boundary: read-only views stay research-silent while analysi
   await expect(panel.getByTestId('backtest-disclosure')).toBeVisible();
   await expect.poll(() => probes.researchCalls.length).toBeGreaterThan(0);
   expect(probes.researchCalls.every(
-    call => call.method === 'GET' && call.path === `/api/research/manifests/${ID}`,
+    call => call.method === 'GET' && [
+      `/api/research/manifests/${ID}`, '/api/research/capabilities',
+    ].includes(call.path),
   )).toBe(true);
   expect(probes.researchCalls.filter(call => call.method !== 'GET')).toEqual([]);
 

@@ -1,5 +1,5 @@
 import { ExternalLink, FileText, Link2, Search } from 'lucide-react';
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
 
 import { Pager, ResourceStatus, type Patch } from '../components/Common';
 import { UnavailableModules } from '../features/workbench/PageStructure';
@@ -17,6 +17,12 @@ import type {
 import { useResource } from '../hooks/useResource';
 import type { ResearchState } from '../state';
 import { CsvExportButton } from '../export/CsvExportButton';
+import PromotedSummaryPreview from '../features/news/PromotedSummaryPreview';
+import { timestamp } from '../format';
+
+function newsTimestamp(value?: string): string {
+  return value ? `${timestamp(value)} 北京时间 UTC+08:00` : '未知（旧版元数据缺失）';
+}
 
 const NewsAITools = import.meta.env.VITE_PRIVATE_AI === '1'
   ? lazy(() => import('../features/ai/NewsAITools'))
@@ -87,15 +93,16 @@ function ArticleDetail({
     <p className="eyebrow">{TYPE_LABELS[article.article_type]} · {article.source} / {article.source_version}</p>
     <h2>{article.title}</h2>
     <dl className="metadata-grid news-metadata">
-      <dt>发布时间</dt><dd>{article.published_at}</dd>
-      <dt>首次获取</dt><dd>{article.received_at}</dd>
-      <dt>可用时间</dt><dd>{article.available_at}</dd>
+      <dt>发布时间</dt><dd>{newsTimestamp(article.published_at)}</dd>
+      <dt>首次获取</dt><dd>{newsTimestamp(article.received_at)}</dd>
+      <dt>可用时间</dt><dd>{newsTimestamp(article.available_at)}</dd>
       <dt>文章修订</dt><dd>第 {article.revision} 版 · {article.revision_id}</dd>
     </dl>
     <a className="news-source-link" href={article.url} target="_blank" rel="noreferrer">
       <ExternalLink size={16} />查看原文
     </a>
     {article.ai_summary && <p className="news-summary">AI 摘要：{article.ai_summary}</p>}
+    {article.ai_preview && <PromotedSummaryPreview preview={article.ai_preview} />}
     {article.summary && <p className="news-summary">授权摘要：{article.summary}</p>}
     {article.content
       ? <div className="news-content"><FileText size={18} /><p>{article.content}</p></div>
@@ -221,8 +228,10 @@ export function News({
             { key: 'source_version', header: 'source_version' },
             { key: 'title', header: 'title' },
             { key: 'published_at', header: 'published_at' },
+            { key: 'received_at', header: 'received_at' },
             { key: 'available_at', header: 'available_at' },
             { key: 'revision', header: 'revision' },
+            { key: 'revision_id', header: 'revision_id' },
           ]}
           rows={data.articles.map(article => ({
             snapshot_id: list.data!.snapshot_id,
@@ -292,10 +301,9 @@ export function News({
       <section id="workbench-news-list" tabIndex={-1} className="news-list" aria-label="消息列表">
         {data.articles.length === 0
           ? <p className="empty">当前筛选没有已发布消息。</p>
-          : data.articles.map(article => <button
+          : data.articles.map(article => <Fragment key={article.article_id}><button
             className="news-list-row"
             aria-pressed={state.article === article.article_id}
-            key={article.article_id}
             onClick={event => {
               articleTrigger.current = event.currentTarget;
               patch({ article: article.article_id });
@@ -306,8 +314,13 @@ export function News({
           >
             <span>{TYPE_LABELS[article.article_type]} · {article.source}</span>
             <strong>{article.title}</strong>
-            <small>{article.available_at}</small>
-          </button>)}
+            <small>发布时间 {newsTimestamp(article.published_at)}</small>
+            <small>首次获取 {newsTimestamp(article.received_at)}</small>
+            <small>可用时间 {newsTimestamp(article.available_at)}</small>
+            <small>文章修订 第 {article.revision} 版 · {article.revision_id || '未知（旧版元数据缺失）'}</small>
+          </button>
+            {article.ai_preview && <PromotedSummaryPreview preview={article.ai_preview} />}
+          </Fragment>)}
         <Pager
           page={data.page}
           size={data.size}

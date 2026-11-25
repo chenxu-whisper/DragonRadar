@@ -16,6 +16,7 @@ from dragon_radar.owner.repository import (
 )
 from dragon_radar.owner.security import validate_origin
 from dragon_radar.publication.repository import PublicationRepository
+from dragon_radar.research.cache_contract import deployment_result_version
 from dragon_radar.research.repository import ResearchRunRepository
 from dragon_radar.research.worker import (
     ResearchBacktestWorker,
@@ -160,7 +161,13 @@ def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
         # The research loop shares this process: no new container or CLI
         # option. It runs on a daemon thread while analysis owns the main
         # thread, so the same worker identity and lease settings apply.
-        research_runs = ResearchRunRepository(repository.database, owners, publications)
+        result_version = deployment_result_version()
+        research_runs = ResearchRunRepository(
+            repository.database,
+            owners,
+            publications,
+            result_version=result_version,
+        )
         research_compute = fail_closed_research_compute
         production_request = getattr(args, "research_production_request", None)
         if production_request is not None:
@@ -169,6 +176,7 @@ def execute(args: argparse.Namespace, repository: Repository) -> dict | None:
             research_compute = load_production_compute(
                 production_request,
                 database=repository.database,
+                result_version=result_version,
             )
         analysis_worker = AnalysisJobWorker(
             jobs,

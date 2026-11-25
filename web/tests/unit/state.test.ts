@@ -15,6 +15,14 @@ describe('URL research state', () => {
     const search = new URLSearchParams(stateSearch(parseState('').state));
     expect(search.has('benchmark')).toBe(false);
     expect(search.has('adj')).toBe(false);
+    expect(search.has('rank_order')).toBe(false);
+  });
+  it('ignores rank_order outside Reset without changing legacy global order', () => {
+    const parsed = parseState('?view=analysis&order=desc&rank_order=asc');
+    expect(parsed.state.order).toBe('desc');
+    expect(parsed.state.rank_order).toBeUndefined();
+    expect(parsed.notices).toEqual([]);
+    expect(new URLSearchParams(stateSearch({ ...parsed.state, rank_order: 'asc' })).has('rank_order')).toBe(false);
   });
   it.each(['excess_return', 'amount_change'])('rejects reset-only legacy sort %s with a notice', sort => {
     const parsed = parseState(`?view=analysis&sort=${sort}`);

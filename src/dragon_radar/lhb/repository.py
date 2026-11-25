@@ -1051,6 +1051,61 @@ class LHBRepository(Repository):
                 latest_visible[key] = record
         return tuple(latest_visible.values())
 
+    def get_lineage(
+        self, *, source_id: str, disclosure_id: str, revision: int, as_of: datetime
+    ) -> dict:
+        from dragon_radar.domain.clocks import utc
+        from dragon_radar.publication.clocks import source_lineage
+
+        _identifier(source_id)
+        _identifier(disclosure_id)
+        if type(revision) is not int or revision < 1:
+            raise ValueError("Invalid disclosure revision")
+        as_of = utc(as_of)
+        with self.database.engine.begin() as connection:
+            r, d, b, chain = self._revision_chain()
+            row = (
+                connection.execute(
+                    select(
+                        r,
+                        b.c.source_version,
+                        b.c.permission_snapshot.label("batch_permission"),
+                    )
+                    .select_from(chain)
+                    .where(
+                        r.c.source_id == source_id,
+                        r.c.disclosure_id == disclosure_id,
+                        r.c.revision == revision,
+                        r.c.available_at <= as_of,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise NotFound("Disclosure revision not found")
+            current = self._source(connection, source_id)
+            now = self._now()
+            for captured in (row["permission_snapshot"], row["batch_permission"]):
+                permission = PermissionSnapshot.model_validate(captured)
+                if (
+                    permission.state != "authorized"
+                    or permission.captured_at > now
+                    or not grant_allows_display(current, source_id=source_id, now=now)
+                ):
+                    raise Forbidden("Disclosure clock access denied")
+            return source_lineage(
+                identity={
+                    "source_id": source_id,
+                    "source_version": row["source_version"],
+                    "disclosure_id": disclosure_id,
+                    "revision": revision,
+                },
+                as_of=as_of,
+                events=(row["source_event_at"],),
+                receipts=(row["received_at"],),
+            )
+
     def list_disclosures(self, selection: DisclosureSelection) -> DisclosurePage:
         if not isinstance(selection, DisclosureSelection):
             raise TypeError("selection must be a DisclosureSelection")

@@ -1,4 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { rankingForRequest } from '../fixtures/ranking-direction';
+import { parseCsv } from '../../scripts/contract-c2-support.mjs';
 
 const ID = '00000000-0000-4000-8000-000000000013';
 const sessions = [
@@ -15,6 +17,7 @@ type MockState = {
   wrongSnapshot?: boolean;
   qfqUnavailable?: boolean;
   closeOnly?: boolean;
+  manyRows?: boolean;
 };
 
 function envelope(data: unknown, extra: Record<string, unknown> = {}) {
@@ -150,8 +153,21 @@ async function mockAnalysis(page: Page, state: MockState = {}) {
       }
       if (state.malformedRank) return respond(envelope({ ...rankData(), ranking: 'dirty payload' }));
       const custom = url.searchParams.get('start') === '2026-08-16';
+      const data = rankData(custom ? '2026-08-17' : sessions[0]);
+      if (state.manyRows) {
+        data.ranking = Array.from({ length: 25 }, (_, index) => ({
+          ...data.ranking[0], security_id: `TEST${String(index + 1).padStart(3, '0')}`,
+          return_ratio: (index - 12) / 100, excess_return_ratio: (index - 12) / 100 - 0.02,
+          max_drawdown_ratio: index / 100, amount_change_ratio: (index - 12) / 100,
+        }));
+        data.exclusions = [];
+      }
+      data.ranking = rankingForRequest(data.ranking, url.searchParams);
       return respond({
-        ...envelope(rankData(custom ? '2026-08-17' : sessions[0])),
+        ...envelope(data, {
+          ...(state.manyRows ? { coverage: { expected: 25, valid: 25, excluded: 0, missing: 0 } } : {}),
+          basis: { unit: 'ratio', currency: 'CNY', price_type: 'raw', benchmark: url.searchParams.get('benchmark') || 'B000300' },
+        }),
         snapshot_id: state.wrongSnapshot ? '00000000-0000-4000-8000-000000000099' : ID,
       });
     }
@@ -169,6 +185,121 @@ async function mockAnalysis(page: Page, state: MockState = {}) {
 }
 
 const analysisUrl = `/?view=analysis&snapshot=${ID}&date=2026-09-10`;
+
+async function decodedCsv(page: Page) {
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出当前页 CSV', exact: true }).click();
+  const download = await pending;
+  const stream = await download.createReadStream();
+  if (!stream) throw new Error('Missing CSV download stream');
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  return parseCsv(Buffer.concat(chunks).toString('utf8'));
+}
+
+for (const [sort, title, apiSort, defaultOrder] of [
+  ['interval_return', '区间收益', 'return', 'desc'],
+  ['excess_return', '超额收益', 'excess_return', 'desc'],
+  ['maximum_drawdown', '最大回撤', 'drawdown', 'asc'],
+  ['amount_change', '成交额变化', 'amount_change', 'desc'],
+] as const) {
+  test(`ranking direction ${sort} toggles both ways and decodes current CSV`, async ({ page }) => {
+    const requests: URL[] = [];
+    page.on('request', request => {
+      const url = new URL(request.url());
+      if (url.pathname === '/api/rank/range') requests.push(url);
+    });
+    await mockAnalysis(page);
+    await page.goto(`${analysisUrl}&sort=${sort}&order=${defaultOrder === 'asc' ? 'desc' : 'asc'}&page_size=20`);
+    const table = page.getByRole('table', { name: '涨幅排行' });
+    const head = table.getByRole('columnheader').filter({ has: page.getByRole('button', { name: title, exact: true }) });
+    await expect(head).toHaveAttribute('aria-sort', defaultOrder === 'asc' ? 'ascending' : 'descending');
+    expect(new URL(page.url()).searchParams.has('rank_order')).toBe(false);
+    expect(requests.at(-1)?.searchParams.get('order')).toBe(defaultOrder);
+    for (const order of [defaultOrder === 'asc' ? 'desc' : 'asc', defaultOrder]) {
+      await table.getByRole('button', { name: title, exact: true }).click();
+      await expect(page).toHaveURL(url => url.searchParams.get('rank_order') === order && url.searchParams.get('page') === '1');
+      await expect(head).toHaveAttribute('aria-sort', order === 'asc' ? 'ascending' : 'descending');
+      const ids = order === 'asc' ? ['TEST006', 'TEST001'] : ['TEST001', 'TEST006'];
+      await expect(table.locator('tbody .security-button')).toHaveText(ids);
+      const csv = await decodedCsv(page);
+      expect(csv.map(row => row.security_id)).toEqual(ids);
+      expect(csv.map(row => row.rank)).toEqual(['1', '2']);
+      expect(csv.map(row => JSON.parse(row.filters))).toEqual(ids.map(() => expect.objectContaining({ sort: apiSort, order, page: 1, page_size: 20 })));
+      expect(requests.at(-1)?.searchParams.get('order')).toBe(order);
+    }
+  });
+}
+
+test('ranking direction survives refresh history pagination and complete details return', async ({ page }) => {
+  await mockAnalysis(page, { manyRows: true });
+  await page.goto(`${analysisUrl}&sort=interval_return&rank_order=asc&order=desc&page=2&page_size=20&q=TEST&return_view=analysis`);
+  const table = page.getByRole('table', { name: '涨幅排行' });
+  const pageTwo = ['TEST021', 'TEST022', 'TEST023', 'TEST024', 'TEST025'];
+  await expect(table.locator('tbody .security-button')).toHaveText(pageTwo);
+  const original = new URL(page.url()).search;
+  await page.reload();
+  await expect(table.locator('tbody .security-button')).toHaveText(pageTwo);
+  await page.getByRole('button', { name: '刷新快照', exact: true }).click();
+  await expect(table.locator('tbody .security-button')).toHaveText(pageTwo);
+  await page.getByRole('button', { name: '上一页', exact: true }).click();
+  await expect(table.locator('tbody .security-button').first()).toHaveText('TEST001');
+  await expect(page).toHaveURL(url => url.searchParams.get('rank_order') === 'asc' && url.searchParams.get('page') === '1');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(table.locator('tbody .security-button')).toHaveText(pageTwo);
+  const csv = await decodedCsv(page);
+  expect(csv.map(row => row.security_id)).toEqual(pageTwo);
+  expect(csv.map(row => row.rank)).toEqual(['21', '22', '23', '24', '25']);
+  expect(JSON.parse(csv[0].filters)).toMatchObject({ sort: 'return', order: 'asc', page: 2, q: 'TEST' });
+  await table.getByRole('button', { name: 'TEST021', exact: true }).click();
+  await page.getByRole('dialog').getByRole('link', { name: '打开完整详情' }).click();
+  await expect(page).toHaveURL(url => url.pathname === '/stock/TEST021' && url.searchParams.get('rank_order') === 'asc');
+  await page.getByRole('link', { name: '返回研究列表', exact: true }).click();
+  await expect(page).toHaveURL(url => url.search === original);
+  await expect(table.locator('tbody .security-button')).toHaveText(pageTwo);
+  await table.getByRole('button', { name: '区间收益', exact: true }).click();
+  await expect(page).toHaveURL(url => url.searchParams.get('rank_order') === 'desc' && url.searchParams.get('page') === '1' && url.searchParams.get('q') === 'TEST');
+  await expect(table.locator('tbody .security-button').first()).toHaveText('TEST025');
+  await page.goBack();
+  await expect(table.locator('tbody .security-button')).toHaveText(pageTwo);
+  await page.goForward();
+  await expect(table.locator('tbody .security-button').first()).toHaveText('TEST025');
+  await table.getByRole('button', { name: '最大回撤', exact: true }).click();
+  await expect(page).toHaveURL(url => url.searchParams.get('sort') === 'maximum_drawdown' && !url.searchParams.has('rank_order') && url.searchParams.get('page') === '1');
+  await expect(table.locator('tbody .security-button').first()).toHaveText('TEST001');
+});
+
+test('ranking direction pending and late response cannot export old rows under new metadata', async ({ page }) => {
+  await mockAnalysis(page);
+  let release!: () => void, arrived!: () => void, completed!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const requested = new Promise<void>(resolve => { arrived = resolve; });
+  const finished = new Promise<void>(resolve => { completed = resolve; });
+  await page.route('**/api/rank/range?**', async route => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('order') === 'asc') { arrived(); await held; }
+    const data = rankData();
+    data.ranking = rankingForRequest(data.ranking, url.searchParams);
+    await route.fulfill({ json: envelope(data) });
+    if (url.searchParams.get('order') === 'asc') completed();
+  });
+  await page.goto(`${analysisUrl}&sort=interval_return`);
+  const table = page.getByRole('table', { name: '涨幅排行' });
+  await expect(table.locator('tbody .security-button').first()).toHaveText('TEST001');
+  await table.getByRole('button', { name: '区间收益', exact: true }).click();
+  await requested;
+  await expect(page).toHaveURL(/rank_order=asc/);
+  await expect(page.getByRole('button', { name: '导出当前页 CSV', exact: true })).toHaveCount(0);
+  await expect(table).toHaveCount(0);
+  await page.goBack();
+  await expect(table.locator('tbody .security-button').first()).toHaveText('TEST001');
+  release();
+  await finished;
+  await expect(table.getByRole('columnheader').filter({ has: page.getByRole('button', { name: '区间收益', exact: true }) })).toHaveAttribute('aria-sort', 'descending');
+  const csv = await decodedCsv(page);
+  expect(csv.map(row => row.security_id)).toEqual(['TEST001', 'TEST006']);
+  expect(JSON.parse(csv[0].filters)).toMatchObject({ order: 'desc' });
+});
 
 test('20日排行展示基准、收益、回撤、成交额、题材、覆盖和排除', async ({ page }) => {
   const rankRequests: URL[] = [];

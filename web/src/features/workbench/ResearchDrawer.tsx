@@ -1,11 +1,15 @@
-import { useEffect, useRef, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import Decimal from 'decimal.js';
 import { X } from 'lucide-react';
-import { useResource } from '../../hooks/useResource';
+import { useAccess, useResource, type Resource } from '../../hooks/useResource';
+import { useSession } from '../review/SessionContext';
 import type { ResearchState } from '../../state';
-import type { ResetOverview, ResetTopicDetail, WorkbenchEnvelope } from '../../types';
+import type { ResetOverview, ResetSnapshotData, ResetTopicDetail, WorkbenchEnvelope } from '../../types';
 import { Pager, Percent, ResourceStatus, TableScroll, type Patch } from '../../components/Common';
 import { ApiError } from '../../api';
 import { validateIndexOverview } from './topic-validation';
+import { fetchIndexHistory, indexHistorySegments, indexHistoryWindow, type HistoryWindow,
+  type IndexHistory, type IndexHistoryResponse, type IndexSelection } from './index-history';
 
 export interface ResearchDrawerProps {
   kind: 'index' | 'topic'; id: string; trigger: HTMLElement; close: () => void;
@@ -16,6 +20,105 @@ export interface ResearchDrawerProps {
 const ratio = (value: number | null, signed = true) => <Percent value={value === null ? null : String(value)} signed={signed} />;
 const covered = (value: { expected: number; valid: number; missing: number; excluded: number }) =>
   `覆盖 ${value.valid}/${value.expected} · 排除 ${value.excluded} · 缺失 ${value.missing}`;
+
+function useIndexHistory(selection: IndexSelection | null, sessions: readonly string[], window: HistoryWindow, token: number): Resource<IndexHistoryResponse> {
+  const { denied, epoch, revoke } = useAccess();
+  const { enabled, store } = useSession();
+  const locked = enabled && store.locked;
+  const [retry, setRetry] = useState(0);
+  const [result, setResult] = useState<{ key: string; data?: IndexHistoryResponse; error?: ApiError }>({ key: '' });
+  const gate = useRef(0);
+  const key = selection && !denied && !locked
+    ? JSON.stringify([selection, sessions, window, token, retry, epoch, enabled ? store.epoch : 0]) : '';
+  useEffect(() => {
+    const generation = ++gate.current, controller = new AbortController();
+    if (!key || !selection) return;
+    Promise.resolve().then(() => {
+      if (controller.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+      return fetchIndexHistory(selection, sessions, controller.signal);
+    }).then(data => {
+      if (gate.current === generation) setResult({ key, data });
+    }).catch((error: unknown) => {
+      if (gate.current !== generation || (error instanceof DOMException && error.name === 'AbortError')) return;
+      const failure = error instanceof ApiError ? error : new ApiError(0);
+      if (enabled && failure.status === 401) {
+        windowEvent('private-session-lock'); setResult({ key: '' }); return;
+      }
+      if (failure.status === 403 && (!enabled || failure.code === 'source_forbidden' || !failure.code)) {
+        revoke(); if (enabled) windowEvent('private-source-revoked');
+        setResult({ key: '' }); return;
+      }
+      setResult({ key, error: failure });
+    });
+    return () => { ++gate.current; controller.abort(); };
+    // key includes every input coordinate; response state never changes request identity.
+  }, [key, revoke, enabled]);
+  const current = Boolean(key) && result.key === key && !denied && !locked;
+  return { data: current ? result.data : undefined, error: current ? result.error : undefined,
+    loading: Boolean(key) && !current, refresh: () => setRetry(n => n + 1) };
+}
+const windowEvent = (name: string) => globalThis.window.dispatchEvent(new Event(name));
+
+function IndexHistoryChart({ data }: { data: IndexHistory }) {
+  const prices = data.points.flatMap(p => [p.low, p.high, p.close].filter((v): v is string => v !== null)).map(v => new Decimal(v));
+  if (!prices.length) return <p role="status">窗口内无有效价格，缺口不可连线。</p>;
+  const min = Decimal.min(...prices), max = Decimal.max(...prices), range = max.minus(min);
+  const x = (i: number) => 12 + i * 576 / Math.max(1, data.points.length - 1);
+  const y = (value: string) => range.isZero() ? 100 : 180 - new Decimal(value).minus(min).div(range).times(160).toNumber();
+  return <svg viewBox="0 0 600 200" role="img" aria-label="指数历史曲线，缺口不连线" style={{ width: '100%', height: 'auto' }}>
+    <title>指数点数历史；精确数值和缺失原因见下方表格</title>
+    {data.chart_type === 'candle' ? data.points.map((p, i) => <g key={p.trade_date}>
+      <line x1={x(i)} x2={x(i)} y1={y(p.high!)} y2={y(p.low!)} stroke="currentColor" />
+      <rect x={x(i) - 2} y={Math.min(y(p.open!), y(p.close!))} width={4}
+        height={Math.max(1, Math.abs(y(p.open!) - y(p.close!)))} fill="currentColor" />
+    </g>) : indexHistorySegments(data.points).map((segment, i) => <g key={i} data-history-segment>
+      <polyline points={segment.map(j => `${x(j)},${y(data.points[j].close!)}`).join(' ')}
+        fill="none" stroke="currentColor" strokeWidth={2} />
+      {segment.map(j => <circle key={j} cx={x(j)} cy={y(data.points[j].close!)} r={2} fill="currentColor" />)}
+    </g>)}
+  </svg>;
+}
+
+function IndexHistoryPanel({ id, state, refreshToken }: Pick<ResearchDrawerProps, 'id' | 'state' | 'refreshToken'>) {
+  const [window, setWindow] = useState<HistoryWindow>(60);
+  const { denied } = useAccess();
+  const { enabled, store } = useSession();
+  const summary = useResource<WorkbenchEnvelope<ResetSnapshotData>>(`/api/snapshots/${encodeURIComponent(state.snapshot)}`, state.snapshot, refreshToken);
+  const sessions = summary.data?.trade_date === state.date && Array.isArray(summary.data?.data?.calendar_sessions)
+    ? summary.data.data.calendar_sessions : [];
+  const bounds = indexHistoryWindow(sessions, state.date, window);
+  const selection = bounds ? { securityId: id, snapshot: state.snapshot, date: state.date, ...bounds } : null;
+  const resource = useIndexHistory(selection, sessions, window, refreshToken);
+  if (denied || (enabled && store.locked)) return null;
+  const data = resource.data?.data;
+  return <section aria-labelledby="index-history-title">
+    <h3 id="index-history-title">指数历史</h3>
+    <label>指数历史窗口<select value={window} onChange={event => setWindow(Number(event.target.value) as HistoryWindow)}>
+      {[20, 60, 120, 250].map(n => <option key={n} value={n}>{n} 交易日</option>)}
+    </select></label>
+    <ResourceStatus resource={summary} name="指数日历" />
+    <ResourceStatus resource={resource} name="指数历史" />
+    {!summary.loading && !summary.error && !bounds && <p role="status">当前 PUB 未提供有效规范日历，指数历史不可用。</p>}
+    {resource.data?.data === null && <p role="status" className="notice">当前发布未归档指数历史行情，历史曲线不可用。 · {resource.data.reason}</p>}
+    {data && !resource.loading && !resource.error && <>
+      <p>价格单位 point（点数） · 序列 {data.index_basis.series_type} · {data.index_basis.series_reference} · raw</p>
+      <p>成交量 {data.index_basis.volume_unit} · 成交额货币 {data.index_basis.amount_currency ?? '未提供（金额缺失）'}</p>
+      <p>请求 {data.requested.start} 至 {data.requested.end} · 调整 {data.adjusted.start} 至 {data.adjusted.end}</p>
+      <p>实际范围 {data.available.start} 至 {data.available.end} · 归档 {data.archive.start} 至 {data.archive.end}</p>
+      <p>{covered(data.coverage)} · 不足所选窗口时按 PUB 日历如实缩短。</p>
+      <p className="muted">来源 {data.source.source_id} / {data.source.source_version} · 截至 {data.source.as_of} · {data.source.provenance}
+        <small>行情快照 {data.source.market_snapshot_id} · 源归档 {data.source.source_archive_id} · 日历 {data.source.calendar_version}</small></p>
+      <IndexHistoryChart data={data} />
+      <TableScroll label="指数历史精确数值横向滚动"><table aria-label="指数历史精确数值">
+        <thead><tr><th>交易日</th><th>开 / 高 / 低 / 收（point）</th><th>成交量 / 成交额</th><th>可用时间 / 缺失原因</th></tr></thead>
+        <tbody>{data.points.map(point => <tr key={point.trade_date}><th>{point.trade_date}</th>
+          <td>{[point.open, point.high, point.low, point.close].map(v => v ?? '缺失').join(' / ')}</td>
+          <td>{point.volume ?? '缺失'} / {point.amount ?? '缺失'}</td>
+          <td>{point.available_at ?? '未知'}<small>{point.reason ?? point.chart_type}</small></td></tr>)}</tbody>
+      </table></TableScroll>
+    </>}
+  </section>;
+}
 
 export default function ResearchDrawer(props: ResearchDrawerProps) {
   const { kind, id, state, refreshToken, page, size } = props;
@@ -84,11 +187,11 @@ export default function ResearchDrawer(props: ResearchDrawerProps) {
             <small>{covered(coverage)}{reason && ` · ${reason}`}</small></dd></div>)}
           <div><dt>波动方法</dt><dd>{factors.volatility_method}</dd></div>
         </dl> : <p className="muted">当前快照未提供该指数的趋势因子。</p>}
-        <p className="notice">当前发布未归档指数历史行情，历史曲线不可用。</p>
         <p className="muted">来源 {overview.data?.source} / {overview.data?.source_version} · 截至 {overview.data?.as_of}</p>
       </>}
       {overview.data?.data === null && <p role="status">指数物化不可用 · materialization_unavailable。</p>}
       {overview.data?.data && !index && <p role="status">当前快照未提供该指数行情。</p>}
+      <IndexHistoryPanel key={`${id}:${state.snapshot}:${state.date}`} id={id} state={state} refreshToken={refreshToken} />
     </> : <>
       <ResourceStatus resource={topic} name="题材详情" />
       {topic.data?.data === null && <p role="status" className="notice">题材成员物化不可用 · materialization_unavailable。当前发布未归档完整成员。</p>}

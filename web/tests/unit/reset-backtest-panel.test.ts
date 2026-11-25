@@ -21,6 +21,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { configHash, normalizedConfig } from '../../src/features/research/config-canonical';
 
 import {
   BacktestClientError,
@@ -250,12 +251,19 @@ describe('Task 16 submit / get / cancel validated calls', () => {
   });
 
   it('get validates the full EX15 materialised envelope and never recomputes', async () => {
-    const fetcher = vi.fn().mockResolvedValue(jsonResponse(recordFixture()));
+    const { idempotency_key: _key, ...input } = buildBacktestPayload(emptyBacktestDraft(), manifest(), 'k');
+    const config = normalizedConfig(input);
+    const hash = await configHash(config);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(recordFixture({ config_hash: hash })))
+      .mockResolvedValueOnce(jsonResponse({ run_id: RUN_ID, config_hash: hash, config }));
     vi.stubGlobal('fetch', fetcher);
     const record = await getBacktestRun(RUN_ID);
     expect(fetcher.mock.calls[0][0]).toBe(`/api/research/backtests/${RUN_ID}`);
     expect(record).toMatchObject({ run_id: RUN_ID, status: 'queued', research_only: true });
     expect(record.result).toBeNull();
+    expect(record.config_context).toEqual(config);
+    expect(fetcher.mock.calls[1][0]).toBe(`/api/research/backtests/${RUN_ID}/config`);
   });
 
   it('rejects an unknown run status or missing research_only flag', async () => {
@@ -269,8 +277,12 @@ describe('Task 16 submit / get / cancel validated calls', () => {
   });
 
   it('cancel posts the idempotency key and returns the cancelled record envelope', async () => {
-    const fetcher = vi.fn().mockResolvedValue(
-      jsonResponse(recordFixture({ status: 'cancelled' })));
+    const { idempotency_key: _key, ...input } = buildBacktestPayload(emptyBacktestDraft(), manifest(), 'k');
+    const config = normalizedConfig(input);
+    const hash = await configHash(config);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(recordFixture({ status: 'cancelled', config_hash: hash })))
+      .mockResolvedValueOnce(jsonResponse({ run_id: RUN_ID, config_hash: hash, config }));
     vi.stubGlobal('fetch', fetcher);
     const record = await cancelBacktestRun(RUN_ID);
     expect(fetcher.mock.calls[0][0]).toBe(`/api/research/backtests/${RUN_ID}/cancel`);
@@ -446,7 +458,7 @@ describe('Task 16 EX14 payload mapping', () => {
       unknown_limit_policy: 'reject_untradable',
     });
     expect(payload.walk_forward).toBeNull();
-    expect(payload.experiment).toEqual({ random_seed: 20250106, legs: ['baseline', 'ai_variant'] });
+    expect(payload.experiment).toEqual({ random_seed: 20250106, legs: ['baseline'] });
     expect(payload.input_manifests.domains).toHaveLength(2);
     expect(payload.input_manifests.versions).toEqual(manifest().versions);
   });
@@ -525,6 +537,16 @@ describe('Task 16 SSR form and accessibility contract', () => {
       errors: {},
       busy: false,
       manifestReady: true,
+      capabilities: {
+        snapshot_id: SNAPSHOT_ID,
+        period: { start: '2025-01-06', end: '2025-06-27' },
+        factors: [{ id: 'FAC-R01', status: 'ready', reason: null,
+          method_version: 'test-only-approved-v1', approval_evidence_sha256: 'a'.repeat(64) }],
+        walk_forward: { id: 'walk-forward-anchored-v1', status: 'disabled',
+          reason: 'phase_series_unavailable', method_version: null, approval_evidence_sha256: null },
+        ai_variant: { id: 'ai_variant', status: 'disabled',
+          reason: ABLATION_DISABLED_REASON, method_version: null, approval_evidence_sha256: null },
+      },
       onDraft: () => undefined,
       onSubmit: () => undefined,
       onCancel: () => undefined,
@@ -677,25 +699,14 @@ const succeededRecord = recordFixture({
 });
 
 describe('Task 16 SSR result view contract', () => {
-  it('renders metrics, equity, trades, rejections, factor health and cost sensitivity', () => {
+  it('withholds obsolete unbound fixture metrics rather than treating them as valid', () => {
     const markup = renderToStaticMarkup(h(BacktestResultView, { record: succeededRecord }));
-    expect(markup).toContain('回测结果');
-    expect(markup).toContain('1125000.00');
-    expect(markup).toContain('0.1250');
-    expect(markup).toContain('净值曲线');
-    expect(markup).toContain('成交流水');
-    expect(markup).toContain('10.0050');
-    expect(markup).toContain(BACKTEST_REJECTION_LABELS.t1_sell_blocked);
-    expect(markup).not.toContain('t1_sell_blocked');
-    expect(markup).toContain('因子体检');
-    expect(markup).toContain('成本敏感性');
-    expect(markup).toContain('low');
-    expect(markup).toContain('base');
-    expect(markup).toContain('high');
-    expect(markup).toContain('0.1300');
+    expect(markup).toContain('config_context_unavailable');
+    expect(markup).not.toContain('1125000.00');
+    expect(markup).not.toContain('10.0050');
   });
 
-  it('renders walk-forward folds when the run carries them', () => {
+  it('does not render unbound root-only fold claims', () => {
     const withFolds = {
       ...resultFixture,
       folds: [{
@@ -714,8 +725,8 @@ describe('Task 16 SSR result view contract', () => {
     const markup = renderToStaticMarkup(h(BacktestResultView, {
       record: recordFixture({ status: 'succeeded', result: withFolds as never }),
     }));
-    expect(markup).toContain('滚动折数');
-    expect(markup).toContain('0');
+    expect(markup).toContain('config_context_unavailable');
+    expect(markup).not.toContain('滚动折数');
   });
 
   it('shows an empty-state message when a terminal run has no materialised result', () => {
@@ -764,10 +775,11 @@ describe('Task 16 ablation disabled-only contract', () => {
     expect(aiRegion).not.toContain('total_return');
   });
 
-  it('still renders the completed baseline leg metrics in the ablation frame', () => {
+  it('withholds unbound baseline numbers in the legacy ablation frame', () => {
     const markup = renderToStaticMarkup(h(AblationSection, { ablation: resultFixture.ablation }));
     const baselineRegion = markup.split('data-testid="ablation-baseline"')[1] ?? '';
-    expect(baselineRegion).toContain('0.1250');
+    expect(baselineRegion).not.toContain('0.1250');
+    expect(markup).toContain('config_context_unavailable');
     expect(markup).toContain('baseline');
   });
 

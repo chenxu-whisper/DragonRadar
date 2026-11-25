@@ -60,6 +60,15 @@ research_backtest_runs = Table(
     Column("idempotency_key", String(200), nullable=False),
     Column("request_hash", String(64), nullable=False),
     Column("config_hash", String(64), nullable=False),
+    Column(
+        "result_schema_version",
+        String(100),
+        nullable=False,
+        server_default="dragon-radar.research-backtest/v1",
+    ),
+    Column(
+        "compute_contract_sha256", String(64), nullable=False, server_default="0" * 64
+    ),
     Column("snapshot_id", PGUUID(as_uuid=True), nullable=False),
     Column("input_manifest", JSONB, nullable=False),
     Column("status", String(20), nullable=False),
@@ -112,6 +121,15 @@ research_backtest_runs = Table(
         name="research_backtest_runs_config_hash",
     ),
     CheckConstraint(
+        "result_schema_version IN ('dragon-radar.research-backtest/v1', "
+        "'dragon-radar.research-backtest-result/v2')",
+        name="research_backtest_runs_result_schema",
+    ),
+    CheckConstraint(
+        "compute_contract_sha256 ~ '^[0-9a-f]{64}$'",
+        name="research_backtest_runs_compute_contract",
+    ),
+    CheckConstraint(
         "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')",
         name="research_backtest_runs_status",
     ),
@@ -135,6 +153,33 @@ research_backtest_runs = Table(
     ),
 )
 
+research_backtest_cache_v2 = Table(
+    "research_backtest_cache_v2",
+    metadata,
+    Column("id", PGUUID(as_uuid=True), nullable=False),
+    Column("config_hash", String(64), nullable=False),
+    Column("result_schema_version", String(100), nullable=False),
+    Column("compute_contract_sha256", String(64), nullable=False),
+    Column("input_manifest", JSONB, nullable=False),
+    Column("result", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("id", name="research_backtest_cache_v2_pkey"),
+    UniqueConstraint(
+        "config_hash",
+        "result_schema_version",
+        "compute_contract_sha256",
+        name="research_backtest_cache_v2_contract_key",
+    ),
+    CheckConstraint(
+        "config_hash ~ '^[0-9a-f]{64}$' AND compute_contract_sha256 ~ '^[0-9a-f]{64}$'",
+        name="research_backtest_cache_v2_digests",
+    ),
+    CheckConstraint(
+        "result_schema_version = 'dragon-radar.research-backtest-result/v2'",
+        name="research_backtest_cache_v2_schema",
+    ),
+)
+
 Index(
     "research_backtest_runs_claim",
     research_backtest_runs.c.available_at,
@@ -144,5 +189,6 @@ Index(
 
 __all__ = [
     "research_backtest_cache",
+    "research_backtest_cache_v2",
     "research_backtest_runs",
 ]

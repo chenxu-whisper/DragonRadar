@@ -52,6 +52,20 @@ class PublicPublicationRepository:
     def list_results(self, publication_id):
         return self._repository.list_results(publication_id)
 
+    def get_lineage(self, snapshot_id, trade_date):
+        return self._repository.get_lineage(snapshot_id, trade_date)
+
+    def get_ai_snapshot(self, connection, snapshot_id, *, ai_domains):
+        return self._repository.get_ai_snapshot(
+            connection, snapshot_id, ai_domains=ai_domains
+        )
+
+    def get_ai_source_grant(self, connection, source_id):
+        return self._repository.get_ai_source_grant(connection, source_id)
+
+    def get_ai_source_ids(self, connection, publication_ids):
+        return self._repository.get_ai_source_ids(connection, publication_ids)
+
 
 def public_publication_repository(
     database,

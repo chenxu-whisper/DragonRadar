@@ -6,7 +6,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   AIClientError,
@@ -35,6 +35,8 @@ import type { AdoptionStrategy } from '../local-review/adoption-command';
 import { TaskOperationGeneration } from './operation-generation';
 import CitationSource from './CitationSource';
 
+const PublicationPanel = lazy(() => import('./PublicationPanel'));
+
 export type { AdoptionStrategy } from '../local-review/adoption-command';
 
 export interface TaskPanelProps {
@@ -48,6 +50,7 @@ export interface TaskPanelProps {
   note?: NoteFields;
   noteSnapshotId?: string;
   marketContext?: string;
+  allowPublicSafeDailyReview?: boolean;
   onAdopt?: (
     text: string,
     context: {
@@ -112,6 +115,7 @@ function validateTaskContext(next: AITask, props: TaskPanelProps, taskId?: strin
 }
 
 export function TaskPanel(props: TaskPanelProps) {
+  const [publicSafe, setPublicSafe] = useState(false);
   const [selectedFields, setSelectedFields] = useState<NoteField[]>([]);
   const [task, setTask] = useState<AITask>();
   const [error, setError] = useState('');
@@ -137,7 +141,9 @@ export function TaskPanel(props: TaskPanelProps) {
       : undefined,
     [note, props.securityId, props.snapshotId, selectedFields],
   );
-  const sendingText = note ? selection?.text || '' : props.marketContext || '';
+  const publicSafeDaily = props.taskType === 'daily_review'
+    && props.allowPublicSafeDailyReview === true && !note && publicSafe;
+  const sendingText = publicSafeDaily ? '' : note ? selection?.text || '' : props.marketContext || '';
   const inputSignature = JSON.stringify([
     props.taskType,
     props.snapshotId,
@@ -148,10 +154,13 @@ export function TaskPanel(props: TaskPanelProps) {
     props.securityId,
     props.noteSnapshotId,
     props.marketContext,
+    publicSafeDaily,
     selection?.text || '',
   ]);
+  const activeInputSignature = useRef(inputSignature);
 
   useEffect(() => {
+    activeInputSignature.current = inputSignature;
     operations.current.invalidate();
     setTask(undefined);
     setStatus('');
@@ -364,7 +373,20 @@ export function TaskPanel(props: TaskPanelProps) {
   };
 
   const presentation = task ? taskPresentation(task) : undefined;
-  const canSubmit = props.taskType !== 'daily_review' || Boolean(sendingText.trim());
+  const canSubmit = props.taskType !== 'daily_review' || publicSafeDaily || Boolean(sendingText.trim());
+  const canPublish = task
+    && activeInputSignature.current === inputSignature
+    && !busy && !citationBlocked
+    && (task.task_type === 'daily_review' || task.task_type === 'summarize')
+    && task.task_type === props.taskType
+    && task.snapshot_id === props.snapshotId
+    && Date.parse(task.as_of) === Date.parse(props.asOf)
+    && task.version === props.version
+    && task.status === 'succeeded'
+    && task.verification_status === 'passed'
+    && task.human_review_status === 'accepted'
+    && task.content_draft
+    && task.revision !== null;
   return <section className="ai-task-panel" aria-label={`AI ${taskLabels[props.taskType]}`}>
     <div className="ai-task-heading">
       <h3><Bot size={18} />AI {taskLabels[props.taskType]}</h3>
@@ -388,7 +410,15 @@ export function TaskPanel(props: TaskPanelProps) {
           {props.securityId ? ` · 证券 ${props.securityId}` : ''}</small>
       </div>
     </fieldset>}
-    {!note && props.marketContext !== undefined && <div
+    {props.taskType === 'daily_review' && props.allowPublicSafeDailyReview && !note && <label>
+      <input type="checkbox" checked={publicSafe} disabled={busy}
+        onChange={event => setPublicSafe(event.target.checked)} />
+      公开安全每日复核（不发送笔记，仅使用服务端 PUB 行情证据）
+    </label>}
+    {publicSafeDaily && <p role="note">
+      原始 notes_context 为空；新任务仍需人工接受、公开许可与服务端隐私核验。
+    </p>}
+    {!note && !publicSafeDaily && props.marketContext !== undefined && <div
       className="ai-scope-preview"
       aria-label="发送内容预览"
     >
@@ -474,6 +504,15 @@ export function TaskPanel(props: TaskPanelProps) {
         <button type="button" disabled={busy} onClick={() => void adopt('save_as_new')}>另存为新笔记</button>
       </div>}
     </div>}
+    {canPublish && <Suspense fallback={<p role="status">正在加载公开发布工具…</p>}>
+      <PublicationPanel
+        key={`${task.task_id}:${task.revision}:${props.snapshotId}:${props.date}`}
+        taskId={task.task_id}
+        revision={task.revision!}
+        snapshotId={props.snapshotId}
+        date={props.date}
+      />
+    </Suspense>}
     <p role="status" aria-live="polite">{status}</p>
   </section>;
 }

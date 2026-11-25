@@ -9,7 +9,6 @@ import { bindIndexItems, type CommandAction } from './features/preferences/comma
 import type { SearchIndex } from './features/preferences/search-index';
 import { ResourceStatus, shouldHandleSpaClick, SnapshotEvidence } from './components/Common';
 import { SnapshotHeader } from './components/SnapshotHeader';
-import { CompareMembership } from './components/CompareMembership';
 import { LazyLoadBoundary } from './components/LazyLoadBoundary';
 import type { ComparisonProps } from './components/Comparison';
 import type { Patch } from './components/Common';
@@ -23,6 +22,9 @@ import { ApiError, request } from './api';
 import { allowNavigation } from './features/review/navigation';
 
 const resetEnabled = import.meta.env.VITE_RESET_WORKBENCH === '1';
+const CompareMembership = !resetEnabled
+  ? lazy(async () => ({ default: (await import('./components/CompareMembership')).CompareMembership }))
+  : null;
 const publicSharing = import.meta.env.VITE_PUBLIC_SHARING === '1';
 const localReviewEnabled = resetEnabled && !publicSharing;
 const ownerResearchEnabled = resetEnabled && !publicSharing;
@@ -74,6 +76,7 @@ const SecurityDrawer = lazy(async () => ({
   default: (await import('./pages/SecurityDetail')).SecurityDrawer as ComponentType<SecurityDrawerProps>,
 }));
 const ResearchDrawer = resetEnabled ? lazy(() => import('./features/workbench/ResearchDrawer')) : null;
+const PublicDailyAIEntry = resetEnabled ? lazy(() => import('./features/public-daily-ai/PublicDailyAIEntry')) : null;
 const SecurityPage = lazy(async () => ({
   default: (await import('./pages/SecurityDetail')).SecurityPage as ComponentType<SecurityPageProps>,
 }));
@@ -481,9 +484,14 @@ export function Workbench({ privateFeatures }: { privateFeatures?: PrivateFeatur
           </Suspense>}
           {!resetEnabled && !state.snapshot && availableSnapshots.length === 0 && !list.loading && <div className="empty"><h1>{state.date ? '该日期没有可用快照' : '暂无可用快照'}</h1><p>请选择其他日期，或在数据准备完成后刷新。不会使用其他日期替代。</p></div>}
           {snapshot && <>
-            {!resetEnabled && <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />}
+            {CompareMembership && <LazyLoadBoundary><Suspense fallback={null}>
+              <CompareMembership state={state} patch={patch} refreshToken={refreshToken} allowPrivate={privateEnabled} />
+            </Suspense></LazyLoadBoundary>}
             {state.view === 'overview' && <Overview state={state} patch={patch} refreshToken={refreshToken} open={open} openResearch={openResearch} compare={compare} ReviewActions={ActiveReviewActions} reset={resetEnabled}
               publicationAsOf={snapshot.result.published_at} publicationVersion={`v${snapshot.result.revision}`} />}
+            {PublicDailyAIEntry && state.view === 'overview' && <Suspense fallback={null}>
+              <PublicDailyAIEntry snapshotId={snapshot.snapshot_id} date={snapshot.trade_date} />
+            </Suspense>}
             {state.view === 'analysis' && <Analysis state={state} patch={patch} refreshToken={refreshToken} open={open} compare={compare} snapshot={snapshot} reset={resetEnabled} ReviewActions={ActiveReviewActions} />}
             {News && state.view === 'news' && <LazyLoadBoundary><Suspense fallback={<p role="status" className="status">正在加载消息…</p>}>
               <News

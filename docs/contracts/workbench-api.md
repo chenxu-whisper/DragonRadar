@@ -353,7 +353,7 @@ records existing controls and exports, not a universal sort or export API.
 | Role changes | Each role's `role_changes.length`; separate client pager | `sector_id`, `security_id`, `name`, `rank`, `change_type`, ASC/DESC; null/undefined last; archive-order ties and initial order | No dedicated change-list CSV control |
 | Topic members | API `total` counts all visible archived members; `known` is independent of source completeness; server slices | Fixed `security_id` ASC before paging, no name/code/direction controls; nullable names/codes remain unknown | No topic-member CSV control |
 | News | API `total` after type/source/query/security filters; server slices | Fixed publication-availability-time order: archived `available_at` DESC, `article_id` ASC ties. `published_at` is separately displayed, not the current sort key; no bidirectional/null-last control | `news-current-page`, selected article page and PUB/filter/page/size metadata |
-| Rank | Client query-filtered `ranking.length`, then current-page slice; not coverage.valid or expected | Only the four fixed metric sorts below; null last and stable `security_id` ASC ties. No identity/name/code sort controls | `analysis-current-page`, visible filtered page; actual adjusted interval, query, request sort and descriptor direction, page/size/adjustment plus PUB/basis |
+| Rank | Client query-filtered `ranking.length`, then current-page slice; not coverage.valid or expected | Four metric sorts below, each ASC/DESC; null last and stable `security_id` ASC ties in both directions. No identity/name/code sort controls | `analysis-current-page`, visible filtered page in actual response order/ranks; actual adjusted interval, query, request sort and effective descriptor direction, page/size/adjustment plus PUB/basis |
 | Global search | Combined available-match `total`; one server page across three groups with independent group totals | Fixed group/ID order above; no user-sort controls; nullable stock names/codes retained, not made sortable | No global-search CSV control |
 | Expanded stock history | Returned `points.length` in the selected actual window, including null gaps; client slices | `trade_date`, `open`, `high`, `low`, `close`, `volume`, `amount`, ASC/DESC; initial date ASC; null last; ties use date ASC | Existing `stock-current-filter` exports quote plus all returned raw-window points, NOT just the expanded table's page or its sort; PUB/security/adjusted window/adjustment metadata |
 
@@ -361,7 +361,7 @@ The UI supplies news size 50 explicitly. The existing bare `/api/news` default
 is 20 and accepts size 1..100; topic-detail API also accepts size 1..100
 (default 50). These HTTP compatibility ranges are not new universal UI options.
 Rank paging/filtering is client-side: `/api/rank/range` does not accept
-page/size/order. Null data and null numerical observations remain unavailable,
+page/size. It accepts optional `order` as described below. Null data and null numerical observations remain unavailable,
 not zero; security ID is distinct from archived code even where an existing
 heading says code. Existing basis/units accompany exports; browser formatting
 does not replace source precision.
@@ -369,23 +369,48 @@ does not replace source precision.
 Rank compatibility is fixed by backend `_SORT_FIELDS` and frontend
 `analysisSortDescriptor`:
 
-| API sort | Archived metric | Direction |
+| API sort | Archived metric | Default Direction |
 | --- | --- | --- |
 | `return` (default) | `return_ratio` | DESC |
 | `excess_return` | `excess_return_ratio` | DESC |
 | `amount_change` | `amount_change_ratio` | DESC |
 | `drawdown` | `max_drawdown_ratio` | ASC |
 
-Equal metric values retain stable security-ID order and equal rank; a missing
-sort value is last with null rank, not a valid zero metric. Frontend
+`/api/rank/range` accepts optional `order` with exact lowercase values `asc`
+and `desc`. Omission preserves the metric defaults above. Empty, uppercase,
+invalid and duplicate `order`, including identical duplicates, are rejected
+with the existing invalid-request response before storage access. Unknown
+query keys remain rejected. `/api/compare/curves` does not accept `order`.
+
+Equal metric values retain security-ID ASC order and equal competition rank
+(for example `1,1,3`) in both directions; a missing sort value is last with
+null rank, not a valid zero metric. Ranking is a read projection on row copies:
+archives, custom-calculation cache identity, algorithm versions, exclusions,
+coverage and window/basis identity do not change with direction. Frontend
 `interval_return`, `excess_return`, `amount_change` (legacy `amount` alias) and
 `maximum_drawdown` map through that descriptor; unsupported UI sorts default
-to return DESC. Headers select the descriptor's fixed direction, not a toggle.
-CSV direction uses the same descriptor, not arbitrary URL `order`. The API
-has NO `order` parameter; unknown query keys are rejected. This freezes existing
-behavior, not an assertion of REQ-V03 bidirectional-ranking compliance.
-REQ-V03 remains an `interaction gap` for that clause, owned by a dedicated
-future rank feature specification, NOT C-only verification.
+to return DESC when no explicit ranking direction is present.
+
+Reset page URLs use optional `rank_order=asc|desc`, independent of the legacy
+global `order`. Old URLs without `rank_order`, even with explicit global
+`order=asc` or `order=desc`, retain the metric defaults. Invalid or duplicate
+`rank_order` is removed with the existing invalid-URL notice. Omitted direction
+is not serialized; explicit direction survives refresh, history, pagination,
+and stock-details return. Non-Reset pages do not interpret or serialize it.
+
+The active metric header toggles effective direction and resets page 1.
+Selecting a new metric clears `rank_order`, uses its default, and resets page 1;
+other research conditions are retained. One effective descriptor drives the
+API request `order`, response-order validation, header `aria-sort` and next-action
+direction title, and CSV metadata. CSV exports only the visible page in actual
+response order with its competition ranks, without local renumbering. A changed
+request path invalidates displayed old rows and their export; a late superseded
+response cannot supply rows under new direction metadata.
+
+The local implementation receipt is
+[ranking-direction-2026-11-24.md](../acceptance/ranking-direction-2026-11-24.md).
+It proves the bounded ranking-direction behavior with synthetic tests, not a
+rerun of C2/C5 or closure of all REQ-V03 clauses.
 
 Bounded exceptions are separate from the paged lists: finite date/board-count
 heatmap and ladder matrices; the fixed six role-evidence groups; small metric
@@ -471,3 +496,17 @@ The owner Reset read allowlist mounts this same GET behind its existing owner
 gate. Taxonomy/membership versions are independently frozen in the topic
 publication result and checked against the detail descriptor; the reader does not
 trust self-reported detail versions as its validation baseline.
+
+### Research result deployment integration (2026-11-24)
+
+New owner backtest admissions and the authenticated worker loader use the same
+server-only `DRAGON_RESEARCH_RESULT_VERSION` setting, default `v2`.
+Only `v1` and `v2` are accepted; unknown values fail closed. Explicit `v1`
+preserves the legacy deployment option. Direct repository/compute constructors
+retain their existing `v1` defaults for explicit legacy execution and tests.
+The owner API and worker processes must receive the same setting. Existing
+idempotency receipts and cached/run artifacts keep their frozen schema and
+compute contract; changing this setting does not upgrade old queued runs.
+A mismatched worker cannot complete a run under another frozen result contract.
+V2 adds archived health and exact frame lineage; missing approved factors,
+phase/AI inputs and benchmark identity remain unavailable or disabled.

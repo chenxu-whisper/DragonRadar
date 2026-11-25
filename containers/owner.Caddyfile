@@ -28,25 +28,31 @@ https://localhost:8443 {
 
 		@publishedRead {
 			method GET HEAD
-			path_regexp publishedRead ^/api/(snapshots/(list|[0-9a-fA-F-]{36})|market/(overview|sector-flow|sentiment/research|sentiment|heatmap)|topics/[^/]+|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
+			path_regexp publishedRead ^/api/(snapshots/(list|lineage|[0-9a-fA-F-]{36})|index/[^/]+/history|market/(overview|sector-flow|sentiment/research|sentiment|heatmap|daily-ai(/archives)?)|topics/[^/]+|search|limit-up/(ladder|continuity)|role/(candidates|evidence)|rank/range|compare/curves|stock/[^/]+(/kline)?|news(/[^/]+)?|regulation/(status|events))$
 		}
 		reverse_proxy @publishedRead 127.0.0.1:8001
 
 		@realtimeRead {
 			method GET
-			path /api/realtime/quotes /api/realtime/minutes /api/realtime/anomalies /api/market/sector-flow/intraday
+			path /api/realtime/quotes /api/realtime/minutes /api/realtime/anomalies /api/realtime/lineage /api/market/sector-flow/intraday
 		}
 		reverse_proxy @realtimeRead 127.0.0.1:8001
 
+		@lhbRead {
+			method GET
+			path_regexp lhbRead ^/api/lhb(/lineage|/seats/[^/]+)?$
+		}
+		reverse_proxy @lhbRead 127.0.0.1:8001
+
 		@aiRead {
 			method GET HEAD
-			path_regexp aiRead ^/api/ai/task/[0-9a-fA-F-]{36}(/evidence/[A-Za-z0-9_-]{1,100})?$
+			path_regexp aiRead ^/api/ai/task/[0-9a-fA-F-]{36}(/evidence/[A-Za-z0-9_-]{1,100}|/publication-eligibility)?$
 		}
 		reverse_proxy @aiRead 127.0.0.1:8001
 
 		@aiWrite {
 			method POST
-			path_regexp aiWrite ^/api/ai/(summarize|topic-suggest|explain-stock|daily-review|task/[0-9a-fA-F-]{36}/(cancel|review))$
+			path_regexp aiWrite ^/api/ai/(summarize|topic-suggest|explain-stock|daily-review|task/[0-9a-fA-F-]{36}/(cancel|review|publish-daily|publish-summary|published-(daily|summary)/[0-9a-fA-F-]{36}/revoke))$
 		}
 		reverse_proxy @aiWrite 127.0.0.1:8001
 
@@ -85,7 +91,7 @@ https://localhost:8443 {
 		# other /api/research sibling falls through to the empty @api 404 below.
 		@researchRead {
 			method GET HEAD
-			path_regexp researchRead ^/api/research/(manifests/[0-9a-fA-F-]{36}|backtests/[0-9a-fA-F-]{36})$
+			path_regexp researchRead ^/api/research/(capabilities|manifests/[0-9a-fA-F-]{36}|backtests/[0-9a-fA-F-]{36}(/config)?)$
 		}
 		reverse_proxy @researchRead 127.0.0.1:8001
 
@@ -94,6 +100,18 @@ https://localhost:8443 {
 			path_regexp researchWrite ^/api/research/backtests(/[0-9a-fA-F-]{36}/cancel)?$
 		}
 		reverse_proxy @researchWrite 127.0.0.1:8001
+
+		@analysisRead {
+			method GET HEAD
+			path_regexp analysisRead ^/api/analysis/jobs/[0-9a-fA-F-]{36}$
+		}
+		reverse_proxy @analysisRead 127.0.0.1:8001
+
+		@analysisWrite {
+			method POST
+			path_regexp analysisWrite ^/api/analysis/jobs(/[0-9a-fA-F-]{36}/cancel)?$
+		}
+		reverse_proxy @analysisWrite 127.0.0.1:8001
 
 		@api path /api/* /health/*
 		respond @api 404

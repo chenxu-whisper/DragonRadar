@@ -1,13 +1,18 @@
 # 工程文档入口
 
-主要功能已整合到本地 `main`，从项目根目录开发。
+2026-11-25 全需求剩余工程已整合到本地 `main`。
+11 月 24 日冻结源码的 19 项本机工程门禁已通过，原始证据保持历史身份；
+本次主工程验证与清理另行记录。
 真实数据和生产验收环境暂缓；缺少许可或证明时，现有程序仍按契约关闭。
 
 | 目的 | 文档 |
 | --- | --- |
 | 当前产品需求 | [开发需求 PRD](DragonRadar_开发需求PRD.md) |
-| 已实现能力与剩余条件 | [需求进度对照](prd-development-progress-2026-11-17.md) |
-| 当前下一阶段计划 | [本机体验、契约收口与工程验收](next-development-plan-2026-11-18.md) |
+| 本次全需求收口 | [2026-11-24 状态与设计入口](all-requirements-status-2026-11-24.md) |
+| 当前主工程整合与清理 | [2026-11-25 主工程记录](acceptance/all-requirements-main-integration-2026-11-25.md) |
+| 本次整合验证范围 | [源码冻结与最终门禁](acceptance/all-requirements-final-gates-2026-11-24.md) |
+| 既有能力与历史条件对照 | [2026-11-17 需求进度](prd-development-progress-2026-11-17.md) |
+| 前一阶段计划 | [2026-11-18 本机体验与工程验收](next-development-plan-2026-11-18.md) |
 | C3 有限工程验收 | [AI 时间与实时契约验收报告](acceptance/contract-c3-2026-11-20.md) |
 | C4 有限工程验收 | [五构建、性能与回归验收报告](acceptance/contract-c4-2026-11-20.md) |
 | 后续待办 | [TODO](TODO.md) |
@@ -32,8 +37,9 @@
 私人复盘运行说明已合入统一指南，不再维护重复入口。
 `scripts/acceptance-stack.sh` 仅用于 CI 验收，不替代本机启动脚本。
 
-`tests/` 精简为 48 个核心 Python 测试文件，覆盖主要业务、授权、发布、
-生产输入与证明、迁移、性能及验收契约；共享 fixture 和 AI 评估清单仍为必需依赖。
+`tests/` 核心 Python 回归覆盖主要业务、授权、发布、生产输入与证明、
+迁移、性能及验收契约；本次新增指数历史、AI归档、分域时钟、样本比较、
+分析容量和研究结果契约用例。共享 fixture 和 AI 评估清单仍为必需依赖。
 Windows 启动与私有文件门禁位于 `scripts/test_reset_start_script.ps1`、
 `scripts/test_private_scripts.ps1`，CI 继续执行。
 早期分层与阶段复核测试已删除，历史测试数量不代表精简后套件的执行结果。

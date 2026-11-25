@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -46,7 +47,7 @@ MANIFEST_SCHEMA = "dragon-radar.migration-release-manifest"
 MANIFEST_SCHEMA_VERSION = 1
 AUDIT_SCHEMA = "dragon-radar.release-migration-verification"
 AUDIT_SCHEMA_VERSION = 1
-RELEASE_HEAD = "0014_research"
+RELEASE_HEAD = "0018_research_contract"
 ROLLBACK_MODE = "backup_restore_only"
 SUPPORTED_FROM = [
     "0001_foundation",
@@ -63,6 +64,13 @@ SUPPORTED_FROM = [
     "0012_lhb",
     "0013_query",
     "0014_research",
+]
+INTERMEDIATE_REVISIONS = [
+    "0014_research",
+    "0015_daily_ai",
+    "0016_clock_lineage",
+    "0017_analysis_limits",
+    RELEASE_HEAD,
 ]
 MANIFEST_FIELDS = {
     "schema",
@@ -558,7 +566,7 @@ def verify_repository_commit(
 
 
 def require_clean_migration_tree(repository_root: Path = REPOSITORY_ROOT) -> None:
-    """Reject staged or unstaged changes to tracked migration files."""
+    """Reject tracked changes and untracked migrations before release checks."""
     result = _git_process(
         repository_root,
         [
@@ -571,6 +579,20 @@ def require_clean_migration_tree(repository_root: Path = REPOSITORY_ROOT) -> Non
     )
     if result.returncode != 0:
         raise ValueError("tracked migrations differ from HEAD")
+    untracked = _git_process(
+        repository_root,
+        [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "src/dragon_radar/migrations",
+        ],
+    )
+    if untracked.returncode != 0:
+        raise ValueError("cannot inspect untracked migrations")
+    if untracked.stdout.strip():
+        raise ValueError("untracked migrations are not an audited release")
 
 
 def _validated_postgres_url(database_url: str):
@@ -612,28 +634,28 @@ def _schema_contract_functions():
 
 
 def _new_schema_name() -> str:
-    return f"schema_contract_{uuid4().hex}"
+    return f"test_schema_contract_{uuid4().hex}"
 
 
 def _new_upgrade_schema_name(schema_prefix: str | None = None) -> str:
     if schema_prefix is None:
-        return f"release_upgrade_{uuid4().hex}"
+        return f"test_release_upgrade_{uuid4().hex}"
     _validate_wheel_schema_prefix(schema_prefix)
     return f"{schema_prefix}{uuid4().hex[:16]}"
 
 
 def _new_wheel_schema_prefix() -> str:
-    return f"release_wheel_{secrets.token_hex(16)}_"
+    return f"test_wheel_{secrets.token_hex(16)}_"
 
 
 def _validate_wheel_schema_prefix(schema_prefix: str) -> None:
-    if re.fullmatch(r"release_wheel_[0-9a-f]{32}_", schema_prefix) is None:
+    if re.fullmatch(r"test_wheel_[0-9a-f]{32}_", schema_prefix) is None:
         raise ValueError("unsafe wheel schema prefix")
 
 
 def _validate_upgrade_schema_name(schema: str, schema_prefix: str | None) -> None:
     pattern = (
-        r"release_upgrade_[0-9a-f]{32}"
+        r"test_release_upgrade_[0-9a-f]{32}"
         if schema_prefix is None
         else re.escape(schema_prefix) + r"[0-9a-f]{16}"
     )
@@ -1634,16 +1656,80 @@ def _legacy_regulation_state(
     }
 
 
+def prepare_intermediate_baseline(connection) -> list[str]:
+    """Project live-metadata 0014 tables to their pre-additive column shape."""
+    from sqlalchemy import text
+
+    schema = connection.scalar(text("SELECT current_schema()"))
+    if not isinstance(schema, str) or not schema.startswith("test_"):
+        raise ValueError("intermediate baseline projection requires a test schema")
+    removed = []
+    for table, column in (
+        ("publication_results", "clock_lineage"),
+        ("analysis_jobs", "max_wall_clock_ms"),
+        ("research_backtest_runs", "result_schema_version"),
+        ("research_backtest_runs", "compute_contract_sha256"),
+    ):
+        exists = connection.scalar(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = current_schema() "
+                "AND table_name = :table AND column_name = :column)"
+            ),
+            {"table": table, "column": column},
+        )
+        if exists:
+            connection.execute(text(f'ALTER TABLE "{table}" DROP COLUMN "{column}"'))
+            removed.append(f"{table}.{column}")
+    return removed
+
+
+def exercise_upgrade_steps(
+    connection,
+    revisions: Sequence[str],
+    kind: str,
+    expected: dict[str, object],
+) -> list[dict[str, object]]:
+    """Record each additive migration's catalog and preserved historical row."""
+    from sqlalchemy import text
+
+    capture, validate = _schema_contract_functions()
+    steps = []
+    for revision in revisions:
+        _upgrade(connection, revision)
+        actual_revision = connection.scalar(
+            text("SELECT version_num FROM alembic_version")
+        )
+        if actual_revision != revision:
+            raise ValueError(f"intermediate upgrade did not reach {revision}")
+        if not _sentinel_preserved(connection, kind, expected):
+            raise ValueError(f"{revision} sentinel was not preserved")
+        catalog = capture(connection)
+        validate(catalog)
+        steps.append(
+            {
+                "to_revision": revision,
+                "sentinel_preserved": True,
+                "catalog_sha256": _hash_database_state(catalog),
+            }
+        )
+    return steps
+
+
 def exercise_upgrade(
     database_url: str,
     revision: str,
     schema_prefix: str | None = None,
+    *,
+    intermediate: bool = False,
 ) -> dict[str, object]:
     """Upgrade one declared baseline with representative data in a fresh schema."""
     from sqlalchemy import text
 
     if revision not in SUPPORTED_FROM:
         raise ValueError(f"unsupported upgrade baseline: {revision}")
+    if intermediate and revision != INTERMEDIATE_REVISIONS[0]:
+        raise ValueError("intermediate proof must start at 0014_research")
     url = _validated_postgres_url(database_url)
     admin_url = url.difference_update_query(["options"])
     admin_engine = _create_admin_engine(admin_url)
@@ -1656,6 +1742,8 @@ def exercise_upgrade(
     result = None
     sentinel_before = None
     sentinel_after = None
+    intermediate_steps = []
+    baseline_projection = []
     try:
         _validate_upgrade_schema_name(schema, schema_prefix)
         with admin_engine.begin() as connection:
@@ -1666,6 +1754,8 @@ def exercise_upgrade(
         values = _sentinel_values()
         with scoped_engine.begin() as connection:
             _upgrade(connection, revision)
+            if intermediate:
+                baseline_projection = prepare_intermediate_baseline(connection)
             kind, expected = _insert_sentinel(connection, revision, values)
             if kind == "legacy_regulation_graph":
                 sentinel_before = _legacy_regulation_state(
@@ -1679,7 +1769,12 @@ def exercise_upgrade(
             if baseline_revision != revision:
                 raise ValueError(f"baseline upgrade did not reach {revision}")
         with scoped_engine.begin() as connection:
-            _upgrade(connection, RELEASE_HEAD)
+            if intermediate:
+                intermediate_steps = exercise_upgrade_steps(
+                    connection, INTERMEDIATE_REVISIONS[1:], kind, expected
+                )
+            else:
+                _upgrade(connection, RELEASE_HEAD)
             final_revision = connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
@@ -1709,6 +1804,9 @@ def exercise_upgrade(
         if sentinel_before is not None and sentinel_after is not None:
             result["sentinel_before"] = sentinel_before
             result["sentinel_after"] = sentinel_after
+        if intermediate:
+            result["intermediate_steps"] = intermediate_steps
+            result["baseline_projection"] = baseline_projection
     except BaseException as exc:
         primary_error = exc
     finally:
@@ -3144,6 +3242,47 @@ def _drop_wheel_schemas(database_url: str, schema_prefix: str) -> None:
         raise cleanup_errors[0]
 
 
+def verify_wheel_commit_resources(wheel: Path, audited_commit: str) -> None:
+    """Bind installed migration/schema resources to actual committed bytes."""
+    manifest_name = "dragon_radar/migrations/release_manifest.json"
+    manifest_bytes = _committed_blob(
+        REPOSITORY_ROOT, audited_commit, f"src/{manifest_name}"
+    )
+    manifest = json.loads(manifest_bytes)
+    expected = {
+        manifest_name: manifest_bytes,
+        "dragon_radar/storage/schema_contract.json": _committed_blob(
+            REPOSITORY_ROOT,
+            audited_commit,
+            "src/dragon_radar/storage/schema_contract.json",
+        ),
+    }
+    for filename in ("env.py",):
+        name = f"dragon_radar/migrations/{filename}"
+        expected[name] = _committed_blob(REPOSITORY_ROOT, audited_commit, f"src/{name}")
+    for entry in manifest["revisions"]:
+        name = f"dragon_radar/migrations/versions/{entry['filename']}"
+        expected[name] = _committed_blob(REPOSITORY_ROOT, audited_commit, f"src/{name}")
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError("wheel contains duplicate resource paths")
+        revisions = {
+            name
+            for name in names
+            if name.startswith("dragon_radar/migrations/versions/")
+            and name.endswith(".py")
+        }
+        expected_revisions = {name for name in expected if "/versions/" in name}
+        if revisions != expected_revisions:
+            raise ValueError("wheel revisions differ from audited commit")
+        for name, content in expected.items():
+            if name not in names or archive.read(name).replace(
+                b"\r\n", b"\n"
+            ) != content.replace(b"\r\n", b"\n"):
+                raise ValueError(f"wheel resource differs from audited commit: {name}")
+
+
 def verify_installed_wheel(
     database_url: str,
     wheel: Path,
@@ -3153,12 +3292,16 @@ def verify_installed_wheel(
     """Install one wheel and execute migration checks outside the source tree."""
     _clear_output_target(output)
     audited_commit = validate_audited_commit(audited_commit, REPOSITORY_ROOT)
+    audit = verify_repository_commit(REPOSITORY_ROOT, audited_commit)
+    if audit["errors"]:
+        raise ValueError("; ".join(audit["errors"]))
     wheel = resolve_wheel_path(wheel)
+    verify_wheel_commit_resources(wheel, audited_commit)
     wheel_digest = wheel_sha256(wheel)
     schema_prefix = _new_wheel_schema_prefix()
     _validate_wheel_schema_prefix(schema_prefix)
     temp_root = Path(tempfile.gettempdir()) / "dragon-radar-task21" / ".temp"
-    run_token = schema_prefix.removeprefix("release_wheel_").removesuffix("_")
+    run_token = schema_prefix.removeprefix("test_wheel_").removesuffix("_")
     venv = temp_root / f"task21-wheel-venv-{run_token}"
     run_root = temp_root / f"task21-wheel-run-{run_token}"
     shutil.rmtree(venv, ignore_errors=True)
@@ -3283,7 +3426,7 @@ def _run_generation_lifecycle(database_url: str) -> dict[str, object]:
     primary_error = None
     cleanup_errors = []
     try:
-        if re.fullmatch(r"schema_contract_[0-9a-f]{32}", schema) is None:
+        if re.fullmatch(r"test_schema_contract_[0-9a-f]{32}", schema) is None:
             raise ValueError("unsafe generated schema name")
         with admin_engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
@@ -3348,6 +3491,49 @@ def generate_schema_contract(
     """Generate a schema contract in a disposable PostgreSQL schema."""
     contract = _run_generation_lifecycle(database_url)
     write_contract_atomically(contract, output_path)
+    return contract
+
+
+def generate_workingtree_schema_contract(
+    output_path: Path,
+    database_url: str,
+    evidence_path: Path,
+) -> dict[str, object]:
+    """Capture development bytes explicitly, never as an audited release."""
+    if Path(output_path).resolve() == Path(evidence_path).resolve():
+        raise ValueError("contract and evidence must use different paths")
+    result = verify_manifest(DEFAULT_MIGRATIONS)
+    if result["errors"]:
+        raise ValueError("; ".join(result["errors"]))
+    manifest_digest = hashlib.sha256(
+        (DEFAULT_MIGRATIONS / "release_manifest.json").read_bytes()
+    ).hexdigest()
+    contract = _run_generation_lifecycle(database_url)
+    after = verify_manifest(DEFAULT_MIGRATIONS)
+    if (
+        after["errors"]
+        or manifest_digest
+        != hashlib.sha256(
+            (DEFAULT_MIGRATIONS / "release_manifest.json").read_bytes()
+        ).hexdigest()
+    ):
+        raise ValueError("workingtree migrations changed during catalog capture")
+    write_contract_atomically(contract, output_path)
+    write_contract_atomically(
+        {
+            "schema": "dragon-radar.workingtree-schema-capture",
+            "schema_version": 1,
+            "provenance": "WORKINGTREE",
+            "audited_commit": "WORKINGTREE",
+            "release_validated": False,
+            "head": RELEASE_HEAD,
+            "release_manifest_sha256": manifest_digest,
+            "schema_contract_sha256": hashlib.sha256(
+                Path(output_path).read_bytes()
+            ).hexdigest(),
+        },
+        evidence_path,
+    )
     return contract
 
 
@@ -3507,6 +3693,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if result["errors"]:
         for error in result["errors"]:
             print(error, file=sys.stderr)
+        return 1
+    try:
+        require_clean_migration_tree()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"release migration verification failed: {exc}", file=sys.stderr)
         return 1
     print(f"{result['head']}: {result['revision_count']} revisions verified")
     return 0

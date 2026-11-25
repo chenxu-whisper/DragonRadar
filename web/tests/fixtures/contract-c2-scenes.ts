@@ -3,6 +3,7 @@ import { ID, OLD, mockLeaders, resetSummary, securities, sessions, snapshot } fr
 import { articleA, articleB, listArticleA, listArticleB, ARTICLE_A, ARTICLE_B } from './news';
 import { mockRegulation } from './regulation';
 import { createTrafficAudit } from '../../scripts/contract-c2-support.mjs';
+import { rankingForRequest } from './ranking-direction';
 
 export { ID, ARTICLE_A, ARTICLE_B };
 export const DATE = '2026-09-10';
@@ -14,7 +15,12 @@ export const candidates = securities.slice(0, 25).map((s, i) => ({
 export const articles = [listArticleA, listArticleB, ...Array.from({ length: 24 }, (_, i) => ({
   ...listArticleA, article_id: `00000000-0000-4000-8000-${String(300 + i).padStart(12, '0')}`,
   title: `C2 announcement ${i + 1}`,
-}))];
+}))].map((item, index) => ({
+  ...item,
+  received_at: index === 1 ? articleB.received_at : articleA.received_at,
+  revision_id: index === 0 ? articleA.revision_id : index === 1 ? articleB.revision_id
+    : `00000000-0000-4000-8000-${String(500 + index).padStart(12, '0')}`,
+}));
 const coverage = { expected: 65, valid: 63, excluded: 1, missing: 1 };
 const env = (data: unknown) => ({ ...resetSummary(snapshot), data });
 const absent = () => ({ ...env(null), quality_flags: ['materialization_unavailable'] });
@@ -199,12 +205,12 @@ export async function mockC2(page: Page) {
     if (path === '/api/rank/range') return json({
       ...env({
         window_days: 20, adjusted_start: sessions[0], adjusted_end: sessions.at(-1), benchmark_return: 0.02,
-        ranking: securities.slice(0, 25).map((security, index) => ({
+        ranking: rankingForRequest(securities.slice(0, 25).map((security, index) => ({
           rank: index + 1, security_id: security.security_id, name: security.name, topics: [],
           topic_status: 'available', topic_reasons: [], reasons: [],
           return_ratio: 0.1 - index / 1000, excess_return_ratio: 0.1 - index / 1000 - 0.02,
           max_drawdown_ratio: 0.02, amount_change_ratio: 0.03,
-        })), exclusions: [],
+        })), url.searchParams), exclusions: [],
       }),
       coverage: { expected: 25, valid: 25, excluded: 0, missing: 0 },
       rule_version: 'analysis-v1', basis: { unit: 'ratio', currency: 'CNY', price_type: 'raw', benchmark: 'B000300' },

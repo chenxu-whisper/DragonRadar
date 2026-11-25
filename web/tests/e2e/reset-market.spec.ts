@@ -53,6 +53,15 @@ async function mockResetMarket(page: Page, listIncludesSelected = true) {
     }
     const selected = url.searchParams.get('snapshot_id') === PRIOR
       ? [PRIOR, '2026-09-09'] : [CURRENT, '2026-09-10'];
+    if (url.pathname === '/api/index/IDX/history') {
+      return respond({
+        ...envelope(selected[0], selected[1], null),
+        coverage: null,
+        basis: { ...basis, unit: 'point', currency: null },
+        reason: 'materialization_unavailable',
+        quality_flags: ['materialization_unavailable'],
+      });
+    }
     if (url.pathname === '/api/market/overview') {
       return respond(envelope(selected[0], selected[1], {
         indexes: [{ security_id: 'IDX', code: '000300', name: '合成指数', last: 1234, change_ratio: 0.01, amount: null, reason: 'source_field_unavailable' }],
@@ -161,8 +170,16 @@ test('index detail uses archived factors and restores overview focus without sto
   expect((await new AxeBuilder({ page }).include('dialog[open]').analyze()).violations).toEqual([]);
   expect(await drawer.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(375);
   await page.screenshot({ path: testInfo.outputPath('index-detail-375.png') });
+  const close = drawer.getByRole('button', { name: '关闭详情' });
+  await close.focus();
+  await page.keyboard.press('Tab');
+  await expect(drawer.getByRole('combobox', { name: '指数历史窗口' })).toBeFocused();
   await page.keyboard.press('Shift+Tab');
-  await expect(drawer.getByRole('button', { name: '关闭详情' })).toBeFocused();
+  await expect(close).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(drawer.getByRole('combobox', { name: '指数历史窗口' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(close).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(drawer).not.toBeVisible();
   await expect(opener).toBeFocused();
